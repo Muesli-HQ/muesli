@@ -11,9 +11,27 @@ struct DictationRowView: View {
     @State private var isHovered = false
     @State private var showDeleteConfirmation = false
     @State private var isExpanded = false
+    @State private var showsFullText = false
 
     private var isComputerUseCommand: Bool {
         record.source == "cua"
+    }
+
+    private var isQuilTransformation: Bool {
+        record.source == "quil"
+    }
+
+    private var canExpandText: Bool {
+        record.rawText.count > 160 || record.rawText.filter { $0 == "\n" }.count > 2
+    }
+
+    private var displayedText: String {
+        guard !showsFullText, record.rawText.count > 160 else { return record.rawText }
+        return String(record.rawText.prefix(160)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    private var hasExpandableDetails: Bool {
+        record.computerUseTrace != nil
     }
 
     private var syncOriginBadgeLabel: String? {
@@ -41,22 +59,58 @@ struct DictationRowView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
 
+                        if isQuilTransformation {
+                            HStack(spacing: 3) {
+                                Image(nsImage: QuillIcon.image())
+                                    .renderingMode(.template)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: 10, height: 10)
+                                Text("QUILL")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            }
+                                .foregroundStyle(MuesliTheme.accent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(MuesliTheme.accentSubtle)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+
                         if let syncOriginBadgeLabel {
                             SyncOriginBadge(label: syncOriginBadgeLabel)
                         }
 
-                        Text(record.rawText)
-                            .font(.system(size: 14, weight: .regular))
+                        Text(displayedText)
+                            .font(MuesliTheme.reading())
                             .foregroundStyle(MuesliTheme.textPrimary)
-                            .lineLimit(nil)
+                            .lineLimit(showsFullText || !canExpandText ? nil : 3)
+                            .lineSpacing(3)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
-                        if let trace = record.computerUseTrace {
-                            Text(Self.displayFinalStatus(trace.finalStatus))
-                                .font(MuesliTheme.captionMedium())
-                                .foregroundStyle(statusColor(trace.finalStatus))
+                        if let trace = record.computerUseTrace, !isQuilTransformation {
+                            HStack(spacing: MuesliTheme.spacing8) {
+                                if trace.finalStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "running" {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Computer use in progress")
+                                }
+                                Text(Self.displayFinalStatus(trace.finalStatus))
+                                    .font(MuesliTheme.captionMedium())
+                                    .foregroundStyle(statusColor(trace.finalStatus))
+                            }
                         }
+                    }
+
+                    if canExpandText {
+                        Button(showsFullText ? "Show less" : "Show more") {
+                            showsFullText.toggle()
+                        }
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.accent)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showsFullText ? "Collapse dictation text" : "Show full dictation text")
+                        .accessibilityIdentifier("dictation.expand.\(record.id)")
                     }
 
                     if isExpanded, let trace = record.computerUseTrace {
@@ -73,7 +127,7 @@ struct DictationRowView: View {
                 }
 
                 HStack(spacing: 8) {
-                    if record.computerUseTrace != nil {
+                    if hasExpandableDetails {
                         Button {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 isExpanded.toggle()
@@ -86,7 +140,7 @@ struct DictationRowView: View {
                         .buttonStyle(.plain)
                     }
 
-                    if record.computerUseTrace != nil, let onCopyTrace {
+                    if !isQuilTransformation, record.computerUseTrace != nil, let onCopyTrace {
                         Button(action: onCopyTrace) {
                             Image(systemName: "list.bullet.clipboard")
                                 .font(.system(size: 12))
@@ -112,19 +166,25 @@ struct DictationRowView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .opacity(isHovered || isExpanded || record.computerUseTrace != nil ? 1 : 0)
+                .opacity(isHovered || isExpanded || hasExpandableDetails ? 1 : 0)
             }
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing16)
-        .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+        }
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovered = hovering
             }
         }
         .onTapGesture {
-            if record.computerUseTrace != nil {
+            if hasExpandableDetails {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     isExpanded.toggle()
                 }
@@ -150,10 +210,12 @@ struct DictationRowView: View {
                 ForEach(trace.events) { event in
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
                         HStack(spacing: MuesliTheme.spacing8) {
-                            Text(event.step.map { "Step \($0)" } ?? "Run")
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(MuesliTheme.textTertiary)
-                                .frame(width: 48, alignment: .leading)
+                            if !isQuilTransformation {
+                                Text(event.step.map { "Step \($0)" } ?? "Run")
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(MuesliTheme.textTertiary)
+                                    .frame(width: 48, alignment: .leading)
+                            }
 
                             Text(event.title)
                                 .font(MuesliTheme.captionMedium())
@@ -167,12 +229,16 @@ struct DictationRowView: View {
                         }
 
                         Text(event.body)
-                            .font(.system(size: 12, weight: .regular, design: event.kind == "model_output" ? .monospaced : .default))
+                            .font(.system(
+                                size: 12,
+                                weight: .regular,
+                                design: ["model_output", "quil_model"].contains(event.kind) ? .monospaced : .default
+                            ))
                             .foregroundStyle(MuesliTheme.textPrimary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, 56)
+                            .padding(.leading, isQuilTransformation ? 0 : 56)
                     }
                 }
             }
@@ -197,6 +263,10 @@ struct DictationRowView: View {
 
     private static func displayFinalStatus(_ status: String) -> String {
         switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "running":
+            return "Running"
+        case "interrupted":
+            return "Interrupted"
         case "done":
             return "Done"
         case "timed_out", "timedout":

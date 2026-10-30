@@ -267,14 +267,18 @@ private struct InsightsShareCard: View {
 
                 Spacer(minLength: 34)
 
-                Text(showsNumbers ? snapshot.selected.totalWords.formatted() : "—")
+                Text(showsNumbers ? snapshot.selected.dictationWords.formatted() : "—")
                     .font(.system(size: 108, weight: .bold, design: .rounded))
                     .tracking(-5)
                     .monospacedDigit()
                     .foregroundStyle(pale)
-                Text("WORDS CAPTURED")
+                Text("WORDS DICTATED")
                     .font(.system(size: 18, weight: .bold))
                     .tracking(2.8)
+                    .foregroundStyle(muted)
+
+                Text(showsNumbers ? "\(snapshot.selected.meetingWords.formatted()) words transcribed in meetings" : "— words transcribed in meetings")
+                    .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(muted)
 
                 Spacer(minLength: 36)
@@ -282,7 +286,7 @@ private struct InsightsShareCard: View {
                 HStack(spacing: 0) {
                     shareDatum(value: showsNumbers ? snapshot.selected.meetings.formatted() : "—", label: "MEETINGS")
                     shareDivider
-                    shareDatum(value: showsNumbers ? "\(Int(snapshot.selected.averageWPM.rounded()))" : "—", label: "AVERAGE WPM")
+                    shareDatum(value: showsNumbers ? "\(Int(snapshot.selected.averageWPM.rounded()))" : "—", label: "DICTATION WPM")
                     shareDivider
                     shareDatum(value: showsNumbers ? dayCount(snapshot.currentStreakDays) : "—", label: "CURRENT STREAK")
                     shareDivider

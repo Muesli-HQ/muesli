@@ -18,8 +18,8 @@ muesli_spm_scratch_disabled() {
 }
 
 muesli_default_spm_cache_root() {
-  local external_root="${MUESLI_EXTERNAL_SPM_CACHE_ROOT:-/Volumes/MuesliBuildCache/muesli-spm}"
-  if [[ -d "$external_root" ]]; then
+  local external_root="${MUESLI_EXTERNAL_SPM_CACHE_ROOT:-}"
+  if [[ -n "$external_root" && -d "$external_root" ]]; then
     printf '%s\n' "$external_root"
   else
     printf '%s\n' "$HOME/Library/Caches/muesli-spm"

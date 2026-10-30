@@ -6,7 +6,7 @@ import TelemetryDeck
 import MuesliCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var controller: MuesliController?
     private var terminationTask: Task<Void, Never>?
     private(set) var updaterController: SPUStandardUpdaterController?
@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "\(AppIdentity.displayName) failed to start"
             alert.informativeText = error.localizedDescription
             alert.runModal()
-            NSApplication.shared.terminate(nil)
+            ApplicationTermination.request()
         }
     }
 
@@ -75,6 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.handleICloudRemoteNotification(userInfo: userInfo)
     }
 
+    /// Best-effort cleanup budget, not a measured duration or the deadlock fix.
+    /// The run-loop handoff in ApplicationTermination lets this deadline run.
+    private static let shutdownDeadline: TimeInterval = 8
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationTask != nil {
             return .terminateLater
@@ -85,11 +89,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let controller else { return .terminateNow }
 
         terminationTask = Task { @MainActor [weak self] in
-            await controller.shutdown()
+            let finished = await ShutdownDeadline.run(seconds: Self.shutdownDeadline) {
+                await controller.shutdown()
+            }
+            if !finished {
+                fputs("[muesli-native] shutdown still waiting on step=\(controller.shutdownStep) after \(Self.shutdownDeadline) s; quitting anyway\n", stderr)
+            }
             self?.terminationTask = nil
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Self.handleReopen(
+            hasVisibleWindows: flag,
+            isMeetingRecording: controller?.appState.isMeetingRecording == true,
+            openActiveNotes: { self.controller?.openActiveMeetingNotes() ?? false },
+            openHistory: { self.controller?.openHistoryWindow() }
+        )
+    }
+
+    static func handleReopen(
+        hasVisibleWindows: Bool,
+        isMeetingRecording: Bool,
+        openActiveNotes: () -> Bool,
+        openHistory: () -> Void
+    ) -> Bool {
+        // Preserve the user's current tab when AppKit can bring a window forward.
+        guard !hasVisibleWindows else { return true }
+        // This menu-bar app manages history manually; AppKit has no untitled
+        // document to create when every window is closed.
+        guard isMeetingRecording else {
+            openHistory()
+            return false
+        }
+        // During native shutdown the recording flag can outlive the active ID.
+        if !openActiveNotes() { openHistory() }
+        return false // The meeting reopen has been handled here.
     }
 
     private static var hasConfiguredSparkleFeed: Bool {
@@ -111,12 +148,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.showWhatsNew()
     }
 
+    @objc func checkForUpdates(_ sender: Any?) {
+        controller?.checkForUpdates()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(AppDelegate.stopMeeting(_:))
+            || menuItem.action == #selector(AppDelegate.discardMeeting(_:)) {
+            return Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true)
+        }
+        if menuItem.action == #selector(AppDelegate.checkForUpdates(_:)) {
+            return updaterController != nil
+        }
+        return true
+    }
+
     @objc func showDictations(_ sender: Any?) {
         controller?.openHistoryWindow(tab: .dictations)
     }
 
     @objc func showMeetings(_ sender: Any?) {
         controller?.openHistoryWindow(tab: .meetings)
+    }
+
+    static func meetingCommandsEnabled(isMeetingRecording: Bool) -> Bool {
+        // Command-period belongs to modal cancellation while an alert is open.
+        isMeetingRecording && NSApp.modalWindow == nil
+            && !NSApp.windows.contains { $0.attachedSheet != nil }
+    }
+
+    @objc func stopMeeting(_ sender: Any?) {
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
+        controller?.stopMeetingRecording()
+    }
+
+    @objc func discardMeeting(_ sender: Any?) {
+        guard Self.meetingCommandsEnabled(isMeetingRecording: controller?.appState.isMeetingRecording == true) else { return }
+        controller?.discardMeetingWithConfirmation()
     }
 
     private func installStandardEditMenu() {
@@ -144,6 +212,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         whatsNewItem.target = self
         appMenu.addItem(whatsNewItem)
+        let updatesItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(AppDelegate.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        updatesItem.target = self
+        appMenu.addItem(updatesItem)
         appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Hide \(AppIdentity.displayName)",
@@ -216,6 +291,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(meetingsItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
+
+        let meetingMenuItem = NSMenuItem(title: "Meeting", action: nil, keyEquivalent: "")
+        let meetingMenu = NSMenu(title: "Meeting")
+        let stopMeetingItem = NSMenuItem(
+            title: "Stop Recording",
+            action: #selector(AppDelegate.stopMeeting(_:)),
+            keyEquivalent: "."
+        )
+        stopMeetingItem.keyEquivalentModifierMask = [.command]
+        stopMeetingItem.target = self
+        meetingMenu.addItem(stopMeetingItem)
+        let discardMeetingItem = NSMenuItem(
+            title: "Discard Recording…",
+            action: #selector(AppDelegate.discardMeeting(_:)),
+            keyEquivalent: ""
+        )
+        discardMeetingItem.target = self
+        meetingMenu.addItem(discardMeetingItem)
+        meetingMenuItem.submenu = meetingMenu
+        mainMenu.addItem(meetingMenuItem)
 
         let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")

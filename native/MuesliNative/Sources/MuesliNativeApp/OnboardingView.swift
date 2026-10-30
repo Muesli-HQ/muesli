@@ -14,9 +14,17 @@ struct OnboardingView: View {
     @State private var selectedCohereLanguage: CohereTranscribeLanguage
     @State private var summaryBackend: MeetingSummaryBackendOption = .chatGPT
     @State private var apiKey = ""
+    @State private var anthropicWorkspaceID = ""
     @State private var isSigningInChatGPT = false
     @State private var chatGPTSignInDone = false
     @State private var chatGPTSignInError: String?
+    @State private var isSigningInOpenRouter = false
+    @State private var openRouterSignInDone = false
+    @State private var openRouterSignInError: String?
+    @State private var isEnteringOpenRouterAPIKey = false
+    @State private var claudeCodeAuthStatus: ClaudeCodeAuthenticationStatus?
+    @State private var claudeCodeSignInError: String?
+    @State private var isWaitingForClaudeCodeSignIn = false
 
     // Permission states — polled from OS every second
     @State private var micGranted = false
@@ -28,6 +36,10 @@ struct OnboardingView: View {
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
     @State private var recentlyGrantedPermissionName: String?
+    @State private var permissionAdvanceTask: Task<Void, Never>?
+    @State private var permissionAdvanceGeneration: UUID?
+    @State private var hasCompletedPermissionsStep: Bool
+    @State private var selectionBeforeEverything: OnboardingUseCase?
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
@@ -55,14 +67,17 @@ struct OnboardingView: View {
     @State private var modelReadyIndicatorBackend: BackendOption?
     @State private var modelReadyIndicatorTask: Task<Void, Never>?
 
-    // Google Calendar
-    @State private var isSigningInGoogleCal = false
-    @State private var googleCalSignInDone = false
-    @State private var googleCalSignInError: String?
     @State private var hasFinishedOnboarding = false
 
     static let permissionsStep = OnboardingFlow.Step.permissions.rawValue
     static let dictationTestStep = OnboardingFlow.dictationTestStep
+    private static let bundledMuesliLogo: NSImage = {
+        if let url = Bundle.main.url(forResource: "muesli_app_icon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSApplication.shared.applicationIconImage
+    }()
 
     private var orderedSteps: [Int] {
         OnboardingFlow.orderedSteps(for: selectedUseCase)
@@ -77,8 +92,8 @@ struct OnboardingView: View {
     }
 
     private var onboardingAlternativeModels: [BackendOption] {
-        var options = BackendOption.onboarding.filter { $0 != BackendOption.onboardingDefault }
-        if BackendOption.onboarding.contains(selectedBackend),
+        var options = BackendOption.compatibleOptions(BackendOption.onboarding).filter { $0 != BackendOption.onboardingDefault }
+        if BackendOption.compatibleOptions(BackendOption.onboarding).contains(selectedBackend),
            selectedBackend != BackendOption.onboardingDefault,
            !options.contains(selectedBackend) {
             options.insert(selectedBackend, at: 0)
@@ -87,10 +102,7 @@ struct OnboardingView: View {
     }
 
     private var onboardingModelDescription: String {
-        if BackendOption.onboardingDefault == .appleSpeechAnalyzer {
-            return "Use Apple Speech, or choose another local model to download while you continue setup."
-        }
-        return "Start with a fast local model. Larger models can download while you continue setup."
+        "Start with a fast local model. Larger models can download while you continue setup."
     }
 
     init(
@@ -128,22 +140,35 @@ struct OnboardingView: View {
             permissions: initialPermissions,
             useCase: initialUseCase,
             permissionsStep: Self.permissionsStep,
-            dictationTestStep: Self.dictationTestStep
+            dictationTestStep: Self.dictationTestStep,
+            useCoreAudioTap: appState.config.useCoreAudioTap
         )
-        let effectiveInitialStep = OnboardingFlow.normalizedStep(permissionGatedInitialStep, for: initialUseCase)
+        let sanitizedInitialBackend = BackendOption.resolvedOnboardingBackend(initialBackend)
+        let modelGatedInitialStep = OnboardingFlow.modelGatedResumeStep(
+            requestedStep: permissionGatedInitialStep,
+            initialBackend: initialBackend,
+            resolvedBackend: sanitizedInitialBackend
+        )
+        let effectiveInitialStep = OnboardingFlow.normalizedStep(modelGatedInitialStep, for: initialUseCase)
 
         _currentStep = State(initialValue: effectiveInitialStep)
+        _hasCompletedPermissionsStep = State(initialValue: OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: effectiveInitialStep
+        ))
         _userName = State(initialValue: initialUserName)
         _selectedUseCase = State(initialValue: initialUseCase)
-        let sanitizedInitialBackend = BackendOption.onboarding.contains(initialBackend)
-            ? initialBackend
-            : BackendOption.onboardingDefault
         _selectedBackend = State(initialValue: sanitizedInitialBackend)
         _selectedCohereLanguage = State(initialValue: initialCohereLanguage)
         _selectedHotkey = State(initialValue: initialHotkey)
-        _summaryBackend = State(initialValue: initialSummaryBackend)
-        _modelDownloadProgress = State(initialValue: initialModelDownloadProgress)
-        _modelDownloadStatus = State(initialValue: initialModelDownloadStatus)
+        let claudeCodeInstalled = ClaudeCodeSummarizer.executableURL(
+            configuredPath: appState.config.claudeCodeExecutablePath
+        ) != nil
+        _summaryBackend = State(initialValue:
+            initialSummaryBackend == .claudeCode && !claudeCodeInstalled ? .chatGPT : initialSummaryBackend
+        )
+        _anthropicWorkspaceID = State(initialValue: appState.config.anthropicWorkspaceID)
+        _modelDownloadProgress = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadProgress : nil)
+        _modelDownloadStatus = State(initialValue: sanitizedInitialBackend == initialBackend ? initialModelDownloadStatus : nil)
         _micGranted = State(initialValue: initialMicGranted)
         _accessibilityGranted = State(initialValue: initialAccessibilityGranted)
         _inputMonitoringGranted = State(initialValue: initialInputMonitoringGranted)
@@ -161,7 +186,7 @@ struct OnboardingView: View {
                 case 3: permissionsStep
                 case 4: dictationTestStep
                 case 5: meetingSummaryStep
-                case 6: googleCalendarStep
+                case 6: calendarAccessStep
                 default: EmptyView()
                 }
             }
@@ -216,7 +241,10 @@ struct OnboardingView: View {
         .onChange(of: userName) { _, _ in
             saveProgress(atStep: currentStep)
         }
-        .onChange(of: selectedUseCase) { _, _ in
+        .onChange(of: selectedUseCase) { previousUseCase, newUseCase in
+            if previousUseCase != newUseCase {
+                hasCompletedPermissionsStep = false
+            }
             if !orderedSteps.contains(currentStep) {
                 currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
             }
@@ -255,7 +283,7 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 1:
-            onboardingButton(selectedBackend.isDownloaded ? "Continue" : "Download & Continue", enabled: true) {
+            onboardingButton(selectedBackend.isDownloaded ? "Continue" : "Download & Continue", enabled: selectedBackend.isCompatible()) {
                 startDownload()
             }
         case 2:
@@ -264,13 +292,7 @@ struct OnboardingView: View {
             }
         case 3:
             onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                if selectedUseCase.includesPushToTalk {
-                    saveProgressAndRestart()
-                } else if currentStepIndex == orderedSteps.count - 1 {
-                    finishOnboarding(withKey: false)
-                } else {
-                    goToNextStep()
-                }
+                advancePastPermissions()
             }
         case 4:
             if dictationTestResult != nil {
@@ -301,14 +323,19 @@ struct OnboardingView: View {
             }
         case 5:
             HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { goToNextStep() }
-                onboardingButton("Continue", enabled: true) {
+                skipButton {
+                    if summaryBackend == .claudeCode && claudeCodeAuthStatus != .signedIn {
+                        summaryBackend = .chatGPT
+                    }
+                    goToNextStep()
+                }
+                onboardingButton("Continue", enabled: summaryBackend != .claudeCode || claudeCodeAuthStatus == .signedIn) {
                     goToNextStep()
                 }
             }
         case 6:
             HStack(spacing: MuesliTheme.spacing12) {
-                skipButton { finishOnboarding(withKey: true) }
+                skipButton("Not now") { finishOnboarding(withKey: true) }
                 onboardingButton("Finish", enabled: true) {
                     finishOnboarding(withKey: true)
                 }
@@ -348,8 +375,8 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
-    private func skipButton(action: @escaping () -> Void) -> some View {
-        Button("Skip", action: action)
+    private func skipButton(_ title: String = "Skip", action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
             .buttonStyle(.plain)
             .font(MuesliTheme.body())
             .foregroundStyle(MuesliTheme.textSecondary)
@@ -514,10 +541,16 @@ struct OnboardingView: View {
         return details.isEmpty ? (snapshot.message ?? "Downloading...") : details.joined(separator: " · ")
     }
 
+    private var isSelectedHotkeyToggle: Bool {
+        selectedHotkey.isCombination && appState.config.dictationCombinationActivation == .toggle
+    }
+
     private var dictationTestSubtitle: AttributedString {
         let markdown: String
-        if isSelectedModelReadyForDictationTest {
-            markdown = selectedUseCase.includesVoiceNotes
+        if isSelectedModelReadyForDictationTest, isSelectedHotkeyToggle {
+            markdown = "Press **\(selectedHotkey.label)** to start, then press it again when done.\nYour words should appear below."
+        } else if isSelectedModelReadyForDictationTest {
+            markdown = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
                 ? "Hold **\(selectedHotkey.label)** to record a voice note, then release.\nYour words should appear below."
                 : "Hold **\(selectedHotkey.label)** and say something, then release.\nYour words should appear below."
         } else {
@@ -527,7 +560,9 @@ struct OnboardingView: View {
     }
 
     private var dictationTestPreparationSubtitleMarkdown: String {
-        let unlockCopy = selectedUseCase.includesVoiceNotes ? "Voice note test" : "Dictation"
+        let unlockCopy = selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation
+            ? "Voice note test"
+            : "Dictation"
         if isModelPreparingAfterDownload {
             return "Optimizing **\(selectedBackend.label)** for this Mac.\n\(unlockCopy) will unlock when it is ready."
         }
@@ -556,9 +591,12 @@ struct OnboardingView: View {
         VStack(spacing: MuesliTheme.spacing16) {
             Spacer()
 
-            MWaveformIcon(barCount: 13, spacing: 3)
-                .foregroundStyle(MuesliTheme.accent)
-                .frame(width: 80, height: 48)
+            Image(nsImage: Self.bundledMuesliLogo)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 64, height: 64)
+                .accessibilityLabel("Muesli")
 
             VStack(spacing: MuesliTheme.spacing8) {
                 Text("Welcome to Muesli")
@@ -599,36 +637,36 @@ struct OnboardingView: View {
                         icon: "waveform",
                         title: "Voice Notes",
                         subtitle: "Record in Muesli",
-                        selected: selectedUseCase == .voiceNotes
+                        selected: selectedUseCase.includesVoiceNotes
                     ) {
-                        selectedUseCase = .voiceNotes
+                        toggleCapability(.voiceNotes)
                     }
 
                     useCaseCard(
                         icon: "keyboard.fill",
                         title: "Dictation",
                         subtitle: "Paste into apps",
-                        selected: selectedUseCase == .dictation
+                        selected: selectedUseCase.includesDictation
                     ) {
-                        selectedUseCase = .dictation
+                        toggleCapability(.dictation)
                     }
 
                     useCaseCard(
                         icon: "person.2.fill",
                         title: "Meetings",
                         subtitle: "Notes and summaries",
-                        selected: selectedUseCase == .meetings
+                        selected: selectedUseCase.includesMeetings
                     ) {
-                        selectedUseCase = .meetings
+                        toggleCapability(.meetings)
                     }
 
                     useCaseCard(
                         icon: "rectangle.3.group.fill",
                         title: "Everything",
-                        subtitle: "Dictation + meetings",
-                        selected: selectedUseCase == .dictationAndMeetings
+                        subtitle: "All workflows",
+                        selected: selectedUseCase == .everything
                     ) {
-                        selectedUseCase = .dictationAndMeetings
+                        toggleEverything()
                     }
                 }
             }
@@ -665,8 +703,18 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(selected ? MuesliTheme.accent : MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .overlay(alignment: .topLeading) {
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.18), value: selected)
     }
 
     // MARK: - Step 2: Model Selection
@@ -761,7 +809,9 @@ struct OnboardingView: View {
 
     private func modelCard(option: BackendOption) -> some View {
         let isSelected = selectedBackend == option
+        let incompatibilityReason = option.incompatibilityReason()
         return Button {
+            guard option.isCompatible() else { return }
             selectedBackend = option
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
@@ -777,7 +827,7 @@ struct OnboardingView: View {
                     HStack(spacing: 6) {
                         Text(option.label)
                             .font(MuesliTheme.headline())
-                            .foregroundStyle(MuesliTheme.textPrimary)
+                            .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                         if option == BackendOption.onboardingDefault {
                             Text("Recommended")
                                 .font(.system(size: 9, weight: .semibold))
@@ -793,7 +843,12 @@ struct OnboardingView: View {
                     }
                     Text(option.description)
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
+                    if let incompatibilityReason {
+                        Label(incompatibilityReason, systemImage: "exclamationmark.triangle")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
                 }
 
                 Spacer()
@@ -807,13 +862,16 @@ struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(incompatibilityReason != nil)
+        .help(incompatibilityReason ?? option.label)
     }
 
     // MARK: - Step 3: Permissions (sequential, one at a time)
 
     /// The ordered list of permissions to grant during onboarding.
-    /// Keep this to the core dictation path so first-run setup gets to a
-    /// successful transcription before meeting-specific permissions appear.
+    /// Request the permission union for the capabilities selected during setup.
+    /// Screen Recording remains optional because it enriches meeting context but
+    /// is not required to capture the meeting's audio.
     private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
         var steps: [(String, String, String, Bool, () -> Void)] = [
             ("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
@@ -828,11 +886,46 @@ struct OnboardingView: View {
             }
             steps += [
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk recording", inputMonitoringGranted, {
+                self.controller.beginSystemPermissionGuide(for: .inputMonitoring)
                 if !CGRequestListenEventAccess() {
-                    self.openSystemSettings("Privacy_ListenEvent")
+                    self.openSystemSettings(
+                        "Privacy_ListenEvent",
+                        yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring)
+                    )
                 }
             }),
             ]
+        }
+        if selectedUseCase.includesMeetings {
+            if appState.config.useCoreAudioTap {
+                steps.append((
+                    "speaker.wave.2.fill",
+                    "System Audio",
+                    "Capture meeting audio from other participants",
+                    systemAudioGranted,
+                    {
+                        Task {
+                            let granted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                            await MainActor.run {
+                                self.systemAudioGranted = granted
+                                if granted {
+                                    self.notePermissionGranted("System Audio")
+                                } else {
+                                    self.saveProgress(atStep: self.currentStep)
+                                }
+                            }
+                        }
+                    }
+                ))
+            } else {
+                steps.append((
+                    "rectangle.dashed.badge.record",
+                    "Screen & System Audio",
+                    "Capture meeting audio from other participants",
+                    screenRecordingGranted,
+                    { CGRequestScreenCaptureAccess() }
+                ))
+            }
         }
         return steps
     }
@@ -982,8 +1075,22 @@ struct OnboardingView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .onAppear { startPermissionPolling() }
-        .onDisappear { stopPermissionPolling() }
+        .onAppear {
+            startPermissionPolling()
+            schedulePermissionAdvanceIfReady()
+        }
+        .onChange(of: requiredPermissionsGranted) { _, granted in
+            if granted {
+                schedulePermissionAdvanceIfReady()
+            } else {
+                cancelScheduledPermissionAdvance()
+            }
+        }
+        .onDisappear {
+            cancelScheduledPermissionAdvance()
+            stopPermissionPolling()
+            controller.dismissSystemPermissionGuide()
+        }
     }
 
     private func permissionButtonTitle(for permissionName: String, isConfirmingGrant: Bool) -> String {
@@ -999,6 +1106,7 @@ struct OnboardingView: View {
 
     private func requestAccessibilityPermission() {
         nativePermissionPromptName = "Accessibility"
+        controller.beginSystemPermissionGuide(for: .accessibility)
         controller.prepareOnboardingForNativePermissionPrompt()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -1018,8 +1126,9 @@ struct OnboardingView: View {
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = nil
-        selectedUseCase = .voiceNotes
-        currentStep = OnboardingFlow.normalizedStep(currentStep, for: .voiceNotes)
+        controller.dismissSystemPermissionGuide()
+        selectedUseCase = selectedUseCase.replacingDictationWithVoiceNotes
+        currentStep = OnboardingFlow.normalizedStep(currentStep, for: selectedUseCase)
         saveProgress(atStep: currentStep)
     }
 
@@ -1030,6 +1139,7 @@ struct OnboardingView: View {
         case "Microphone": return "Privacy_Microphone"
         case "Accessibility": return "Privacy_Accessibility"
         case "Input Monitoring": return "Privacy_ListenEvent"
+        case "System Audio", "Screen & System Audio": return "Privacy_ScreenCapture"
         default: return "Privacy_Microphone"
         }
     }
@@ -1094,7 +1204,8 @@ struct OnboardingView: View {
                 systemAudio: systemAudioGranted,
                 screenRecording: screenRecordingGranted
             ),
-            for: selectedUseCase
+            for: selectedUseCase,
+            useCoreAudioTap: appState.config.useCoreAudioTap
         )
     }
 
@@ -1111,6 +1222,81 @@ struct OnboardingView: View {
     private func stopPermissionPolling() {
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
+    }
+
+    private func schedulePermissionAdvanceIfReady() {
+        guard OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: currentStep,
+            requiredPermissionsGranted: requiredPermissionsGranted,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep,
+            hasScheduledTask: permissionAdvanceTask != nil
+        ) else { return }
+
+        let generation = UUID()
+        permissionAdvanceGeneration = generation
+        permissionAdvanceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard permissionAdvanceGeneration == generation, !Task.isCancelled else { return }
+            guard currentStep == Self.permissionsStep, requiredPermissionsGranted else {
+                permissionAdvanceGeneration = nil
+                permissionAdvanceTask = nil
+                return
+            }
+
+            permissionAdvanceGeneration = nil
+            permissionAdvanceTask = nil
+            advancePastPermissions()
+        }
+    }
+
+    private func cancelScheduledPermissionAdvance() {
+        permissionAdvanceGeneration = nil
+        permissionAdvanceTask?.cancel()
+        permissionAdvanceTask = nil
+    }
+
+    private func advancePastPermissions() {
+        cancelScheduledPermissionAdvance()
+        controller.dismissSystemPermissionGuide()
+        let action = OnboardingFlow.permissionAdvanceAction(
+            for: selectedUseCase,
+            currentStepIndex: currentStepIndex,
+            orderedStepCount: orderedSteps.count,
+            hasCompletedPermissionsStep: hasCompletedPermissionsStep
+        )
+        hasCompletedPermissionsStep = true
+        switch action {
+        case .restartForDictationTest:
+            saveProgressAndRestart()
+        case .finish:
+            finishOnboarding(withKey: false)
+        case .next:
+            goToNextStep()
+        }
+    }
+
+    private func toggleCapability(_ capability: OnboardingCapability) {
+        applyUseCaseSelection(OnboardingFlow.toggling(
+            capability,
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func toggleEverything() {
+        applyUseCaseSelection(OnboardingFlow.togglingEverything(
+            in: OnboardingFlow.UseCaseSelectionState(
+                selectedUseCase: selectedUseCase,
+                selectionBeforeEverything: selectionBeforeEverything
+            )
+        ))
+    }
+
+    private func applyUseCaseSelection(_ state: OnboardingFlow.UseCaseSelectionState) {
+        selectedUseCase = state.selectedUseCase
+        selectionBeforeEverything = state.selectionBeforeEverything
     }
 
     private func refreshPermissions() {
@@ -1132,6 +1318,10 @@ struct OnboardingView: View {
             return accessibilityGranted
         case "Input Monitoring":
             return inputMonitoringGranted
+        case "System Audio":
+            return systemAudioGranted
+        case "Screen & System Audio":
+            return screenRecordingGranted
         default:
             return false
         }
@@ -1140,6 +1330,9 @@ struct OnboardingView: View {
     @MainActor
     private func notePermissionGranted(_ permissionName: String) {
         guard recentlyGrantedPermissionName != permissionName else { return }
+        if PermissionDragGuidePermission(permissionName: permissionName) != nil {
+            controller.dismissSystemPermissionGuide()
+        }
         grantingPermissionName = nil
         nativePermissionPromptName = nil
         recentlyGrantedPermissionName = permissionName
@@ -1164,8 +1357,7 @@ struct OnboardingView: View {
             selectedBackendKey: selectedBackend.backend,
             selectedModelKey: selectedBackend.model,
             selectedCohereLanguageCode: selectedCohereLanguage.rawValue,
-            hotkeyKeyCode: selectedHotkey.keyCode,
-            hotkeyLabel: selectedHotkey.label,
+            hotkey: selectedHotkey,
             systemAudioRequested: systemAudioGranted,
             onboardingUseCaseRawValue: selectedUseCase.rawValue,
             modelDownloadProgress: modelDownloadProgress,
@@ -1181,19 +1373,32 @@ struct OnboardingView: View {
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {
         let steps = permissionSteps
+        var guidePermission: PermissionDragGuidePermission?
         if permissionIndex < steps.count {
-            grantingPermissionName = steps[permissionIndex].name
+            let permissionName = steps[permissionIndex].name
+            grantingPermissionName = permissionName
             nativePermissionPromptName = nil
             recentlyGrantedPermissionName = nil
             saveProgress(atStep: currentStep)
+            guidePermission = PermissionDragGuidePermission(permissionName: permissionName)
+            if let guidePermission {
+                controller.beginSystemPermissionGuide(for: guidePermission)
+            }
         }
-        openSystemSettings(systemSettingsPane(for: permissionIndex))
+        openSystemSettings(
+            systemSettingsPane(for: permissionIndex),
+            yieldBehavior: OnboardingSystemSettingsYieldPolicy.behavior(for: guidePermission)
+        )
     }
 
-    private func openSystemSettings(_ pane: String) {
+    private func openSystemSettings(
+        _ pane: String,
+        yieldBehavior: OnboardingSystemSettingsYieldBehavior
+    ) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-            controller.yieldOnboardingFocusToSystemSettings()
-            NSWorkspace.shared.open(url)
+            if NSWorkspace.shared.open(url) {
+                controller.yieldOnboardingFocusToSystemSettings(using: yieldBehavior)
+            }
         }
     }
 
@@ -1212,7 +1417,9 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
+                Text(isSelectedHotkeyToggle
+                    ? "Press your key combination to record, then press it again to transcribe."
+                    : "Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -1292,7 +1499,7 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text(selectedUseCase.includesVoiceNotes ? "Test Voice Note" : "Test Dictation")
+                Text(selectedUseCase.includesVoiceNotes && !selectedUseCase.includesDictation ? "Test Voice Note" : "Test Dictation")
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -1375,7 +1582,9 @@ struct OnboardingView: View {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Listening... release \(selectedHotkey.label) when done")
+                            Text(isSelectedHotkeyToggle
+                                ? "Listening... press \(selectedHotkey.label) again when done"
+                                : "Listening... release \(selectedHotkey.label) when done")
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textSecondary)
                         }
@@ -1383,7 +1592,7 @@ struct OnboardingView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "keyboard")
                                 .font(.system(size: 14))
-                            Text("Hold \(selectedHotkey.label) to start")
+                            Text("\(isSelectedHotkeyToggle ? "Press" : "Hold") \(selectedHotkey.label) to start")
                                 .font(MuesliTheme.body())
                         }
                         .foregroundStyle(MuesliTheme.textTertiary)
@@ -1419,6 +1628,9 @@ struct OnboardingView: View {
                 withAnimation { isDictationTesting = true }
                 dictationTestError = nil
             }
+            controller.dictationTestRecordingStopped = {
+                withAnimation { isDictationTesting = false }
+            }
             controller.dictationTestCallback = { text in
                 if text.isEmpty {
                     dictationTestError = "No speech detected. Try again."
@@ -1438,11 +1650,7 @@ struct OnboardingView: View {
             // Cancel any in-flight recording before clearing callbacks to prevent
             // the transcription Task from falling through to the production paste path
             controller.cancelTestDictation()
-            controller.dictationTestCallback = nil
-            controller.dictationTestFailureCallback = nil
-            controller.dictationTestRecordingStarted = nil
-            controller.dictationTestBackend = nil
-            controller.dictationTestCohereLanguage = nil
+            controller.clearDictationTestLifecycle()
             // Stop the test monitor while moving through onboarding, but leave the
             // production monitor running when finishing from the dictation test.
             if !hasFinishedOnboarding {
@@ -1463,7 +1671,10 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Connect an LLM provider to get AI-powered meeting notes.\nYou can set this up later in Settings.")
+                Text(
+                    "Connect an LLM provider for AI-powered meeting notes.\n"
+                        + "Remote summaries may send transcripts, notes, screen context, and participant names off-device."
+                )
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -1477,6 +1688,16 @@ struct OnboardingView: View {
                 providerTab("OpenAI", selected: summaryBackend == .openAI) {
                     summaryBackend = .openAI
                     apiKey = ""
+                }
+                providerTab("Anthropic", selected: summaryBackend == .anthropic) {
+                    summaryBackend = .anthropic
+                    apiKey = ""
+                }
+                if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) != nil {
+                    providerTab("Claude Code", selected: summaryBackend == .claudeCode) {
+                        summaryBackend = .claudeCode
+                        apiKey = ""
+                    }
                 }
                 providerTab("OpenRouter", selected: summaryBackend == .openRouter) {
                     summaryBackend = .openRouter
@@ -1493,7 +1714,7 @@ struct OnboardingView: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
-            .frame(width: 320)
+            .frame(width: ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil ? 400 : 480)
 
             if summaryBackend == .chatGPT {
                 Text("Use your ChatGPT Plus or Pro subscription.")
@@ -1554,6 +1775,62 @@ struct OnboardingView: View {
                             .lineLimit(2)
                     }
                 }
+            } else if summaryBackend == .claudeCode {
+                VStack(spacing: MuesliTheme.spacing12) {
+                    Text("Use your existing Claude Code sign-in. Meeting prompts go through your Claude account or configured proxy; the model does not run on-device.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .multilineTextAlignment(.center)
+
+                    if let claudeCodeAuthStatus {
+                        switch claudeCodeAuthStatus {
+                        case .signedIn:
+                            Label("Claude Code is signed in and ready", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(MuesliTheme.success)
+                        case .signedOut:
+                            if isWaitingForClaudeCodeSignIn {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Finish sign-in in Terminal or your browser")
+                                }
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                            } else {
+                                ClaudeCodeSignInButton { beginClaudeCodeSignIn() }
+                            }
+                            Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
+                        case .unknown:
+                            Text("Muesli could not check Claude Code's sign-in status.")
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                            ClaudeCodeSignInButton { beginClaudeCodeSignIn() }
+                            Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
+                        case .unavailable:
+                            EmptyView()
+                        }
+                    } else {
+                        ProgressView("Checking Claude Code sign-in…")
+                    }
+                    if let claudeCodeSignInError {
+                        Text(claudeCodeSignInError)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .font(MuesliTheme.caption())
+                .buttonStyle(.plain)
+                .task { await refreshClaudeCodeAuthStatus() }
+                .task(id: isWaitingForClaudeCodeSignIn) {
+                    guard isWaitingForClaudeCodeSignIn else { return }
+                    for _ in 0..<90 {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        guard !Task.isCancelled else { return }
+                        await refreshClaudeCodeAuthStatus()
+                        if claudeCodeAuthStatus == .signedIn || claudeCodeAuthStatus == .unavailable {
+                            isWaitingForClaudeCodeSignIn = false
+                            return
+                        }
+                    }
+                    isWaitingForClaudeCodeSignIn = false
+                }
             } else if summaryBackend == .ollama {
                 Text("Run AI models locally on your device with Ollama.\nNo API key needed — just install Ollama and pull a model.")
                     .font(MuesliTheme.caption())
@@ -1574,24 +1851,112 @@ struct OnboardingView: View {
                             .foregroundStyle(MuesliTheme.success)
                     }
                 }
-            } else {
-                if summaryBackend == .openRouter {
-                    Text("OpenRouter supports many model providers through one API key.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                }
+            } else if summaryBackend == .openRouter {
+                Text("Connect OpenRouter in your browser. Muesli receives a dedicated API key after you approve access.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .multilineTextAlignment(.center)
 
+                if appState.isOpenRouterAuthenticated || openRouterSignInDone {
+                    HStack(spacing: 6) {
+                        Image(systemName: "network")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("OpenRouter connected")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(MuesliTheme.success)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                } else if isSigningInOpenRouter {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Connecting...")
+                            .font(.system(size: 12))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                } else {
+                    Button {
+                        isSigningInOpenRouter = true
+                        openRouterSignInError = nil
+                        apiKey = ""
+                        isEnteringOpenRouterAPIKey = false
+                        Task {
+                            let error = await controller.signInWithOpenRouter()
+                            isSigningInOpenRouter = false
+                            openRouterSignInDone = OpenRouterAuthManager.shared.isAuthenticated
+                            openRouterSignInError = error
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "network")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Connect OpenRouter")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(MuesliTheme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
+                        isEnteringOpenRouterAPIKey.toggle()
+                        apiKey = ""
+                        openRouterSignInError = nil
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
+
+                    if isEnteringOpenRouterAPIKey {
+                        PastableSecureField(
+                            text: apiKey,
+                            placeholder: "sk-or-...",
+                            onChange: { apiKey = $0 }
+                        )
+                        .frame(width: 320, height: 28)
+                    }
+
+                    if let openRouterSignInError {
+                        Text(openRouterSignInError)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    }
+                }
+            } else {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    if summaryBackend == .anthropic {
+                        Text("Use an Anthropic API key for Claude meeting summaries. This is separate from Claude Code sign-in.")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
                     Text("API Key")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
 
                     PastableSecureField(
                         text: apiKey,
-                        placeholder: summaryBackend == .openAI ? "sk-..." : "sk-or-...",
+                        placeholder: summaryBackend == .anthropic ? "sk-ant-api..." : "sk-...",
                         onChange: { apiKey = $0 }
                     )
                     .frame(width: 320, height: 28)
+
+                    if summaryBackend == .anthropic {
+                        Text("Workspace ID (only for keys not scoped to one workspace)")
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                        PastableTextField(
+                            text: anthropicWorkspaceID,
+                            placeholder: "Optional workspace ID",
+                            onChange: { anthropicWorkspaceID = $0 }
+                        )
+                        .frame(width: 320, height: 28)
+                    }
 
                     HStack(spacing: 4) {
                         Circle()
@@ -1622,9 +1987,33 @@ struct OnboardingView: View {
         .buttonStyle(.plain)
     }
 
+    @MainActor
+    private func refreshClaudeCodeAuthStatus() async {
+        let status = await ClaudeCodeSummarizer.authenticationStatus(
+            executablePath: appState.config.claudeCodeExecutablePath
+        )
+        if status == .unavailable {
+            summaryBackend = .chatGPT
+        } else {
+            claudeCodeAuthStatus = status
+        }
+    }
+
+    @MainActor
+    private func beginClaudeCodeSignIn() {
+        claudeCodeSignInError = nil
+        do {
+            try ClaudeCodeSignInLauncher.start(executablePath: appState.config.claudeCodeExecutablePath)
+            isWaitingForClaudeCodeSignIn = true
+        } catch {
+            claudeCodeSignInError = error.localizedDescription
+        }
+    }
+
     // MARK: - Actions
 
     private func startDownload() {
+        guard selectedBackend.isCompatible() else { return }
         ensureModelDownloadStarted()
         goToNextStep()
     }
@@ -1653,7 +2042,7 @@ struct OnboardingView: View {
             dictationTestError = nil
             controller.dictationTestBackend = selectedBackend
             controller.dictationTestCohereLanguage = selectedCohereLanguage
-            controller.startHotkeyMonitor(keyCode: selectedHotkey.keyCode)
+            controller.startHotkeyMonitor(hotkey: selectedHotkey)
             isDictationTestMonitorActive = true
         }
     }
@@ -1668,6 +2057,10 @@ struct OnboardingView: View {
     }
 
     private func ensureModelDownloadStarted() {
+        if let reason = selectedBackend.incompatibilityReason() {
+            modelDownloadError = reason
+            return
+        }
         if modelReadyBackend == selectedBackend {
             isModelStillDownloading = false
             modelDownloadProgress = 1.0
@@ -1982,99 +2375,31 @@ struct OnboardingView: View {
         }
     }
 
-    private var googleCalendarStep: some View {
+    private var calendarAccessStep: some View {
         VStack(spacing: MuesliTheme.spacing24) {
             Spacer()
-
-            VStack(spacing: MuesliTheme.spacing8) {
-                Text("Google Calendar")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-
-                Text("Connect Google Calendar to see upcoming meetings.\nYou can set this up later in Settings.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .multilineTextAlignment(.center)
+            Image(nsImage: CalendarIntegration.calendarIcon)
+                .resizable()
+                .frame(width: 80, height: 80)
+                .accessibilityHidden(true)
+            Text("Bring your meetings into Muesli")
+                .font(MuesliTheme.title1())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("Allow access to macOS Calendar to see upcoming meetings and get reminders.")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            CalendarAccessControl {
+                await controller.calendarAccessDidChange()
             }
-
-            VStack(spacing: MuesliTheme.spacing12) {
-                if googleCalSignInDone {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(MuesliTheme.success)
-                        Text("Google Calendar connected")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
-                } else if isSigningInGoogleCal {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Connecting...")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textSecondary)
-                    }
-                } else if appState.isGoogleCalendarAvailable && !appState.isGoogleCalendarVerified {
-                    VStack(spacing: 6) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar.badge.plus")
-                                .font(.system(size: 14))
-                            Text("Connect Google Calendar")
-                                .font(.system(size: 14, weight: .medium))
-                        }
-                        .foregroundStyle(.white.opacity(0.4))
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.textTertiary.opacity(0.3))
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                        Text("Google OAuth verification pending")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    }
-                } else if appState.isGoogleCalendarAvailable {
-                    Button {
-                        isSigningInGoogleCal = true
-                        googleCalSignInError = nil
-                        Task {
-                            let error = await controller.signInWithGoogleCalendar()
-                            isSigningInGoogleCal = false
-                            if let error {
-                                googleCalSignInError = error
-                            } else {
-                                googleCalSignInDone = true
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar.badge.plus")
-                                .font(.system(size: 14))
-                            Text("Connect Google Calendar")
-                                .font(.system(size: 14, weight: .medium))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    }
-                    .buttonStyle(.plain)
-
-                    if let googleCalSignInError {
-                        Text(googleCalSignInError)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .multilineTextAlignment(.center)
-                    }
-                } else {
-                    Text("Google Calendar credentials not configured.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                }
-            }
-
+            Button("Set up calendar accounts…", action: CalendarIntegration.openAccounts)
+                .buttonStyle(.link)
+            Divider().background(MuesliTheme.surfaceBorder)
+            Text("Already use Google or Exchange? Add the account in macOS Internet Accounts and turn on Calendars.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
             Spacer()
         }
+        .multilineTextAlignment(.center)
         .padding(.horizontal, MuesliTheme.spacing32)
     }
 
@@ -2110,7 +2435,8 @@ struct OnboardingView: View {
             hotkey: selectedHotkey,
             onboardingUseCase: selectedUseCase,
             summaryBackend: summaryBackend,
-            apiKey: withKey ? apiKey : nil
+            apiKey: withKey ? apiKey : nil,
+            anthropicWorkspaceID: summaryBackend == .anthropic ? anthropicWorkspaceID : nil
         )
     }
 }

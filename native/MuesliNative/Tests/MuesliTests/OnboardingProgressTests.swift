@@ -22,6 +22,8 @@ struct OnboardingProgressTests {
 
         let progress = try JSONDecoder().decode(OnboardingProgress.self, from: Data(json.utf8))
 
+        #expect(progress.selectedBackendKey == BackendOption.cohereTranscribe.backend)
+        #expect(progress.selectedModelKey == BackendOption.cohereTranscribe.model)
         #expect(progress.selectedCohereLanguageCode == CohereTranscribeLanguage.english.rawValue)
     }
 
@@ -71,8 +73,7 @@ struct OnboardingProgressTests {
             userName: "Test User",
             selectedBackendKey: "fluidaudio",
             selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
-            hotkeyKeyCode: 55,
-            hotkeyLabel: "Left Cmd",
+            hotkey: HotkeyConfig(keyCode: 55, label: "Left Cmd"),
             modelDownloadProgress: 0.42,
             modelDownloadStatus: "189 MB of 450 MB"
         )
@@ -82,6 +83,54 @@ struct OnboardingProgressTests {
 
         #expect(decoded.modelDownloadProgress == 0.42)
         #expect(decoded.modelDownloadStatus == "189 MB of 450 MB")
+    }
+
+    @Test("combination dictation shortcut survives onboarding progress round trip")
+    func combinationDictationShortcutRoundTrips() throws {
+        let chord = HotkeyConfig.combination(modifiers: [.control, .option], keyCode: 49)
+        let progress = OnboardingProgress(
+            currentStep: OnboardingFlow.dictationTestStep,
+            userName: "Test User",
+            selectedBackendKey: "fluidaudio",
+            selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+            hotkey: chord
+        )
+
+        let decoded = try JSONDecoder().decode(OnboardingProgress.self, from: JSONEncoder().encode(progress))
+
+        #expect(decoded.hotkey == chord)
+        #expect(decoded.hotkey.label == "⌃⌥Space")
+    }
+
+    @Test("legacy and invalid onboarding shortcuts resume with a live hotkey")
+    func legacyAndInvalidOnboardingShortcuts() throws {
+        let legacy = try JSONDecoder().decode(OnboardingProgress.self, from: Data("""
+        {
+          "schemaVersion": 4,
+          "currentStep": 2,
+          "userName": "Test User",
+          "selectedBackendKey": "fluidaudio",
+          "selectedModelKey": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          "hotkeyKeyCode": 55,
+          "hotkeyLabel": "Left Cmd"
+        }
+        """.utf8))
+        #expect(legacy.hotkey == HotkeyConfig(keyCode: 55, label: "Left Cmd"))
+
+        // A combination saved without its key code would otherwise register nothing.
+        let truncated = try JSONDecoder().decode(OnboardingProgress.self, from: Data("""
+        {
+          "schemaVersion": 4,
+          "currentStep": 2,
+          "userName": "Test User",
+          "selectedBackendKey": "fluidaudio",
+          "selectedModelKey": "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+          "hotkeyKeyCode": 65535,
+          "hotkeyLabel": "⌘⇧D",
+          "hotkeyCombinationModifiers": 1179648
+        }
+        """.utf8))
+        #expect(truncated.hotkey == .default)
     }
 
     @Test("dictation monitor starts at and after its resume threshold")
@@ -135,8 +184,7 @@ struct OnboardingProgressTests {
                 userName: "Test User",
                 selectedBackendKey: "fluidaudio",
                 selectedModelKey: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
-                hotkeyKeyCode: 55,
-                hotkeyLabel: "Left Cmd"
+                hotkey: HotkeyConfig(keyCode: 55, label: "Left Cmd")
             )
             let roundTripped = try JSONDecoder().decode(
                 OnboardingProgress.self,
@@ -212,8 +260,31 @@ struct OnboardingProgressTests {
         #expect(step == 3)
     }
 
-    @Test("meetings-only does not require input monitoring")
-    func meetingsOnlyDoesNotRequireInputMonitoring() {
+    @Test("meetings-only requires system audio but not input monitoring")
+    func meetingsOnlyRequiresSystemAudioButNotInputMonitoring() {
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: false,
+            systemAudio: true,
+            screenRecording: false
+        )
+
+        let step = OnboardingPermissionGate.resumeStep(
+            requestedStep: 5,
+            permissions: permissions,
+            useCase: .meetings,
+            permissionsStep: 3,
+            dictationTestStep: 4
+        )
+
+        #expect(OnboardingPermissionGate.hasRequiredMeetingPermissions(permissions))
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
+        #expect(step == 5)
+    }
+
+    @Test("meetings-only cannot leave permissions without system audio")
+    func meetingsOnlyMissingSystemAudioResumesAtPermissionsStep() {
         let permissions = OnboardingPermissionSnapshot(
             microphone: true,
             accessibility: false,
@@ -230,8 +301,32 @@ struct OnboardingProgressTests {
             dictationTestStep: 4
         )
 
-        #expect(OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
-        #expect(step == 5)
+        #expect(!OnboardingPermissionGate.hasRequiredMeetingPermissions(permissions))
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
+        #expect(OnboardingPermissionGate.hasRequiredStartupPermissions(permissions, for: .meetings))
+        #expect(step == 3)
+    }
+
+    @Test("ScreenCaptureKit meetings require Screen Recording instead of the CoreAudio permission")
+    func screenCaptureKitMeetingsRequireScreenRecording() {
+        let permissions = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: false,
+            systemAudio: false,
+            screenRecording: true
+        )
+
+        #expect(OnboardingPermissionGate.hasRequiredMeetingPermissions(
+            permissions,
+            useCoreAudioTap: false
+        ))
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(
+            permissions,
+            for: .meetings,
+            useCoreAudioTap: false
+        ))
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(permissions, for: .meetings))
     }
 
     @Test("voice notes require microphone and input monitoring")
@@ -277,5 +372,37 @@ struct OnboardingProgressTests {
 
         #expect(!OnboardingPermissionGate.hasRequiredVoiceNotesPermissions(permissions))
         #expect(step == 3)
+    }
+
+    @Test("multi-select permission requirements use the strictest capability union")
+    func multiSelectPermissionUnion() {
+        let voiceAndMeetings = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: true,
+            screenRecording: false
+        )
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(voiceAndMeetings, for: .voiceNotesAndMeetings))
+
+        var voiceAndMeetingsWithoutSystemAudio = voiceAndMeetings
+        voiceAndMeetingsWithoutSystemAudio.systemAudio = false
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(
+            voiceAndMeetingsWithoutSystemAudio,
+            for: .voiceNotesAndMeetings
+        ))
+
+        let everythingWithoutAccessibility = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: false,
+            inputMonitoring: true,
+            systemAudio: true,
+            screenRecording: false
+        )
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(everythingWithoutAccessibility, for: .everything))
+
+        var everythingGranted = everythingWithoutAccessibility
+        everythingGranted.accessibility = true
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(everythingGranted, for: .everything))
     }
 }

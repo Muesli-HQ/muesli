@@ -90,16 +90,17 @@ enum MeetingBrowserLogic {
             }
         }
 
-        let sorted = filtered.sorted { lhs, rhs in
-            let lhsDate = parseDate(lhs.startTime) ?? .distantPast
-            let rhsDate = parseDate(rhs.startTime) ?? .distantPast
+        // Parse each start time once. Parsing inside the comparator costs
+        // O(n log n) ISO8601 parses, which is seconds of CPU for a few hundred rows.
+        let dated = filtered.map { ($0, parseDate($0.startTime) ?? Date.distantPast) }
+        let sorted = dated.sorted { lhs, rhs in
             switch sort {
             case .newestFirst:
-                return lhsDate > rhsDate
+                return lhs.1 > rhs.1
             case .oldestFirst:
-                return lhsDate < rhsDate
+                return lhs.1 < rhs.1
             }
-        }
+        }.map(\.0)
 
         return MeetingBrowserPresentation(
             meetings: sorted,
@@ -134,9 +135,30 @@ enum MeetingBrowserLogic {
         return date >= threshold
     }
 
+    // Start times repeat on every render of the list, the timeline and the filter
+    // menu, and each uncached parse is an ICU call. Only strings with an explicit
+    // UTC offset are cached: a local-time string means a different instant when the
+    // system time zone changes. Failed parses are not cached.
+    private static let parsedDates = NSCache<NSString, NSDate>()
+    private static let localParserLock = NSLock()
+
     static func parseDate(_ raw: String) -> Date? {
-        isoParsers.lazy.compactMap { $0.date(from: raw) }.first
-            ?? localParsers.lazy.compactMap { $0.date(from: raw) }.first
+        let key = raw as NSString
+        if let cached = parsedDates.object(forKey: key) { return cached as Date }
+        if let parsed = isoParsers.lazy.compactMap({ $0.date(from: raw) }).first {
+            parsedDates.setObject(parsed as NSDate, forKey: key)
+            return parsed
+        }
+        // Local timestamps follow the current zone; refresh and parse atomically
+        // because background exports share these formatters with the meeting list.
+        localParserLock.lock()
+        defer { localParserLock.unlock() }
+        let timeZone = TimeZone.current
+        for parser in localParsers {
+            if parser.timeZone != timeZone { parser.timeZone = timeZone }
+            if let parsed = parser.date(from: raw) { return parsed }
+        }
+        return nil
     }
 
     static func formatStartTime(
@@ -147,12 +169,39 @@ enum MeetingBrowserLogic {
         guard let date = parseDate(raw) else {
             return formatStartTimeFallback(raw)
         }
+        return startTimeFormatter(locale: locale, timeZone: timeZone).string(from: date)
+    }
+
+    // DateFormatter construction loads ICU symbol tables, which dominated list
+    // rendering when every row built its own. One formatter per locale and zone.
+    private static let startTimeFormatterLock = NSLock()
+    nonisolated(unsafe) private static var startTimeFormatters: [String: DateFormatter] = [:]
+
+    // The 12/24-hour preference can change without changing the locale identifier,
+    // so the identifier key alone would keep serving a stale clock format.
+    private static let localeChangeObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: NSLocale.currentLocaleDidChangeNotification,
+        object: nil,
+        queue: nil
+    ) { _ in
+        startTimeFormatterLock.lock()
+        startTimeFormatters.removeAll()
+        startTimeFormatterLock.unlock()
+    }
+
+    private static func startTimeFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+        _ = localeChangeObserver
+        let key = "\(locale.identifier)|\(timeZone.identifier)"
+        startTimeFormatterLock.lock()
+        defer { startTimeFormatterLock.unlock() }
+        if let cached = startTimeFormatters[key] { return cached }
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.timeZone = timeZone
         formatter.dateStyle = .medium
         formatter.timeStyle = .medium
-        return formatter.string(from: date)
+        startTimeFormatters[key] = formatter
+        return formatter
     }
 
     private static func formatStartTimeFallback(_ raw: String) -> String {
@@ -193,8 +242,11 @@ enum MeetingBrowserLogic {
 struct MeetingsView: View {
     let appState: AppState
     let controller: MuesliController
+    @State private var isGranolaImportPresented = false
     @State private var selectedFilter: MeetingBrowserFilter = .all
     @State private var selectedSort: MeetingBrowserSort = .newestFirst
+    // Bumped when the system locale changes so cached start-time labels redraw.
+    @State private var localeChangeVersion = 0
 
     private var scopedMeetings: [MeetingRecord] {
         appState.meetingRows
@@ -232,8 +284,11 @@ struct MeetingsView: View {
                     meeting: meeting,
                     controller: controller,
                     appState: appState,
-                    onBack: { controller.showMeetingsHome(folderID: appState.selectedFolderID) },
-                    backLabel: "Back to Meetings"
+                    onBack: {
+                        if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
+                        else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
+                    },
+                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {
@@ -242,6 +297,9 @@ struct MeetingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(MuesliTheme.backgroundBase)
+        .sheet(isPresented: $isGranolaImportPresented) {
+            GranolaImportView(controller: controller)
+        }
         .sheet(
             isPresented: Binding(
                 get: { appState.isMeetingTemplatesManagerPresented },
@@ -261,9 +319,13 @@ struct MeetingsView: View {
         ScrollView {
             let presentation = browserPresentation
             VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-                PageTitle("Meetings")
+                DashboardPageHeader(
+                    title: "Meetings",
+                    appState: appState,
+                    controller: controller
+                )
 
-                if !appState.upcomingCalendarEvents.isEmpty {
+                if !appState.visibleUpcomingCalendarEvents.isEmpty {
                     comingUpSection
                 }
 
@@ -283,13 +345,15 @@ struct MeetingsView: View {
                 if presentation.meetings.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: MuesliTheme.spacing12) {
+                    LazyVStack(spacing: 0) {
                         ForEach(presentation.meetings) { meeting in
                             MeetingListItemView(
                                 record: meeting,
                                 isSelected: appState.selectedMeetingID == meeting.id,
                                 hasFollowUps: presentation.meetingIDsWithFollowUps.contains(meeting.id),
+                                localeVersion: localeChangeVersion,
                                 folders: appState.folders,
+                                browsedFolderID: appState.selectedFolderID,
                                 onSelect: { controller.showMeetingDocument(id: meeting.id) },
                                 onMove: { folderID in
                                     controller.moveMeeting(id: meeting.id, toFolder: folderID)
@@ -306,20 +370,24 @@ struct MeetingsView: View {
                 }
             }
             .frame(maxWidth: 960, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity, alignment: .center)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+            localeChangeVersion &+= 1
+        }
         .onDrop(of: ["public.file-url"], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
+            let folderID = appState.selectedFolderID
             provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
                 guard let data = item as? Data,
                       let urlString = String(data: data, encoding: .utf8),
                       let url = URL(string: urlString) else { return }
                 guard AudioFileImportController.isSupportedFileURL(url) else { return }
                 DispatchQueue.main.async {
-                    controller.importAudioFileFromURL(url)
+                    controller.importAudioFileFromURL(url, folderID: folderID)
                 }
             }
             return true
@@ -353,7 +421,7 @@ struct MeetingsView: View {
     private var groupedUpcomingEvents: [UpcomingEventGroup] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
-        let timedEvents = appState.upcomingCalendarEvents.filter { !$0.isAllDay && !appState.hiddenCalendarEventIDs.contains($0.id) }
+        let timedEvents = appState.visibleUpcomingCalendarEvents
         let grouped = Dictionary(grouping: timedEvents) { event in
             calendar.startOfDay(for: event.startDate)
         }
@@ -403,22 +471,6 @@ struct MeetingsView: View {
                     .font(.custom("Cormorant Garamond", size: 22).weight(.medium))
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                if appState.isGoogleCalendarAuthenticated {
-                    Button {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 9))
-                            Text("Add Google to macOS Calendar for real-time sync")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundStyle(MuesliTheme.accent)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
             .padding(.bottom, 4)
 
@@ -682,7 +734,7 @@ struct MeetingsView: View {
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
             Button {
-                controller.startQuickNoteMeeting()
+                controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "plus")
@@ -702,13 +754,14 @@ struct MeetingsView: View {
             .help("Start a quick meeting note")
             .fixedSize()
 
-            Button {
-                controller.importAudioFile()
+            Menu {
+                Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
+                Button("Granola…") { isGranolaImportPresented = true }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("Import Audio")
+                    Text("Import")
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -724,7 +777,7 @@ struct MeetingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
-            .help("Import an audio file for offline transcription")
+            .help("Import audio or meeting notes from Granola")
             .fixedSize()
 
             sortButton
@@ -845,6 +898,9 @@ struct MeetingsView: View {
     }
 
     private func activeMeetingStatusText(for meeting: MeetingRecord) -> String {
+        if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
+            return job.message
+        }
         guard meeting.status == .recording else { return "Finalizing notes" }
         return appState.isMeetingRecordingPaused ? "Recording paused" : "Recording now"
     }

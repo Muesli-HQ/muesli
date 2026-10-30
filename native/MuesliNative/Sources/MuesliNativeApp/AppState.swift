@@ -7,6 +7,7 @@ enum DashboardTab: String, CaseIterable {
     case dictations
     case insights
     case meetings
+    case meetingChat
     case dictionary
     case models
     case shortcuts
@@ -47,6 +48,8 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
     case dictation
     case streaming
     case postProcessing
+    case quill
+    case cotypist
 
     var id: String { rawValue }
 
@@ -55,7 +58,16 @@ enum ModelsCategory: String, CaseIterable, Identifiable {
         case .dictation: return "Dictation"
         case .streaming: return "Live Meetings"
         case .postProcessing: return "Cleanup"
+        case .quill: return "Quill"
+        case .cotypist: return "Cotypist"
         }
+    }
+}
+
+extension ModelsCategory {
+    /// Categories shown in Models: Cotypist only in builds that bundle it.
+    @MainActor static var visible: [ModelsCategory] {
+        allCases.filter { $0 != .cotypist || CotypistSetup.isAvailable }
     }
 }
 
@@ -118,25 +130,33 @@ enum SparkleUpdateStatus: Equatable {
     case failed(message: String)
 }
 
-enum GoogleCalendarListLoadState: Equatable {
-    case idle
-    case loading
-    case loaded
-    case failed(String)
-}
-
 enum ICloudBridgeState: Equatable {
     case notConfigured
     case checkingICloud
     case syncing
     case active
     case needsICloud
+    case needsReconnection
+    case needsAccountReplacement
     case error
+}
+
+enum ICloudBridgeCompanionDiscoveryState: Equatable {
+    case idle
+    case waiting
+    case timedOut
 }
 
 struct ActiveMeetingAudioWarning: Equatable {
     let meetingID: Int64
     let message: String
+}
+
+enum OpenRouterModelCatalogLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
 }
 
 @MainActor
@@ -169,12 +189,14 @@ final class AppState {
 
     // Config-driven state
     var selectedBackend: BackendOption = .whisper
+    var dictationProvider: DictationProvider = .local
     var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
+    var interactionPermissionSnapshot: InteractionPermissionSnapshot?
 
     // Live status
     var isMeetingRecording: Bool = false
@@ -182,6 +204,9 @@ final class AppState {
     var isMeetingStarting: Bool = false
     var meetingStartStatus: String?
     var liveMeetingTranscript: String = ""
+    var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
+    var modelFileMutationCount = 0
+    var activeAudioImportCount = 0
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
     /// source; owner-gated by `liveMeetingTranscriptOwnerID` like the transcript.
@@ -191,19 +216,31 @@ final class AppState {
     var dictationState: DictationState = .idle
     var isVoiceNoteRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
-    var isGoogleCalendarAvailable: Bool = false
-    var isGoogleCalendarVerified: Bool = false
-    var isGoogleCalendarAuthenticated: Bool = false
+    var isOpenRouterAuthenticated: Bool = false
+    var isOpenRouterEnvironmentManaged: Bool = false
+    var hasStoredOpenRouterCredential: Bool = false
+    var openRouterSummaryModels: [SummaryModelPreset] = []
+    var openRouterSummaryCatalogState: OpenRouterModelCatalogLoadState = .idle
+    var openRouterTranscriptionModels: [SummaryModelPreset] = []
+    var openRouterTranscriptionCatalogState: OpenRouterModelCatalogLoadState = .idle
     var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
     var hiddenCalendarEventIDs: Set<String> = []
+    /// Keep the complete cache for attendee reconciliation and hidden-event pruning.
+    /// Calendar presentation and passive detection share this filtered view.
+    var visibleUpcomingCalendarEvents: [UnifiedCalendarEvent] {
+        upcomingCalendarEvents.filter {
+            !$0.isAllDay && !hiddenCalendarEventIDs.contains($0.id)
+                && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
+        }
+    }
+    var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
-    var availableGoogleCalendars: [GoogleCalendarSummary] = []
-    var googleCalendarListLoadState: GoogleCalendarListLoadState = .idle
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
     var sparkleLastCheckedAt: Date?
     var iCloudSyncStatus: String?
     var isICloudSyncInProgress: Bool = false
     var isICloudBridgeActivationPending: Bool = false
+    var iCloudBridgeCompanionDiscoveryState: ICloudBridgeCompanionDiscoveryState = .idle
     var iCloudBridgeState: ICloudBridgeState = .notConfigured
     var iCloudBridgeMessage: String?
     var iCloudBridgeRemoteDeviceName: String?
@@ -238,6 +275,8 @@ final class AppState {
     var dictationOriginFilter: RecordOriginFilter = .all
     var dictationApplicationFilter: DictationTargetApplication?
     var dictationTargetApplications: [DictationTargetApplication] = []
+    /// Dictation apps plus apps with Cotypist sessions.
+    var timelineTargetApplications: [DictationTargetApplication] = []
     var hasMoreDictations: Bool = true
     var meetingOriginFilter: RecordOriginFilter = .all
 
@@ -260,6 +299,7 @@ final class AppState {
 
     // Navigation
     var selectedTab: DashboardTab = .timeline
+    var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
     var insightsBackLabel: String {
         insightsReturnTab == .dictations ? "Back to Dictations" : "Back to Timeline"

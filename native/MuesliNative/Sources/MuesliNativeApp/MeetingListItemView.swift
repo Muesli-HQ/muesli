@@ -5,7 +5,10 @@ struct MeetingListItemView: View {
     let record: MeetingRecord
     let isSelected: Bool
     let hasFollowUps: Bool
+    /// Changes when the system locale does, so the row redraws its formatted date without losing its @State.
+    let localeVersion: Int
     let folders: [MeetingFolder]
+    let browsedFolderID: Int64?
     private let folderByID: [Int64: MeetingFolder]
     private let folderIDsWithChildren: Set<Int64>
     let onSelect: () -> Void
@@ -22,7 +25,9 @@ struct MeetingListItemView: View {
         record: MeetingRecord,
         isSelected: Bool,
         hasFollowUps: Bool,
+        localeVersion: Int = 0,
         folders: [MeetingFolder],
+        browsedFolderID: Int64? = nil,
         onSelect: @escaping () -> Void,
         onMove: @escaping (Int64?) -> Void,
         onCreateFolderAndMove: ((String) -> Void)?,
@@ -31,7 +36,9 @@ struct MeetingListItemView: View {
         self.record = record
         self.isSelected = isSelected
         self.hasFollowUps = hasFollowUps
+        self.localeVersion = localeVersion
         self.folders = folders
+        self.browsedFolderID = browsedFolderID
         self.folderByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
         self.folderIDsWithChildren = Set(folders.compactMap(\.parentID))
         self.onSelect = onSelect
@@ -41,7 +48,7 @@ struct MeetingListItemView: View {
     }
 
     private var currentFolderName: String? {
-        guard let fid = record.folderID else { return nil }
+        guard let fid = record.folderID, fid != browsedFolderID else { return nil }
         guard let folder = folderByID[fid] else { return nil }
         // Build breadcrumb path: "Grandparent / Parent / Folder"
         var parts: [String] = [folder.name]
@@ -106,21 +113,18 @@ struct MeetingListItemView: View {
             }
 
             Text(previewText())
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .lineLimit(2)
         }
         .padding(MuesliTheme.spacing16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? MuesliTheme.surfaceSelected : MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerLarge)
-                .strokeBorder(
-                    isSelected ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder,
-                    lineWidth: 1
-                )
-        )
+        .background(isSelected ? MuesliTheme.accentSubtle : (isHovering ? MuesliTheme.backgroundHover : Color.clear))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing16)
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
@@ -290,8 +294,10 @@ struct MeetingListItemView: View {
     }
 
     private var sourceIndicator: AnyView? {
+        if record.source == .granolaImport,
+           let browsedFolderID, folderByID[browsedFolderID]?.name == "Granola" { return nil }
         if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: record.source) {
-            return AnyView(SyncOriginBadge(label: label))
+            return AnyView(SyncOriginBadge(label: label, help: SyncOriginDisplay.help(forMeetingSource: record.source)))
         }
         if isImportedAudio {
             return AnyView(sourceBadge(icon: "square.and.arrow.down", label: "Imported", help: "Imported audio"))
@@ -336,6 +342,7 @@ struct MeetingListItemView: View {
 
     private func formatMeta() -> String {
         let time = MeetingBrowserLogic.formatStartTime(record.startTime)
+        if record.source == .granolaImport { return "Created \(time)" }
         let duration = formatDuration(record.durationSeconds)
         return "\(time)  \u{2022}  \(duration)"
     }

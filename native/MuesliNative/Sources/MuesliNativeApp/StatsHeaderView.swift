@@ -55,8 +55,8 @@ struct StatsHeaderView: View {
                 )
             }
         }
-        .padding(.horizontal, MuesliTheme.spacing24)
-        .padding(.vertical, MuesliTheme.spacing20)
+        .padding(.horizontal, MuesliTheme.pageInset)
+        .padding(.vertical, MuesliTheme.spacing16)
     }
 
     private func formatWordCount(_ count: Int) -> String {
@@ -90,9 +90,10 @@ private struct StatCard: View {
                     .contentTransition(.numericText())
                 Text(label)
                     .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .foregroundStyle(MuesliTheme.textSecondary)
             }
-            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(MuesliTheme.spacing16)
             .background(isHovered ? MuesliTheme.backgroundHover : MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
@@ -100,6 +101,7 @@ private struct StatCard: View {
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                     .strokeBorder(isHovered ? MuesliTheme.accent.opacity(0.38) : MuesliTheme.surfaceBorder, lineWidth: 1)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(InsightsStatButtonStyle(reduceMotion: reduceMotion))
         .onHover { hovering in

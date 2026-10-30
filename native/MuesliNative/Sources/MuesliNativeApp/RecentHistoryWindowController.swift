@@ -33,6 +33,28 @@ struct DashboardPresentationReadiness<Action> {
     }
 }
 
+enum DashboardWindowPresentation: Equatable {
+    case restored
+    case compactMeetingTrailing
+}
+
+enum DashboardWindowPlacement {
+    static func compactTrailingFrame(
+        currentFrame: NSRect,
+        visibleFrame: NSRect,
+        targetFrameWidth: CGFloat
+    ) -> NSRect {
+        let width = min(targetFrameWidth, visibleFrame.width)
+        let height = min(currentFrame.height, visibleFrame.height)
+        return NSRect(
+            x: visibleFrame.maxX - width,
+            y: visibleFrame.maxY - height,
+            width: width,
+            height: height
+        )
+    }
+}
+
 @MainActor
 final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     typealias ReadyAction = () -> Void
@@ -52,13 +74,17 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         self.controller = controller
     }
 
-    func show(whenReady readyAction: ReadyAction? = nil) {
+    func show(
+        whenReady readyAction: ReadyAction? = nil,
+        presentation: DashboardWindowPresentation = .restored
+    ) {
         if window == nil {
             buildWindow()
         }
         guard let window else { return }
         applyAppearance(to: window)
         controller.syncAppState()
+        apply(presentation, to: window)
         if !window.isVisible {
             controller.noteWindowOpened()
         }
@@ -72,34 +98,46 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         scheduleInitialOrderedLayoutIfNeeded(for: window)
     }
 
+    private func apply(_ presentation: DashboardWindowPresentation, to window: NSWindow) {
+        guard presentation == .compactMeetingTrailing else { return }
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouseLocation) }
+            ?? window.screen
+            ?? NSScreen.main
+        guard let screen else { return }
+
+        let currentContentWidth = window.contentRect(forFrameRect: window.frame).width
+        let frameChromeWidth = max(0, window.frame.width - currentContentWidth)
+        let targetFrame = DashboardWindowPlacement.compactTrailingFrame(
+            currentFrame: window.frame,
+            visibleFrame: screen.visibleFrame,
+            targetFrameWidth: DashboardWindowLayout.minimumContentWidth + frameChromeWidth
+        )
+        window.setFrame(targetFrame, display: true, animate: window.isVisible)
+    }
+
     func reload() {
         applyThemeAppearance()
         controller.syncAppState()
     }
 
-    /// Called when the theme preference changes, so the chrome follows the in-app light/dark
-    /// toggle instead of waiting for the window to be rebuilt.
+    /// Called when the theme preference changes, without rebuilding the window.
     func applyThemeAppearance() {
         guard let window else { return }
         applyAppearance(to: window)
     }
 
-    nonisolated static func appearanceName(for darkMode: Bool) -> NSAppearance.Name {
-        darkMode ? .darkAqua : .aqua
-    }
-
-    /// The window is created before SwiftUI applies `preferredColorScheme`, and AppKit chrome
-    /// (transparent titlebar, traffic lights, resize corners) resolves against the window's own
-    /// appearance rather than the SwiftUI environment. Without this the titlebar keeps rendering
-    /// dark while the app is set to the light theme.
+    /// AppKit owns appearance for both chrome and hosted SwiftUI content. Do not add a
+    /// SwiftUI preferredColorScheme override: clearing that preference can leave the
+    /// hosting window pinned to its previous theme when returning to System.
     ///
     /// Reads `controller.config` rather than `appState.config`: the latter is assigned during
     /// `syncAppState()`, so reading it here would apply the previous theme whenever the appearance
     /// is refreshed before that assignment.
     private func applyAppearance(to window: NSWindow) {
-        let name = Self.appearanceName(for: controller.config.darkMode)
+        let name = controller.config.appearanceMode.appearanceName
         if window.appearance?.name != name {
-            window.appearance = NSAppearance(named: name)
+            window.appearance = name.flatMap { NSAppearance(named: $0) }
         }
     }
 
@@ -129,6 +167,10 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
         window.title = AppIdentity.displayName
         window.isReleasedWhenClosed = false
         window.delegate = self
+        window.contentMinSize = NSSize(
+            width: DashboardWindowLayout.minimumContentWidth,
+            height: DashboardWindowLayout.minimumContentHeight
+        )
         // Opaque titlebar: with .fullSizeContentView a transparent titlebar
         // renders the system chrome material over the detail column, and that
         // material follows the OS theme rather than the app's (dark strip with

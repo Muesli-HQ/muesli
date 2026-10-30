@@ -5,8 +5,23 @@ import Testing
 struct MeetingProcessingStageTests {
     @Test("audio processing keeps dictation blocked")
     func audioProcessingBlocksDictation() {
+        #expect(!MeetingProcessingStage.stoppingCapture.allowsDictation)
         #expect(!MeetingProcessingStage.transcribingAudio.allowsDictation)
+        #expect(!MeetingProcessingStage.diarizingSpeakers.allowsDictation)
         #expect(!MeetingProcessingStage.cleaningAudio.allowsDictation)
+    }
+
+    @Test("a blocked capture shutdown keeps microphone features gated after transcript processing")
+    func shutdownLeaseOutlivesTranscription() {
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [.generatingTitle], captureShutdownInProgress: true
+        ))
+        #expect(MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [], captureShutdownInProgress: true
+        ))
+        #expect(!MeetingProcessingAdmissionPolicy.blocksDictation(
+            stages: [], captureShutdownInProgress: false
+        ))
     }
 
     @Test("post-transcription processing allows dictation")
@@ -118,7 +133,7 @@ struct MeetingSessionRecoveryPolicyTests {
     @Test("Nemotron falls back to system audio when streaming produced no segments")
     func unifiedNemotronRecoversEmptySystemTranscript() {
         #expect(MeetingSession.shouldAttemptSystemRecovery(
-            usesUnifiedNemotronTranscript: true,
+            usesStreamingFinalTranscript: true,
             hasSystemSegments: false
         ))
     }
@@ -126,15 +141,24 @@ struct MeetingSessionRecoveryPolicyTests {
     @Test("Nemotron skips redundant system recovery when streaming produced segments")
     func unifiedNemotronKeepsStreamingSystemTranscript() {
         #expect(!MeetingSession.shouldAttemptSystemRecovery(
-            usesUnifiedNemotronTranscript: true,
+            usesStreamingFinalTranscript: true,
             hasSystemSegments: true
+        ))
+    }
+
+    @Test("verified streaming silence does not retranscribe the entire system recording")
+    func finalizedSilenceSkipsSystemRecovery() {
+        #expect(!MeetingSession.shouldAttemptSystemRecovery(
+            usesStreamingFinalTranscript: true,
+            hasSystemSegments: false,
+            hasCompleteStreamingCoverage: true
         ))
     }
 
     @Test("batch meeting paths retain their existing system recovery behavior")
     func batchPathStillAttemptsSystemRecovery() {
         #expect(MeetingSession.shouldAttemptSystemRecovery(
-            usesUnifiedNemotronTranscript: false,
+            usesStreamingFinalTranscript: false,
             hasSystemSegments: true
         ))
     }
@@ -142,7 +166,7 @@ struct MeetingSessionRecoveryPolicyTests {
     @Test("batch meeting paths recover when no system segments exist")
     func batchPathRecoversEmptySystemTranscript() {
         #expect(MeetingSession.shouldAttemptSystemRecovery(
-            usesUnifiedNemotronTranscript: false,
+            usesStreamingFinalTranscript: false,
             hasSystemSegments: false
         ))
     }

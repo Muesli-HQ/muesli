@@ -109,13 +109,224 @@ struct ICloudSyncCallbackDeadlineTests {
 
 @Suite("iCloud bridge working copy")
 struct ICloudBridgeWorkingCopyTests {
+    @Test("linked device presentation distinguishes iPhone and iPad")
+    func linkedDevicePresentationUsesPlatformIdentity() {
+        let iPhone = ICloudLinkedDevicePresentation(
+            name: "Pranav's iPhone",
+            platform: "iOS"
+        )
+        #expect(iPhone.name == "Pranav's iPhone")
+        #expect(iPhone.platformLabel == "iPhone")
+        #expect(iPhone.systemImage == "iphone.gen3")
+
+        let iPad = ICloudLinkedDevicePresentation(
+            name: "Test iPad",
+            platform: "iPadOS"
+        )
+        #expect(iPad.name == "Test iPad")
+        #expect(iPad.platformLabel == "iPad")
+        #expect(iPad.systemImage == "ipad")
+    }
+
     @Test("distinguishes first-time setup from routine sync")
     func distinguishesSetupFromSync() {
-        #expect(ICloudBridgeWorkingCopy.title(isActivationPending: true) == "Setting up private iCloud sync")
-        #expect(ICloudBridgeWorkingCopy.title(isActivationPending: false) == "Syncing with private iCloud")
-        #expect(ICloudBridgeWorkingCopy.subtitle(isActivationPending: true).contains("Creating the sync channel"))
-        #expect(ICloudBridgeWorkingCopy.subtitle(isActivationPending: false).contains("uploading local changes"))
+        #expect(ICloudBridgeWorkingCopy.title(isActivationPending: true) == "Setting up sync")
+        #expect(ICloudBridgeWorkingCopy.title(isActivationPending: false) == "Syncing")
+        #expect(ICloudBridgeWorkingCopy.subtitle(isActivationPending: true) == "Connecting to iCloud…")
+        #expect(ICloudBridgeWorkingCopy.subtitle(isActivationPending: false) == "Uploading and downloading changes…")
         #expect(ICloudBridgeWorkingCopy.buttonHelp(isActivationPending: true) == "Sync setup is in progress")
         #expect(ICloudBridgeWorkingCopy.buttonHelp(isActivationPending: false) == "Text sync is in progress")
+    }
+
+    @Test("duplicate enable requests do not restart pending activation")
+    func duplicateActivationIsIgnored() {
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: false,
+            isActivationPending: false
+        ) == .beginActivation)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: false,
+            isActivationPending: true
+        ) == .ignore)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: true,
+            isActivationPending: true
+        ) == .ignore)
+        #expect(ICloudSyncActivationPolicy.action(
+            isEnabled: true,
+            isActivationPending: false
+        ) == .performSync)
+    }
+
+    @Test("successful automatic CloudKit activity clears only a settled transient error")
+    func automaticSuccessRecoversOnlyTransientError() {
+        #expect(ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        for protectedState in [
+            ICloudBridgeState.needsICloud,
+            .needsReconnection,
+            .needsAccountReplacement,
+            .active,
+        ] {
+            #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+                state: protectedState,
+                isEnabled: true,
+                isSyncInProgress: false,
+                isActivationPending: false,
+                isSetupInProgress: false
+            ))
+        }
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: false,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: true,
+            isActivationPending: false,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: true,
+            isSetupInProgress: false
+        ))
+        #expect(!ICloudSyncAutomaticRecoveryPolicy.shouldRecover(
+            state: .error,
+            isEnabled: true,
+            isSyncInProgress: false,
+            isActivationPending: false,
+            isSetupInProgress: true
+        ))
+    }
+
+    @Test("legacy ambiguity reconnects while a confirmed account mismatch resets")
+    func recoveryActionsRespectAccountBoundaryClassification() {
+        #expect(ICloudSyncRecoveryPolicy.action(
+            for: .needsReconnection,
+            supportsLegacyReconnect: true
+        ) == .reconnectLegacyLibrary)
+        #expect(ICloudSyncRecoveryPolicy.action(
+            for: .needsReconnection,
+            supportsLegacyReconnect: false
+        ) == .resetAccountLink)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .needsAccountReplacement) == .resetAccountLink)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .active) == nil)
+        #expect(ICloudSyncRecoveryPolicy.action(for: .error) == nil)
+    }
+
+    @Test("sync setup exposes one next step for each state")
+    func syncFlowIsStateDriven() {
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .notConfigured,
+            isEnabled: false,
+            hasCompanionDevice: false
+        ) == .setUp)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .active,
+            isEnabled: true,
+            hasCompanionDevice: false
+        ) == .connectDevice)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .active,
+            isEnabled: true,
+            hasCompanionDevice: false,
+            companionDiscoveryState: .waiting
+        ) == .waitingForDevice)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .active,
+            isEnabled: true,
+            hasCompanionDevice: false,
+            companionDiscoveryState: .timedOut
+        ) == .connectDevice)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .active,
+            isEnabled: true,
+            hasCompanionDevice: true,
+            companionDiscoveryState: .waiting
+        ) == .syncNow)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .syncing,
+            isEnabled: true,
+            hasCompanionDevice: false
+        ) == .working)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .error,
+            isEnabled: true,
+            hasCompanionDevice: false
+        ) == .continueSetup)
+        #expect(ICloudSyncFlowPolicy.action(
+            for: .error,
+            isEnabled: true,
+            hasCompanionDevice: true
+        ) == .retry)
+    }
+
+    @Test("initial activation waits for pairing before its first sync")
+    func initialActivationWaitsForCompanion() {
+        #expect(ICloudBridgeActivationSyncPolicy.action(
+            isActivationPending: true,
+            hasCompanionDevice: false
+        ) == .waitForCompanion)
+        #expect(ICloudBridgeActivationSyncPolicy.action(
+            isActivationPending: true,
+            hasCompanionDevice: true
+        ) == .startSync)
+        #expect(ICloudBridgeActivationSyncPolicy.action(
+            isActivationPending: false,
+            hasCompanionDevice: false
+        ) == .startSync)
+        #expect(ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: true,
+            previousDiscoveryState: .waiting,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+        #expect(!ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: true,
+            previousDiscoveryState: .idle,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+        #expect(!ICloudBridgeActivationSyncPolicy.shouldStartAfterCompanionDiscovery(
+            foundCompanion: false,
+            previousDiscoveryState: .waiting,
+            isActivationPending: true,
+            isSyncEnabled: true
+        ))
+    }
+
+    @Test("Mac dev builds generate the iOS dev sync scheme")
+    func syncQRCodeMatchesBuildLane() {
+        #expect(IPhoneBridgeLinks.syncDeepLinkURL(bundleIdentifier: "com.muesli.dev").scheme == "mueslidev")
+        #expect(IPhoneBridgeLinks.syncDeepLinkURL(bundleIdentifier: "com.muesli.dev.c").scheme == "mueslidev")
+        #expect(IPhoneBridgeLinks.syncDeepLinkURL(bundleIdentifier: "com.muesli.app").scheme == "muesli")
+    }
+
+    @Test("QR setup dismisses as soon as the companion connects")
+    func syncQRCodeClosesAfterConnection() {
+        #expect(ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: false,
+            hasCompanionDevice: false
+        ) == .hidden)
+        #expect(ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: true,
+            hasCompanionDevice: false
+        ) == .readyToScan)
+        #expect(ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: true,
+            hasCompanionDevice: true
+        ) == .dismiss)
     }
 }

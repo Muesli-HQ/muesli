@@ -365,6 +365,51 @@ struct CohereTranscribeUtilsTests {
 @Suite("TranscriptionEngineArtifactsFilter")
 struct TranscriptionEngineArtifactsFilterTests {
 
+    @Test(arguments: ["*crickets*", "*cheers*", "**APPLAUSE**", "[Cheering]", "(laughter)",
+                      "<music>", "[background_music]", "*crickets chirping*", "(audience laughing)",
+                      "* cheers and applause! *"])
+    func removesDecoratedSoundCues(cue: String) {
+        #expect(TranscriptionEngineArtifactsFilter.apply(cue).isEmpty)
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello \(cue) world.") == "Hello world.")
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello \(cue), world.") == "Hello, world.")
+        let segments = TranscriptionEngineArtifactsFilter.apply(to: [
+            SpeechSegment(start: 0, end: 1, text: cue),
+            SpeechSegment(start: 1, end: 2, text: "Hello \(cue) world.")])
+        #expect(segments.map(\.text) == ["Hello world."])
+        #expect(segments.map(\.start) == [1])
+    }
+
+    @Test(arguments: ["Cheers, everyone!", "I heard crickets and cheers.", "Thank you.",
+                      "We study music and laughter.", "*music theory*", "(cheers from my friends)",
+                      "[a useful note]", "a * b", "a < b > c"])
+    func preservesSpokenWordsAndUnrelatedMarkup(text: String) {
+        #expect(TranscriptionEngineArtifactsFilter.apply(text) == text)
+    }
+
+    @Test(arguments: ["Hello *crickets* world.", "Hello **cheers** world.",
+                      "Hello [crickets chirping], world.", "Hello (laughter) again.",
+                      "Hello *music theory* again.", "Hello *bold* [cheers] again.",
+                      "வணக்கம் *crickets* நண்பர்களே."])
+    func cueSplitAcrossUpdatesNeverRevisesAnEmittedPrefix(text: String) {
+        var raw = ""
+        var prior = ""
+        for character in text {
+            raw.append(character)
+            let visible = TranscriptionEngineArtifactsFilter.applyToCommittedText(raw)
+            #expect(visible.hasPrefix(prior), "Revised visible prefix: \(prior) -> \(visible)")
+            prior = visible
+        }
+        #expect(prior == TranscriptionEngineArtifactsFilter.apply(text))
+    }
+
+    @Test func incompleteCueStaysInternalUntilRecognizedOrDisambiguated() {
+        #expect(TranscriptionEngineArtifactsFilter.applyToCommittedText("Hello *cric") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.applyToPartialText("Hello [cheer") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.applyToCommittedText("Hello *cricket bat*") == "Hello *cricket bat*")
+        // Final cleanup preserves unmatched markup rather than guessing away speech.
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello *cricket bat") == "Hello *cricket bat")
+    }
+
     @Test("returns empty string for known artifact")
     func blankAudioArtifact() {
         #expect(TranscriptionEngineArtifactsFilter.apply("[blank_audio]") == "")
@@ -424,6 +469,28 @@ struct TranscriptionEngineArtifactsFilterTests {
             TranscriptionEngineArtifactsFilter.apply("We discussed speaking in foreign language classes.") ==
                 "We discussed speaking in foreign language classes."
         )
+    }
+
+    @Test("strips any Whisper control token such as nocaptions")
+    func whisperControlTokens() {
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|nocaptions|>") == "")
+        #expect(TranscriptionEngineArtifactsFilter.apply("Det er <|nocaptions|> viktig") == "Det er viktig")
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|no|><|transcribe|>Hei") == "Hei")
+        #expect(TranscriptionEngineArtifactsFilter.apply("a < b | c > d") == "a < b | c > d")
+    }
+
+    @Test("cleans segment text and drops segments left empty")
+    func cleansSegments() {
+        let segments = [
+            SpeechSegment(start: 0, end: 1, text: "<|nocaptions|>"),
+            SpeechSegment(start: 1, end: 2, text: "Hei <|nospeech|> alle"),
+            SpeechSegment(start: 2, end: 3, text: "Det er bra"),
+        ]
+        let cleaned = TranscriptionEngineArtifactsFilter.apply(to: segments)
+        #expect(cleaned.map(\.text) == ["Hei alle", "Det er bra"])
+        #expect(cleaned.map(\.start) == [1, 2])
+        #expect(cleaned.map(\.end) == [2, 3])
+        #expect(TranscriptionEngineArtifactsFilter.apply(to: [segments[0]]).isEmpty)
     }
 
     @Test("strips leaked prompt suffix from transcript")
@@ -531,6 +598,90 @@ struct Qwen3PostProcessingOutputCleanerTests {
                 cleaned: cleaned,
                 input: "Please send the update to Priyanka."
             ))
+        }
+    }
+
+    @Test("recognizes LLM.swift's empty-generation placeholder for S1-mini")
+    func recognizesS1MiniEmptyOutput() {
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("..."))
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(". . ."))
+        #expect(Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("…"))
+        #expect(!Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput("Okay."))
+    }
+
+    @available(macOS 15, *)
+    @Test("local cleanup keeps the captured configuration across model switches")
+    func localCleanupKeepsCapturedConfigurationAcrossModelSwitches() async {
+        let configurableURL = URL(fileURLWithPath: "/tmp/muesli-configurable-cleanup-test.gguf")
+        let s1MiniURL = URL(fileURLWithPath: "/tmp/muesli-s1-mini-cleanup-test.gguf")
+        let configurable = Qwen3PostProcessor.Configuration(
+            modelURL: configurableURL,
+            systemPrompt: "Configurable prompt",
+            inputFormat: .configurable
+        )
+        let s1Mini = Qwen3PostProcessor.Configuration(
+            modelURL: s1MiniURL,
+            systemPrompt: PostProcessorOption.s1MiniSystemPrompt,
+            inputFormat: .s1Mini
+        )
+        let processor = Qwen3PostProcessor(
+            modelURL: configurable.modelURL,
+            systemPrompt: configurable.systemPrompt,
+            inputFormat: configurable.inputFormat
+        )
+
+        // Configurable -> S1-mini: the active configuration changes, but the
+        // already captured configurable request must still use its own model.
+        await processor.reconfigure(
+            modelURL: s1Mini.modelURL,
+            systemPrompt: s1Mini.systemPrompt,
+            inputFormat: s1Mini.inputFormat
+        )
+        await assertMissingModel(
+            processor: processor,
+            configuration: configurable,
+            expectedPath: configurableURL.path
+        )
+
+        // S1-mini -> configurable follows the same rule in the other direction.
+        await processor.reconfigure(
+            modelURL: configurable.modelURL,
+            systemPrompt: configurable.systemPrompt,
+            inputFormat: configurable.inputFormat
+        )
+        await assertMissingModel(
+            processor: processor,
+            configuration: s1Mini,
+            expectedPath: s1MiniURL.path
+        )
+    }
+
+    @available(macOS 15, *)
+    @Test("effective local generation configuration preserves the token budget")
+    func effectiveConfigurationPreservesTokenBudget() {
+        let configuration = Qwen3PostProcessor.Configuration(
+            modelURL: URL(fileURLWithPath: "/tmp/muesli-quill-budget-test.gguf"),
+            systemPrompt: QuilTransformationPrompt.system,
+            inputFormat: .configurable,
+            maxTokenCount: Qwen3PostProcessorConfig.quilMaxContextTokens
+        )
+
+        let effective = Qwen3PostProcessor.effectiveConfiguration(for: configuration)
+
+        #expect(effective.maxTokenCount == Qwen3PostProcessorConfig.quilMaxContextTokens)
+    }
+
+    @available(macOS 15, *)
+    private func assertMissingModel(
+        processor: Qwen3PostProcessor,
+        configuration: Qwen3PostProcessor.Configuration,
+        expectedPath: String
+    ) async {
+        do {
+            _ = try await processor.process("test", configuration: configuration)
+            Issue.record("Expected the test-only missing cleanup model to fail loading")
+        } catch {
+            #expect(error.localizedDescription.contains(expectedPath))
         }
     }
 

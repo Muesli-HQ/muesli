@@ -7,7 +7,7 @@ enum MeetingRecordingStartOrigin: Equatable {
     case scheduledMeetingPrompt
     case joinAndRecord
 
-    var enablesMeetingAutoStop: Bool {
+    var tracksMeetingSource: Bool {
         switch self {
         case .manual:
             return false
@@ -17,7 +17,14 @@ enum MeetingRecordingStartOrigin: Equatable {
     }
 
     var signalLossResponse: MeetingSignalLossResponse {
-        enablesMeetingAutoStop ? .autoStopAfterWarning : .none
+        switch self {
+        case .manual:
+            return .none
+        case .detectedPrompt:
+            return .warnOnly
+        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+            return .warnOnly
+        }
     }
 
     func signalLossSource(
@@ -36,12 +43,12 @@ enum MeetingRecordingStartOrigin: Equatable {
 enum MeetingSignalLossResponse: Equatable {
     case none
     case warnOnly
-    case autoStopAfterWarning
 }
 
 struct MeetingSignalLossPromptState: Equatable {
     private(set) var isPromptSuppressed = false
     private(set) var isDismissedForRecording = false
+    private(set) var lastTranscriptActivityAt: Date?
 
     var canPresentPrompt: Bool {
         !isPromptSuppressed && !isDismissedForRecording
@@ -50,6 +57,16 @@ struct MeetingSignalLossPromptState: Equatable {
     mutating func resetForRecording() {
         isPromptSuppressed = false
         isDismissedForRecording = false
+        lastTranscriptActivityAt = nil
+    }
+
+    mutating func noteTranscriptActivity(now: Date) {
+        lastTranscriptActivityAt = now
+    }
+
+    func hasRecentTranscriptActivity(now: Date, quietPeriod: TimeInterval) -> Bool {
+        guard let lastTranscriptActivityAt else { return false }
+        return now.timeIntervalSince(lastTranscriptActivityAt) < quietPeriod
     }
 
     mutating func markPromptPresented() {
@@ -187,18 +204,27 @@ struct MeetingAutoStopTracker: Equatable {
 
 enum MeetingAutoStopPolicy {
     static func matches(candidate: MeetingCandidate, source: MeetingAutoStopSource) -> Bool {
-        if let candidateID = source.candidateID, candidate.id == candidateID {
+        // Missing room evidence permits a media fallback; conflicting room
+        // evidence must never extend the original recording, even in one browser.
+        if let room = source.normalizedURL, let candidateRoom = candidate.url,
+           room != candidateRoom { return false }
+        if candidate.id == source.candidateID
+            || candidate.suppressionID == source.suppressionID
+            || (source.normalizedURL != nil && candidate.url == source.normalizedURL) {
             return true
         }
+        guard let sourceBundle = source.sourceBundleID,
+              let candidateBundle = candidate.sourceBundleID,
+              bundleIDsReferToSameApp(sourceBundle, candidateBundle) else { return false }
+        // Native sources have no room identity. Browser sources need observed
+        // media attribution when their room URL is temporarily unavailable.
+        return source.normalizedURL == nil
+            || (source.hasObservedCandidate && candidate.evidence.contains(.audioInputProcess))
+    }
 
-        if let suppressionID = source.suppressionID, candidate.suppressionID == suppressionID {
-            return true
-        }
-
-        if let normalizedURL = source.normalizedURL, candidate.url == normalizedURL {
-            return true
-        }
-
-        return false
+    static func bundleIDsReferToSameApp(_ lhs: String, _ rhs: String) -> Bool {
+        let lhs = lhs.lowercased()
+        let rhs = rhs.lowercased()
+        return lhs == rhs || lhs.hasPrefix("\(rhs).") || rhs.hasPrefix("\(lhs).")
     }
 }

@@ -8,12 +8,13 @@ struct LLMBackendOption: Equatable, Identifiable {
 
     static let chatGPT = LLMBackendOption(backend: "chatgpt", label: "ChatGPT")
     static let openAI = LLMBackendOption(backend: "openai", label: "OpenAI")
+    static let anthropic = LLMBackendOption(backend: "anthropic", label: "Anthropic")
     static let openRouter = LLMBackendOption(backend: "openrouter", label: "OpenRouter")
     static let ollama = LLMBackendOption(backend: "ollama", label: "Ollama")
     static let lmStudio = LLMBackendOption(backend: "lmstudio", label: "LM Studio")
     static let customLLM = LLMBackendOption(backend: "custom_llm", label: "Custom LLM")
 
-    static let all: [LLMBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let all: [LLMBackendOption] = [.chatGPT, .openAI, .anthropic, .openRouter, .ollama, .lmStudio, .customLLM]
 
     static func resolved(_ backend: String?) -> LLMBackendOption? {
         guard let backend else { return nil }
@@ -39,7 +40,7 @@ struct TranscriptCleanupBackendOption: Equatable, Identifiable {
 
     static let gemma4LiteRT = TranscriptCleanupBackendOption(
         backend: "gemma4-litert",
-        label: "Gemma 4 E2B",
+        label: "Gemma 4",
         llmBackend: nil
     )
 
@@ -57,6 +58,12 @@ struct TranscriptCleanupBackendOption: Equatable, Identifiable {
         !(isGemma4LiteRT && transcriptionBackend.backend == BackendOption.gemma4E2BLiteRT.backend)
     }
 
+    /// Only the local S1-mini formatter is restricted to non-Bodhan input.
+    func isCompatible(with transcriptionBackend: BackendOption, inputFormat: PostProcessorOption.InputFormat) -> Bool {
+        isCompatible(with: transcriptionBackend)
+            && !(self == .local && inputFormat == .s1Mini && transcriptionBackend.backend == "bodhan")
+    }
+
     static func available(for transcriptionBackend: BackendOption) -> [TranscriptCleanupBackendOption] {
         all.filter { $0.isCompatible(with: transcriptionBackend) }
     }
@@ -66,5 +73,32 @@ struct TranscriptCleanupBackendOption: Equatable, Identifiable {
             return .local
         }
         return option
+    }
+}
+
+struct QuilModelSourceOption: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let hostedBackend: TranscriptCleanupBackendOption?
+
+    static let localModels = QuilModelSourceOption(
+        id: "local-models",
+        label: "Local Models",
+        hostedBackend: nil
+    )
+
+    static let hosted: [QuilModelSourceOption] = LLMBackendOption.all.map { option in
+        QuilModelSourceOption(
+            id: option.backend,
+            label: option.label,
+            hostedBackend: .hosted(option)
+        )
+    }
+
+    static let all: [QuilModelSourceOption] = [.localModels] + hosted
+
+    static func resolved(for backend: TranscriptCleanupBackendOption) -> QuilModelSourceOption {
+        guard !backend.isOnDevice else { return .localModels }
+        return hosted.first(where: { $0.hostedBackend == backend }) ?? .localModels
     }
 }

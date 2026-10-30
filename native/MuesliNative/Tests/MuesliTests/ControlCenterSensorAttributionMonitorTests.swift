@@ -30,6 +30,20 @@ struct ControlCenterSensorAttributionMonitorTests {
         #expect(snapshot?.observedAt == now)
     }
 
+    @Test("active attribution persists until an explicit clear or stream stop")
+    func activeAttributionPersistsUntilCleared() throws {
+        let active = try #require(ControlCenterSensorAttributionMonitor.parseSnapshot(
+            from: #"2026-05-01 ControlCenter[695] [com.apple.controlcenter:sensor-indicators] Active activity attributions changed to ["cam:com.google.Chrome", "mic:com.google.Chrome"]"#,
+            now: now
+        ))
+        let monitor = ControlCenterSensorAttributionMonitor(initialSnapshot: active)
+
+        #expect(monitor.snapshot() == active)
+
+        monitor.stop()
+        #expect(monitor.snapshot() == .empty)
+    }
+
     @Test("ignores unrelated sensor log lines")
     func ignoresUnrelatedSensorLogLines() {
         let snapshot = ControlCenterSensorAttributionMonitor.parseSnapshot(

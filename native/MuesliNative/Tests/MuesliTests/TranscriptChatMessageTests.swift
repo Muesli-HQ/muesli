@@ -3,6 +3,26 @@ import Testing
 
 @Suite("Transcript chat message parsing")
 struct TranscriptChatMessageTests {
+    @Test("uncertain recorded-audio speakers retain their explicit labels")
+    func uncertainSpeakers() {
+        let messages = TranscriptChatMessage.messages(from: "[00:00:01] Multiple speakers: Hello\n[00:00:06] Unknown speaker: Goodbye")
+        #expect(messages.map(\.speaker) == ["Multiple speakers", "Unknown speaker"])
+        #expect(messages.map(\.text) == ["Hello", "Goodbye"])
+        #expect(messages.allSatisfy { !$0.isUser })
+    }
+
+    @Test("in-room microphone speakers keep their local labels")
+    func localSpeakers() {
+        let messages = TranscriptChatMessage.messages(from: """
+        [10:00:00] Local speaker 1: Ahoj.
+        [10:00:02] Local speaker 12: Dobrý den.
+        [10:00:05] Local speaker: Ano.
+        """)
+        #expect(messages.map(\.speaker) == ["Local speaker 1", "Local speaker 12", "Local speaker"])
+        #expect(messages.map(\.text) == ["Ahoj.", "Dobrý den.", "Ano."])
+        #expect(messages.allSatisfy { !$0.isUser })
+    }
+
     @Test("timestamped speaker lines become chat messages")
     func timestampedSpeakerLinesBecomeChatMessages() {
         let messages = TranscriptChatMessage.messages(from: """

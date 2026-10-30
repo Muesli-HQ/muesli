@@ -59,7 +59,7 @@ struct UpcomingMeetingEvent {
 /// A calendar exposed by EventKit (iCloud, On-My-Mac, Exchange, an Internet
 /// Account–linked Google calendar, etc.). Used by Settings to show which
 /// calendars Muesli is reading from and to drive per-calendar enable/disable.
-struct AvailableCalendar: Identifiable, Equatable {
+struct AvailableCalendar: Identifiable, Equatable, Sendable {
     let id: String           // EKCalendar.calendarIdentifier
     let title: String
     let sourceTitle: String  // e.g. "iCloud", "spencer@dockstreet.com"
@@ -74,7 +74,22 @@ final class CalendarMonitor {
         case running(Int)
     }
 
-    private let store = EKEventStore()
+    private let store: EKEventStore
+    private let authorizationStatus: () -> EKAuthorizationStatus
+    private let requestAccess: (@escaping @Sendable (Bool, Error?) -> Void) -> Void
+    private let notificationCenter: NotificationCenter
+
+    init(
+        store: EKEventStore = EKEventStore(),
+        authorizationStatus: @escaping () -> EKAuthorizationStatus = { EKEventStore.authorizationStatus(for: .event) },
+        requestAccess: ((@escaping @Sendable (Bool, Error?) -> Void) -> Void)? = nil,
+        notificationCenter: NotificationCenter = .default
+    ) {
+        self.store = store
+        self.authorizationStatus = authorizationStatus
+        self.requestAccess = requestAccess ?? { completion in store.requestFullAccessToEvents(completion: completion) }
+        self.notificationCenter = notificationCenter
+    }
     private var changeObserver: NSObjectProtocol?
     private var generation = 0
     private var state: State = .stopped
@@ -84,18 +99,21 @@ final class CalendarMonitor {
     var onCalendarChanged: (() -> Void)?
 
     func start() {
+        // Permission is requested explicitly by onboarding or Settings. In particular,
+        // choosing “Not now” must not trigger a prompt from the background monitor.
+        guard canConfirmMissingEvents else { return }
         guard case .stopped = state else { return }
 
         generation += 1
         let token = generation
         state = .requesting(token)
 
-        store.requestFullAccessToEvents { [weak self] granted, error in
+        requestAccess { [weak self] granted, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard case .requesting(let activeToken) = self.state, activeToken == token else { return }
 
-                if !granted {
+                if !granted || !self.canConfirmMissingEvents {
                     self.state = .stopped
                     fputs("[calendar] calendar access denied: \(error?.localizedDescription ?? "none")\n", stderr)
                     return
@@ -114,7 +132,7 @@ final class CalendarMonitor {
     }
 
     var canConfirmMissingEvents: Bool {
-        switch EKEventStore.authorizationStatus(for: .event) {
+        switch authorizationStatus() {
         case .fullAccess, .authorized:
             return true
         case .notDetermined, .restricted, .denied, .writeOnly:
@@ -132,7 +150,7 @@ final class CalendarMonitor {
         // is added, modified, or deleted — including synced changes from
         // Google Calendar, iCloud, Exchange, etc. This is push-based and
         // works regardless of App Nap or LSUIElement status.
-        changeObserver = NotificationCenter.default.addObserver(
+        changeObserver = notificationCenter.addObserver(
             forName: .EKEventStoreChanged,
             object: store,
             queue: .main
@@ -143,7 +161,7 @@ final class CalendarMonitor {
 
     private func removeObserver() {
         if let changeObserver {
-            NotificationCenter.default.removeObserver(changeObserver)
+            notificationCenter.removeObserver(changeObserver)
             self.changeObserver = nil
         }
     }
@@ -211,8 +229,9 @@ final class CalendarMonitor {
     /// Returns upcoming timed events from the local macOS calendar (EventKit) for the selected calendar-day window.
     /// All-day events are excluded — they're not useful for meeting recording.
     /// Events from calendars listed in `disabledCalendarIDs` are filtered out.
-    func upcomingEvents(
+    static func upcomingEvents(
         daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
+        hoursAhead: Int? = nil,
         disabledCalendarIDs: Set<String> = [],
         now: Date = Date()
     ) -> [UnifiedCalendarEvent] {
@@ -221,7 +240,7 @@ final class CalendarMonitor {
         // reflect external changes (e.g., events moved in Google Calendar).
         // Uses a local instance to avoid racing with currentEvent()/currentOrNearbyEvent().
         let freshStore = EKEventStore()
-        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead) else { return [] }
+        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead, hourCount: hoursAhead) else { return [] }
         let predicate = freshStore.predicateForEvents(withStart: now, end: future, calendars: nil)
         let events = freshStore.events(matching: predicate)
         let unified: [UnifiedCalendarEvent] = events.compactMap { event in
@@ -313,7 +332,9 @@ final class CalendarMonitor {
     /// Exchange, and any Google account linked via System Settings > Internet
     /// Accounts. Used by Settings to surface which calendars Muesli is reading
     /// from and to power per-calendar enable/disable.
-    func availableCalendars() -> [AvailableCalendar] {
+    /// Produces a value-only snapshot so EventKit objects never cross the
+    /// background boundary used by Settings and calendar-monitor refreshes.
+    static func availableCalendars() -> [AvailableCalendar] {
         let freshStore = EKEventStore()
         return freshStore.calendars(for: .event)
             .map { cal in
@@ -359,6 +380,8 @@ final class CalendarMonitor {
             "https://[a-z0-9.-]*zoom\\.us/j/[^\\s\"<>]+",
             "https://meet\\.google\\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}[^\\s\"<>]*",
             "https://teams\\.microsoft\\.com/l/meetup-join/[^\\s\"<>]+",
+            "https://teams\\.microsoft\\.com/meet/[^/?#\\s\"<>][^\\s\"<>]*",
+            "https://teams\\.live\\.com/meet/[^/?#\\s\"<>][^\\s\"<>]*",
             "https://[a-z0-9.-]*webex\\.com/[^\\s\"<>]+/j\\.php[^\\s\"<>]*",
             "https://[a-z0-9.-]*chime\\.aws/[^\\s\"<>]+",
             "https://facetime\\.apple\\.com/join[^\\s\"<>]*",
@@ -391,6 +414,11 @@ final class CalendarMonitor {
         // Slack: only huddle URLs are meetings; app.slack.com/client/... etc. are not.
         if host == "app.slack.com" {
             return url.path.hasPrefix("/huddle/")
+        }
+        // Teams free: only /meet/<id> links are meetings, matching the text patterns.
+        if host == "teams.live.com" {
+            let parts = url.path.split(separator: "/", omittingEmptySubsequences: false)
+            return parts.count > 2 && parts[1] == "meet" && !parts[2].isEmpty
         }
         let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com"]
         return meetingHosts.contains(where: { host.hasSuffix($0) })

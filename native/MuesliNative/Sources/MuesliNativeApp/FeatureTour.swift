@@ -35,6 +35,15 @@ struct MarketingVersion: Comparable, Equatable {
 }
 
 enum FeatureTourTarget: String, Hashable {
+    case recordingIndicatorStyle
+    case computerUseShortcut
+    case meetingSummaryProvider
+    case meetingRetranscription
+    case dictationRecordingMode
+    case quillSettings
+    case dictationProviderSetting
+    case parakeetFamilyCard
+    case bodhanFlexCard
     case timelineSidebar
     case timelineApplications
     case appleSpeechCard
@@ -49,18 +58,49 @@ enum FeatureTourTarget: String, Hashable {
     case streamingModels
     case experimentalModels
 
-    var modelsCategory: ModelsCategory? {
+    var navigationRoute: FeatureTourNavigationRoute {
         switch self {
-        case .modelLibrary, .appleSpeechCard:
-            return .dictation
+        case .quillSettings, .dictationProviderSetting, .cloudCleanupSetting:
+            return .settings(.dictation)
+        case .recordingIndicatorStyle:
+            return .settings(.appearance)
+        case .computerUseShortcut, .dictationRecordingMode:
+            return .tab(.shortcuts)
+        case .meetingRetranscription:
+            return .meetingRetranscription
+        case .liveCaptionsSetting, .meetingSummaryProvider:
+            return .settings(.meetings)
+        case .timelineSidebar, .timelineFilters, .insightsEntry:
+            return .tab(.timeline)
+        case .timelineApplications:
+            return .timelineApplications
+        case .dictionarySuggestions:
+            return .tab(.dictionary)
+        case .meetingsSidebar:
+            return .meetingsBrowser
+        case .meetingPeople:
+            return .meetingPeople
+        case .modelLibrary, .appleSpeechCard, .parakeetFamilyCard, .bodhanFlexCard, .experimentalModels:
+            return .models(.dictation)
         case .streamingModels:
-            return .streaming
-        case .experimentalModels:
-            return .dictation
-        case .timelineSidebar, .timelineApplications, .meetingPeople, .timelineFilters, .insightsEntry, .dictionarySuggestions, .meetingsSidebar, .liveCaptionsSetting, .cloudCleanupSetting:
-            return nil
+            return .models(.streaming)
         }
     }
+
+    var modelsCategory: ModelsCategory? {
+        guard case let .models(category) = navigationRoute else { return nil }
+        return category
+    }
+}
+
+enum FeatureTourNavigationRoute: Equatable {
+    case settings(SettingsPane)
+    case tab(DashboardTab)
+    case models(ModelsCategory)
+    case timelineApplications
+    case meetingsBrowser
+    case meetingPeople
+    case meetingRetranscription
 }
 
 struct FeatureTourStep: Identifiable, Equatable {
@@ -69,7 +109,7 @@ struct FeatureTourStep: Identifiable, Equatable {
     let title: String
     let message: String
     let systemImage: String
-    let target: FeatureTourTarget
+    let target: FeatureTourTarget?
 }
 
 struct FeatureTour: Equatable {
@@ -96,63 +136,56 @@ extension AppState {
 
 enum FeatureTourCatalog {
     static var latest: FeatureTour {
-        latest(
-            includeApplicationFilter: false,
-            includeAppleSpeech: false,
-            includeMeetingPeople: false
-        )
-    }
-
-    static func latest(
-        includeApplicationFilter: Bool,
-        includeAppleSpeech: Bool,
-        includeMeetingPeople: Bool
-    ) -> FeatureTour {
-        var steps = [
+        FeatureTour(version: "0.8.5", steps: [
             FeatureTourStep(
-                id: "timeline",
-                eyebrow: "ONE TIMELINE",
-                title: "Dictations and meetings, together",
-                message: "Timeline puts your recent work in one chronological view. Open it from the sidebar whenever you want to retrace what you dictated or discussed.",
-                systemImage: "clock.arrow.circlepath",
-                target: .timelineSidebar
+                id: "notch",
+                eyebrow: "A NEW LOOK",
+                title: "Meet Muesli at the notch",
+                message: "Choose Notch under Settings → Appearance → Recording indicator. Follow recording and processing at the top of your screen. Displays without a notch use a temporary Classic indicator.",
+                systemImage: "menubar.rectangle",
+                target: .recordingIndicatorStyle
+            ),
+            FeatureTourStep(
+                id: "voice-settings",
+                eyebrow: "COMPUTER USE COMMAND",
+                title: "Change settings with your voice",
+                message: "Enable Computer Use Command in Shortcuts, then hold your shortcut and ask Muesli to change a setting. Use experimental local Gemma or your connected ChatGPT account for hosted processing.",
+                systemImage: "slider.horizontal.3",
+                target: .computerUseShortcut
+            ),
+            FeatureTourStep(
+                id: "claude-summaries",
+                eyebrow: "MEETING NOTES",
+                title: "Claude, now for meeting notes",
+                message: "Open the highlighted Summary backend menu and choose Anthropic or, when installed, Claude Code. Use a signed-in Claude Code installation or your Anthropic API key. Meeting content is sent to Claude for summaries.",
+                systemImage: "text.bubble",
+                target: .meetingSummaryProvider
+            ),
+            FeatureTourStep(
+                id: "retranscribe",
+                eyebrow: "SAVED RECORDINGS",
+                title: "Re-transcribe an existing meeting",
+                message: "Open a meeting with saved audio, then choose Re-transcribe above the transcript (also available in More actions). Pick a downloaded meeting model to give the recording another pass without recording it again.",
+                systemImage: "waveform",
+                target: .meetingRetranscription
+            ),
+            FeatureTourStep(
+                id: "toggle-dictation",
+                eyebrow: "PRESS TO TOGGLE",
+                title: "No need to hold all the time",
+                message: "In Shortcuts → Dictation, set Recording mode to Press to toggle and choose a modifier + key shortcut. Press once to start dictation, then press again to stop.",
+                systemImage: "keyboard",
+                target: .dictationRecordingMode
+            ),
+            FeatureTourStep(
+                id: "bodhan-script",
+                eyebrow: "BODHAN FLEX",
+                title: "Your language. Your script.",
+                message: "Choose Native, Mixed, or Romanized output in Models → Dictation → Bodhan Flex. Write Indic speech in Latin letters with Romanized output, using the same downloaded model.",
+                systemImage: "character.book.closed",
+                target: .bodhanFlexCard
             )
-        ]
-
-        if includeApplicationFilter {
-            steps.append(FeatureTourStep(
-                id: "timeline-apps",
-                eyebrow: "FILTER BY APP",
-                title: "Find dictations by destination app",
-                message: "Use Apps to narrow Timeline to dictations sent to a specific destination, such as Mail, Notes, or your browser.",
-                systemImage: "square.grid.2x2",
-                target: .timelineApplications
-            ))
-        }
-
-        if includeAppleSpeech {
-            steps.append(FeatureTourStep(
-                id: "apple-speech",
-                eyebrow: "ON-DEVICE SPEECH",
-                title: "Try Apple's native on-device speech model",
-                message: "On macOS 26, Apple Speech can transcribe without a separate model download. Use your system language or choose another supported language in Models.",
-                systemImage: "apple.logo",
-                target: .appleSpeechCard
-            ))
-        }
-
-        if includeMeetingPeople {
-            steps.append(FeatureTourStep(
-                id: "meeting-people",
-                eyebrow: "MEETING ATTENDEES",
-                title: "Meeting attendees are now available!",
-                message: "See organizers and attendees from calendar events, or add people from Apple Contacts directly to a meeting.",
-                systemImage: "person.2.fill",
-                target: .meetingPeople
-            ))
-        }
-
-        return FeatureTour(version: "0.8.2", steps: steps)
+        ])
     }
 }
 

@@ -1,0 +1,26 @@
+round,setting,command,success,seconds,coldStart,expected,actual,status,message
+1,sound,Turn sound effects off.,False,6.7078294166130945,True,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+1,dark_mode,Turn dark mode on.,False,4.9308035833528265,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+1,pause_media,Turn pause media during dictation on.,False,4.937068874947727,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+1,open_dashboard,Turn open dashboard on launch off.,False,4.934014333295636,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+1,indicator_style,Change recording indicator style to notch.,False,4.917801208328456,False,notch,classic,failed,Inspect the setting before changing it. Nothing was changed.
+2,sound,Turn sound effects off.,False,4.909160833340138,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+2,dark_mode,Turn dark mode on.,False,4.922972041647881,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+2,pause_media,Turn pause media during dictation on.,False,4.937822541687638,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+2,open_dashboard,Turn open dashboard on launch off.,False,4.984755083336495,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+2,indicator_style,Change recording indicator style to notch.,False,4.93208120833151,False,notch,classic,failed,Inspect the setting before changing it. Nothing was changed.
+3,sound,Turn sound effects off.,False,4.8959306250326335,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+3,dark_mode,Turn dark mode on.,False,4.940851500025019,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+3,pause_media,Turn pause media during dictation on.,False,4.955273624975234,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+3,open_dashboard,Turn open dashboard on launch off.,False,4.9727927499916404,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+3,indicator_style,Change recording indicator style to notch.,False,4.956460291636176,False,notch,classic,failed,Inspect the setting before changing it. Nothing was changed.
+4,sound,Turn sound effects off.,False,4.935441291658208,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+4,dark_mode,Turn dark mode on.,False,4.94248287496157,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+4,pause_media,Turn pause media during dictation on.,False,4.9679263749858364,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+4,open_dashboard,Turn open dashboard on launch off.,False,4.989993291674182,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+4,indicator_style,Change recording indicator style to notch.,False,4.998029500013217,False,notch,classic,failed,Inspect the setting before changing it. Nothing was changed.
+5,sound,Turn sound effects off.,False,4.952591666718945,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+5,dark_mode,Turn dark mode on.,False,5.021310249925591,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+5,pause_media,Turn pause media during dictation on.,False,4.99910004157573,False,on,off,failed,Inspect the setting before changing it. Nothing was changed.
+5,open_dashboard,Turn open dashboard on launch off.,False,5.0273635416524485,False,off,on,failed,Inspect the setting before changing it. Nothing was changed.
+5,indicator_style,Change recording indicator style to notch.,False,5.049221208319068,False,notch,classic,failed,Inspect the setting before changing it. Nothing was changed.

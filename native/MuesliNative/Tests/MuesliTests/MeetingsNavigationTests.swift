@@ -2,11 +2,153 @@ import Testing
 import AppKit
 import Foundation
 import MuesliCore
+import SQLite3
+import Observation
 @testable import MuesliNativeApp
+
+@MainActor
+private final class HistoryRefreshPublicationCounter {
+    private(set) var count = 0
+
+    func observe(_ state: AppState) {
+        withObservationTracking {
+            _ = state.dictationStats
+        } onChange: { [weak self, weak state] in
+            MainActor.assumeIsolated {
+                guard let self, let state else { return }
+                self.count += 1
+                self.observe(state)
+            }
+        }
+    }
+}
+
+private enum OpenRouterDisconnectTestError: Error {
+    case expected
+}
+
+private final class DisconnectHostedDictationSessionSpy: HostedDictationSession {
+    let acceptsLiveAudio = false
+    private(set) var cancelCount = 0
+    private(set) var finishCount = 0
+
+    func append(_: [Float]) {}
+
+    func finish(recordedWAVURL _: URL) async throws -> HostedDictationResult {
+        finishCount += 1
+        return HostedDictationResult(text: "unexpected", backend: "test")
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+private actor OpenRouterCatalogVisibilityProbe {
+    private(set) var requestCount = 0
+
+    func recordRequest() {
+        requestCount += 1
+    }
+
+    func waitForRequest() async {
+        for _ in 0..<100 where requestCount == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+private actor OpenRouterCatalogRaceProbe {
+    private struct PendingResponse {
+        let url: URL
+        let continuation: CheckedContinuation<(Data, URLResponse), Never>
+    }
+
+    private var nextRequestID = 0
+    private var pendingResponses: [Int: PendingResponse] = [:]
+    private var returnedRequestIDs = Set<Int>()
+
+    func load(_ request: URLRequest) async -> (id: Int, data: Data, response: URLResponse) {
+        nextRequestID += 1
+        let requestID = nextRequestID
+        let result = await withCheckedContinuation { continuation in
+            pendingResponses[requestID] = PendingResponse(
+                url: request.url!,
+                continuation: continuation
+            )
+        }
+        returnedRequestIDs.insert(requestID)
+        return (requestID, result.0, result.1)
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        for _ in 0..<100 where nextRequestID < count {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func waitForReturn(_ requestID: Int) async {
+        for _ in 0..<100 where !returnedRequestIDs.contains(requestID) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func complete(_ requestID: Int, modelID: String, name: String) {
+        guard let pending = pendingResponses.removeValue(forKey: requestID) else { return }
+        let data = Data("""
+        {"data":[
+          {"id":"\(modelID)","name":"\(name)","pricing":{},"architecture":{"output_modalities":["transcription"]}}
+        ]}
+        """.utf8)
+        let response = HTTPURLResponse(
+            url: pending.url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        pending.continuation.resume(returning: (data, response))
+    }
+}
 
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+
+    @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
+    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
+        let directory = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let configStore = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.showFloatingIndicator = false
+        configStore.save(config)
+        let controller = makeController(dictationStore: store, configStore: configStore)
+        let history = controller.installRefreshWindowsForTesting(
+            history: hasHistoryWindow, preferences: hasPreferencesWindow
+        )
+        defer { _ = controller.installRefreshWindowsForTesting(history: false, preferences: false) }
+        let counter = HistoryRefreshPublicationCounter()
+        counter.observe(controller.appState)
+
+        for expectedCount in 1...2 {
+            let id = try store.insertDictation(
+                text: "Fresh history", durationSeconds: 1,
+                startedAt: Date(), endedAt: Date()
+            )
+            controller.refreshUI()
+            #expect(counter.count == expectedCount)
+            #expect(controller.appState.dictationRows.contains { $0.id == id })
+            #expect(controller.appState.dictationStats.totalSessions == expectedCount)
+        }
+
+        // Standalone reload callers must still refresh history themselves.
+        if let history {
+            history.reload()
+            #expect(counter.count == 3)
+        }
+    }
 
     private func makeController(
         dictationStore: DictationStore? = nil,
@@ -55,6 +197,177 @@ struct MeetingsNavigationTests {
             systemAudioPath: nil,
             savedRecordingPath: savedRecordingPath
         )
+    }
+
+    @Test("recording template changes persist without summarizing or changing the default",
+          arguments: [false, true])
+    func recordingTemplateSelection(paused: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Planning", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.defaultMeetingTemplateID = "one-to-one"
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Interview notes", icon: "doc.text"
+            )]
+        }
+        // Pausing leaves the meeting's status as recording, so the choice remains editable.
+        controller.appState.isMeetingRecordingPaused = paused
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let selected = try #require(try store.meeting(id: id))
+        #expect(selected.selectedTemplateID == "custom-test")
+        #expect(selected.selectedTemplatePrompt == "Interview notes")
+        #expect(selected.title == "Planning")
+        #expect(selected.formattedNotes == "## Notes")
+        #expect(selected.rawTranscript == "Transcript")
+        #expect(selected.status == .recording)
+        #expect(controller.config.defaultMeetingTemplateID == "one-to-one")
+        // Explicit Auto must not resolve back to the configured default.
+        try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+        let automatic = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: automatic).id == MeetingTemplates.autoID)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
+    }
+
+    @Test("Stop freezes the template and rejects late selections")
+    func recordingTemplateLocksAtStop() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        try controller.selectRecordingTemplate(id: "custom-test", meetingID: id)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(try store.meeting(id: id)?.status == .processing)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        }
+        controller.deleteCustomMeetingTemplate(id: "custom-test")
+        #expect(frozen.id == "custom-test")
+        #expect(frozen.prompt == "Original prompt")
+        let persisted = try #require(try store.meeting(id: id))
+        #expect(controller.meetingTemplateSnapshot(for: persisted).prompt == frozen.prompt)
+        for status in [MeetingStatus.completed, .failed, .noteOnly] {
+            try store.updateMeetingStatus(id: id, status: status)
+            #expect(throws: MeetingTemplateSelectionError.self) {
+                try controller.selectRecordingTemplate(id: MeetingTemplates.autoID, meetingID: id)
+            }
+        }
+    }
+
+    @Test("Stop retains the last saved template when the database read fails", arguments: [false, true])
+    func recordingTemplateReadFailure(explicitAuto: Bool) throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        controller.updateConfig {
+            $0.customMeetingTemplates = [CustomMeetingTemplate(
+                id: "custom-test", name: "Interview", prompt: "Original prompt", icon: "doc.text"
+            )]
+        }
+        let selectedID = explicitAuto ? MeetingTemplates.autoID : "custom-test"
+        try controller.selectRecordingTemplate(id: selectedID, meetingID: id)
+        // A rejected choice must not replace the last successfully saved selection.
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings RENAME TO unavailable_meetings", nil, nil, nil) == SQLITE_OK)
+        defer { sqlite3_exec(db, "ALTER TABLE unavailable_meetings RENAME TO meetings", nil, nil, nil) }
+        #expect(throws: (any Error).self) { _ = try store.meeting(id: id) }
+        // A different capture must never inherit this meeting's choice.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id + 1) == nil)
+        let frozen = try #require(controller.lockMeetingTemplateForProcessing(id: id))
+        #expect(frozen.id == selectedID)
+        if !explicitAuto { #expect(frozen.prompt == "Original prompt") }
+        // The fallback is consumed at Stop, not retained indefinitely.
+        #expect(controller.lockMeetingTemplateForProcessing(id: id) == nil)
+    }
+
+    @Test("a deleted template cannot silently replace a recording's selection")
+    func recordingTemplateRejectsMissingChoice() throws {
+        let store = try makeStore()
+        let id = try insertMeeting(in: store, title: "Meeting", savedRecordingPath: nil)
+        let controller = makeController(dictationStore: store)
+        try store.updateMeetingStatus(id: id, status: .recording)
+        try controller.selectRecordingTemplate(id: "one-to-one", meetingID: id)
+        #expect(throws: MeetingTemplateSelectionError.self) {
+            try controller.selectRecordingTemplate(id: "deleted-template", meetingID: id)
+        }
+        #expect(try store.meeting(id: id)?.selectedTemplateID == "one-to-one")
+    }
+
+    @Test("re-summarize rejects unconfigured Anthropic without changing saved notes")
+    func resummarizeWithoutAnthropicKeyPreservesNotes() throws {
+        guard MeetingSummaryClient.resolvedAnthropicAPIKey(config: AppConfig()).isEmpty else { return }
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        let storedMeeting = try store.meeting(id: meetingID)
+        let meeting = try #require(storedMeeting)
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
+            $0.anthropicAPIKey = ""
+        }
+
+        #expect(!controller.canUseSummaryProvider(.anthropic))
+        var outcome: Result<Void, Error>?
+        controller.resummarize(meeting: meeting) { outcome = $0 }
+        guard case .failure(let error)? = outcome else {
+            Issue.record("Expected re-summarization to reject the missing key")
+            return
+        }
+        guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+            Issue.record("Unexpected error: \(error)")
+            return
+        }
+        #expect(backend == "Anthropic")
+        let savedNotes = try store.meeting(id: meetingID)?.formattedNotes
+        #expect(savedNotes == "## Notes")
+    }
+
+    @Test("Claude Code re-summarization reports the backend failure and preserves saved notes")
+    func claudeCodeResummaryFailurePreservesError() async throws {
+        let directory = makeSupportDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        try #"""
+        #!/bin/sh
+        printf '%s' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Authentication expired"]}'
+        """#.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let store = try makeStore()
+        let meetingID = try insertMeeting(in: store, title: "Customer review", savedRecordingPath: nil)
+        let storedMeeting = try store.meeting(id: meetingID)
+        let meeting = try #require(storedMeeting)
+        let controller = makeController(dictationStore: store)
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.claudeCode.backend
+            $0.claudeCodeExecutablePath = executable.path
+        }
+
+        let outcome: Result<Void, Error> = await withCheckedContinuation { continuation in
+            controller.resummarize(meeting: meeting) { continuation.resume(returning: $0) }
+        }
+        guard case .failure(let error) = outcome else {
+            Issue.record("Expected the CLI error to propagate")
+            return
+        }
+        #expect(error is ClaudeCodeSummaryError)
+        #expect(!(error is MeetingSummaryPersistenceError))
+        #expect(error.localizedDescription.contains("Authentication expired"))
+        #expect(error.localizedDescription.contains("CLAUDE_CODE_5"))
+        #expect(try store.meeting(id: meetingID)?.formattedNotes == "## Notes")
     }
 
     @Test("app state defaults meetings to browser mode")
@@ -634,6 +947,377 @@ struct MeetingsNavigationTests {
         ) == .failed)
     }
 
+    @Test("retry registration survives navigation, rejects duplicate jobs, and cancellation preserves data")
+    func retryRegistrationAndCancellation() async throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(
+            title: "Existing meeting", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Original transcript", formattedNotes: "Original notes",
+            micAudioPath: nil, systemAudioPath: nil,
+            savedRecordingPath: "/missing/retry-test.wav"
+        )
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        let result = await withCheckedContinuation { continuation in
+            controller.retranscribe(meeting: meeting) { continuation.resume(returning: $0) }
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            #expect(!controller.canRetranscribeMeeting(meeting))
+            #expect(!controller.canDeleteMeeting(meeting))
+            #expect(!controller.canModifyModelFiles)
+            #expect(controller.beginModelFileMutation() == nil)
+            controller.appState.selectedMeetingID = nil
+            controller.appState.selectedMeetingRecord = nil
+            controller.appState.meetingsNavigationState = .browser
+            #expect(controller.appState.meetingRetranscriptions[id]?.isRunning == true)
+            controller.retranscribe(meeting: meeting) { duplicate in
+                guard case .failure(let error) = duplicate,
+                      case .busy = error as? MeetingRetranscriptionError else {
+                    Issue.record("Expected synchronous busy rejection")
+                    return
+                }
+            }
+            controller.cancelMeetingRetranscription(id: id)
+        }
+        guard case .failure(let error) = result else { Issue.record("Expected cancellation"); return }
+        #expect(error is CancellationError)
+        #expect(controller.appState.meetingRetranscriptions[id]?.phase == .cancelled)
+        #expect(controller.canRetranscribeMeeting(meeting))
+        #expect(controller.canDeleteMeeting(meeting))
+        #expect(controller.canModifyModelFiles)
+        let restored = try #require(try store.meeting(id: id))
+        #expect(restored.rawTranscript == meeting.rawTranscript)
+        #expect(restored.formattedNotes == meeting.formattedNotes)
+        #expect(restored.savedRecordingPath == meeting.savedRecordingPath)
+        #expect(restored.status == .completed)
+    }
+
+    @Test("shutdown asynchronously drains retry cleanup and prevents new retries")
+    func shutdownDrainsRetranscription() async throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(
+            title: "Existing", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "Original transcript", formattedNotes: "Original notes",
+            micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/missing/shutdown.wav"
+        )
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        var completed = false
+        controller.retranscribe(meeting: meeting) { result in
+            guard case .failure(let error) = result else { Issue.record("Expected cancellation"); return }
+            #expect(error is CancellationError)
+            completed = true
+        }
+        await controller.cancelMeetingRetranscriptionsForShutdown()
+        #expect(completed)
+        #expect(!controller.canModifyModelFiles)
+        #expect(controller.beginModelFileMutation() == nil)
+        #expect(controller.appState.meetingRetranscriptions[id]?.phase == .cancelled)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        #expect(controller.canDeleteMeeting(meeting)) // job registry was drained by defer
+        #expect(try store.meeting(id: id)?.rawTranscript == "Original transcript")
+        #expect(try store.meeting(id: id)?.formattedNotes == "Original notes")
+        await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
+    }
+
+    @Test("a corrupt legacy catalog cannot disable meeting video storage")
+    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let legacy = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        #expect(controller.store == nil)
+        #expect(!controller.hasMedia(meetingID: id))
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try videos.save([clip])
+        controller.reload()
+        #expect(controller.items == [clip])
+    }
+
+    @Test("a failed initial meeting keeps video without retained audio or notes")
+    func failedMeetingKeepsVideo() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let config = ConfigStore(supportDirectory: support)
+        let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
+        let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try Data([1]).write(to: videos.url(for: clip.path))
+        try videos.save([clip])
+        let controller = makeController(dictationStore: store, configStore: config)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(try videos.items() == [clip])
+    }
+
+    @Test("a failed initial meeting keeps its retained audio even without manual notes")
+    func failedMeetingKeepsRetainedAudio() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Failed meeting", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingSavedRecordingPath(id: id, path: "/retained/meeting.wav")
+        let controller = makeController(dictationStore: store)
+        controller.resolveLiveMeetingAfterStopFailure(id: id)
+        let recovered = try #require(try store.meeting(id: id))
+        #expect(recovered.status == .failed)
+        #expect(recovered.savedRecordingPath == "/retained/meeting.wav")
+        #expect(controller.canRetranscribeMeeting(recovered))
+        #expect(MeetingDetailView.showsRecordingRecoveryAction(for: recovered))
+    }
+
+    @Test("prominent recording recovery action is hidden for successful meetings and failures without audio")
+    func recordingRecoveryActionVisibility() throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(title: "Saved", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "text", formattedNotes: "notes", micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/saved.wav")
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(!MeetingDetailView.showsRecordingRecoveryAction(for: meeting))
+        let controller = makeController(dictationStore: store)
+        #expect(controller.canRetranscribeMeeting(meeting)) // Overflow action remains available.
+        let failedID = try store.createLiveMeeting(title: "Failed", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: failedID, manualNotes: "Keep draft")
+        controller.resolveLiveMeetingAfterStopFailure(id: failedID)
+        let failed = try #require(try store.meeting(id: failedID))
+        #expect(failed.status == .failed)
+        #expect(!MeetingDetailView.showsRecordingRecoveryAction(for: failed))
+    }
+
+    @Test("early recording path failure remains nonfatal and preserves the recovery draft")
+    func earlyAttachmentFailurePreservesRecovery() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Recoverable", calendarEventID: nil, startTime: Date())
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER fail_recording_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected path failure'); END;"
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        let controller = makeController(dictationStore: store)
+        #expect(!controller.attachEarlyMeetingRecording(id: id, path: "/saved/recovery.wav"))
+        // Even a second path-write failure must not delete a draft with saved audio.
+        controller.resolveLiveMeetingAfterStopFailure(id: id, retainedRecordingPath: "/saved/recovery.wav")
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_recording_path", nil, nil, nil) == SQLITE_OK)
+        #expect(controller.attachEarlyMeetingRecording(id: id, path: "/saved/recovery.wav"))
+        #expect(try store.meeting(id: id)?.savedRecordingPath == "/saved/recovery.wav")
+    }
+
+    @Test("retained recording reference survives restart and repeated database failure")
+    func retainedRecordingReferenceSurvivesRestart() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("recovery.wav")
+        try Data([0, 1, 2]).write(to: audio)
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
+        do {
+            let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+            #expect(!controller.attachEarlyMeetingRecording(id: id, path: audio.path))
+            let result = MeetingSessionResult(
+                title: "Recovery", originalTitle: "Recovery", calendarEventID: nil,
+                startTime: Date(), endTime: Date(), durationSeconds: 1,
+                rawTranscript: "Retained speech", formattedNotes: "Notes",
+                retainedRecordingURL: nil, retainedRecordingError: nil,
+                systemRecordingURL: nil, templateSnapshot: MeetingTemplates.auto.snapshot
+            )
+            #expect(throws: (any Error).self) {
+                _ = try controller.persistCompletedMeetingResult(result, existingMeetingID: id,
+                    preparedRecordingSave: PreparedMeetingRecordingSave(path: audio.path, error: nil))
+            }
+            controller.resolveLiveMeetingAfterStopFailure(id: id, retainedRecordingPath: audio.path)
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        }
+        // A fresh controller has no in-memory path; failed recovery keeps the file.
+        do {
+            let restarted = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            restarted.recoverRetainedMeetingRecordings()
+            #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+            #expect(FileManager.default.fileExists(atPath: reference.path))
+        }
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
+        let recovered = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        recovered.recoverRetainedMeetingRecordings()
+        let recoveredPath = try #require(try store.meeting(id: id)?.savedRecordingPath)
+        #expect(URL(fileURLWithPath: recoveredPath).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
+        #expect(try store.meeting(id: id)?.status == .failed)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        recovered.recoverRetainedMeetingRecordings() // Idempotent after success.
+        #expect(try store.meeting(id: id)?.savedRecordingPath == recoveredPath)
+    }
+
+    @Test("recording recovery leaves newer recordings and unrelated identities untouched")
+    func recordingReferenceIdentityGuards() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("old.wav")
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        try Data([0]).write(to: audio)
+        let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        let newerAudio = recordings.appendingPathComponent("newer.wav")
+        try Data([1]).write(to: newerAudio)
+        try store.updateMeetingSavedRecordingPath(id: id, path: newerAudio.path)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == newerAudio.path)
+        #expect(FileManager.default.fileExists(atPath: newerAudio.path))
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        try store.deleteMeeting(id: id)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(FileManager.default.fileExists(atPath: audio.path))
+    }
+
+    @Test("verified recovery replaces a missing saved path only after successful persistence")
+    func recoveryReplacesMissingSavedPath() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let audio = recordings.appendingPathComponent("recovery.wav")
+        try Data([0, 1, 2]).write(to: audio)
+        let missing = recordings.appendingPathComponent("missing.wav").path
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingSavedRecordingPath(id: id, path: missing)
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
+        let reference = MeetingRecordingRecoveryReference.url(for: audio)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
+        controller.recoverRetainedMeetingRecordings()
+        #expect(try store.meeting(id: id)?.savedRecordingPath == missing)
+        #expect(FileManager.default.fileExists(atPath: reference.path))
+        #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
+        controller.recoverRetainedMeetingRecordings()
+        let recovered = try #require(try store.meeting(id: id)?.savedRecordingPath)
+        #expect(URL(fileURLWithPath: recovered).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
+        #expect(!FileManager.default.fileExists(atPath: reference.path))
+        #expect(try Data(contentsOf: audio) == Data([0, 1, 2]))
+    }
+
+    @Test("recording recovery cleans missing audio references but preserves foreign and unreadable references")
+    func recordingReferenceCleanupScope() throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        let recordings = support.appendingPathComponent("meeting-recordings")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
+        let meeting = try #require(try store.meeting(id: id))
+        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let missingAudio = recordings.appendingPathComponent("missing.wav")
+        try controller.preserveMeetingRecordingReference(meeting: meeting, path: missingAudio.path)
+        let foreignAudio = recordings.appendingPathComponent("foreign.wav")
+        try MeetingRecordingRecoveryReference(meetingID: id, startTime: meeting.startTime,
+            databasePath: store.resolvedDatabaseURL.path + ".other").write(beside: foreignAudio)
+        let unreadable = MeetingRecordingRecoveryReference.url(for: recordings.appendingPathComponent("unreadable.wav"))
+        let malformed = Data("not JSON".utf8)
+        try malformed.write(to: unreadable)
+
+        controller.recoverRetainedMeetingRecordings()
+        controller.recoverRetainedMeetingRecordings() // Cleanup is idempotent.
+        #expect(!FileManager.default.fileExists(atPath: MeetingRecordingRecoveryReference.url(for: missingAudio).path))
+        #expect(FileManager.default.fileExists(atPath: MeetingRecordingRecoveryReference.url(for: foreignAudio).path))
+        #expect(try Data(contentsOf: unreadable) == malformed)
+        #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
+    }
+
+    @Test("pending model deletion blocks retry until all mutation leases end")
+    func modelMutationExcludesRetry() throws {
+        let store = try makeStore()
+        let id = try store.insertMeeting(title: "Saved", calendarEventID: nil, startTime: Date(), endTime: Date(), rawTranscript: "text", formattedNotes: "notes", micAudioPath: nil, systemAudioPath: nil, savedRecordingPath: "/saved.wav")
+        let controller = makeController(dictationStore: store)
+        let meeting = try #require(try store.meeting(id: id))
+        let first = try #require(controller.beginModelFileMutation())
+        let second = try #require(controller.beginModelFileMutation())
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.endModelFileMutation(first)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.endModelFileMutation(second)
+        #expect(controller.canRetranscribeMeeting(meeting))
+        #expect(controller.appState.modelFileMutationCount == 0)
+        controller.appState.activeAudioImportCount = 1
+        #expect(!controller.canModifyModelFiles)
+        #expect(controller.beginModelFileMutation() == nil)
+        #expect(!controller.canRetranscribeMeeting(meeting))
+        controller.appState.activeAudioImportCount = 0
+        #expect(controller.canModifyModelFiles)
+    }
+
+    @Test("prompt policy surfaces writer errors without asking to save a nonexistent file")
+    func retentionPolicyPreservesWriterFailure() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: false, writerFailed: true, prompt: {
+            Issue.record("No prompt expected for a failed writer")
+            return false
+        }))
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
+        #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("explicit screen recording retains audio without another save prompt")
+    func screenRecordingSkipsRetentionPrompt() async {
+        #expect(await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: {
+                Issue.record("Screen recording already opted into retaining media")
+                return false
+            }
+        ))
+        // The separate audio preference must not override an explicit never policy.
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: false,
+            hasScreenRecording: true, prompt: { true }
+        )))
+    }
+
+    @Test("WAV recovery reports success and double failure reports the fallback error")
+    func recordingFallbackOutcome() async {
+        let request = MeetingRecordingSaveRequest(tempURL: URL(fileURLWithPath: "/unused.wav"), meetingTitle: "Test", startedAt: Date(), supportDirectory: URL(fileURLWithPath: "/unused"), fileFormat: .m4a)
+        let recovered = await MuesliController.prepareRecoverableMeetingRecording(request, save: { request in
+            request.fileFormat == .wav
+                ? PreparedMeetingRecordingSave(path: "/saved/recovery.wav", error: nil)
+                : PreparedMeetingRecordingSave(path: nil, error: .failedToSaveRecording(underlying: CocoaError(.fileWriteUnknown)))
+        })
+        #expect(recovered.path == "/saved/recovery.wav")
+        #expect(recovered.error == nil)
+        let failed = await MuesliController.prepareRecoverableMeetingRecording(request, save: { _ in
+            PreparedMeetingRecordingSave(path: nil, error: .failedToSaveRecording(underlying: CocoaError(.fileWriteNoPermission)))
+        })
+        #expect(failed.path == nil)
+        #expect(failed.error != nil)
+    }
+
     @Test("retranscribe status is unchanged before processing starts")
     func retranscribeStatusIsUnchangedBeforeProcessingStarts() {
         #expect(MuesliController.retranscriptionFailureStatus(
@@ -652,13 +1336,13 @@ struct MeetingsNavigationTests {
         ) == .completed)
     }
 
-    @Test("retranscribe processing failures mark meeting failed")
-    func retranscribeProcessingFailuresMarkMeetingFailed() {
+    @Test("retranscribe processing failures preserve original meeting status")
+    func retranscribeProcessingFailuresPreserveOriginalMeetingStatus() {
         #expect(MuesliController.retranscriptionFailureStatus(
             originalStatus: .completed,
             didSetProcessing: true,
             error: CocoaError(.fileReadUnknown)
-        ) == .failed)
+        ) == .completed)
     }
 
     @Test("cached manual notes are persisted before debounce")
@@ -1242,6 +1926,316 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
     }
 
+    @Test("switching to Bodhan disables S1-mini cleanup")
+    func switchingToBodhanDisablesS1MiniCleanup() {
+        let controller = makeController()
+        controller.updateConfig {
+            $0.sttBackend = BackendOption.parakeetMultilingual.backend
+            $0.sttModel = BackendOption.parakeetMultilingual.model
+            $0.activePostProcessorId = PostProcessorOption.s1Mini.id
+            $0.enablePostProcessor = true
+        }
+
+        controller.selectBackend(.bodhanFlex)
+
+        #expect(controller.appState.config.activePostProcessorId == PostProcessorOption.s1Mini.id)
+        #expect(!controller.appState.config.enablePostProcessor)
+    }
+
+    @Test("switching from hosted cleanup to local disables incompatible S1-mini cleanup")
+    func switchingFromHostedCleanupToLocalDisablesIncompatibleS1MiniCleanup() {
+        let controller = makeController()
+        controller.updateConfig {
+            $0.sttBackend = BackendOption.bodhanFlex.backend
+            $0.sttModel = BackendOption.bodhanFlex.model
+            $0.postProcessorBackend = LLMBackendOption.chatGPT.backend
+            $0.activePostProcessorId = PostProcessorOption.s1Mini.id
+            $0.enablePostProcessor = true
+        }
+
+        controller.selectPostProcessorBackend(.local)
+
+        #expect(controller.selectedPostProcessorBackend == .local)
+        #expect(!controller.appState.config.enablePostProcessor)
+    }
+
+    @Test("disconnecting OpenRouter updates future providers without interrupting active dictation")
+    func disconnectingOpenRouterFallsBackSafely() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+            $0.quilModel = "openai/gpt-5.4"
+            $0.dictationProvider = DictationProvider.openRouter.rawValue
+            $0.openRouterDictationModel = "provider/transcribe"
+        }
+        let recordingSession = DisconnectHostedDictationSessionSpy()
+        let finalizingSession = DisconnectHostedDictationSessionSpy()
+        controller.installHostedDictationSessionsForTesting(
+            recording: recordingSession,
+            finalizing: finalizingSession
+        )
+
+        #expect(controller.signOutOpenRouter() == nil)
+
+        #expect(!openRouterAuth.isAuthenticated)
+        #expect(recordingSession.cancelCount == 0)
+        #expect(recordingSession.finishCount == 0)
+        #expect(finalizingSession.cancelCount == 0)
+        #expect(finalizingSession.finishCount == 0)
+        #expect(controller.hostedDictationSessionPresenceForTesting.recording)
+        #expect(controller.hostedDictationSessionPresenceForTesting.finalizing)
+        #expect(controller.selectedDictationProvider == .local)
+        #expect(controller.dictationBackendReadiness == .preparing)
+        #expect(controller.selectedMeetingSummaryBackend == .openAI)
+        #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
+        #expect(controller.selectedPostProcessorBackend == .local)
+        #expect(controller.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(controller.config.quilModel == PostProcessorOption.defaultQuilOption.id)
+
+        let persisted = configStore.load()
+        #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
+        #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.resolvedDictationProvider == .local)
+        #expect(persisted.openRouterDictationModel == "provider/transcribe")
+    }
+
+    @Test("OpenRouter transcription catalog stays hidden until authentication")
+    func openRouterCatalogRequiresAuthentication() async throws {
+        let supportDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        let probe = OpenRouterCatalogVisibilityProbe()
+        let catalogClient = OpenRouterModelCatalogClient { request in
+            await probe.recordRequest()
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            let data = Data("""
+            {"data":[
+              {"id":"provider/asr","name":"Provider ASR","pricing":{},"architecture":{"output_modalities":["transcription"]}}
+            ]}
+            """.utf8)
+            return (data, response)
+        }
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: supportDirectory),
+            openRouterAuth: openRouterAuth,
+            openRouterModelCatalogClient: catalogClient
+        )
+        controller.appState.openRouterTranscriptionModels = [
+            SummaryModelPreset(id: "stale/model", label: "Stale")
+        ]
+        controller.appState.openRouterTranscriptionCatalogState = .loaded
+
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await Task.yield()
+
+        let unauthenticatedRequestCount = await probe.requestCount
+        #expect(unauthenticatedRequestCount == 0)
+        #expect(!controller.canUseSummaryProvider(.openRouter))
+        #expect(controller.appState.openRouterTranscriptionModels.isEmpty)
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .idle)
+
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-test")
+        controller.updateConfig { _ in }
+        #expect(controller.canUseSummaryProvider(.openRouter))
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequest()
+        for _ in 0..<100 where controller.appState.openRouterTranscriptionCatalogState != .loaded {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let authenticatedRequestCount = await probe.requestCount
+        #expect(authenticatedRequestCount == 1)
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["provider/asr"])
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .loaded)
+    }
+
+    @Test("legacy OpenRouter credentials expose the same model controls as stored credentials")
+    func legacyOpenRouterCredentialShowsModels() {
+        let configDirectory = makeSupportDirectory()
+        let authDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: authDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: configDirectory),
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig { $0.openRouterAPIKey = " sk-or-v1-legacy " }
+
+        #expect(!openRouterAuth.isAuthenticated)
+        #expect(controller.hostedDictationModelVisibility.shows(.openRouter))
+        #expect(controller.canUseSummaryProvider(.openRouter))
+    }
+
+    @Test("an older cancelled catalog request cannot overwrite a newer reload")
+    func staleOpenRouterCatalogLoadCannotReplaceNewerModels() async throws {
+        let supportDirectory = makeSupportDirectory()
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-first")
+        let probe = OpenRouterCatalogRaceProbe()
+        let catalogClient = OpenRouterModelCatalogClient { request in
+            let result = await probe.load(request)
+            return (result.data, result.response)
+        }
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: ConfigStore(supportDirectory: supportDirectory),
+            openRouterAuth: openRouterAuth,
+            openRouterModelCatalogClient: catalogClient
+        )
+
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequestCount(1)
+        #expect(controller.signOutOpenRouter() == nil)
+
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-second")
+        controller.loadOpenRouterModels(.transcription, force: true)
+        await probe.waitForRequestCount(2)
+        await probe.complete(2, modelID: "new/model", name: "New Model")
+        for _ in 0..<100 where controller.appState.openRouterTranscriptionCatalogState != .loaded {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["new/model"])
+
+        await probe.complete(1, modelID: "stale/model", name: "Stale Model")
+        await probe.waitForReturn(1)
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(controller.appState.openRouterTranscriptionModels.map(\.id) == ["new/model"])
+        #expect(controller.appState.openRouterTranscriptionCatalogState == .loaded)
+    }
+
+    @Test("failed OpenRouter credential deletion preserves provider selections")
+    func failedOpenRouterDisconnectPreservesSelections() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { [:] },
+            deleteCredential: { throw OpenRouterDisconnectTestError.expected }
+        )
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+        }
+
+        let error = controller.signOutOpenRouter()
+
+        #expect(error == OpenRouterAuthError.credentialDeletionFailed.errorDescription)
+        #expect(openRouterAuth.isAuthenticated)
+        #expect(controller.selectedMeetingSummaryBackend == .openRouter)
+        #expect(controller.selectedPostProcessorBackend == .hosted(.openRouter))
+        #expect(controller.config.quilBackend == LLMBackendOption.openRouter.backend)
+    }
+
+    @Test("environment OpenRouter credential survives local disconnect without resetting providers")
+    func environmentOpenRouterCredentialPreservesSelections() throws {
+        let supportDirectory = makeSupportDirectory()
+        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let openRouterAuth = OpenRouterAuthManager(
+            credentialStore: credentialStore,
+            loadData: { _ in throw URLError(.unsupportedURL) },
+            openURL: { _ in false },
+            environment: { ["OPENROUTER_API_KEY": "sk-or-v1-environment"] }
+        )
+        try openRouterAuth.storeManualAPIKey("sk-or-v1-local")
+        let controller = MuesliController(
+            runtime: RuntimePaths(
+                repoRoot: FileManager.default.temporaryDirectory,
+                menuIcon: nil,
+                appIcon: nil,
+                bundlePath: nil
+            ),
+            configStore: configStore,
+            openRouterAuth: openRouterAuth
+        )
+        controller.updateConfig {
+            $0.meetingSummaryBackend = MeetingSummaryBackendOption.openRouter.backend
+            $0.postProcessorBackend = LLMBackendOption.openRouter.backend
+            $0.quilBackend = LLMBackendOption.openRouter.backend
+        }
+
+        #expect(controller.signOutOpenRouter() == nil)
+
+        #expect(openRouterAuth.isAuthenticated)
+        #expect(openRouterAuth.hasEnvironmentCredential)
+        #expect(!openRouterAuth.hasStoredCredential)
+        #expect(controller.appState.isOpenRouterEnvironmentManaged)
+        #expect(controller.selectedMeetingSummaryBackend == .openRouter)
+        #expect(controller.selectedPostProcessorBackend == .hosted(.openRouter))
+        #expect(controller.config.quilBackend == LLMBackendOption.openRouter.backend)
+    }
+
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
         let configStore = ConfigStore(supportDirectory: makeSupportDirectory())
@@ -1276,13 +2270,13 @@ struct MeetingsNavigationTests {
         controller.updateConfig {
             $0.sttBackend = BackendOption.parakeetMultilingual.backend
             $0.sttModel = BackendOption.parakeetMultilingual.model
-            $0.meetingTranscriptionBackend = BackendOption.nemotron35Multilingual.backend
-            $0.meetingTranscriptionModel = BackendOption.nemotron35Multilingual.model
+            $0.meetingTranscriptionBackend = BackendOption.cohereTranscribe.backend
+            $0.meetingTranscriptionModel = BackendOption.cohereTranscribe.model
         }
 
         #expect(controller.appState.selectedMeetingTranscriptionBackend.supportsMeetingTranscription)
-        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.nemotron35Multilingual.backend)
-        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.nemotron35Multilingual.model)
+        #expect(controller.appState.config.meetingTranscriptionBackend != BackendOption.cohereTranscribe.backend)
+        #expect(controller.appState.config.meetingTranscriptionModel != BackendOption.cohereTranscribe.model)
         #expect(controller.config.meetingTranscriptionBackend == controller.appState.selectedMeetingTranscriptionBackend.backend)
         #expect(controller.config.meetingTranscriptionModel == controller.appState.selectedMeetingTranscriptionBackend.model)
     }
@@ -1402,6 +2396,27 @@ struct MeetingBrowserLogicTests {
         #expect(formatted.contains("Jun 15, 2025"))
         #expect(formatted.contains("12:30"))
         #expect(formatted.localizedCaseInsensitiveContains("PM"))
+    }
+
+    @Test("local timestamps follow time-zone changes while explicit offsets stay fixed")
+    func localDatesFollowTimeZoneChanges() async {
+        // Keep process-wide TZ changes isolated from other tests and macOS settings.
+        await #expect(processExitsWith: .success) {
+            setenv("TZ", "UTC", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let local = "2025-01-01T12:00:00"
+            let absolute = "2025-01-01T12:00:00Z"
+            let before = try #require(MeetingBrowserLogic.parseDate(local))
+            let fixed = try #require(MeetingBrowserLogic.parseDate(absolute))
+
+            setenv("TZ", "America/Los_Angeles", 1)
+            tzset()
+            NSTimeZone.resetSystemTimeZone()
+            let after = try #require(MeetingBrowserLogic.parseDate(local))
+            #expect(after.timeIntervalSince(before) == 8 * 60 * 60)
+            #expect(MeetingBrowserLogic.parseDate(absolute) == fixed)
+        }
     }
 
     private static func isoDate(daysAgo: Int, now: Date, calendar: Calendar) -> String {

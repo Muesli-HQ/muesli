@@ -2,6 +2,24 @@ import AVFoundation
 import Foundation
 import os
 
+/// Local-only recovery metadata stored beside retained audio until database
+/// finalization succeeds. No transcript or meeting title is duplicated here.
+struct MeetingRecordingRecoveryReference: Codable {
+    let meetingID: Int64
+    let startTime: String
+    let databasePath: String
+
+    static let suffix = ".recovery.json"
+
+    static func url(for recording: URL) -> URL {
+        URL(fileURLWithPath: recording.path + suffix)
+    }
+
+    func write(beside recording: URL) throws {
+        try JSONEncoder().encode(self).write(to: Self.url(for: recording), options: .atomic)
+    }
+}
+
 enum MeetingRecordingFileFormat: String, CaseIterable, Sendable {
     case m4a
     case wav

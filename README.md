@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <strong>Local-first dictation & meeting transcription for macOS</strong><br>
-  100% on-device speech-to-text · Zero cloud costs · Privacy by default
+  <strong>Local-by-default dictation & meeting transcription for macOS</strong><br>
+  On-device speech-to-text by default · Optional OpenAI or OpenRouter dictation · Privacy by default
 </p>
 
 <p align="center">
@@ -20,433 +20,190 @@
   <img src="https://img.shields.io/badge/Apple%20Silicon-optimized-green" alt="Apple Silicon" />
 </p>
 
+<p align="center">
+  <a href="https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa">Get the Muesli plugin for ChatGPT and Codex</a> · <a href="https://muesli.works/blog/muesli-chatgpt-codex-plugin/">Setup guide</a>
+</p>
+
 ---
 
 ## What is Muesli?
 
-Muesli is a **lightweight native macOS app** that combines **WisprFlow-style dictation** and **Granola-style meeting transcription** in one tool. All transcription runs locally on Apple Silicon — your audio never leaves your device unless you choose a cloud-backed meeting summary provider.
+Muesli is a **native macOS app for dictation and meeting transcription**, built for Apple Silicon. Speak into any text field, capture a meeting without a bot, and turn transcripts into notes or a plan for your next task.
+
+Speech recognition runs on your Mac by default. Hosted transcription and AI features are optional and send the content needed for the selected task to your provider. iCloud sync transfers text and sync metadata, never audio. See [Muesli's privacy policy](https://muesli.works/privacy).
 
 <p align="center">
-  <img src="assets/muesli-github-ss.png" alt="Muesli interface showing dictations and meeting history" width="900" />
+  <img src="assets/muesli-github-ss.png" alt="Muesli 0.8.4 Timeline with illustrative dictation, meeting, iPhone, and Computer Use entries" width="900" />
 </p>
 
-### Dictation
-Hold your hotkey (or double-tap for hands-free mode) → speak → release → transcribed text is pasted at your cursor. **~0.13 second latency** via Parakeet TDT on the Apple Neural Engine.
-
-### Meeting Transcription
-Start a meeting recording → Muesli captures your mic (You) and system audio (Others) simultaneously → VAD-driven chunked transcription happens during the meeting at natural speech boundaries → speaker diarization identifies individual remote speakers (Speaker 1, Speaker 2, etc.) → when you stop, the transcript is ready in seconds, not minutes. Generate structured meeting notes via OpenAI, free OpenRouter models, your ChatGPT Plus/Pro subscription, or local Ollama models.
-
-Live meeting transcripts have two explicit modes. **Nemotron 3.5** is a unified multilingual option: its continuous transcript is the normal final raw transcript before diarization and note generation, with the configured meeting model retained only for gap recovery. **Parakeet Realtime EOU** is a low-latency English preview: it powers the live floating transcript while a separately selected meeting model creates the final transcript. Settings always shows which model owns the final transcript.
-
-Live transcription is off by default. Download Parakeet Realtime EOU or Nemotron 3.5 from Models, then select one under **Settings → Meetings → Transcription**. The waveform-hover preview can be enabled separately from the same section. Downloading a streaming model does not activate it automatically.
-
----
+<p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
 
 ## Features
 
-- **Native macOS architecture** — Swift, AppKit, and SwiftUI app code with in-process CoreML/ANE, Metal, and LiteRT-LM inference.
-- **Multiple ASR providers** — Apple Speech (system-managed on macOS 26+), Parakeet TDT and Nemotron 3.5 (Neural Engine), Cohere Transcribe 2B (mixed precision CoreML), multilingual Whisper Tiny/Small/Large Turbo (CoreML/ANE via WhisperKit), Qwen3 ASR, SenseVoice Small, Indic ASR, and experimental Gemma 4 E2B.
-- **Hold-to-talk & hands-free** — Hold hotkey for quick dictation, or double-tap for sustained recording.
-- **Apple Shortcuts & Siri** — Six preconfigured actions out of the box: Start/Stop Dictation (latched hands-free mode, same as double-tapping the hotkey), Start/Stop Meeting Recording, Get Last Dictation, and Get Last Meeting Notes. Trigger them from Spotlight, Siri ("Start a meeting recording in Muesli"), keyboard shortcuts, or Shortcuts automations — e.g. auto-record when a calendar event starts, or pipe your last dictation into Notes, Messages, or Files.
-- **Meeting recording** — Captures mic + system audio (including Bluetooth/AirPods) with a CoreAudio process tap by default and ScreenCaptureKit fallback. System audio from Zoom, Teams, and other call clients stays on the Others side of the transcript.
-- **Live meeting transcript** — Choose Nemotron 3.5 for one multilingual live-and-final transcript, or Parakeet Realtime EOU for an English live preview paired with a separate final meeting model.
-- **VAD-driven chunk rotation** — Silero VAD detects natural speech boundaries in real-time, splitting mic audio at pauses instead of fixed intervals. No mid-sentence cuts.
-- **Speaker diarization** — Identifies individual speakers in system audio (Speaker 1, Speaker 2, etc.) using FluidAudio's pyannote-based CoreML diarization model.
-- **Camera-based meeting detection** — Detects when your webcam + mic activate in a recognized meeting app (Zoom, Chrome, Teams, FaceTime, Slack, WhatsApp). Camera alone (e.g. Photo Booth) won't trigger false positives.
-- **Join & Transcribe** — Extracts meeting URLs from calendar events (Zoom, Google Meet, Teams, Webex, Chime, FaceTime). Split-button notification: "Join & Transcribe" opens the meeting + starts transcription, "Join Only" opens without transcribing, "Transcribe Only" starts transcription without joining. Platform icons (Zoom, Meet) in the notification panel.
-- **Google Calendar integration** — Connect your Google Calendar to see upcoming meetings in the Coming Up section and status bar. Choose whether Muesli watches today, two days, or three days of upcoming events. Event-driven notifications via `EKEventStoreChangedNotification` for instant calendar change detection. Pre-meeting countdowns via Marauder's Map easter egg.
-- **Import Audio** — Import m4a, mp4, wav, or mp3 files for offline transcription, speaker diarization, title generation, summaries, and saved meeting history.
-- **Meeting export** — Export meeting notes or transcripts as PDF (paginated US Letter) or Markdown. Format picker in the save panel, auto-opens the exported file.
-- **Meeting templates** — Built-in and custom templates for meeting notes. Choose a template before or after recording — re-summarize any meeting with a different template.
-- **Dismiss calendar events** — Hide irrelevant events from Coming Up, status bar, and menu bar. Dismissed events are pruned automatically.
-- **iCloud Text Sync & iPhone Bridge** — Privately sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through iCloud. Audio recordings are never synced.
-- **Filler word removal** — Automatically strips "uh", "um", "er", "hmm" and verbal disfluencies.
-- **AI meeting notes** — BYOK with OpenAI or OpenRouter, sign in with your ChatGPT Plus/Pro subscription (no API key needed), or use local Ollama models. Auto-generated meeting titles. Re-summarize any meeting.
-- **ChatGPT OAuth** — Sign in with your existing ChatGPT subscription via browser-based OAuth (PKCE). Tokens stored in the app support directory with owner-only file permissions.
-- **Computer Use planner** — Optional voice-driven planner that can execute local app and browser actions from dictated commands with configurable model and timeout settings.
-- **Post-meeting hooks** — Run a user-supplied executable after completed meetings. Hooks receive a JSON payload on stdin and log results in the app support directory.
-- **Personal dictionary** — Add custom words, phrase matches, and replacement pairs. Jaro-Winkler fuzzy matching auto-corrects transcription output.
-- **Model management** — Download, delete, and switch between models from the Models tab. Background downloads that don't block the app.
-- **Configurable hotkeys** — Choose any modifier key (Cmd, Option, Ctrl, Fn, Shift) for dictation.
-- **Onboarding** — First-launch wizard with model selection, real OS permission verification, hotkey configuration, smoother Accessibility handoff, live dictation test to verify the full pipeline works, and optional summary setup for ChatGPT, OpenAI, OpenRouter, or Ollama. Progress saved on every step — survives crashes and manual quits.
-- **Launch at Login** — Start Muesli automatically with macOS login items, with approval-state refresh in Settings.
-- **Dark & light mode** — Adaptive theme with toggle in sidebar.
-- **SwiftUI dashboard** — Dictation history, meeting notes (Notes-style split view), meeting folders, dictionary, models, shortcuts, settings, about page.
-- **Floating indicator** — Frosted glass pill with dynamic waveform, accent color customization, and click-to-stop for meetings.
+- **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
+- **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
+- **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
+- **Cotypist typeahead (experimental, development builds)** — Suggests your next words inline as you type in any app, through a Muesli input source. Tab accepts; ⌥→ accepts one word. Runs entirely on your Mac.
+- **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
+- **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
+- **Meeting notes** — Use templates, re-summarize with another model, and export notes, transcripts, and answers as Markdown or PDF.
+- **Ask Meetings** — Chat with your meeting notes and transcripts directly beneath a saved meeting or from the Ask Meetings workspace. Use `@` to attach saved meetings, continue with follow-up questions, and open cited passages to check the sources.
+- **Your choice of AI** — Generate summaries with OpenAI or Anthropic API keys, OpenRouter, ChatGPT sign-in, Claude Code, Ollama, LM Studio, or a custom endpoint. Hosted providers receive the transcript for the requested task.
+- **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
+- **Calendar and meeting detection** — Show upcoming events from macOS Calendar accounts, choose calendars and time windows, and join or record from reminders. Optional camera and microphone activity detection recognizes meeting apps.
+- **Shortcuts and Siri** — Start or stop dictation and meetings, retrieve the last dictation or meeting notes, and connect these actions to your own automations.
+- **Voice commands** — Use the optional Computer Use planner for app and browser actions or supported Muesli settings. Choose on-device Gemma on macOS 15+ or a connected ChatGPT account. AI prompt settings remain manual-only.
+- **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
+- **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
 
 ---
 
 ## Install
 
-### Download (recommended)
-
-Download the latest `.dmg` from [Releases](https://github.com/Muesli-HQ/muesli/releases), open it, and drag Muesli to Applications — or double-click to install automatically.
-
-### Homebrew
+Download the latest `.dmg` from [Releases](https://github.com/Muesli-HQ/muesli/releases), open it, and move Muesli to Applications. Or install with Homebrew:
 
 ```bash
 brew install --cask muesli
 ```
 
-Current Homebrew also resolves `brew install muesli` to the official cask; the
-`--cask` form is shown to make the app install explicit.
+Muesli requires an Apple Silicon Mac running macOS 14.2 or later. Individual models may require a newer macOS version. Speech models download when selected and can be managed in the **Models** tab.
 
-### Build from source
+<details>
+<summary>Build from source</summary>
 
-**Requirements:** macOS 14.2+, Xcode 16+
+Use Xcode 26.6 (Swift 6.3) on macOS 26, matching CI. The app deployment target remains macOS 14.2.
 
 ```bash
-# Clone
 git clone https://github.com/Muesli-HQ/muesli.git
 cd muesli
-
-# Build and install to /Applications
-./scripts/build_native_app.sh
-
-# Contributor dev build without the maintainer Developer ID certificate
+./scripts/build_localvqe.sh
 MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh
 ```
 
-Release builds are signed by the maintainer Developer ID certificate. External
-contributors can use the unsigned dev build for local testing; it installs
-`MuesliDev.app` with a separate bundle ID and app data directory.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local development workflow.
+This installs an unsigned `MuesliDev.app` with a separate bundle ID and app data directory. Signed packages require a complete LocalVQE runtime in addition to the committed model. See [CONTRIBUTING.md](CONTRIBUTING.md) for build, signing, cache, and test instructions.
 
-The selected transcription model downloads on demand (~450 MB for the recommended Parakeet v3).
-The app bundle also includes the arm64 LiteRT-LM runtime (~61 MB) for experimental
-Gemma 4 support; its ~2.6 GB model weights download only when Gemma is selected.
+</details>
 
 ---
 
+## ChatGPT and Codex plugin
+
+[Install the official Muesli plugin](https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa) to extract decisions and action items or turn a meeting into an implementation plan.
+
+- **With local shell access on your Mac:** The agent can use Muesli's bundled CLI to find meetings and dictations, read transcripts, transcribe audio, and save revised notes when requested.
+- **Without local access:** Export a meeting as Markdown and attach it to your conversation. Installing the plugin alone does not expose your Mac's meeting database.
+
+Transcripts shared with ChatGPT or a hosted Codex model become part of that assistant's context and may be processed by its provider. Read the [plugin setup guide and example prompts](https://muesli.works/blog/muesli-chatgpt-codex-plugin/) for the full workflow.
+
 ## Agent CLI
 
-Muesli bundles an agent-friendly local CLI inside the app bundle:
-
-- Installed path: `/Applications/Muesli.app/Contents/MacOS/muesli-cli`
-- Dev path: `native/MuesliNative/.build/arm64-apple-macosx/debug/muesli-cli`
-- Future Homebrew alias: `muesli` once the official cask exposes the bundled binary as a command
-
-The CLI is designed for coding agents such as Codex and Claude Code. It exposes meetings, dictations, raw transcripts, stored notes, and local audio-file transcription. Existing data commands return stable JSON so an agent can analyze them with its own model and write notes back without requiring a user-supplied OpenAI or OpenRouter key. `transcribe` prints plain transcript text by default so it works naturally in shell pipelines.
-
-### What agents should do
-
-1. Discover the CLI:
-   ```bash
-   command -v muesli-cli || echo "/Applications/Muesli.app/Contents/MacOS/muesli-cli"
-   ```
-2. Inspect the command contract:
-   ```bash
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli spec
-   ```
-3. Transcribe a local audio file:
-   ```bash
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli transcribe file.mp3
-   ```
-   Homebrew users should eventually be able to use:
-   ```bash
-   muesli transcribe file.mp3
-   ```
-4. List recent meetings or dictations:
-   ```bash
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings list --limit 10
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations list --limit 10
-   ```
-5. Fetch a full record:
-   ```bash
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings get 125
-   /Applications/Muesli.app/Contents/MacOS/muesli-cli dictations get 42
-   ```
-6. Summarize or analyze locally in the agent.
-7. Write improved meeting notes back:
-   ```bash
-   cat notes.md | /Applications/Muesli.app/Contents/MacOS/muesli-cli meetings update-notes 125 --stdin
-   ```
-
-### Commands
-
-- `muesli-cli spec`
-- `muesli-cli info`
-- `muesli-cli transcribe <file> [--format text|json|markdown] [--model parakeet-v3|parakeet-v2|parakeet-eou-320ms|sensevoice|qwen3-asr|nemotron35|whisper-tiny|whisper-tiny-english|whisper-small|whisper-small-english|whisper-medium-english|whisper-large-turbo] [--dictionary PATH] [--summarize] [--save-meeting] [--title TITLE] [--output PATH]`
-- `muesli-cli meetings list [--limit N] [--folder-id ID]`
-- `muesli-cli meetings get <id>`
-- `muesli-cli meetings update-notes <id> (--stdin | --file <path>)`
-- `muesli-cli dictations list [--limit N]`
-- `muesli-cli dictations get <id>`
-
-### Audio transcription
-
-Supported input files: `.mp3`, `.mp4`, `.m4a`, and `.wav`.
-
-Default output is transcript text only:
+The CLI ships inside Muesli.app and works with Codex, Claude Code, and other agents with local shell access. The agent can analyze transcripts using its own model without a separate Muesli summary API key.
 
 ```bash
-muesli-cli transcribe interview.mp3
-```
-
-Agent-friendly JSON output uses the normal CLI envelope:
-
-```bash
+export PATH="/Applications/Muesli.app/Contents/MacOS:$PATH"
+muesli-cli spec
+muesli-cli meetings list --limit 10
+muesli-cli meetings get 42 # Replace 42 with an ID from the list
 muesli-cli transcribe interview.m4a --format json
 ```
 
-```json
-{
-  "ok": true,
-  "command": "muesli-cli transcribe",
-  "data": {
-    "transcript": "Raw transcript text...",
-    "summary": null,
-    "durationSeconds": 123.4,
-    "wordCount": 420,
-    "model": "parakeet-v3",
-    "warnings": [],
-    "savedMeetingID": null,
-    "title": "interview"
-  },
-  "meta": {
-    "schemaVersion": 1,
-    "generatedAt": "2026-07-08T00:00:00Z",
-    "dbPath": "/Users/example/Library/Application Support/Muesli/muesli.db",
-    "warnings": []
-  }
-}
-```
+All transcription models in the app are also available through `transcribe --model`, including `apple-speech` (macOS 26 and compatible hardware), `cohere-transcribe`, `bodhan-core`, `bodhan-core-int8`, `bodhan-flex`, `bodhan-flex-int8`, `gemma4-e2b`, and `gemma4-e4b` (macOS 15+). Use `muesli-cli transcribe --help` for the full list. Downloads reuse the app’s model caches; Apple manages its own language assets. Apple Speech uses the system language, Cohere defaults to English, and Bodhan defaults to Hindi. Gemma retains its experimental status.
 
-Generate markdown notes with the configured API/local summary backend when available:
+Data commands return JSON; file transcription returns plain text unless another format is requested. The `meetings update-notes` command replaces formatted notes while preserving the raw transcript. Use `spec` to check commands supported by your installed version.
+
+See the [CLI quickstart](https://muesli.works/docs/), [coding agent guide](https://muesli.works/docs/agents/), and [full CLI reference](https://muesli.works/docs/cli/) for write-back, dictionaries, output formats, and troubleshooting. The repository's [agent skill](skills/muesli-agent/SKILL.md) provides reusable instructions.
+
+### Custom vocabulary and dictionary
+
+Use the app's **Dictionary** tab to add custom words and replacement phrases, or import and export entries as JSON. Imports merge by match word, update changed definitions, and append new entries. The same file can be used for CLI transcription:
 
 ```bash
-muesli-cli transcribe interview.mp4 --summarize --format markdown --output notes.md
+muesli-cli transcribe interview.m4a --dictionary dictionary.json
 ```
 
-`--summarize` uses configured OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM settings. If the configured backend is unavailable in headless CLI mode, Muesli keeps the transcript and reports a warning instead of discarding the transcription.
-
-Save the import into Muesli as `source = audio_import`:
-
-```bash
-muesli-cli transcribe interview.wav --save-meeting --title "Customer Interview"
-```
-
-### Dictionary import and export
-
-The app's **Dictionary** tab supports importing and exporting the personal dictionary as JSON. Import merges entries by match word, updates an existing match when the imported definition differs, and appends new words. Export produces the same portable format accepted by `muesli-cli --dictionary`:
+Each entry specifies a word, its replacement, and a matching threshold:
 
 ```json
 [
-  {
-    "word": "museli",
-    "replacement": "muesli",
-    "matching_threshold": 0.85
-  }
+  { "word": "museli", "replacement": "muesli", "matching_threshold": 0.85 }
 ]
 ```
-
-The CLI also accepts an app `config.json` directly when it contains a `custom_words` array:
-
-```bash
-muesli-cli transcribe interview.wav --dictionary ~/Library/Application\ Support/Muesli/config.json
-```
-
-`parakeet-eou-320ms` is available for batch file transcription. The CLI chunks the audio internally and returns the completed transcript; it does not expose streaming partials for file transcription.
-
-Direct app-bundle fallback path:
-
-```bash
-/Applications/Muesli.app/Contents/MacOS/muesli-cli transcribe file.mp3
-```
-
-### JSON contract
-
-Data commands return JSON on stdout. `transcribe` returns plain text by default; pass `--format json` to use the envelope below.
-
-Success shape:
-
-```json
-{
-  "ok": true,
-  "command": "muesli-cli meetings get",
-  "data": {},
-  "meta": {
-    "schemaVersion": 1,
-    "generatedAt": "2026-03-17T00:00:00Z",
-    "dbPath": "/Users/example/Library/Application Support/Muesli/muesli.db",
-    "warnings": []
-  }
-}
-```
-
-Failure shape:
-
-```json
-{
-  "ok": false,
-  "command": "muesli-cli meetings get 999",
-  "error": {
-    "code": "not_found",
-    "message": "No meeting exists with id 999.",
-    "fix": "Run `muesli-cli meetings list` to find a valid ID."
-  },
-  "meta": {
-    "schemaVersion": 1,
-    "generatedAt": "2026-03-17T00:00:00Z",
-    "dbPath": "",
-    "warnings": []
-  }
-}
-```
-
-Important meeting fields:
-
-- `rawTranscript`
-- `formattedNotes`
-- `notesState`
-- `calendarEventID`
-- `micAudioPath`
-- `systemAudioPath`
-
-`notesState` values:
-
-- `missing`
-- `raw_transcript_fallback`
-- `structured_notes`
-
-### Notes for agent authors
-
-- The CLI is JSON-first and intended to be machine-consumed.
-- `transcribe` is text-first by default; use `--format json` for structured agent workflows.
-- `formattedNotes` is the only write-back surface in v1.
-- `rawTranscript` is read-only and should be treated as source material.
-- If `notesState` is `missing` or `raw_transcript_fallback`, agents should prefer summarizing from `rawTranscript`.
-- Use `--db-path` or `--support-dir` only when the default Muesli data location is wrong.
-- Read the [SQLite database guide](database-schema.md) before adding tables,
-  columns, migrations, direct queries, or new sync fields.
 
 ---
 
 ## Models
 
-| Model | Backend | Runtime | Size | Languages | Latency |
-|-------|---------|---------|------|-----------|---------|
-| **Apple Speech** | SpeechAnalyzer / SpeechTranscriber | System-managed | No Muesli model download | System-supported locales | macOS 26+, system dependent |
-| **Parakeet v3** (recommended) | FluidAudio | CoreML / Neural Engine | ~450 MB | 25 languages | ~0.13s |
-| Parakeet v2 | FluidAudio | CoreML / Neural Engine | ~450 MB | English only | ~0.13s |
-| Parakeet Realtime EOU | FluidAudio | CoreML / Neural Engine | ~430 MB | English only | Live preview |
-| **Cohere Transcribe 2B** | CoreML | FP16 encoder + INT8 decoder | ~3.8 GB | 14 languages | ~1s |
-| Nemotron 3.5 Multilingual | FluidInference | CoreML / Neural Engine | ~665 MB | 100+ locales | Live + final |
-| SenseVoice Small | FluidAudio | INT8 CoreML / Neural Engine | ~240 MB | 50+ languages | ~1s |
-| Qwen3 ASR | FluidAudio | CoreML / Neural Engine | ~1.3 GB | 52 languages | ~2-3s |
-| Indic ASR | CoreML | RNNT | ~618 MB | 7 Indian languages | Experimental |
-| Gemma 4 E2B | LiteRT-LM | Metal GPU decoder + CPU audio encoder | ~2.6 GB | Multilingual | Experimental |
-| Whisper Tiny Multilingual | WhisperKit | CoreML / Neural Engine | ~153 MB | Multilingual | Fastest Whisper option |
-| Whisper Tiny English | WhisperKit | CoreML / Neural Engine | ~153 MB | English only | Fastest English Whisper option |
-| Whisper Small Multilingual | WhisperKit | CoreML / Neural Engine | ~250 MB | Multilingual | ~1-2s |
-| Whisper Small English | WhisperKit | CoreML / Neural Engine | ~250 MB | English only | ~1-2s |
-| Whisper Medium English | WhisperKit | CoreML / Neural Engine | ~1.5 GB | English only | Slower, more accurate English option |
-| Whisper Large Turbo Multilingual | WhisperKit | CoreML / Neural Engine | ~626 MB | Multilingual | ~2-4s |
+Choose and download models in the **Models** tab. English defaults to Parakeet Unified; multilingual options include Parakeet v3 and the families below.
 
-Apple Speech uses the system `SpeechAnalyzer` and `SpeechTranscriber` APIs on
-macOS 26 and compatible Apple hardware. Its language assets are managed by the
-operating system rather than downloaded into Muesli's model cache; older macOS
-versions continue to use Muesli's downloadable local ASR backends.
+| Model family | Options | Approximate download |
+|---|---|---|
+| Apple Speech | System-managed dictation and live meeting transcription; macOS 26+ | Managed by macOS |
+| Parakeet | Unified, v2, v3, Redux, and Realtime EOU | 220–565 MB |
+| Nemotron 3.5 | Multilingual live and final transcripts | 665 MB |
+| Cohere Transcribe 2B | Multilingual transcription | 3.8 GB |
+| SenseVoice Small | Multilingual transcription | 240 MB |
+| Qwen3 ASR | Multilingual transcription | 1.3 GB |
+| Bodhan Core / Flex | Indic languages and English; Pro or Lite; macOS 15+ | 2.46 GB / 1.27 GB weights |
+| Whisper | Tiny and Small in English or multilingual variants, Medium English, Large Turbo Multilingual | 153 MB–1.5 GB |
+| Gemma 4 E2B / E4B | On-device dictation, cleanup, Quill and Computer Use; macOS 15+ | 3.6 GB / 5.2 GB |
+| Muesli Cleanup Lite | Qwen 3.5 0.8B with extended fine-tuning and app and screen context; MLX 8-bit | 820 MB |
+| Muesli Pro Cleanup | Fine-tuned LFM 2.5, Qwen 3.5 or Gemma 4 with app and screen context | 731 MB–2.6 GB |
+| Cotypist | Qwen 3.5 0.8B base (default), Qwen 3.5 2B base, or Gemma 4 E2B base; MLX 4-bit | 424 MB / 1.06 GB / 3.6 GB |
 
-Whisper's Tiny and Small sizes are available as either multilingual or
-English-only downloads. The multilingual variants auto-detect the spoken
-language by default and also let you pin a language; the English variants stay
-focused on English and therefore do not show a language control. Medium English
-is available when English accuracy matters more than download size and speed,
-while Large Turbo is the strongest multilingual choice for accents, background
-noise, and mixed-language audio. Every variant can be downloaded, deleted, and
-downloaded again from the Models tab.
+Download sizes are storage estimates, not RAM requirements. Gemma's optional MTP assistant adds about 190 MB per model family; E2B and Gemma Pro Cleanup share an assistant. Gemma cannot be selected for transcription and cleanup simultaneously.
 
-The app and `muesli-cli` share Nemotron 3.5's model cache at
-`~/.cache/muesli/models/nemotron35-multilingual-2240ms`; downloading it in one
-surface makes it available to the other without a second copy.
+Gemma uses MLX Swift LM for generation and a native Swift/MLX audio encoder. Multi-token prediction (MTP) is on by default when verified assistant weights are available. If those weights cannot be downloaded or loaded, the main model remains usable with ordinary decoding. Computer Use keeps its tool-call grammar and validation in either mode. The app no longer packages LiteRT.
 
-Cohere Transcribe is a 2B parameter model (#1 on Open ASR Leaderboard) running in mixed precision — FP16 FastConformer encoder on the Neural Engine with INT8 quantized decoders. Includes VAD-gated silence detection to prevent hallucination. Best for high-accuracy multilingual dictation.
+Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. Cleanup Lite and Qwen Pro Cleanup use the same native MLX-Swift-LM integration with 8-bit weights, as do Cotypist's base models (4-bit, no new runtime). LFM and S1-mini retain LLM.swift's llama.cpp runtime.
 
-Gemma 4 E2B is an experimental multimodal LiteRT-LM backend for direct transcription or on-device transcript cleanup. It is not an ASR-tuned model, so assistant-style outputs are rejected and Parakeet remains the recommended transcription backend. Gemma cannot be selected for ASR and cleanup at the same time.
+Live transcription is off by default. Apple Speech and Nemotron provide live and final transcripts; Parakeet Realtime EOU provides an English preview alongside a separate final meeting model. Enable it under **Settings → Meetings → Transcription**.
 
-Meeting echo cancellation uses LocalVQE by default. Release builds ship the
-bundled `localvqe-v1.2-1.3M-f32.gguf` model plus the LocalVQE shared libraries,
-so users do not need to download an AEC model before their first meeting
-transcription. DTLN remains available as the fallback AEC path when LocalVQE
-cannot load.
-
-Source/dev builds need the LocalVQE runtime built once with
-`./scripts/build_localvqe.sh` (the model is committed; the dylibs under
-`native/MuesliNative/LocalVQE/lib/` are not). Without that step, packaging
-warns and the app falls back to DTLN. See `CONTRIBUTING.md`.
-
-Models download on demand from HuggingFace. Manage them from the **Models** tab in the dashboard.
+For background on the local runtimes, see [Apple Neural Engine speech-to-text on Mac](https://muesli.works/apple-neural-engine-speech-to-text-mac) and the [speech-to-text glossary](https://muesli.works/local-speech-to-text-glossary).
 
 ---
 
-## Permissions
+## Permissions and calendars
 
-Muesli needs these macOS permissions (guided during onboarding):
+Onboarding guides you through the macOS permissions needed for the features you use.
 
-| Permission | Why |
+| Permission | Purpose |
 |---|---|
-| **Microphone** | Record audio for dictation and meetings |
-| **System Audio Recording** | Capture call audio from Zoom/Meet/Teams |
-| **Accessibility** | Simulate Cmd+V to paste transcribed text |
-| **Input Monitoring** | Detect hotkey presses globally |
-| **Camera** *(implicit)* | Detect webcam activation for meeting detection |
-| **Calendar** *(optional)* | Show upcoming meetings from Google Calendar |
+| Microphone | Record dictation and meetings |
+| System Audio Recording | Capture audio from meeting apps |
+| Accessibility | Paste transcribed text |
+| Input Monitoring | Detect global hotkeys |
+| Camera activity detection | Recognize webcam activation for optional meeting detection |
+| Calendar (optional) | Show upcoming meetings and reminders |
+
+For calendars, add Google, Exchange, or other accounts in **System Settings → Internet Accounts** with Calendars enabled. Grant Muesli Calendar access, then choose calendars under **Settings → Meetings → Calendars**. Muesli uses macOS Calendar through EventKit; direct Google Calendar sign-in is not available. Hiding a calendar in Muesli does not delete its events.
+
+See [Help and troubleshooting](https://muesli.works/help) for setup and permission issues.
 
 ---
 
-## Tech Stack
+## Tech stack
 
 | Component | Technology |
 |---|---|
-| App | Swift, AppKit, SwiftUI |
-| Primary ASR | [FluidAudio](https://github.com/FluidInference/FluidAudio) and FluidInference models (Parakeet TDT, Nemotron 3.5, SenseVoice Small, and Qwen3 ASR on CoreML/ANE) |
-| Cohere ASR | [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) (FP16 encoder + INT8 decoder on CoreML) |
-| Indic ASR | AI4Bharat IndicConformer RNNT CoreML backend |
-| Gemma ASR / cleanup | [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) with Gemma 4 E2B (Metal GPU decoder + CPU audio encoder) |
-| Whisper ASR | [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML/ANE) |
-| Voice activity | Silero VAD via FluidAudio (streaming, event-driven) |
-| Speaker diarization | pyannote via FluidAudio (CoreML on ANE) |
-| Camera detection | CoreMediaIO property listeners (event-driven) |
-| System audio | CoreAudio process tap by default; ScreenCaptureKit (`SCStream`) fallback |
-| Meeting notes | OpenAI / OpenRouter (BYOK), ChatGPT subscription (OAuth), or Ollama |
-| Calendar | Google Calendar API (OAuth 2.0) |
-| Sync | CloudKit private database for text-only iCloud sync |
-| Automation | Computer Use planner and post-meeting executable hooks |
-| Export | PDF (NSPrintOperation, paginated US Letter) + Markdown |
-| Word correction | Jaro-Winkler similarity (native Swift) |
-| Storage | SQLite (WAL mode) |
-| Signing | Developer ID + hardened runtime (notarization ready) |
-
----
+| Native app | Swift, AppKit, SwiftUI |
+| Local inference | CoreML / Apple Neural Engine, MLX Swift / MLX Swift LM, Metal, LLM.swift / llama.cpp, WhisperKit |
+| Audio and speakers | CoreAudio process tap, ScreenCaptureKit fallback, Silero VAD, pyannote diarization |
+| Storage and sync | SQLite in WAL mode; CloudKit private database for text sync |
+| Calendar | Apple EventKit |
+| Automation | App Intents, Shortcuts, Computer Use planner, post-meeting executable hooks |
+| Export | Markdown and PDF |
 
 ## Contributing
 
-Contributions welcome! To get started:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development builds and tests, [AGENTS.md](AGENTS.md) for agent workflows, and the [SQLite database guide](database-schema.md) before changing persistence or sync fields. Please open an issue before submitting a large PR.
 
-```bash
-git clone https://github.com/Muesli-HQ/muesli.git
-cd muesli
-swift build --package-path native/MuesliNative -c release
-swift test --package-path native/MuesliNative
-./scripts/test_packaged_cli.sh
-```
-
-1,148 tests covering model configuration, custom word and phrase matching, filler removal, transcription routing, data persistence, CLI contract/path-resolution logic, speaker diarization alignment, token consolidation, camera-based meeting detection, CoreAudio system capture, ChatGPT OAuth logic, Ollama summaries, update-flow policy, launch at login, paste/clipboard safety, meeting export, meeting navigation, upcoming-meeting window behavior, and Google Calendar URL extraction.
-
-Current test scope:
-
-- Covered by tests: CLI command contract generation, CLI path-resolution logic, SQLite read/write behavior, note-state classification, meeting/dictation retrieval/update flows, update-flow policy, CoreAudio cleanup, paste/clipboard safety, launch at login, Ollama summary routing, and Computer Use planner foundations.
-- Not covered by Swift unit tests: app-bundle packaging and copying `muesli-cli` into `/Applications/Muesli.app/Contents/MacOS`.
-- Packaging is verified by `scripts/test_packaged_cli.sh`, which builds an isolated app bundle, checks that `Contents/MacOS/muesli-cli` exists and is executable, and runs `muesli-cli spec` from the packaged path.
-
-Please open an issue before submitting large PRs.
+Contributions require a DCO sign-off and disclosure of material AI assistance, as described in the contribution guide.
 
 ---
 
 ## Support
 
-If Muesli saves you time, consider supporting development:
+For help, use the [support guide](https://muesli.works/help) or [open an issue](https://github.com/Muesli-HQ/muesli/issues). If Muesli saves you time, consider supporting development:
 
 <a href="https://buymeacoffee.com/phequals7"><img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy Me A Coffee" /></a>
 
@@ -464,6 +221,8 @@ Muesli has been possible because of the generosity of companies such as:
   <a href="https://telemetrydeck.com"><img src="assets/sponsors/telemetrydeck.svg" alt="TelemetryDeck" height="44" /></a>
   &nbsp;&nbsp;&nbsp;
   <a href="https://www.coderabbit.ai"><img src="assets/sponsors/coderabbit.svg" alt="CodeRabbit" height="44" /></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://jarvislabs.ai"><img src="assets/sponsors/jarvislabs.png" alt="JarvisLabs.ai" height="44" /></a>
 </p>
 
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) — CoreML speech models for Apple devices (Parakeet TDT, Qwen3 ASR, Silero VAD, speaker diarization)
@@ -471,12 +230,18 @@ Muesli has been possible because of the generosity of companies such as:
 - [WhisperKit](https://github.com/argmaxinc/WhisperKit) — Swift Whisper inference on CoreML/ANE
 - [Core Audio](https://developer.apple.com/documentation/coreaudio) by Apple — system audio process taps
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
+- [Parakeet Redux by Moondream](https://huggingface.co/moondream/parakeet-redux), based on NVIDIA Parakeet v3, with the [Core ML conversion by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) — model weights under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Muesli uses the converted weights without further modification.
+- [Phonon-2.5 by Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5), with the [Muesli Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Uses the GPU encoder on macOS 15+; original notices and conversion attribution are included.
+- [MedASR by Google](https://huggingface.co/google/medasr), with the [Muesli Core ML conversion](https://huggingface.co/Muesli-HQ/medasr-coreml) — English medical dictation under the HAI-DEF terms; see [setup and runtime details](docs/medasr.md).
 - [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — FastConformer TDT speech recognition model
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)
-- [AI4Bharat IndicASR](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual) — IndicConformer multilingual ASR model for Indian languages
-- [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) — Native on-device Gemma runtime with Swift APIs and Metal acceleration
-- [Gemma 4 E2B LiteRT-LM](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm) — Experimental multimodal transcription and cleanup model
+- [Bodhan AI Core](https://huggingface.co/bodhan-ai/indic-transcribe-core) and [Flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) — multilingual Indic/English ASR; community [Core](https://huggingface.co/Muesli-HQ/indic-transcribe-core-coreml) and [Flex](https://huggingface.co/Muesli-HQ/indic-transcribe-flex-coreml) CoreML/MLX conversions
+- [MLX Swift](https://github.com/ml-explore/mlx-swift) — native Apple-silicon inference for Gemma and the Bodhan Pro/Lite hybrid runtimes
+- [MLX Swift LM](https://github.com/ml-explore/mlx-swift-lm) — Gemma language-model inference and speculative decoding in native Swift
+- [Hugging Face Swift Transformers](https://github.com/huggingface/swift-transformers) — native Swift tokenization for the MLX models
+- [LLM.swift](https://github.com/obra/LLM.swift) and [llama.cpp](https://github.com/ggml-org/llama.cpp) — local GGUF inference for LFM and S1-mini
+- [Gemma 4 E2B](https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit) and [E4B](https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit) — MLX Community conversions used for on-device audio and text tasks
 - [pyannote](https://github.com/pyannote/pyannote-audio) — Speaker diarization (via FluidAudio CoreML conversion)
 
 ---
@@ -494,6 +259,14 @@ Muesli has been possible because of the generosity of companies such as:
 - [Best dictation apps for Mac](https://muesli.works/best-dictation-apps-mac) — a practical comparison of Mac dictation tools.
 - [Offline dictation for Mac](https://muesli.works/offline-dictation-mac) — why local-first voice typing matters.
 - [Local meeting transcription for Mac](https://muesli.works/local-meeting-transcription-mac) — meeting notes without adding a bot.
+- [Use Muesli meeting notes in ChatGPT and Codex](https://muesli.works/blog/muesli-chatgpt-codex-plugin/) — install the plugin and turn transcripts into notes and implementation plans.
+- [Hinglish and Indic language meeting notes on Mac](https://muesli.works/blog/hinglish-indic-meeting-notes-mac/) — capture and review multilingual conversations with Muesli.
+- [Hinglish dictation on Mac](https://muesli.works/blog/hinglish-dictation-mac/) — Hindi-English voice typing with Muesli.
+- [Bodhan Indic speech-to-text on Mac](https://muesli.works/blog/bodhan-indic-transcription-mac/) — Bodhan Core and Flex for multilingual dictation and transcription.
+- [Dictate in Hindi, Tamil, and other Indian languages](https://muesli.works/blog/indian-language-dictation-mac/) — set up Indic language dictation on your Mac.
+- [Running Bodhan on Apple Silicon with CoreML and MLX Swift](https://muesli.works/blog/bodhan-coreml-mlx-apple-silicon/) — how Muesli runs Bodhan locally.
+- [Muesli website](https://muesli.works/) · [Documentation](https://muesli.works/docs/) · [Release history](https://github.com/Muesli-HQ/muesli/releases)
+- [Privacy policy](https://muesli.works/privacy) · [Terms of service](https://muesli.works/terms)
 
 ---
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import plistlib
 import subprocess
 import tempfile
@@ -104,11 +105,25 @@ for missing_key in (
 stable_release = (ROOT / "scripts" / "release.sh").read_text(encoding="utf-8")
 preprod_release = (ROOT / "scripts" / "release-preprod.sh").read_text(encoding="utf-8")
 build_script = (ROOT / "scripts" / "build_native_app.sh").read_text(encoding="utf-8")
+dev_test_script = (ROOT / "scripts" / "dev-test.sh").read_text(encoding="utf-8")
 assert 'MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"' in stable_release
 assert 'MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Production"' in preprod_release
+assert 'MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Development"' in dev_test_script
 assert stable_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert preprod_release.count("verify_signed_cloud_entitlements.sh") >= 2
 assert "CloudKit provisioning profiles require an explicit" in build_script
+
+dev_production_environment = dict(os.environ)
+dev_production_environment["MUESLI_ICLOUD_CONTAINER_ENVIRONMENT"] = "Production"
+dev_production_result = subprocess.run(
+    ["bash", str(ROOT / "scripts" / "dev-test.sh"), "--cloud-entitlements"],
+    text=True,
+    capture_output=True,
+    check=False,
+    env=dev_production_environment,
+)
+assert dev_production_result.returncode == 2
+assert "must use the CloudKit Development environment" in dev_production_result.stderr
 
 metadata_marker = (
     "# --- Step 11: Validate appcast metadata and open its PR while release stays draft ---"

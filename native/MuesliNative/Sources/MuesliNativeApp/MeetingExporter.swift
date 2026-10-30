@@ -51,9 +51,9 @@ struct MeetingExporter {
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(meeting: MeetingRecord, content: MeetingExportContent) {
+    static func export(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) {
         DispatchQueue.main.async {
-            let markdown = buildMarkdown(meeting: meeting, content: content)
+            let markdown = buildMarkdown(meeting: meeting, content: content, notesOverride: notesOverride)
             let filename = suggestedFilename(meeting: meeting, content: content)
 
             let panel = NSSavePanel()
@@ -81,24 +81,37 @@ struct MeetingExporter {
 
     // MARK: - Markdown composition
 
-    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent) -> String {
+    static func metadataHeader(for meeting: MeetingRecord, wordCount: Int? = nil) -> String {
         var parts: [String] = []
-
         parts.append("# \(meeting.title)")
         parts.append("")
-        parts.append("**Date:** \(formatExportDate(meeting.startTime))")
-        parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
-        parts.append("**Words:** \(meeting.wordCount)")
+        if meeting.source == .granolaImport {
+            parts.append("**Created in Granola:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Source:** Imported from Granola")
+        } else {
+            parts.append("**Date:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
+        }
+        parts.append("**Words:** \(wordCount ?? meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
         }
         parts.append("")
         parts.append("---")
         parts.append("")
+        return parts.joined(separator: "\n")
+    }
+
+    static func buildMarkdown(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) -> String {
+        var parts: [String] = [metadataHeader(for: meeting)]
 
         switch content {
         case .notes:
-            if meeting.notesState == .structuredNotes {
+            if let notesOverride {
+                parts.append(notesOverride)
+            } else if meeting.usesImportedManualNotes {
+                parts.append(meeting.manualNotes)
+            } else if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available. Raw transcript included below.*")
@@ -112,7 +125,12 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
-            if meeting.notesState == .structuredNotes {
+            if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
+                parts.append("## Original manual notes from Granola")
+                parts.append(meeting.manualNotes)
+                parts.append("")
+            }
+            if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available.*")
@@ -125,7 +143,7 @@ struct MeetingExporter {
             parts.append(meeting.rawTranscript)
         }
 
-        return parts.joined(separator: "\n")
+        return parts.joined(separator: "\n") + MeetingExportBranding.markdownFooter
     }
 
     // MARK: - Write files
@@ -142,6 +160,12 @@ struct MeetingExporter {
     }
 
     static func writePDF(attributed: NSAttributedString, to url: URL) throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-pdf-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let printedURL = temporaryDirectory.appendingPathComponent("content.pdf")
+        let brandedURL = temporaryDirectory.appendingPathComponent("branded.pdf")
         let pageWidth: CGFloat = 612   // US Letter
         let pageHeight: CGFloat = 792
         let margin: CGFloat = 72       // 1 inch
@@ -157,6 +181,16 @@ struct MeetingExporter {
         textView.textContainerInset = .zero
         textView.textStorage?.setAttributedString(attributed)
 
+        // Printing can paginate the entire string while lazy text layout only
+        // draws the initial viewport, leaving later pages blank. Lay out every
+        // glyph and expand the view before NSPrintOperation captures its pages.
+        if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+            layoutManager.ensureLayout(for: container)
+            textView.setFrameSize(NSSize(
+                width: contentWidth,
+                height: max(pageHeight - margin * 2, ceil(layoutManager.usedRect(for: container).maxY))))
+        }
+
         let printInfo = NSPrintInfo()
         printInfo.paperSize = NSSize(width: pageWidth, height: pageHeight)
         printInfo.topMargin = margin
@@ -168,7 +202,7 @@ struct MeetingExporter {
         printInfo.isHorizontallyCentered = false
         printInfo.isVerticallyCentered = false
         printInfo.jobDisposition = .save
-        printInfo.dictionary().setValue(url, forKey: NSPrintInfo.AttributeKey.jobSavingURL.rawValue)
+        printInfo.dictionary().setValue(printedURL, forKey: NSPrintInfo.AttributeKey.jobSavingURL.rawValue)
 
         let printOp = NSPrintOperation(view: textView, printInfo: printInfo)
         printOp.showsPrintPanel = false
@@ -177,11 +211,13 @@ struct MeetingExporter {
         guard printOp.run() else {
             throw CocoaError(.fileWriteUnknown)
         }
+        try MeetingExportBranding.writeBrandedPDF(from: printedURL, to: brandedURL)
+        try Data(contentsOf: brandedURL).write(to: url, options: .atomic)
     }
 
     // MARK: - Save panel
 
-    private static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
+    static func presentSavePanel(_ panel: NSSavePanel, onSave: @escaping (URL) -> Void) {
         NSApp.activate()
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { response in
@@ -206,7 +242,7 @@ struct MeetingExporter {
 
     static func buildAttributedString(from markdown: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let lines = markdown.components(separatedBy: .newlines)
+        let lines = MeetingExportBranding.removingFooter(from: markdown).components(separatedBy: .newlines)
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -290,7 +326,8 @@ struct MeetingExporter {
 
     static func markdownToHTML(_ markdown: String) -> String {
         var htmlLines: [String] = []
-        let lines = markdown.components(separatedBy: .newlines)
+        let hasBranding = markdown.hasSuffix(MeetingExportBranding.markdownFooter)
+        let lines = MeetingExportBranding.removingFooter(from: markdown).components(separatedBy: .newlines)
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -317,6 +354,10 @@ struct MeetingExporter {
             } else {
                 htmlLines.append("<p style='margin:4px 0;'>\(inlineBoldHTML(escapeHTML(trimmed)))</p>")
             }
+        }
+
+        if hasBranding {
+            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"Muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with Muesli</a></p>")
         }
 
         return """
@@ -378,8 +419,20 @@ struct MeetingExporter {
         return "\(stem)\(suffix).\(fileExtension)"
     }
 
-    private static func formatExportDate(_ raw: String) -> String {
-        MeetingBrowserLogic.formatStartTime(raw)
+    static func formatExportDate(
+        _ raw: String,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        guard let date = MeetingBrowserLogic.parseDate(raw) else {
+            return MeetingBrowserLogic.formatStartTime(raw, locale: locale, timeZone: timeZone)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     private static func formatExportDuration(_ seconds: Double) -> String {
@@ -406,7 +459,7 @@ struct MeetingExporter {
 
 // MARK: - Save panel format picker accessory
 
-private class ExportFormatAccessory: NSObject {
+class ExportFormatAccessory: NSObject {
     let view: NSView
     private let popup: NSPopUpButton
     private weak var panel: NSSavePanel?

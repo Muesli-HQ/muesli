@@ -6,8 +6,8 @@ builds and CI shards.
 
 ## Requirements
 
-- macOS 14.2 or newer
-- Xcode 16 or newer
+- macOS 26 build host (the app deployment target remains macOS 14.2)
+- Xcode 26.6 (Swift 6.3), matching CI; MLX Swift requires Swift 6.3
 - Apple Silicon Mac for the main app workflows
 
 ## Local Development Build
@@ -76,6 +76,12 @@ If you do have your own signing certificate, you can override the identity:
 ```bash
 MUESLI_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/dev-test.sh
 ```
+
+Cotypist (experimental typeahead in dev builds) needs a signing identity with a
+team ID, either Developer ID or Apple Development. Its input method only sends
+what you type to the Muesli app signed by its own team. In an ad-hoc build
+(`MUESLI_SKIP_SIGN=1`) it has no team to check against, so it sends nothing and
+shows no suggestions. Nothing reports this failure.
 
 Cloud-entitled local builds require a provisioning profile whose App ID matches
 the selected bundle ID and whose certificate matches the signing identity:

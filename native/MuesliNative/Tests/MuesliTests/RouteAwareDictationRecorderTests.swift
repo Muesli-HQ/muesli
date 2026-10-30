@@ -140,6 +140,21 @@ struct RouteAwareDictationRecorderTests {
         ])
     }
 
+    @Test("audio buffers are forwarded only from the active child recorder")
+    func audioBuffersAreForwardedOnlyFromActiveChildRecorder() throws {
+        let system = FakeRouteAwareChildRecorder()
+        let appScoped = FakeRouteAwareChildRecorder()
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+        var received: [[Float]] = []
+        recorder.onAudioBuffer = { received.append($0) }
+
+        _ = try recorder.start()
+        appScoped.onAudioBuffer?([9])
+        system.onAudioBuffer?([1, 2])
+
+        #expect(received == [[1, 2]])
+    }
+
     @Test("switching recorder keeps the inactive graph warm")
     func switchingRecorderKeepsInactiveGraphWarm() throws {
         let system = FakeRouteAwareChildRecorder()
@@ -212,6 +227,7 @@ private final class FakeRouteAwareChildRecorder: DictationAudioRecording {
     var onNoAudioTimeout: ((Date) -> Void)?
     var onRecordingFailed: ((Error, UUID) -> Void)?
     var onLatencyEvent: ((String, Date) -> Void)?
+    var onAudioBuffer: (([Float]) -> Void)?
 
     var warmUpCalls = 0
     var explicitWarmupCalls = 0

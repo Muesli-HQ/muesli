@@ -120,7 +120,7 @@ final class MeetingNotificationController {
             )
         }
         let cardHeight: CGFloat = 60
-        let closeButtonSize: CGFloat = 22
+        let closeButtonSize = NotificationDismissButton.size
         let cardX = closeButtonSize / 2 + 1
         let topGutter: CGFloat = closeButtonSize / 2 + 1
         let width = cardWidth + cardX
@@ -176,24 +176,13 @@ final class MeetingNotificationController {
         progressBar.anchorPoint = CGPoint(x: 0, y: 0.5)
         progressBar.position = CGPoint(x: 0, y: 1.5)
 
-        let dismissButton = NSButton(title: "×", target: self, action: #selector(handleDismiss))
-        dismissButton.font = .systemFont(ofSize: 15, weight: .medium)
+        let dismissButton = NotificationDismissButton.make(target: self, action: #selector(handleDismiss))
         dismissButton.frame = NSRect(
             x: cardX - closeButtonSize / 2,
             y: cardHeight + topGutter - closeButtonSize,
             width: closeButtonSize,
             height: closeButtonSize
         )
-        dismissButton.wantsLayer = true
-        dismissButton.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.70).cgColor
-        dismissButton.layer?.borderWidth = 1
-        dismissButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.55).cgColor
-        dismissButton.layer?.cornerRadius = closeButtonSize / 2
-        dismissButton.alignment = .center
-        dismissButton.focusRingType = .none
-        dismissButton.isBordered = false
-        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.86)
-        dismissButton.toolTip = "Dismiss"
         contentView.addSubview(dismissButton)
         contentView.hoverFrames = [cardView.frame, dismissButton.frame]
 
@@ -586,7 +575,7 @@ enum MeetingPlatform: Equatable {
         guard let host = url.host?.lowercased() else { return nil }
         if host.hasSuffix("zoom.us") { return .zoom }
         if host == "meet.google.com" { return .googleMeet }
-        if host.hasSuffix("teams.microsoft.com") { return .teams }
+        if host.hasSuffix("teams.microsoft.com") || host == "teams.live.com" { return .teams }
         if host.hasSuffix("webex.com") { return .webex }
         if host == "facetime.apple.com" { return .facetime }
         if host == "app.slack.com" && url.path.hasPrefix("/huddle/") { return .slack }

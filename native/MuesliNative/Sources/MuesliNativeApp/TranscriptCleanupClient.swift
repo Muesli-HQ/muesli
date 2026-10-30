@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 enum TranscriptCleanupError: LocalizedError {
     case missingConfiguration(String)
@@ -28,6 +29,7 @@ struct TranscriptCleanupResult {
 
 enum TranscriptCleanupClient {
     private static let openAIResponsesURL = URL(string: "https://api.openai.com/v1/responses")!
+    private static let anthropicURL = URL(string: "https://api.anthropic.com/v1/messages")!
     private static let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
     private static let defaultOllamaBaseURL = URL(string: "http://localhost:11434")!
     private static let requestTimeout: TimeInterval = 120
@@ -36,15 +38,17 @@ enum TranscriptCleanupClient {
 
     static func defaultModel(for backend: TranscriptCleanupBackendOption) -> String {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.repoID
+            return Gemma4LiteRTModel.e2b.repoID
         }
         switch backend.llmBackend {
         case .some(.chatGPT):
-            return SummaryModelPreset.chatGPTTranscriptCleanupModels.first?.id ?? "gpt-5.6-terra"
+            return SummaryModelPreset.chatGPTTranscriptCleanupModels.first?.id ?? "gpt-6-luna"
         case .some(.openAI):
-            return SummaryModelPreset.openAIModels.first?.id ?? "gpt-5.4-mini"
+            return SummaryModelPreset.openAIModels.first?.id ?? "gpt-6.1-sol"
+        case .some(.anthropic):
+            return SummaryModelPreset.anthropicModels.first?.id ?? "claude-sonnet-5-5"
         case .some(.openRouter):
-            return SummaryModelPreset.openRouterModels.first?.id ?? "stepfun/step-3.5-flash:free"
+            return SummaryModelPreset.openRouterModels.first?.id ?? "openrouter/free"
         case .some(.ollama):
             return "qwen3.5"
         case .some(.lmStudio), .some(.customLLM):
@@ -58,7 +62,7 @@ enum TranscriptCleanupClient {
 
     static func configuredModel(for backend: TranscriptCleanupBackendOption, config: AppConfig) -> String {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.repoID
+            return Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel).repoID
         }
         let raw: String
         switch backend.llmBackend {
@@ -66,6 +70,8 @@ enum TranscriptCleanupClient {
             raw = config.postProcessorChatGPTModel
         case .some(.openAI):
             raw = config.postProcessorOpenAIModel
+        case .some(.anthropic):
+            raw = config.postProcessorAnthropicModel
         case .some(.openRouter):
             raw = config.postProcessorOpenRouterModel
         case .some(.ollama):
@@ -83,32 +89,37 @@ enum TranscriptCleanupClient {
         return trimmed.isEmpty ? defaultModel(for: backend) : trimmed
     }
 
-    static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool) -> Bool {
+    static func hasRequiredSettings(for backend: TranscriptCleanupBackendOption, config: AppConfig, isChatGPTAuthenticated: Bool, modelOverride: String? = nil) -> Bool {
         if backend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.isAvailableLocally()
+            let model = Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel)
+            return Gemma4LiteRTModelStore.isAvailableLocally(model: model)
         }
         switch backend.llmBackend {
         case .some(.chatGPT):
             return isChatGPTAuthenticated
         case .some(.openAI):
-            return !config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+            return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: config).isEmpty
+        case .some(.anthropic):
+            return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: config).isEmpty
         case .some(.openRouter):
-            return !config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+            return !resolvedOpenRouterAPIKey(config: config).isEmpty
         case .some(.ollama):
             return resolveConfiguredOllamaURL(config: config) != nil
         case .some(.lmStudio):
-            let model = configuredModel(for: backend, config: config)
+            let model = modelOverride ?? configuredModel(for: backend, config: config)
             return !model.isEmpty
                 && MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) != nil
         case .some(.customLLM):
-            let model = configuredModel(for: backend, config: config)
+            let model = modelOverride ?? configuredModel(for: backend, config: config)
             let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
             let key = config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !model.isEmpty
+            let keyCommand = config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasAPIKey = !key.isEmpty || !keyCommand.isEmpty
+            let headersAreValid = (try? CustomLLMRequestHeaders.validated(config.customLLMHeaders)) != nil
+            return headersAreValid
+                && !model.isEmpty
                 && resolveConfiguredCustomLLMURL(config: config, format: format) != nil
-                && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || !key.isEmpty)
+                && (!MeetingSummaryClient.customLLMRequiresAPIKey(config: config) || hasAPIKey)
         case nil:
             return true
         default:
@@ -123,10 +134,6 @@ enum TranscriptCleanupClient {
         backend: TranscriptCleanupBackendOption,
         config: AppConfig
     ) async throws -> TranscriptCleanupResult {
-        guard let llmBackend = backend.llmBackend else {
-            throw TranscriptCleanupError.missingConfiguration("Local cleanup is handled by Qwen3PostProcessor.")
-        }
-
         let model = configuredModel(for: backend, config: config)
         let userPrompt = Qwen3PostProcessorConfig.formatInput(
             text,
@@ -134,69 +141,16 @@ enum TranscriptCleanupClient {
             maxAppContextCharacters: hostedAppContextCharacterLimit
         )
         let effectiveSystemPrompt = systemPromptWithAppContextGuidance(systemPrompt, appContext: appContext)
-        let raw: String
-
-        switch llmBackend {
-        case .chatGPT:
-            raw = try await ChatGPTResponsesClient.respond(
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model,
-                logCategory: "postproc"
-            )
-        case .openAI:
-            raw = try await cleanWithOpenAI(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
-        case .openRouter:
-            let apiKey = resolvedOpenRouterAPIKey(config: config)
-            raw = try await cleanWithChatCompletions(
-                backend: "OpenRouter",
-                requestURL: openRouterURL,
-                apiKey: apiKey,
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model
-            )
-        case .ollama:
-            raw = try await cleanWithOllama(systemPrompt: effectiveSystemPrompt, userPrompt: userPrompt, model: model, config: config)
-        case .lmStudio:
-            guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
-                throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
-            }
-            raw = try await cleanWithChatCompletions(
-                backend: "LM Studio",
-                requestURL: requestURL,
-                apiKey: "",
-                systemPrompt: effectiveSystemPrompt,
-                userPrompt: userPrompt,
-                model: model
-            )
-        case .customLLM:
-            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
-            guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
-                throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
-            }
-            switch format {
-            case .openAI:
-                raw = try await cleanWithChatCompletions(
-                    backend: "Custom LLM",
-                    requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
-                    systemPrompt: effectiveSystemPrompt,
-                    userPrompt: userPrompt,
-                    model: model
-                )
-            case .anthropic:
-                raw = try await cleanWithAnthropic(
-                    requestURL: requestURL,
-                    apiKey: config.customLLMAPIKey,
-                    systemPrompt: effectiveSystemPrompt,
-                    userPrompt: userPrompt,
-                    model: model
-                )
-            }
-        default:
-            throw TranscriptCleanupError.missingConfiguration("Unsupported transcript cleanup backend: \(backend.label)")
-        }
+        let raw = try await generate(
+            systemPrompt: effectiveSystemPrompt,
+            userPrompt: userPrompt,
+            backend: backend,
+            model: model,
+            config: config,
+            maxOutputTokens: backend.llmBackend == .anthropic ? AnthropicModelPolicy.cleanupMaxOutputTokens : nil,
+            reasoningEffort: config.transcriptCleanupReasoningEffort,
+            logCategory: "postproc"
+        )
 
         let cleaned = cleanOutput(raw)
         let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -209,14 +163,143 @@ enum TranscriptCleanupClient {
         return TranscriptCleanupResult(rawOutput: raw, cleanedOutput: trimmed, model: model)
     }
 
+    static func generate(
+        systemPrompt: String,
+        userPrompt: String,
+        backend: TranscriptCleanupBackendOption,
+        model: String,
+        config: AppConfig,
+        maxOutputTokens: Int? = nil,
+        reasoningEffort: ReasoningEffort? = nil,
+        logCategory: String = "generation"
+    ) async throws -> String {
+        guard let llmBackend = backend.llmBackend else {
+            throw TranscriptCleanupError.missingConfiguration("Local generation is handled on device.")
+        }
+        switch llmBackend {
+        case .chatGPT:
+            return try await ChatGPTResponsesClient.respond(
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens,
+                reasoningEffort: reasoningEffort,
+                logCategory: logCategory
+            )
+        case .openAI:
+            return try await cleanWithOpenAI(
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                config: config,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                reasoningEffort: reasoningEffort
+            )
+        case .anthropic:
+            let apiKey = MeetingSummaryClient.resolvedAnthropicAPIKey(config: config)
+            guard !apiKey.isEmpty else {
+                throw TranscriptCleanupError.missingConfiguration("Anthropic transcript cleanup requires an API key.")
+            }
+            return try await cleanWithAnthropic(
+                requestURL: anthropicURL,
+                apiKey: apiKey,
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                backend: "Anthropic",
+                workspaceID: MeetingSummaryClient.resolvedAnthropicWorkspaceID(config: config)
+            )
+        case .openRouter:
+            let apiKey = resolvedOpenRouterAPIKey(config: config)
+            return try await cleanWithChatCompletions(
+                backend: "OpenRouter",
+                requestURL: openRouterURL,
+                apiKey: apiKey,
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+            )
+        case .ollama:
+            return try await cleanWithOllama(systemPrompt: systemPrompt, userPrompt: userPrompt, model: model, config: config, maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens)
+        case .lmStudio:
+            guard let requestURL = MeetingSummaryClient.resolveLMStudioURL(config: cleanupConfig(config, model: model)) else {
+                throw TranscriptCleanupError.missingConfiguration("Invalid LM Studio URL: \(config.lmStudioURL)")
+            }
+            return try await cleanWithChatCompletions(
+                backend: "LM Studio",
+                requestURL: requestURL,
+                apiKey: "",
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model,
+                maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens
+            )
+        case .customLLM:
+            let format = CustomLLMFormat(rawValue: config.customLLMFormat) ?? .openAI
+            guard let requestURL = resolveConfiguredCustomLLMURL(config: config, format: format) else {
+                throw TranscriptCleanupError.missingConfiguration("Invalid custom URL: \(config.customLLMURL)")
+            }
+            let configuredModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !configuredModel.isEmpty else {
+                throw TranscriptCleanupError.missingConfiguration("No model selected. Enter a model in Settings.")
+            }
+            if MeetingSummaryClient.customLLMRequiresAPIKey(config: config),
+               config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               config.customLLMAPIKeyCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TranscriptCleanupError.missingConfiguration(
+                    "Enter an API key or API key command for the selected Custom LLM format."
+                )
+            }
+            let extraHeaders: [String: String]
+            do {
+                extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+            } catch {
+                throw TranscriptCleanupError.missingConfiguration(error.localizedDescription)
+            }
+            let apiKey = try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
+            if MeetingSummaryClient.customLLMRequiresAPIKey(config: config) && apiKey.isEmpty {
+                throw TranscriptCleanupError.missingConfiguration(
+                    "Enter an API key or API key command for the selected Custom LLM format."
+                )
+            }
+            switch format {
+            case .openAI:
+                return try await cleanWithChatCompletions(
+                    backend: "Custom LLM",
+                    requestURL: requestURL,
+                    apiKey: apiKey,
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    model: configuredModel,
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                    extraHeaders: extraHeaders
+                )
+            case .anthropic:
+                return try await cleanWithAnthropic(
+                    requestURL: requestURL,
+                    apiKey: apiKey,
+                    systemPrompt: systemPrompt,
+                    userPrompt: userPrompt,
+                    model: configuredModel,
+                    maxOutputTokens: maxOutputTokens ?? defaultMaxOutputTokens,
+                    extraHeaders: extraHeaders
+                )
+            }
+        default:
+            throw TranscriptCleanupError.missingConfiguration("Unsupported transcript cleanup backend: \(backend.label)")
+        }
+    }
+
     static func cleanOutput(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         var result = Qwen3PostProcessorOutputCleaner.clean(text)
         result = result.replacingOccurrences(of: #"\r\n?"#, with: "\n", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]+([,.;:!?])"#, with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"[ \t]+([,;:!?]|\.(?![./\w]))"#, with: "$1", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"(?<=\S)[ \t]{2,}"#, with: " ", options: .regularExpression)
         result = result.replacingOccurrences(of: #"(?m)[ \t]+$"#, with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"[ \t]*\n"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -233,10 +316,14 @@ enum TranscriptCleanupClient {
 
     static func resolvedOpenRouterAPIKey(
         config: AppConfig,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        credentialStore: OpenRouterCredentialStore = OpenRouterCredentialStore()
     ) -> String {
-        let key = config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return key.isEmpty ? (environment["OPENROUTER_API_KEY"] ?? "") : key
+        OpenRouterCredentialResolver.resolvedAPIKey(
+            legacyAPIKey: config.openRouterAPIKey,
+            environment: environment,
+            credentialStore: credentialStore
+        )
     }
 
     private static func cleanupConfig(_ config: AppConfig, model: String) -> AppConfig {
@@ -256,22 +343,21 @@ enum TranscriptCleanupClient {
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        reasoningEffort: ReasoningEffort? = nil
     ) async throws -> String {
-        let key = config.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let apiKey = key.isEmpty ? (ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "") : key
+        let apiKey = MeetingSummaryClient.resolvedOpenAIAPIKey(config: config)
         guard !apiKey.isEmpty else {
             throw TranscriptCleanupError.missingConfiguration("OpenAI API key is not configured.")
         }
-        var body: [String: Any] = [
-            "model": model,
-            "instructions": systemPrompt,
-            "input": userPrompt,
-            "max_output_tokens": defaultMaxOutputTokens,
-        ]
-        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
-            body["reasoning"] = ["effort": effort]
-        }
+        let body = openAIRequestBody(
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            model: model,
+            maxOutputTokens: maxOutputTokens,
+            reasoningEffort: reasoningEffort
+        )
         var request = URLRequest(url: openAIResponsesURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
@@ -291,11 +377,31 @@ enum TranscriptCleanupClient {
         return text
     }
 
+    static func openAIRequestBody(
+        systemPrompt: String,
+        userPrompt: String,
+        model: String,
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        reasoningEffort: ReasoningEffort? = nil
+    ) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "instructions": systemPrompt,
+            "input": userPrompt,
+            "max_output_tokens": maxOutputTokens,
+        ]
+        if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {
+            body["reasoning"] = ["effort": effort]
+        }
+        return body
+    }
+
     private static func cleanWithOllama(
         systemPrompt: String,
         userPrompt: String,
         model: String,
-        config: AppConfig
+        config: AppConfig,
+        maxOutputTokens: Int = defaultMaxOutputTokens
     ) async throws -> String {
         let baseURL = resolveConfiguredOllamaURL(config: config)
         guard let baseURL else {
@@ -309,7 +415,7 @@ enum TranscriptCleanupClient {
                 ["role": "user", "content": userPrompt],
             ],
             "stream": false,
-            "options": ["num_predict": defaultMaxOutputTokens],
+            "options": ["num_predict": maxOutputTokens],
         ]
         var request = URLRequest(url: chatURL)
         request.timeoutInterval = requestTimeout
@@ -352,7 +458,9 @@ enum TranscriptCleanupClient {
         apiKey: String,
         systemPrompt: String,
         userPrompt: String,
-        model: String
+        model: String,
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
         var body: [String: Any] = [
             "model": model,
@@ -362,7 +470,7 @@ enum TranscriptCleanupClient {
             ],
         ]
         let tokenKey = requestURL.host?.contains("openai.com") == true ? "max_completion_tokens" : "max_tokens"
-        body[tokenKey] = defaultMaxOutputTokens
+        body[tokenKey] = maxOutputTokens
         var request = URLRequest(url: requestURL)
         request.timeoutInterval = requestTimeout
         request.httpMethod = "POST"
@@ -370,6 +478,9 @@ enum TranscriptCleanupClient {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedKey.isEmpty {
             request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -390,33 +501,40 @@ enum TranscriptCleanupClient {
         apiKey: String,
         systemPrompt: String,
         userPrompt: String,
-        model: String
+        model: String,
+        maxOutputTokens: Int = defaultMaxOutputTokens,
+        backend: String = "Custom LLM",
+        workspaceID: String = "",
+        extraHeaders: [String: String] = [:]
     ) async throws -> String {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultMaxOutputTokens,
+            "max_tokens": maxOutputTokens,
             "system": systemPrompt,
             "messages": [["role": "user", "content": userPrompt]],
         ]
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = requestTimeout
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedKey.isEmpty {
-            request.setValue(trimmedKey, forHTTPHeaderField: "x-api-key")
+        if backend == "Anthropic", let effort = AnthropicModelPolicy.briefTaskEffort(for: model) {
+            body["output_config"] = ["effort": effort]
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        var request = try AnthropicAPIRequest.make(
+            url: requestURL,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: requestTimeout
+        )
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        try validateHTTPResponse(response, data: data, backend: "Custom LLM")
+        try validateHTTPResponse(response, data: data, backend: backend)
         guard
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let text = extractAnthropicText(from: json),
             !text.isEmpty
         else {
-            throw TranscriptCleanupError.emptyResponse("Custom LLM")
+            throw TranscriptCleanupError.emptyResponse(backend)
         }
         return text
     }
@@ -424,6 +542,11 @@ enum TranscriptCleanupClient {
     private static func validateHTTPResponse(_ response: URLResponse, data: Data, backend: String) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
+            if backend == "Custom LLM" {
+                throw TranscriptCleanupError.backendFailed(
+                    "Custom LLM cleanup failed with HTTP \(http.statusCode)."
+                )
+            }
             let message = extractErrorMessage(from: data)
                 ?? String(data: data, encoding: .utf8)
                 ?? "HTTP \(http.statusCode)"

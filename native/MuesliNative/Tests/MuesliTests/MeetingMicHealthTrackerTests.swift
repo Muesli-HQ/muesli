@@ -91,3 +91,16 @@ struct MeetingMicHealthTrackerTests {
         #expect(recovered.firstNonZeroMicAt != nil)
     }
 }
+
+extension MeetingMicHealthTrackerTests {
+    @Test("route callback loss is visible without playback and a fresh callback cancels the warning")
+    func routeCallbackLossWithoutPlayback() {
+        let tracker = MeetingMicHealthTracker()
+        let now = Date(timeIntervalSince1970: 1000)
+        _ = tracker.noteRawMicSamples([1000, -1000], now: now)
+        #expect(tracker.noteRouteCallbackLoss(now: now.addingTimeInterval(4))?.state == .micCallbacksMissing)
+        _ = tracker.noteRawMicSamples([1000, -1000], now: now.addingTimeInterval(5))
+        #expect(tracker.noteRouteCallbackLoss(now: now.addingTimeInterval(5)) == nil)
+        #expect(tracker.snapshot().state == .healthy)
+    }
+}

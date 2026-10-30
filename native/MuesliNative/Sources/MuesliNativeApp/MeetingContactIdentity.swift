@@ -43,6 +43,22 @@ enum MeetingContactIdentity {
         )
     }
 
+    static func participant(
+        for resolvedContact: CNContact,
+        preservingIdentifierFrom selectedContact: CNContact
+    ) -> MeetingParticipantDraft {
+        let selectedParticipant = participant(for: selectedContact)
+        let resolvedParticipant = participant(for: resolvedContact)
+        let displayName = resolvedParticipant.displayName == unnamedFallback
+            ? selectedParticipant.displayName
+            : resolvedParticipant.displayName
+        return MeetingParticipantDraft(
+            participantIdentifier: selectedParticipant.participantIdentifier,
+            displayName: displayName,
+            emailAddress: resolvedParticipant.emailAddress ?? selectedParticipant.emailAddress
+        )
+    }
+
     static func isEmailFallback(_ displayName: String) -> Bool {
         let normalizedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalizedName.contains("@")

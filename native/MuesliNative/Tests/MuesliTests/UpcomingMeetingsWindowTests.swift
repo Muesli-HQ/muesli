@@ -4,6 +4,30 @@ import Foundation
 
 @Suite("Upcoming meetings window")
 struct UpcomingMeetingsWindowTests {
+    @Test("hour windows roll forward across midnight and daylight saving")
+    func rollingHourWindows() throws {
+        let zone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone
+        let now = try #require(cal.date(from: DateComponents(year: 2026, month: 3, day: 7, hour: 23)))
+        for hours in [6, 12] {
+            let end = try #require(UpcomingMeetingsWindow.endDate(from: now, calendar: cal, dayCount: 1, hourCount: hours))
+            #expect(end.timeIntervalSince(now) == Double(hours * 3600))
+        }
+    }
+
+    @Test("hour preference round trips and invalid hours preserve legacy days")
+    func hourPreferencePersistence() throws {
+        var config = AppConfig()
+        config.upcomingMeetingsHourCount = 12
+        let restored = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(restored.upcomingMeetingsWindow == .twelveHours)
+        let invalid = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"upcoming_meetings_hour_count":7,"upcoming_meetings_day_count":2}"#.utf8))
+        #expect(invalid.upcomingMeetingsWindow == .twoDays)
+        #expect(UpcomingMeetingsWindow.resolve(dayCount: 6) == .today)
+        #expect(Set(UpcomingMeetingsWindow.allCases.map(\.settingID)).count == UpcomingMeetingsWindow.allCases.count)
+    }
+
     @Test("today only ends at the next local day")
     func todayOnlyEndsAtNextLocalDay() throws {
         let now = try date(year: 2026, month: 4, day: 10, hour: 15)

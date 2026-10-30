@@ -3,6 +3,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 import MuesliCore
+import MuesliNativeApp
 import WhisperKit
 
 enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
@@ -14,10 +15,22 @@ enum TranscribeOutputFormat: String, CaseIterable, ExpressibleByArgument {
 enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     case parakeetV3 = "parakeet-v3"
     case parakeetV2 = "parakeet-v2"
+    case parakeetRedux = "parakeet-redux"
+    case phonon25 = "phonon-2.5"
+    case parakeetUnified = "parakeet-unified"
     case parakeetEou320ms = "parakeet-eou-320ms"
     case senseVoice = "sensevoice"
     case qwen3Asr = "qwen3-asr"
     case nemotron35 = "nemotron35"
+    case appleSpeech = "apple-speech"
+    case medASR = "medasr"
+    case cohere = "cohere-transcribe"
+    case bodhanCore = "bodhan-core"
+    case bodhanFlex = "bodhan-flex"
+    case bodhanCoreInt8 = "bodhan-core-int8"
+    case bodhanFlexInt8 = "bodhan-flex-int8"
+    case gemma4E2B = "gemma4-e2b"
+    case gemma4E4B = "gemma4-e4b"
     case whisperTiny = "whisper-tiny"
     case whisperTinyEnglish = "whisper-tiny-english"
     case whisperSmall = "whisper-small"
@@ -29,9 +42,11 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
     /// batch `AsrManager` path (streaming, or a different FluidAudio manager).
     var asrModelVersion: AsrModelVersion? {
         switch self {
-        case .parakeetV3: return .v3
+        case .parakeetV3, .phonon25: return .v3
         case .parakeetV2: return .v2
-        case .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
+        case .parakeetRedux: return .redux
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+             .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35,
              .whisperTiny, .whisperTinyEnglish,
              .whisperSmall, .whisperSmallEnglish, .whisperMediumEnglish,
              .whisperLargeTurbo:
@@ -48,11 +63,19 @@ enum TranscribeModel: String, CaseIterable, ExpressibleByArgument, Encodable {
         case .whisperSmallEnglish: return "small.en"
         case .whisperMediumEnglish: return "medium.en"
         case .whisperLargeTurbo: return "large-v3-v20240930_626MB"
-        case .parakeetV3, .parakeetV2, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B,
+             .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25, .parakeetUnified, .parakeetEou320ms, .senseVoice, .qwen3Asr, .nemotron35:
             return nil
         }
     }
 
+    var nativeModel: NativeFileTranscriptionModel? {
+        NativeFileTranscriptionModel(rawValue: rawValue)
+    }
+
+    static var modelHelp: String {
+        "Transcription model: " + allCases.map(\.rawValue).joined(separator: ", ") + "."
+    }
 }
 
 struct TranscribeJSONPayload: Encodable {
@@ -108,8 +131,8 @@ struct TranscribeCommand: AsyncParsableCommand {
     var file: String
     @Option(name: .long, help: "Output format: text, json, or markdown.")
     var format: TranscribeOutputFormat = .text
-    @Option(name: .long, help: "Transcription model: parakeet-v3, parakeet-v2, parakeet-eou-320ms (streaming), sensevoice, qwen3-asr, nemotron35, whisper-tiny, whisper-tiny-english, whisper-small, whisper-small-english, whisper-medium-english, or whisper-large-turbo.")
-    var model: TranscribeModel = .parakeetV3
+    @Option(name: .long, help: ArgumentHelp(TranscribeModel.modelHelp))
+    var model: TranscribeModel = .parakeetUnified
     @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
     var summarize = false
     @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")
@@ -616,16 +639,21 @@ struct MuesliAudioFilePreparer: AudioPreparing {
 /// entirely for SenseVoice/Qwen3).
 struct RoutingAudioTranscriber: AudioTranscribing {
     var batch: AudioTranscribing = FluidAudioCLITranscriber()
+    var parakeetUnified: AudioTranscribing = ParakeetUnifiedCLITranscriber()
     var streaming: AudioTranscribing = StreamingEouCLITranscriber()
     var senseVoice: AudioTranscribing = SenseVoiceCLITranscriber()
     var qwen3Asr: AudioTranscribing = Qwen3AsrCLITranscriber()
     var nemotron35: AudioTranscribing = Nemotron35CLITranscriber()
     var whisper: AudioTranscribing = WhisperCLITranscriber()
+    var native: AudioTranscribing = NativeModelsCLITranscriber()
 
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let transcriber: AudioTranscribing
         switch model {
-        case .parakeetV3, .parakeetV2: transcriber = batch
+        case .appleSpeech, .medASR, .cohere, .bodhanCore, .bodhanFlex, .bodhanCoreInt8, .bodhanFlexInt8, .gemma4E2B, .gemma4E4B:
+            transcriber = native
+        case .parakeetV3, .parakeetV2, .parakeetRedux, .phonon25: transcriber = batch
+        case .parakeetUnified: transcriber = parakeetUnified
         case .parakeetEou320ms: transcriber = streaming
         case .senseVoice: transcriber = senseVoice
         case .qwen3Asr: transcriber = qwen3Asr
@@ -636,6 +664,32 @@ struct RoutingAudioTranscriber: AudioTranscribing {
             transcriber = whisper
         }
         return try await transcriber.transcribe(wavURL: wavURL, model: model, progress: progress)
+    }
+}
+
+/// Uses the app's shipping implementations rather than duplicating their model
+/// downloads, Apple asset reservations, CoreML/MLX policy or bounded file replay.
+struct NativeModelsCLITranscriber: AudioTranscribing {
+    var transcribeFile: (URL, NativeFileTranscriptionModel, @escaping (String) -> Void) async throws -> String = {
+        try await NativeFileTranscriber.transcribe(wavURL: $0, model: $1, progress: $2)
+    }
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        guard let nativeModel = model.nativeModel else {
+            throw CLIError.invalidInput("\(model.rawValue) is not an app-native transcription model.")
+        }
+        let text: String
+        do {
+            text = try await transcribeFile(wavURL, nativeModel, progress)
+        } catch let error as MedASRLicenseError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Run muesli-cli model-terms medasr, then repeat with --accept.")
+        } catch let error as NativeFileTranscriptionError {
+            throw CLIError.invalidInput(error.localizedDescription,
+                fix: "Choose a different --model, or use a compatible Mac and macOS version.")
+        }
+        // The pipeline retains the decoded source file's full duration.
+        return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 }
 
@@ -666,20 +720,41 @@ actor FluidAudioCLITranscriber: AudioTranscribing {
             )
         }
         progress("loading \(model.rawValue)")
-        let plan = asrModelVersion == .v2
-            ? ManagedASRModelPlans.parakeetV2()
-            : ManagedASRModelPlans.parakeetV3()
+        let plan: ManagedASRModelPlan
+        switch model {
+        case .parakeetV2: plan = ManagedASRModelPlans.parakeetV2()
+        case .parakeetRedux: plan = ManagedASRModelPlans.parakeetRedux()
+        case .phonon25: plan = ManagedASRModelPlans.phonon25()
+        default: plan = ManagedASRModelPlans.parakeetV3()
+        }
+        if ParakeetRuntimePolicy.requiresMacOS15(for: plan.modelID), #unavailable(macOS 15) {
+            throw CLIError.invalidInput("\(model.rawValue) requires macOS 15 or later.", fix: "Choose parakeet-v3 or parakeet-v2.")
+        }
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             progress: { fraction, message in
                 progress(message ?? "model \(Int((fraction * 100).rounded()))%")
             }
         ) { modelDirectory in
-            progress("preparing model")
-            let models = try await AsrModels.load(from: modelDirectory, version: asrModelVersion)
+            progress(ParakeetRuntimePolicy.preparingMessage(for: plan.modelID))
+            let models: AsrModels
+            if ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+                models = try AsrModels.loadLocal(
+                    from: modelDirectory, version: asrModelVersion,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            } else {
+                models = try await AsrModels.load(
+                    from: modelDirectory, version: asrModelVersion,
+                    encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
+                )
+            }
             let manager = AsrManager(config: .default)
             try await manager.loadModels(models)
-            return manager
+            return try await ParakeetRuntimePolicy.prepareLoadedModel(manager, for: plan.modelID) { candidate, samples in
+                var state = TdtDecoderState.make(decoderLayers: await candidate.decoderLayerCount)
+                _ = try await candidate.transcribe(samples, decoderState: &state)
+            }
         }
         asrManager = manager
         loadedModel = model
@@ -720,10 +795,10 @@ actor SenseVoiceCLITranscriber: AudioTranscribing {
     }
 }
 
-/// Wraps FluidAudio's `Qwen3AsrManager` directly — a thin wrapper, same shape as
+/// Wraps the vendored `MuesliQwen3AsrManager` directly — a thin wrapper, same shape as
 /// the app's `Qwen3AsrTranscriber` (`Qwen3AsrBackend.swift`), reusing the app's
 /// default model cache. Requires macOS 15+ for CoreML stateful decoder support,
-/// same constraint FluidAudio's `Qwen3AsrManager` itself carries.
+/// same constraint the vendored manager itself carries.
 actor Qwen3AsrCLITranscriber: AudioTranscribing {
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         guard #available(macOS 15, *) else {
@@ -744,7 +819,7 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
                 }
             ) { modelDir in
                 progress("preparing model")
-                let mgr = Qwen3AsrManager()
+                let mgr = MuesliQwen3AsrManager()
                 try await mgr.loadModels(from: modelDir)
                 return mgr
             }
@@ -755,16 +830,52 @@ actor Qwen3AsrCLITranscriber: AudioTranscribing {
         }
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        let text = try await (manager as! Qwen3AsrManager).transcribe(audioSamples: samples)
+        guard let qwen3Manager = manager as? MuesliQwen3AsrManager else {
+            throw CLIError.invalidInput("Qwen3 ASR model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let text = try await qwen3Manager.transcribe(audioSamples: samples)
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(text: text, durationSeconds: nil)
     }
 
-    // Stored as Any: `Qwen3AsrManager` itself is `@available(macOS 15, *)` in FluidAudio,
+    // Stored as Any: the vendored manager is `@available(macOS 15, *)`,
     // and a stored property of that type would force this whole actor declaration behind
     // the same guard — but `RoutingAudioTranscriber` needs to construct this actor
     // unconditionally on any deployment target, and only fail at call time on older OSes.
     private var manager: Any?
+}
+
+/// Offline-batch Parakeet Unified 0.6B (FastConformer-RNNT) via the managed
+/// model directory shared with the app backend.
+actor ParakeetUnifiedCLITranscriber: AudioTranscribing {
+    private var manager: UnifiedAsrManager?
+
+    func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
+        if manager == nil {
+            progress("loading parakeet-unified")
+            let plan = ManagedASRModelPlans.parakeetUnified()
+            manager = try await ManagedASRModelDownloader.loadValidated(
+                plan,
+                progress: { fraction, message in
+                    progress(message ?? "model \(Int((fraction * 100).rounded()))%")
+                }
+            ) { modelDir in
+                progress("preparing model")
+                let mgr = UnifiedAsrManager()
+                try await mgr.loadModels(from: modelDir)
+                return mgr
+            }
+            progress("model ready")
+        }
+        guard let manager else {
+            throw CLIError.invalidInput("Parakeet Unified model was not loaded.", fix: "Run the command again after the model finishes downloading.")
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        let text = try await manager.transcribe(samples)
+        progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
+        return HeadlessTranscription(text: text, durationSeconds: nil)
+    }
 }
 
 /// Wraps FluidAudio's public multilingual Nemotron manager using the exact
@@ -823,13 +934,13 @@ actor WhisperCLITranscriber: AudioTranscribing {
             throw CLIError.invalidInput("WhisperKit model was not loaded.", fix: "Run the command again after the model finishes downloading.")
         }
         let start = CFAbsoluteTimeGetCurrent()
-        // English-only `.en` checkpoints have no multilingual tokens — keep default DecodingOptions.
+        // English-only `.en` checkpoints have no multilingual tokens — keep default English language decoding.
         // Multilingual variants need detectLanguage; WhisperKit defaults otherwise force English.
         let decodeOptions: DecodingOptions
         if modelName.hasSuffix(".en") {
-            decodeOptions = DecodingOptions()
+            decodeOptions = DecodingOptions(skipSpecialTokens: true)
         } else {
-            decodeOptions = DecodingOptions(detectLanguage: true)
+            decodeOptions = DecodingOptions(detectLanguage: true, skipSpecialTokens: true)
         }
         let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -866,8 +977,7 @@ actor WhisperCLITranscriber: AudioTranscribing {
 /// 320ms chunks, simulating how the live meeting-caption path consumes audio in
 /// the app. This is the same model, chunk size, and cache directory as
 /// `MeetingLiveCaptionModelStore`/`ParakeetEOUMeetingPartialEngine` in the app
-/// target (`MeetingStreamingPartialSession.swift`) — that code lives in an
-/// executable target the CLI cannot link, so this reimplements the same call
+/// target (`MeetingStreamingPartialSession.swift`). File replay uses the call
 /// pattern directly against FluidAudio's public streaming API rather than
 /// duplicating the app's internal session/tail-state machinery, which the CLI
 /// does not need. If a user already downloaded the model via the app's live
@@ -1049,9 +1159,13 @@ struct ConfiguredCLIMeetingSummarizer: MeetingSummarizing {
 
 struct CLISummaryConfig: Decodable {
     var meetingSummaryBackend = "chatgpt"
+    var meetingSummaryMaxOutputTokens: Int? = nil
     var openAIAPIKey = ""
+    var anthropicAPIKey = ""
+    var anthropicWorkspaceID = ""
     var openRouterAPIKey = ""
     var openAIModel = ""
+    var anthropicModel = ""
     var openRouterModel = ""
     var ollamaURL = "http://localhost:11434"
     var ollamaModel = "qwen3.5"
@@ -1059,23 +1173,33 @@ struct CLISummaryConfig: Decodable {
     var lmStudioModel = ""
     var customLLMURL = ""
     var customLLMAPIKey = ""
+    var customLLMHeaders: [CustomLLMRequestHeader] = []
     var customLLMModel = ""
     var customLLMFormat = "openai"
+    var claudeCodeModel = ""
+    var claudeCodeExecutablePath = ""
 
     enum CodingKeys: String, CodingKey {
-        case meetingSummaryBackend
-        case openAIAPIKey
-        case openRouterAPIKey
-        case openAIModel
-        case openRouterModel
-        case ollamaURL
-        case ollamaModel
-        case lmStudioURL
-        case lmStudioModel
-        case customLLMURL
-        case customLLMAPIKey
-        case customLLMModel
-        case customLLMFormat
+        case meetingSummaryBackend = "meeting_summary_backend"
+        case meetingSummaryMaxOutputTokens = "meeting_summary_max_output_tokens"
+        case openAIAPIKey = "openai_api_key"
+        case anthropicAPIKey = "anthropic_api_key"
+        case anthropicWorkspaceID = "anthropic_workspace_id"
+        case openRouterAPIKey = "openrouter_api_key"
+        case openAIModel = "openai_model"
+        case anthropicModel = "anthropic_model"
+        case openRouterModel = "openrouter_model"
+        case ollamaURL = "ollama_url"
+        case ollamaModel = "ollama_model"
+        case lmStudioURL = "lmstudio_url"
+        case lmStudioModel = "lmstudio_model"
+        case customLLMURL = "custom_llm_url"
+        case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMHeaders = "custom_llm_headers"
+        case customLLMModel = "custom_llm_model"
+        case customLLMFormat = "custom_llm_format"
+        case claudeCodeModel = "claude_code_model"
+        case claudeCodeExecutablePath = "claude_code_executable_path"
     }
 
     init() {}
@@ -1083,9 +1207,15 @@ struct CLISummaryConfig: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         meetingSummaryBackend = try container.decodeIfPresent(String.self, forKey: .meetingSummaryBackend) ?? meetingSummaryBackend
+        meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(
+            try? container.decode(Int.self, forKey: .meetingSummaryMaxOutputTokens)
+        )
         openAIAPIKey = try container.decodeIfPresent(String.self, forKey: .openAIAPIKey) ?? openAIAPIKey
+        anthropicAPIKey = try container.decodeIfPresent(String.self, forKey: .anthropicAPIKey) ?? anthropicAPIKey
+        anthropicWorkspaceID = try container.decodeIfPresent(String.self, forKey: .anthropicWorkspaceID) ?? anthropicWorkspaceID
         openRouterAPIKey = try container.decodeIfPresent(String.self, forKey: .openRouterAPIKey) ?? openRouterAPIKey
         openAIModel = try container.decodeIfPresent(String.self, forKey: .openAIModel) ?? openAIModel
+        anthropicModel = try container.decodeIfPresent(String.self, forKey: .anthropicModel) ?? anthropicModel
         openRouterModel = try container.decodeIfPresent(String.self, forKey: .openRouterModel) ?? openRouterModel
         ollamaURL = try container.decodeIfPresent(String.self, forKey: .ollamaURL) ?? ollamaURL
         ollamaModel = try container.decodeIfPresent(String.self, forKey: .ollamaModel) ?? ollamaModel
@@ -1093,15 +1223,32 @@ struct CLISummaryConfig: Decodable {
         lmStudioModel = try container.decodeIfPresent(String.self, forKey: .lmStudioModel) ?? lmStudioModel
         customLLMURL = try container.decodeIfPresent(String.self, forKey: .customLLMURL) ?? customLLMURL
         customLLMAPIKey = try container.decodeIfPresent(String.self, forKey: .customLLMAPIKey) ?? customLLMAPIKey
+        customLLMHeaders = try container.decodeIfPresent([CustomLLMRequestHeader].self, forKey: .customLLMHeaders) ?? customLLMHeaders
         customLLMModel = try container.decodeIfPresent(String.self, forKey: .customLLMModel) ?? customLLMModel
         customLLMFormat = try container.decodeIfPresent(String.self, forKey: .customLLMFormat) ?? customLLMFormat
+        claudeCodeModel = try container.decodeIfPresent(String.self, forKey: .claudeCodeModel) ?? claudeCodeModel
+        claudeCodeExecutablePath = try container.decodeIfPresent(String.self, forKey: .claudeCodeExecutablePath) ?? claudeCodeExecutablePath
     }
 
     static func load(from supportDirectory: URL) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),
-              let config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
+              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
             return CLISummaryConfig()
+        }
+        if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            struct StoredOpenRouterCredential: Decodable {
+                let apiKey: String
+
+                enum CodingKeys: String, CodingKey {
+                    case apiKey = "api_key"
+                }
+            }
+            let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
+            if let credentialData = try? Data(contentsOf: credentialURL),
+               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+                config.openRouterAPIKey = credential.apiKey
+            }
         }
         return config
     }
@@ -1121,16 +1268,30 @@ enum CLISummaryError: LocalizedError {
 }
 
 enum CLISummaryClient {
-    private static let defaultOpenAIModel = "gpt-5.4-mini"
-    private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
-    private static let defaultSummaryMaxOutputTokens = 2500
+    private static let defaultOpenAIModel = "gpt-6.1-sol"
+    private static let defaultAnthropicModel = "claude-sonnet-5-5"
+    private static let defaultOpenRouterModel = "openrouter/free"
+
+    static func resolvedOpenRouterModel(_ configuredModel: String) -> String {
+        configuredModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultOpenRouterModel : configuredModel
+    }
 
     static func summarize(transcript: String, title: String, config: CLISummaryConfig) async throws -> String {
         let backend = config.meetingSummaryBackend.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch backend.isEmpty ? "chatgpt" : backend {
+        case "claude_code":
+            return try await ClaudeCodeSummarizer.run(
+                instructions: "You are a meeting notes assistant. Summarize the transcript as concise Markdown. Include decisions, action items with owners when stated, and open questions. Do not invent facts. Return only the notes.",
+                input: "Meeting title: \(title)\n\nRaw transcript:\n\(transcript)",
+                model: config.claudeCodeModel,
+                executablePath: config.claudeCodeExecutablePath
+            )
         case "openai":
-            let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? config.openAIAPIKey
-            guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let key = OpenAIAPISettings.resolvedAPIKey(
+                environmentValue: ProcessInfo.processInfo.environment["OPENAI_API_KEY"],
+                savedValue: config.openAIAPIKey
+            )
+            guard !key.isEmpty else {
                 throw CLISummaryError.unavailable("OpenAI summary settings are missing an API key.")
             }
             return try await responsesSummary(
@@ -1139,7 +1300,30 @@ enum CLISummaryClient {
                 apiKey: key,
                 model: config.openAIModel.isEmpty ? defaultOpenAIModel : config.openAIModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
+            )
+        case "anthropic":
+            let key = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+                savedValue: config.anthropicAPIKey
+            )
+            guard !key.isEmpty else {
+                throw CLISummaryError.unavailable("Anthropic summary settings are missing an API key.")
+            }
+            let workspaceID = AnthropicAPISettings.resolvedValue(
+                environmentValue: ProcessInfo.processInfo.environment["ANTHROPIC_WORKSPACE_ID"],
+                savedValue: config.anthropicWorkspaceID
+            )
+            return try await anthropicSummary(
+                url: URL(string: "https://api.anthropic.com/v1/messages")!,
+                apiKey: key,
+                model: config.anthropicModel.isEmpty ? defaultAnthropicModel : config.anthropicModel,
+                transcript: transcript,
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens,
+                backend: "Anthropic",
+                workspaceID: workspaceID
             )
         case "openrouter":
             let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? config.openRouterAPIKey
@@ -1150,9 +1334,10 @@ enum CLISummaryClient {
                 backend: "OpenRouter",
                 url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!,
                 apiKey: key,
-                model: config.openRouterModel.isEmpty ? defaultOpenRouterModel : config.openRouterModel,
+                model: resolvedOpenRouterModel(config.openRouterModel),
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "ollama":
             let baseURL = URL(string: config.ollamaURL.isEmpty ? "http://localhost:11434" : config.ollamaURL)
@@ -1161,7 +1346,8 @@ enum CLISummaryClient {
                 url: baseURL.appendingPathComponent("api/chat"),
                 model: config.ollamaModel.isEmpty ? "qwen3.5" : config.ollamaModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "lmstudio":
             guard !config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1176,20 +1362,40 @@ enum CLISummaryClient {
                 apiKey: "",
                 model: config.lmStudioModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens
             )
         case "custom_llm":
             guard !config.customLLMModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw CLISummaryError.unavailable("Custom LLM summary settings are missing a selected model.")
             }
+            let extraHeaders: [String: String]
+            do {
+                extraHeaders = try CustomLLMRequestHeaders.validated(config.customLLMHeaders)
+            } catch {
+                throw CLISummaryError.unavailable(error.localizedDescription)
+            }
+            let apiKey = (ProcessInfo.processInfo.environment["CUSTOM_LLM_API_KEY"]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 }
+                ?? config.customLLMAPIKey)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if config.customLLMFormat == "anthropic" {
-                guard !config.customLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
-                }
                 guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "https://api.anthropic.com" : config.customLLMURL, endpointSuffix: "v1/messages") else {
                     throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
                 }
-                return try await anthropicSummary(url: url, apiKey: config.customLLMAPIKey, model: config.customLLMModel, transcript: transcript, title: title)
+                guard !apiKey.isEmpty else {
+                    throw CLISummaryError.unavailable("Custom Anthropic summary settings are missing an API key.")
+                }
+                return try await anthropicSummary(
+                    url: url,
+                    apiKey: apiKey,
+                    model: config.customLLMModel,
+                    transcript: transcript,
+                    title: title,
+                    maxOutputTokens: config.meetingSummaryMaxOutputTokens,
+                    extraHeaders: extraHeaders
+                )
             }
             guard let url = resolveEndpointURL(config.customLLMURL.isEmpty ? "http://localhost:8080" : config.customLLMURL, endpointSuffix: "v1/chat/completions") else {
                 throw CLISummaryError.unavailable("Invalid Custom LLM URL.")
@@ -1197,13 +1403,15 @@ enum CLISummaryClient {
             return try await chatCompletionsSummary(
                 backend: "Custom LLM",
                 url: url,
-                apiKey: config.customLLMAPIKey,
+                apiKey: apiKey,
                 model: config.customLLMModel,
                 transcript: transcript,
-                title: title
+                title: title,
+                maxOutputTokens: config.meetingSummaryMaxOutputTokens,
+                extraHeaders: extraHeaders
             )
         default:
-            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select OpenAI, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
+            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
         }
     }
 
@@ -1230,8 +1438,8 @@ enum CLISummaryClient {
         "Meeting title: \(title)\n\nRaw transcript:\n\(transcript)"
     }
 
-    private static func responsesSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
-        let body: [String: Any] = [
+    private static func responsesSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String, maxOutputTokens: Int?) async throws -> String {
+        var body: [String: Any] = [
             "model": model,
             "input": [
                 ["role": "system", "content": systemPrompt()],
@@ -1239,8 +1447,8 @@ enum CLISummaryClient {
             ],
             "reasoning": ["effort": "low"],
             "text": ["verbosity": "low"],
-            "max_output_tokens": defaultSummaryMaxOutputTokens,
         ]
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) { body["max_output_tokens"] = limit }
         let data = try await postJSON(url: url, apiKey: apiKey, body: body, backend: backend)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = extractOpenAIText(from: json),
@@ -1250,16 +1458,33 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func chatCompletionsSummary(backend: String, url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
-        let body: [String: Any] = [
+    private static func chatCompletionsSummary(
+        backend: String,
+        url: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        title: String,
+        maxOutputTokens: Int?,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> String {
+        var body: [String: Any] = [
             "model": model,
             "messages": [
                 ["role": "system", "content": systemPrompt()],
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
-            "max_tokens": defaultSummaryMaxOutputTokens,
         ]
-        let data = try await postJSON(url: url, apiKey: apiKey, body: body, backend: backend)
+        if let limit = MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) {
+            body[url.host == "api.openai.com" ? "max_completion_tokens" : "max_tokens"] = limit
+        }
+        let data = try await postJSON(
+            url: url,
+            apiKey: apiKey,
+            body: body,
+            backend: backend,
+            extraHeaders: extraHeaders
+        )
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = extractChatCompletionsText(from: json),
               !text.isEmpty else {
@@ -1268,7 +1493,7 @@ enum CLISummaryClient {
         return text
     }
 
-    private static func ollamaSummary(url: URL, model: String, transcript: String, title: String) async throws -> String {
+    private static func ollamaSummary(url: URL, model: String, transcript: String, title: String, maxOutputTokens: Int?) async throws -> String {
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -1276,7 +1501,7 @@ enum CLISummaryClient {
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
             "stream": false,
-            "options": ["num_predict": defaultSummaryMaxOutputTokens],
+            "options": ["num_predict": MeetingSummaryOutputPolicy.normalizedLimit(maxOutputTokens) ?? -1],
         ]
         let data = try await postJSON(url: url, apiKey: "", body: body, backend: "Ollama")
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1288,41 +1513,65 @@ enum CLISummaryClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func anthropicSummary(url: URL, apiKey: String, model: String, transcript: String, title: String) async throws -> String {
+    private static func anthropicSummary(
+        url: URL,
+        apiKey: String,
+        model: String,
+        transcript: String,
+        title: String,
+        maxOutputTokens: Int?,
+        backend: String = "Custom LLM",
+        workspaceID: String = "",
+        extraHeaders: [String: String] = [:]
+    ) async throws -> String {
+        let outputLimit = try await MeetingSummaryOutputPolicy.anthropicLimit(
+            model: model, requested: maxOutputTokens, messagesURL: url, apiKey: apiKey,
+            workspaceID: workspaceID, extraHeaders: extraHeaders,
+            send: { try await URLSession.shared.data(for: $0) }
+        )
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": defaultSummaryMaxOutputTokens,
+            "max_tokens": outputLimit,
+            "stream": MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: outputLimit),
             "system": systemPrompt(),
             "messages": [
                 ["role": "user", "content": userPrompt(transcript: transcript, title: title)],
             ],
         ]
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 300
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await send(request: request, backend: "Custom LLM")
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]] else {
-            throw CLISummaryError.emptyResponse("Custom LLM returned an empty summary response.")
+        var request = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: apiKey,
+            workspaceID: workspaceID,
+            body: body,
+            timeout: 300
+        )
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
-        let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = try await send(request: request, backend: backend)
+        let text = try MeetingSummaryOutputPolicy.anthropicText(from: data, redactProviderErrors: backend == "Custom LLM")
         guard !text.isEmpty else {
-            throw CLISummaryError.emptyResponse("Custom LLM returned an empty summary response.")
+            throw CLISummaryError.emptyResponse("\(backend) returned an empty summary response.")
         }
         return text
     }
 
-    private static func postJSON(url: URL, apiKey: String, body: [String: Any], backend: String) async throws -> Data {
+    private static func postJSON(
+        url: URL,
+        apiKey: String,
+        body: [String: Any],
+        backend: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 300
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in extraHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(request: request, backend: backend)
@@ -1331,6 +1580,11 @@ enum CLISummaryClient {
     private static func send(request: URLRequest, backend: String) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if backend == "Custom LLM" {
+                throw CLISummaryError.backendFailed(
+                    "Custom LLM summary failed with HTTP \(http.statusCode)."
+                )
+            }
             let message = extractErrorMessage(from: data)
                 ?? String(data: data, encoding: .utf8)
                 ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)

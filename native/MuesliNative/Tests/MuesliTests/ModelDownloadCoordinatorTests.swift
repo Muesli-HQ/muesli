@@ -1,20 +1,30 @@
+import CryptoKit
 import Foundation
 import Testing
 import MuesliCore
 
 private final class DownloadTestTracker: @unchecked Sendable {
-    private let lock = NSCondition()
+    private let lock = NSLock()
     private var active = 0
     private(set) var maximumActive = 0
-    private(set) var requestCount = 0
+    private var requestCountStorage = 0
+    private var startWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestCountStorage
+    }
 
     func started() {
         lock.lock()
         active += 1
-        requestCount += 1
+        requestCountStorage += 1
         maximumActive = max(maximumActive, active)
-        lock.broadcast()
+        let waiters = Array(startWaiters.values)
+        startWaiters.removeAll()
         lock.unlock()
+        for waiter in waiters { waiter.resume(returning: true) }
     }
 
     func finished() {
@@ -23,14 +33,31 @@ private final class DownloadTestTracker: @unchecked Sendable {
         lock.unlock()
     }
 
-    func waitUntilRequestStarts(timeout: TimeInterval = 2) -> Bool {
+    var activeCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        let deadline = Date().addingTimeInterval(timeout)
-        while requestCount == 0 {
-            guard lock.wait(until: deadline) else { return false }
+        return active
+    }
+
+    func waitUntilRequestStarts(timeout: TimeInterval = 2) async -> Bool {
+        // Suspend rather than occupying the cooperative worker needed to start the request.
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if requestCountStorage > 0 {
+                lock.unlock()
+                continuation.resume(returning: true)
+                return
+            }
+            let id = UUID()
+            startWaiters[id] = continuation
+            lock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [self] in
+                lock.lock()
+                let waiter = startWaiters.removeValue(forKey: id)
+                lock.unlock()
+                waiter?.resume(returning: false)
+            }
         }
-        return true
     }
 }
 
@@ -128,6 +155,12 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        // Do not block URLSession's protocol queue: it must deliver stopLoading
+        // while the simulated server is still streaming a delayed response.
+        DispatchQueue.global().async { self.deliverResponse() }
+    }
+
+    private func deliverResponse() {
         let response: Response? = {
             Self.lock.lock()
             defer { Self.lock.unlock() }
@@ -177,6 +210,27 @@ private final class ModelDownloadTestURLProtocol: URLProtocol {
 
 @Suite("ModelDownloadCoordinator", .serialized)
 struct ModelDownloadCoordinatorTests {
+    @Test("namespace changes reuse verified model bytes without a request")
+    func renamedRepositoryReusesCache() async throws {
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            return ModelDownloadTestURLProtocol.Response(data: Data("test".utf8), tracker: tracker)
+        }
+        let coordinator = makeCoordinator()
+        for owner in ["phequals", "Muesli-HQ"] {
+            let file = ModelDownloadFile(relativePath: "model.gguf",
+                remoteURL: URL(string: "https://huggingface.co/\(owner)/model/resolve/pin/model.gguf")!,
+                expectedByteCount: 4, sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+            try await coordinator.download(ModelDownloadManifest(id: "\(owner)/model", version: "pin", files: [file]), to: root)
+        }
+        #expect(tracker.requestCount == 1)
+        #expect(try Data(contentsOf: root.appendingPathComponent("model.gguf")) == Data("test".utf8))
+    }
+
+
     @Test("manifest totals known file sizes")
     func manifestTotalsKnownFileSizes() throws {
         let manifest = ModelDownloadManifest(
@@ -413,6 +467,861 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 1)
     }
 
+    @Test("Muesli mirror manifests become checksum-validated downloader manifests")
+    func muesliMirrorManifestResolution() async throws {
+        let data = Data("mirror".utf8)
+        let manifestData = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "models/model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/models/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        ModelDownloadTestURLProtocol.install { request in
+            #expect(request.url?.host == "assets.muesli.works")
+            #expect(request.url?.lastPathComponent == "manifest.json")
+            return ModelDownloadTestURLProtocol.Response(data: manifestData)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let resolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let manifest = try await resolver.resolve(
+            modelID: "acme/asr",
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+
+        #expect(manifest.id == "acme/asr")
+        #expect(manifest.version == "mirror-v1")
+        #expect(manifest.files.map(\.relativePath) == ["models/model.bin"])
+        #expect(manifest.files[0].remoteURL.absoluteString == "https://assets.muesli.works/models/acme/asr/mirror-v1/files/models/model.bin")
+        #expect(manifest.files[0].sha256 == sha256(data))
+    }
+
+    @Test("Muesli mirror manifests reject an untrusted origin")
+    func muesliMirrorManifestRejectsUntrustedOrigin() async throws {
+        let resolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+
+        await #expect(throws: MuesliModelMirrorManifestError.self) {
+            try await resolver.resolve(
+                modelID: "acme/asr",
+                mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://example.com/models/acme/asr/mirror-v1/manifest.json")))
+            )
+        }
+    }
+
+    @Test("Muesli mirror manifests reject unsafe entries")
+    func muesliMirrorManifestRejectsUnsafeEntries() async throws {
+        let manifestURL = try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json"))
+        let validSHA256 = String(repeating: "a", count: 64)
+        let cases: [(name: String, files: [[String: Any]])] = [
+            (
+                "path traversal",
+                [[
+                    "relativePath": "../escape.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/escape.bin",
+                    "bytes": 1,
+                    "sha256": validSHA256,
+                ]]
+            ),
+            (
+                "cross-release object key",
+                [[
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/other/mirror-v1/files/model.bin",
+                    "bytes": 1,
+                    "sha256": validSHA256,
+                ]]
+            ),
+            (
+                "invalid checksum",
+                [[
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                    "bytes": 1,
+                    "sha256": "not-a-sha256",
+                ]]
+            ),
+            (
+                "duplicate path",
+                [
+                    [
+                        "relativePath": "model.bin",
+                        "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                        "bytes": 1,
+                        "sha256": validSHA256,
+                    ],
+                    [
+                        "relativePath": "model.bin",
+                        "objectKey": "models/acme/asr/mirror-v1/files/second.bin",
+                        "bytes": 1,
+                        "sha256": validSHA256,
+                    ],
+                ]
+            ),
+        ]
+
+        for testCase in cases {
+            let manifestData = try JSONSerialization.data(withJSONObject: [
+                "format": "muesli-r2-model-manifest-v1",
+                "modelID": "acme/asr",
+                "version": "mirror-v1",
+                "files": testCase.files,
+            ])
+            ModelDownloadTestURLProtocol.install { _ in
+                ModelDownloadTestURLProtocol.Response(data: manifestData)
+            }
+            let resolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+            await #expect(throws: MuesliModelMirrorManifestError.self) {
+                try await resolver.resolve(
+                    modelID: "acme/asr",
+                    mirror: MuesliModelMirror(manifestURL: manifestURL)
+                )
+            }
+            ModelDownloadTestURLProtocol.uninstall()
+        }
+    }
+
+    @Test("managed downloads prefer the Muesli mirror without contacting Hugging Face")
+    func managedDownloadPrefersMuesliMirror() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data("mirror".utf8)
+        let manifestData = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: manifestData)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(data: data)
+            }
+            Issue.record("Mirror-backed download unexpectedly requested \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        )
+
+        #expect(directory == plan.cacheDirectory)
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == data)
+        #expect(plan.isComplete())
+    }
+
+    @Test("managed downloads fall back to Hugging Face when the Muesli mirror is unavailable")
+    func managedDownloadFallsBackWhenMuesliMirrorFails() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data("fallback".utf8)
+        let tree = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "model.bin",
+            "size": data.count,
+            "oid": "fallback-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works" {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            if url.path.contains("/tree/") {
+                return ModelDownloadTestURLProtocol.Response(data: tree)
+            }
+            if url.path.contains("/resolve/") {
+                return ModelDownloadTestURLProtocol.Response(data: data)
+            }
+            Issue.record("Unexpected fallback request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        )
+
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == data)
+        #expect(plan.isComplete())
+    }
+
+    @Test("managed downloads fall back to Hugging Face after a mirror transfer failure")
+    func managedDownloadFallsBackWhenMuesliMirrorTransferFails() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mirroredData = Data("mirror".utf8)
+        let fallbackData = Data("fallback".utf8)
+        let fallbackOnlyData = Data("fallback-only".utf8)
+        let mirrorOnlyData = Data("mirror-only".utf8)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [
+                [
+                    "relativePath": "a-mirror-only.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/a-mirror-only.bin",
+                    "bytes": mirrorOnlyData.count,
+                    "sha256": sha256(mirrorOnlyData),
+                ],
+                [
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                    "bytes": mirroredData.count,
+                    "sha256": sha256(mirroredData),
+                ],
+            ],
+        ])
+        let tree = try JSONSerialization.data(withJSONObject: [[
+            "type": "file",
+            "path": "fallback-only.bin",
+            "size": fallbackOnlyData.count,
+            "oid": "fallback-only-oid",
+        ], [
+            "type": "file",
+            "path": "model.bin",
+            "size": fallbackData.count,
+            "oid": "fallback-oid",
+        ]])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/a-mirror-only.bin") {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorOnlyData)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 400)
+            }
+            if url.path.contains("/tree/") {
+                return ModelDownloadTestURLProtocol.Response(data: tree)
+            }
+            if url.path.contains("/resolve/") {
+                if url.lastPathComponent == "fallback-only.bin" {
+                    #expect(request.value(forHTTPHeaderField: "Range") == nil)
+                    return ModelDownloadTestURLProtocol.Response(data: fallbackOnlyData)
+                }
+                return ModelDownloadTestURLProtocol.Response(data: fallbackData)
+            }
+            Issue.record("Unexpected transfer fallback request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin", "fallback-only.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let staleFallbackPartialURL = plan.cacheDirectory.appendingPathComponent("fallback-only.bin.part")
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try Data("stale fallback bytes".utf8).write(to: staleFallbackPartialURL)
+
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        )
+
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == fallbackData)
+        #expect(try Data(contentsOf: directory.appendingPathComponent("fallback-only.bin")) == fallbackOnlyData)
+        #expect(!FileManager.default.fileExists(atPath: staleFallbackPartialURL.path))
+        #expect(!FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("a-mirror-only.bin").path
+        ))
+        #expect(plan.isComplete())
+    }
+
+    @Test("failed fallback restores reused files from a mirror cache")
+    func failedFallbackRestoresReusedMirrorCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reusedData = Data("reused mirror artifact".utf8)
+        let mirrorData = Data("mirror model".utf8)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [
+                [
+                    "relativePath": "a-reused.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/a-reused.bin",
+                    "bytes": reusedData.count,
+                    "sha256": sha256(reusedData),
+                ],
+                [
+                    "relativePath": "model.bin",
+                    "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                    "bytes": mirrorData.count,
+                    "sha256": sha256(mirrorData),
+                ],
+            ],
+        ])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            if url.path.contains("/tree/") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            Issue.record("Unexpected failed fallback request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let reusedURL = plan.cacheDirectory.appendingPathComponent("a-reused.bin")
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try reusedData.write(to: reusedURL)
+
+        await #expect(throws: Error.self) {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+                mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+                coordinator: makeCoordinator()
+            )
+        }
+
+        #expect(try Data(contentsOf: reusedURL) == reusedData)
+        #expect(!FileManager.default.fileExists(
+            atPath: plan.cacheDirectory.appendingPathComponent("model.bin").path
+        ))
+    }
+
+    @Test("interrupted fallback restores its mirror cache before retrying")
+    func interruptedFallbackRestoresMirrorCacheBeforeRetry() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mirrorData = Data("mirror model".utf8)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": mirrorData.count,
+                "sha256": sha256(mirrorData),
+            ]],
+        ])
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            // A restored, verified mirror file needs no second transfer. If
+            // the interrupted Hugging Face cache were used instead, both
+            // origins are deliberately unavailable and this retry would fail.
+            if url.host == "assets.muesli.works" || url.path.contains("/tree/") {
+                return ModelDownloadTestURLProtocol.Response(statusCode: 503)
+            }
+            Issue.record("Unexpected interrupted-fallback request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let interruptedFallback = root.appendingPathComponent(
+            ".model.muesli-mirror-fallback-interrupted",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: interruptedFallback, withIntermediateDirectories: true)
+        try mirrorData.write(to: interruptedFallback.appendingPathComponent("model.bin"))
+
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        try Data("partial Hugging Face bytes".utf8).write(
+            to: plan.cacheDirectory.appendingPathComponent("model.bin.part")
+        )
+        try Data("{}".utf8).write(
+            to: plan.cacheDirectory.appendingPathComponent(".muesli-download-state.json")
+        )
+
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+            mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+            coordinator: makeCoordinator()
+        )
+
+        #expect(directory == plan.cacheDirectory)
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == mirrorData)
+        #expect(plan.isComplete())
+        #expect(!FileManager.default.fileExists(atPath: interruptedFallback.path))
+        #expect(!FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("model.bin.part").path
+        ))
+    }
+
+    @Test("same-model callers share one mirror and fallback operation")
+    func sameModelCallersShareOneDownloadOperation() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data("shared model".utf8)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "acme/asr",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        let mirrorManifestTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: mirrorManifest,
+                    chunkSize: 1,
+                    delay: 0.001,
+                    tracker: mirrorManifestTracker
+                )
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(data: data)
+            }
+            Issue.record("Unexpected shared-operation request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "acme/asr",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let mirrorResolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let first = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        try #require(await mirrorManifestTracker.waitUntilRequestStarts())
+        let second = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+
+        let firstDirectory = try await first.value
+        let secondDirectory = try await second.value
+        #expect(firstDirectory == plan.cacheDirectory)
+        #expect(secondDirectory == plan.cacheDirectory)
+        #expect(mirrorManifestTracker.requestCount == 1)
+        #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
+    }
+
+    @Test("cancelling the owner caller preserves a shared model operation")
+    func cancellingOwnerCallerPreservesSharedModelOperation() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data(repeating: 0x42, count: 512 * 1024)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "owner-cancellation",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        let modelTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: data,
+                    chunkSize: 4 * 1024,
+                    delay: 0.002,
+                    tracker: modelTracker
+                )
+            }
+            Issue.record("Unexpected owner-cancellation request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "owner-cancellation",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let mirrorResolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let firstReturned = DownloadCompletionFlag()
+        let first = Task {
+            do {
+                let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+                    plan,
+                    resolver: resolver,
+                    mirrorResolver: mirrorResolver,
+                    coordinator: coordinator
+                )
+                firstReturned.markCompleted()
+                return directory
+            } catch {
+                firstReturned.markCompleted()
+                throw error
+            }
+        }
+        try #require(await modelTracker.waitUntilRequestStarts())
+        let second = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        first.cancel()
+
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(firstReturned.isCompleted)
+        let secondDirectory = try await second.value
+        await #expect(throws: CancellationError.self) {
+            try await first.value
+        }
+        #expect(secondDirectory == plan.cacheDirectory)
+        #expect(modelTracker.requestCount == 1)
+        #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
+    }
+
+    @Test("cancelling a model permits an immediate fresh retry")
+    func cancellingModelPermitsImmediateFreshRetry() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data(repeating: 0x7F, count: 512 * 1024)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "cancel-and-immediate-retry",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        let modelTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: data,
+                    chunkSize: 4 * 1024,
+                    delay: 0.002,
+                    tracker: modelTracker
+                )
+            }
+            Issue.record("Unexpected immediate-cancellation-retry request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "cancel-and-immediate-retry",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let mirrorResolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let first = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        try #require(await modelTracker.waitUntilRequestStarts())
+
+        await ManagedASRModelDownloader.cancel(
+            modelID: plan.modelID,
+            coordinator: coordinator
+        )
+
+        let retry = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        await #expect(throws: CancellationError.self) {
+            _ = try await first.value
+        }
+        let directory = try await retry.value
+        #expect(directory == plan.cacheDirectory)
+        #expect(modelTracker.requestCount == 2)
+        #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
+    }
+
+    @Test("cancelling and waiting permits an immediate fresh model retry")
+    func cancellingAndWaitingPermitsImmediateFreshModelRetry() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data(repeating: 0x7F, count: 512 * 1024)
+        let mirrorManifest = try JSONSerialization.data(withJSONObject: [
+            "format": "muesli-r2-model-manifest-v1",
+            "modelID": "cancel-and-wait-retry",
+            "version": "mirror-v1",
+            "files": [[
+                "relativePath": "model.bin",
+                "objectKey": "models/acme/asr/mirror-v1/files/model.bin",
+                "bytes": data.count,
+                "sha256": sha256(data),
+            ]],
+        ])
+        let modelTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            guard let url = request.url else { fatalError("Expected request URL") }
+            if url.host == "assets.muesli.works", url.lastPathComponent == "manifest.json" {
+                return ModelDownloadTestURLProtocol.Response(data: mirrorManifest)
+            }
+            if url.host == "assets.muesli.works", url.path.hasSuffix("/files/model.bin") {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: data,
+                    chunkSize: 4 * 1024,
+                    delay: 0.002,
+                    tracker: modelTracker
+                )
+            }
+            Issue.record("Unexpected cancellation-wait-retry request \(url.absoluteString)")
+            return ModelDownloadTestURLProtocol.Response(statusCode: 500)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let plan = ManagedASRModelPlan(
+            modelID: "cancel-and-wait-retry",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let resolver = HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration())
+        let mirrorResolver = MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration())
+        let coordinator = makeCoordinator()
+        let first = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: resolver,
+                mirrorResolver: mirrorResolver,
+                coordinator: coordinator
+            )
+        }
+        try #require(await modelTracker.waitUntilRequestStarts())
+
+        await ManagedASRModelDownloader.cancelAndWait(
+            modelID: plan.modelID,
+            coordinator: coordinator
+        )
+        await #expect(throws: CancellationError.self) {
+            _ = try await first.value
+        }
+
+        let directory = try await ManagedASRModelDownloader.downloadIfNeeded(
+            plan,
+            resolver: resolver,
+            mirrorResolver: mirrorResolver,
+            coordinator: coordinator
+        )
+        #expect(directory == plan.cacheDirectory)
+        #expect(modelTracker.requestCount == 2)
+        #expect(try Data(contentsOf: plan.cacheDirectory.appendingPathComponent("model.bin")) == data)
+    }
+
+    @Test("cancelling mirror manifest resolution does not fall back to Hugging Face")
+    func cancellingMirrorManifestResolutionDoesNotFallBack() async throws {
+        let mirrorTracker = DownloadTestTracker()
+        let fallbackTracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { request in
+            if request.url?.host == "assets.muesli.works" {
+                return ModelDownloadTestURLProtocol.Response(
+                    data: Data(repeating: 0x7B, count: 512 * 1024),
+                    chunkSize: 128,
+                    delay: 0.002,
+                    tracker: mirrorTracker
+                )
+            }
+            return ModelDownloadTestURLProtocol.Response(tracker: fallbackTracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "mirror-manifest-cancel",
+            repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model", isDirectory: true),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]],
+            mirror: MuesliModelMirror(manifestURL: try #require(URL(string: "https://assets.muesli.works/models/acme/asr/mirror-v1/manifest.json")))
+        )
+        let coordinator = makeCoordinator()
+        let task = Task {
+            try await ManagedASRModelDownloader.downloadIfNeeded(
+                plan,
+                resolver: HuggingFaceModelManifestResolver(configuration: makeSessionConfiguration()),
+                mirrorResolver: MuesliModelMirrorManifestResolver(configuration: makeSessionConfiguration()),
+                coordinator: coordinator
+            )
+        }
+        try #require(await mirrorTracker.waitUntilRequestStarts())
+
+        await ManagedASRModelDownloader.cancel(modelID: plan.modelID, coordinator: coordinator)
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
+        #expect(fallbackTracker.requestCount == 0)
+    }
+
+    @Test("Redux installs and deletes independently of existing Parakeet models")
+    func parakeetReduxArtifacts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let redux = ManagedASRModelPlans.parakeetRedux(modelsRoot: root)
+        let v3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(redux.repository == "FluidInference/parakeet-redux-coreml")
+        #expect(redux.cacheDirectory.lastPathComponent == "parakeet-redux")
+        #expect(redux.cacheDirectory != v3.cacheDirectory)
+        #expect(redux.mirror == nil)
+        #expect(redux.selections[0].includedPaths == v3.selections[0].includedPaths)
+        #expect(!redux.isAvailableLocally())
+        for plan in [redux, v3] {
+            for alternatives in plan.requiredArtifactAlternatives {
+                let url = plan.cacheDirectory.appendingPathComponent(alternatives[0])
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([1]).write(to: url)
+            }
+        }
+        #expect(redux.isAvailableLocally())
+        let encoderWeights = redux.cacheDirectory.appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: encoderWeights)
+        #expect(!redux.isAvailableLocally())
+        try Data([1]).write(to: encoderWeights)
+        try redux.delete()
+        #expect(!redux.isAvailableLocally())
+        #expect(v3.isAvailableLocally())
+    }
+
+    @Test("Phonon GPU artifacts have a pinned revision and independent completeness/deletion")
+    func phonon25Artifacts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let phonon = ManagedASRModelPlans.phonon25(modelsRoot: root)
+        let v3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(phonon.repository == ParakeetRuntimePolicy.phonon25ModelID)
+        #expect(phonon.cacheDirectory.lastPathComponent == "phonon-2.5-gpu")
+        #expect(phonon.revision.count == 40)
+        #expect(phonon.selections[0].includedPaths == v3.selections[0].includedPaths)
+        for plan in [phonon, v3] {
+            for alternatives in plan.requiredArtifactAlternatives {
+                let file = plan.cacheDirectory.appendingPathComponent(alternatives[0])
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data([1]).write(to: file)
+            }
+        }
+        #expect(phonon.isAvailableLocally())
+        let weights = phonon.cacheDirectory.appendingPathComponent("Encoder.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: weights)
+        #expect(!phonon.isAvailableLocally())
+        try Data([1]).write(to: weights)
+        try phonon.delete()
+        #expect(!phonon.isAvailableLocally())
+        #expect(v3.isAvailableLocally())
+    }
+
     @Test("managed ASR plans require complete compiled artifacts")
     func managedASRPlanCompleteness() throws {
         let root = try makeTemporaryDirectory()
@@ -469,11 +1378,40 @@ struct ModelDownloadCoordinatorTests {
         #expect(plan.selections[0].remoteDirectory == "int8")
         #expect(plan.selections[0].includedPaths.contains("vocab.json"))
 
+        let parakeet = ManagedASRModelPlans.parakeetV2(modelsRoot: root)
+        #expect(parakeet.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-tdt-0.6b-v2/legacy-local-v1/manifest.json")
+
+        let parakeetV3 = ManagedASRModelPlans.parakeetV3(modelsRoot: root)
+        #expect(parakeetV3.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-tdt-0.6b-v3/legacy-local-v1/manifest.json")
+
+        let unified = ManagedASRModelPlans.parakeetUnified(modelsRoot: root)
+        #expect(unified.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/fluidaudio/parakeet-unified-en-0.6b/legacy-local-v1/manifest.json")
+
         let whisper = ManagedASRModelPlans.whisperKit(modelName: "tiny", downloadRoot: root)
         #expect(whisper.selections[0].includedPaths.contains("AudioEncoder.mlmodelc"))
         #expect(whisper.selections[0].includedPaths.contains("config.json"))
         #expect(whisper.selections[0].includedPaths.contains("generation_config.json"))
         #expect(!whisper.selections[0].includedPaths.contains("AudioEncoder.mlpackage"))
+        #expect(whisper.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/whisperkit/openai_whisper-tiny/legacy-local-v1/manifest.json")
+    }
+
+    @Test("supported WhisperKit variants have immutable Muesli mirrors")
+    func mirroredWhisperKitVariants() {
+        let expectedPaths = [
+            "tiny": "openai_whisper-tiny",
+            "tiny.en": "openai_whisper-tiny.en",
+            "small": "openai_whisper-small",
+            "small.en": "openai_whisper-small.en",
+            "medium.en": "openai_whisper-medium.en",
+            "large-v3-v20240930_626MB": "openai_whisper-large-v3-v20240930_626MB",
+        ]
+
+        for (modelName, remoteDirectory) in expectedPaths {
+            let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
+            #expect(plan.mirror?.manifestURL.absoluteString == "https://assets.muesli.works/models/whisperkit/\(remoteDirectory)/legacy-local-v1/manifest.json")
+        }
+
+        #expect(ManagedASRModelPlans.whisperKit(modelName: "distil-large-v3").mirror == nil)
     }
 
     @Test("English-only Whisper checkpoints use their exact downloadable cache identities")
@@ -607,8 +1545,45 @@ struct ModelDownloadCoordinatorTests {
 
         #expect(value == "good")
         #expect(attempts.current == 2)
-        #expect(tracker.requestCount == 2)
+        // The repair must list the model and transfer its artifact. Transport
+        // retries are permitted by both stages, so they are not part of this
+        // legacy-cache repair contract.
+        #expect(tracker.requestCount >= 2)
         #expect(plan.isComplete())
+    }
+
+    @Test("local-only ASR loading never repairs a failed legacy cache")
+    func localOnlyLoadPreservesFailedCache() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = ManagedASRModelPlan(
+            modelID: "local-only", repository: "acme/asr",
+            cacheDirectory: root.appendingPathComponent("model"),
+            selections: [HuggingFaceModelSelection(includedPaths: ["model.bin"])],
+            requiredArtifactAlternatives: [["model.bin"]]
+        )
+        var calls = 0
+        await #expect(throws: CocoaError.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+            }
+        }
+        #expect(calls == 0)
+        try FileManager.default.createDirectory(at: plan.cacheDirectory, withIntermediateDirectories: true)
+        let modelURL = plan.cacheDirectory.appendingPathComponent("model.bin")
+        try Data("legacy".utf8).write(to: modelURL)
+        enum LoadFailure: Error { case invalidModel }
+        await #expect(throws: LoadFailure.self) {
+            try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { _ in
+                calls += 1
+                throw LoadFailure.invalidModel
+            }
+        }
+        #expect(calls == 1)
+        #expect(try Data(contentsOf: modelURL) == Data("legacy".utf8))
+        #expect(plan.requiresRuntimeValidation())
+        let loaded = try await ManagedASRModelDownloader.loadValidated(plan, allowDownload: false) { $0 }
+        #expect(loaded == plan.cacheDirectory)
     }
 
     @Test("cancelled legacy validation preserves the offline cache")
@@ -673,7 +1648,7 @@ struct ModelDownloadCoordinatorTests {
                 coordinator: coordinator
             )
         }
-        #expect(tracker.waitUntilRequestStarts())
+        try #require(await tracker.waitUntilRequestStarts())
 
         let deletionToken = await ManagedASRModelDownloader.beginDeletion(
             modelID: plan.modelID,
@@ -694,6 +1669,33 @@ struct ModelDownloadCoordinatorTests {
         }
         await ManagedASRModelDownloader.endDeletion(deletionToken)
         #expect(!FileManager.default.fileExists(atPath: plan.cacheDirectory.path))
+    }
+
+    @Test("repairs same-size cached corruption and reuses verified files without a request")
+    func repairsSameSizeCachedCorruption() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = Data("good weights".utf8)
+        let corrupt = Data("evil weights".utf8)
+        #expect(original.count == corrupt.count)
+        let destination = directory.appendingPathComponent("model.bin")
+        try corrupt.write(to: destination)
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(data: original, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let manifest = ModelDownloadManifest(id: "cached-integrity", version: "1", files: [
+            ModelDownloadFile(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/model")),
+                              expectedByteCount: Int64(original.count), sha256: sha256(original))
+        ])
+        let coordinator = makeCoordinator()
+        try await coordinator.download(manifest, to: directory)
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(tracker.requestCount == 1)
+        try await coordinator.download(manifest, to: directory)
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(tracker.requestCount == 1)
     }
 
     @Test("downloads multiple files with bounded concurrency")
@@ -857,8 +1859,49 @@ struct ModelDownloadCoordinatorTests {
         #expect(tracker.requestCount == 1)
     }
 
-    @Test("cancelling one duplicate caller does not cancel the shared transfer")
-    func cancellingOneDuplicateCallerPreservesSharedTransfer() async throws {
+    @Test("removal fails while a download owns the destination")
+    func removalFailsWhileDownloadIsActive() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            ModelDownloadTestURLProtocol.Response(
+                data: Data(repeating: 0x42, count: 512 * 1024),
+                chunkSize: 4 * 1024,
+                delay: 0.002,
+                tracker: tracker
+            )
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(
+            id: "active-removal",
+            version: "1",
+            files: [ModelDownloadFile(
+                relativePath: "model.bin",
+                remoteURL: try #require(URL(string: "https://example.com/model")),
+                expectedByteCount: 512 * 1024
+            )],
+            maximumConcurrency: 1
+        )
+        let task = Task { try await coordinator.download(manifest, to: directory) }
+        try #require(await tracker.waitUntilRequestStarts())
+
+        await #expect(throws: ModelDownloadError.self) {
+            try await coordinator.removeDownload(manifest, at: directory)
+        }
+        await coordinator.cancelAndWait(modelID: manifest.id)
+        do {
+            try await task.value
+            Issue.record("Cancellation unexpectedly completed")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    @Test("cancelling one duplicate caller does not cancel the shared transfer", arguments: [false, true])
+    func cancellingOneDuplicateCallerPreservesSharedTransfer(cancelWhenUnobserved: Bool) async throws {
         let tracker = DownloadTestTracker()
         ModelDownloadTestURLProtocol.install { _ in
             ModelDownloadTestURLProtocol.Response(
@@ -883,23 +1926,28 @@ struct ModelDownloadCoordinatorTests {
         let firstReturned = DownloadCompletionFlag()
         let first = Task {
             do {
-                try await coordinator.download(manifest, to: directory)
+                try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved)
             } catch {
                 firstReturned.markCompleted()
                 throw error
             }
             firstReturned.markCompleted()
         }
-        try await Task.sleep(for: .milliseconds(20))
-        let second = Task { try await coordinator.download(manifest, to: directory) }
+        try #require(await tracker.waitUntilRequestStarts())
+        let registered = DownloadCompletionFlag()
+        let second = Task {
+            try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: cancelWhenUnobserved) { _ in
+                registered.markCompleted()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !registered.isCompleted && ContinuousClock.now < deadline { await Task.yield() }
+        #expect(registered.isCompleted)
         first.cancel()
 
-        try await Task.sleep(for: .milliseconds(20))
+        await #expect(throws: CancellationError.self) { try await first.value }
         #expect(firstReturned.isCompleted)
         try await second.value
-        await #expect(throws: CancellationError.self) {
-            try await first.value
-        }
         #expect(tracker.requestCount == 1)
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
     }
@@ -1129,7 +2177,7 @@ struct ModelDownloadCoordinatorTests {
             maximumConcurrency: 1
         )
         let task = Task { try await coordinator.download(manifest, to: directory) }
-        #expect(tracker.waitUntilRequestStarts())
+        try #require(await tracker.waitUntilRequestStarts())
         let partURL = directory.appendingPathComponent("model.bin.part")
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while !FileManager.default.fileExists(atPath: partURL.path),
@@ -1151,6 +2199,54 @@ struct ModelDownloadCoordinatorTests {
         #expect(!FileManager.default.fileExists(atPath: partURL.path))
     }
 
+    @Test("caller-owned assistant transfer stops when the last caller cancels")
+    func lastAssistantCallerCancellationStopsTransfer() async throws {
+        let tracker = DownloadTestTracker()
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: Data(repeating: 0x43, count: 2 * 1024 * 1024),
+                  chunkSize: 4096, delay: 0.01, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "assistant-drafter", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/drafter")), expectedByteCount: 2 * 1024 * 1024)])
+        let task = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        try #require(await tracker.waitUntilRequestStarts())
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while tracker.activeCount > 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tracker.activeCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("model.bin").path))
+    }
+
+    @Test("a new caller retries after cancellation instead of joining a canceled transfer")
+    func newCallerAfterCancellationStartsReplacement() async throws {
+        let tracker = DownloadTestTracker()
+        let data = Data(repeating: 0x44, count: 256 * 1024)
+        ModelDownloadTestURLProtocol.install { _ in
+            .init(data: data, chunkSize: 4096, delay: 0.002, tracker: tracker)
+        }
+        defer { ModelDownloadTestURLProtocol.uninstall() }
+        let coordinator = makeCoordinator()
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manifest = ModelDownloadManifest(id: "retry-after-cancel", version: "1",
+            files: [.init(relativePath: "model.bin", remoteURL: try #require(URL(string: "https://example.com/retry")), expectedByteCount: Int64(data.count))])
+        let first = Task { try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true) }
+        try #require(await tracker.waitUntilRequestStarts())
+        // No cancelAndWait: the replacement must itself drain a canceled writer.
+        await coordinator.cancel(modelID: manifest.id)
+        try await coordinator.download(manifest, to: directory, cancelWhenUnobserved: true)
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(try Data(contentsOf: directory.appendingPathComponent("model.bin")) == data)
+        #expect(tracker.requestCount == 2)
+    }
+
     private func makeCoordinator() -> ModelDownloadCoordinator {
         ModelDownloadCoordinator(configuration: makeSessionConfiguration())
     }
@@ -1170,5 +2266,9 @@ struct ModelDownloadCoordinatorTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -17,13 +17,40 @@ struct BackendOption: Equatable {
     let description: String
     let recommended: Bool
 
+    static let parakeetUnified = BackendOption(
+        backend: "parakeet-unified",
+        model: "FluidInference/parakeet-unified-en-0.6b-coreml",
+        label: "Parakeet Unified",
+        sizeLabel: "~565 MB",
+        description: "The best English dictation. Lowest error rate, newest architecture, instant. For other languages, choose Parakeet v3.",
+        recommended: true
+    )
+
     static let parakeetMultilingual = BackendOption(
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
         sizeLabel: "~450 MB",
-        description: "The best default for everyday dictation: quick enough to feel responsive, reliable in normal rooms, and able to follow 25 languages.",
-        recommended: true
+        description: "Fast, reliable dictation in 25 languages.",
+        recommended: false
+    )
+
+    static let parakeetRedux = BackendOption(
+        backend: "fluidaudio",
+        model: "FluidInference/parakeet-redux-coreml",
+        label: "Parakeet Redux",
+        sizeLabel: "~220 MB",
+        description: "A smaller download for dictation in 25 languages.",
+        recommended: false
+    )
+
+    static let phonon25 = BackendOption(
+        backend: "fluidaudio",
+        model: ParakeetRuntimePolicy.phonon25ModelID,
+        label: "Phonon-2.5",
+        sizeLabel: "~290 MB",
+        description: "Compact multilingual transcription in 25 languages.",
+        recommended: false
     )
 
     static let parakeetEnglish = BackendOption(
@@ -98,23 +125,44 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let medASR = BackendOption(
+        backend: "medasr", model: MedASRModel.id,
+        label: "MedASR", sizeLabel: "~212 MB",
+        description: "English medical dictation from Google, running locally.",
+        recommended: false
+    )
+
     static let cohereTranscribe = BackendOption(
         backend: "cohere",
-        model: "phequals/cohere-transcribe-coreml-mixed-precision",
+        model: "Muesli-HQ/cohere-transcribe-coreml-mixed-precision",
         label: "Cohere Transcribe",
         sizeLabel: "~3.8 GB",
         description: "The most deliberate option for difficult accents and tricky audio. It supports 14 languages and can be more accurate than faster models, but the download is large and you only see the result after you stop speaking.",
         recommended: false
     )
 
-    static let indicASR = BackendOption(
-        backend: "indicasr",
-        model: "phequals/indic-conformer-600m-multilingual-coreml-rnnt",
-        label: "Indic ASR",
-        sizeLabel: "~618 MB",
-        description: "Built specifically for seven Indian languages. Choose your language before recording; it can help where general multilingual models struggle, but results still vary enough to keep it experimental.",
-        recommended: false
+    static let bodhanCore = BackendOption(
+        backend: "bodhan", model: BodhanModel.core.rawValue,
+        label: BodhanModel.core.name, sizeLabel: "~2.46 GB",
+        description: "Indian-language speech in its native script. English words within Hindi or Tamil are written in that script too. Detects the language automatically, or use the language picker.", recommended: false
     )
+    static let bodhanFlex = BackendOption(
+        backend: "bodhan", model: BodhanModel.flex.rawValue,
+        label: BodhanModel.flex.name, sizeLabel: "~2.46 GB",
+        description: "For mixed-language dictation: keeps Hindi or Tamil in its own script and English words in Latin letters. Also formats spoken numbers. Try both models to compare accuracy.", recommended: false
+    )
+
+    static let bodhanCoreInt8 = BackendOption(
+        backend: "bodhan", model: BodhanModel.coreInt8.rawValue,
+        label: BodhanModel.coreInt8.name, sizeLabel: "~1.27 GB",
+        description: "A smaller download of Core for Indian-language speech in its native script. Detects language automatically. Uses less space; transcription can differ slightly from Pro.", recommended: false
+    )
+    static let bodhanFlexInt8 = BackendOption(
+        backend: "bodhan", model: BodhanModel.flexInt8.rawValue,
+        label: BodhanModel.flexInt8.name, sizeLabel: "~1.27 GB",
+        description: "A smaller download of Flex for mixed-language dictation and spoken numbers. Keeps English words in Latin letters. Uses less space; transcription can differ slightly from Pro.", recommended: false
+    )
+    static let bodhanFamily: [BackendOption] = [.bodhanCore, .bodhanCoreInt8, .bodhanFlex, .bodhanFlexInt8]
 
     static let senseVoiceSmall = BackendOption(
         backend: "sensevoice",
@@ -127,12 +175,32 @@ struct BackendOption: Equatable {
 
     static let gemma4E2BLiteRT = BackendOption(
         backend: "gemma4-litert",
-        model: Gemma4LiteRTModelStore.repoID,
-        label: "Gemma 4 E2B",
-        sizeLabel: "~2.6 GB",
+        model: Gemma4LiteRTModel.e2b.repoID,
+        label: Gemma4LiteRTModel.e2b.label,
+        sizeLabel: Gemma4LiteRTModel.e2b.sizeLabel,
         description: "A research preview, not a dependable dictation model yet. It is large, slow to get ready, requires macOS 15 or later, and may produce an answer instead of a faithful transcript.",
         recommended: false
     )
+
+    static let gemma4E4BLiteRT = BackendOption(
+        backend: "gemma4-litert",
+        model: Gemma4LiteRTModel.e4b.repoID,
+        label: Gemma4LiteRTModel.e4b.label,
+        sizeLabel: Gemma4LiteRTModel.e4b.sizeLabel,
+        description: "A larger experimental Gemma 4 model for higher-quality local transcription and rewriting. It requires macOS 15 or later and trades additional download size and memory for stronger instruction following.",
+        recommended: false
+    )
+
+    static func gemma4LiteRT(_ model: Gemma4LiteRTModel) -> BackendOption {
+        switch model {
+        case .e2b: .gemma4E2BLiteRT
+        case .e4b: .gemma4E4BLiteRT
+        case .muesliCleanupV2:
+            BackendOption(backend: "gemma4-litert", model: model.repoID,
+                          label: model.label, sizeLabel: model.sizeLabel,
+                          description: "Fine-tuned from Gemma 4 E2B. More capable cleanup with app and screen context.", recommended: false)
+        }
+    }
 
     static let appleSpeechAnalyzer = BackendOption(
         backend: "apple-speech",
@@ -147,7 +215,7 @@ struct BackendOption: Equatable {
     static let whisper = parakeetMultilingual
 
     static let parakeetFamily: [BackendOption] = [
-        .parakeetMultilingual, .parakeetEnglish,
+        .parakeetUnified, .parakeetMultilingual, .parakeetRedux, .parakeetEnglish,
     ]
 
     static let whisperFamily: [BackendOption] = [
@@ -161,12 +229,12 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Strong multilingual transcription across 52 languages when accuracy matters more than instant results. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
     static let experimental: [BackendOption] = [
-        .senseVoiceSmall, .indicASR, .gemma4E2BLiteRT,
+        .senseVoiceSmall, .gemma4E2BLiteRT, .gemma4E4BLiteRT, .qwen3Asr,
     ]
 
     /// Native streaming backends used by low-latency product surfaces.
@@ -180,14 +248,17 @@ struct BackendOption: Equatable {
         let systemManaged: [BackendOption] = appleSpeechAvailable ? [.appleSpeechAnalyzer] : []
         let all = systemManaged
             + parakeetFamily
-            + [.qwen3Asr]
             + whisperFamily
-            + [.cohereTranscribe]
+            + [.phonon25, .medASR, .cohereTranscribe]
             + streaming
+            + bodhanFamily
             + experimental
-        let onboardingDefault = systemManaged.first ?? .parakeetMultilingual
+        // Parakeet Unified (English) and v3 (multilingual) are the preferred
+        // onboarding models; Apple Speech remains available in the catalog.
+        let onboardingDefault: BackendOption = .parakeetUnified
         let onboardingCandidates: [BackendOption] = [
             onboardingDefault,
+            .parakeetUnified,
             .parakeetMultilingual,
             .whisperTiny,
             .whisperSmall,
@@ -220,8 +291,9 @@ struct BackendOption: Equatable {
     /// Models available for download and use.
     static let all = currentCatalog.all
 
-    /// The first-run default uses the system-managed backend when the OS exposes it.
-    /// Parakeet remains the deterministic fallback for older or unsupported Macs.
+    /// The first-run default is Parakeet Unified (English), with Parakeet v3
+    /// (multilingual) as the second candidate; Apple Speech remains available
+    /// in the catalog but is not the onboarding default.
     static let onboardingDefault = currentCatalog.onboardingDefault
 
     /// Curated first-run choices. Experimental models are excluded by default.
@@ -230,9 +302,28 @@ struct BackendOption: Equatable {
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
 
-    /// Only models that have been downloaded and are ready for inference.
+    /// Choices offered by model pickers; retain the full catalog for saved-ID resolution.
+    static func compatibleOptions(
+        _ options: [BackendOption] = all,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        options.filter { $0.isCompatible(currentOSVersion: currentOSVersion) }
+    }
+
+    /// Cached unsupported models remain deletable, separately from inference choices.
+    static func incompatibleDownloadedOptions(
+        _ downloadedModelIDs: Set<String>,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> [BackendOption] {
+        let deletableOptions = all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(Self.gemma4LiteRT)
+        return deletableOptions.filter {
+            downloadedModelIDs.contains($0.model) && !$0.isCompatible(currentOSVersion: currentOSVersion)
+        }
+    }
+
+    /// Only installed models supported by this Mac are ready for inference.
     static var downloaded: [BackendOption] {
-        all.filter { $0.isDownloaded }
+        compatibleOptions().filter { $0.isDownloaded }
     }
 
     /// Models that can keep up with post-meeting and imported recording transcription.
@@ -241,21 +332,99 @@ struct BackendOption: Equatable {
     }
 
     static func resolve(backend: String, model: String) -> BackendOption? {
-        all.first {
-            $0.backend == backend && $0.model == model
+        // Keep saved pre-rename choices without changing cache locations.
+        let model = model.hasPrefix("phequals/") ? "Muesli-HQ/" + model.dropFirst(9) : model
+        // Compatibility for saved selections from the retired Indic backend.
+        if backend == "indicasr" {
+            return all.first { $0.backend == "bodhan" && $0.model == model } ?? .bodhanFlex
         }
+        return all.first { $0.backend == backend && $0.model == model }
     }
 
     var isStreamingDictationBackend: Bool {
         Self.streaming.contains(self)
     }
 
-    var supportsMeetingTranscription: Bool {
+    /// Buffered previews are deliberately opt-in and independent of native streaming.
+    var supportsBufferedLiveTranscription: Bool {
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self) || Self.bodhanFamily.contains(self)
+    }
+
+    var supportsHostedDictationFallback: Bool {
         !isStreamingDictationBackend
+    }
+
+    static func resolveHostedDictationFallback(
+        selected: BackendOption,
+        available: [BackendOption]
+    ) -> BackendOption? {
+        let compatible = available.filter(\.supportsHostedDictationFallback)
+        return compatible.contains(selected) ? selected : compatible.first
+    }
+
+    var supportsMeetingTranscription: Bool {
+        Self.parakeetFamily.contains(self) || Self.whisperFamily.contains(self)
+            || Self.bodhanFamily.contains(self) || self == .phonon25 || self == .appleSpeechAnalyzer
+            || self == .nemotron35Multilingual
     }
 
     var isSystemManaged: Bool {
         backend == "apple-speech"
+    }
+
+    /// Shared OS requirements for model selection in onboarding and the library.
+    /// Native `#available` checks still protect calls into newer system APIs.
+    var minimumOSVersion: OperatingSystemVersion {
+        if backend == "fluidaudio", ParakeetRuntimePolicy.requiresMacOS15(for: model) {
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        }
+        switch backend {
+        case "nemotron35", "qwen", "cohere", "bodhan", "gemma4-litert":
+            return OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        case "apple-speech":
+            return OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)
+        default:
+            return OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)
+        }
+    }
+
+    func isCompatible(currentOSVersion: OperatingSystemVersion = Self.currentOSVersion) -> Bool {
+        let minimum = minimumOSVersion
+        return (currentOSVersion.majorVersion, currentOSVersion.minorVersion, currentOSVersion.patchVersion)
+            >= (minimum.majorVersion, minimum.minorVersion, minimum.patchVersion)
+    }
+
+    /// Applies even to installed models; download state does not establish OS compatibility.
+    func incompatibilityReason(currentOSVersion: OperatingSystemVersion = Self.currentOSVersion) -> String? {
+        guard !isCompatible(currentOSVersion: currentOSVersion) else { return nil }
+        let minimum = minimumOSVersion
+        let required = minimum.minorVersion == 0 ? "\(minimum.majorVersion)" : Self.label(for: minimum)
+        return "\(label) requires macOS \(required) or later (you're on macOS \(Self.label(for: currentOSVersion)))."
+    }
+
+    /// Restore only selectable, supported onboarding models (including after an OS downgrade).
+    static func resolvedOnboardingBackend(
+        _ preferred: BackendOption,
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> BackendOption {
+        onboarding.contains(preferred) && preferred.isCompatible(currentOSVersion: currentOSVersion)
+            ? preferred : onboardingDefault
+    }
+
+    /// Resolve once per launch, including the optional `MUESLI_DEBUG_OS_VERSION=14.8`
+    /// UI preview. This does not override native API availability checks.
+    static let currentOSVersion: OperatingSystemVersion = {
+        if let raw = ProcessInfo.processInfo.environment["MUESLI_DEBUG_OS_VERSION"] {
+            let parts = raw.split(separator: ".").compactMap { Int($0) }
+            if parts.count >= 2 {
+                return OperatingSystemVersion(majorVersion: parts[0], minorVersion: parts[1], patchVersion: 0)
+            }
+        }
+        return ProcessInfo.processInfo.operatingSystemVersion
+    }()
+
+    private static func label(for version: OperatingSystemVersion) -> String {
+        "\(version.majorVersion).\(version.minorVersion)"
     }
 
     /// Multilingual WhisperKit models expose language selection (auto-detect or pinned code).
@@ -268,8 +437,10 @@ struct BackendOption: Equatable {
         backend: String,
         model: String,
         fallback: BackendOption?,
-        downloadedOptions: [BackendOption]
+        downloadedOptions: [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
     ) -> BackendOption? {
+        let downloadedOptions = compatibleOptions(downloadedOptions, currentOSVersion: currentOSVersion)
         if let selected = downloadedOptions.first(where: { $0.backend == backend && $0.model == model }) {
             return selected
         }
@@ -280,6 +451,42 @@ struct BackendOption: Equatable {
         return downloadedOptions.first
     }
 
+    /// Repair selections restored from a newer OS, preferring compatible installed models.
+    /// File availability alone cannot make an unsupported model usable.
+    @discardableResult
+    static func normalizeRestoredSelections(
+        in config: inout AppConfig,
+        downloadedOptions: @autoclosure () -> [BackendOption],
+        currentOSVersion: OperatingSystemVersion = Self.currentOSVersion
+    ) -> Bool {
+        let dictation = resolve(backend: config.sttBackend, model: config.sttModel)
+        let meeting = resolve(backend: config.meetingTranscriptionBackend, model: config.meetingTranscriptionModel)
+        let unsupportedDictation = dictation?.isCompatible(currentOSVersion: currentOSVersion) == false
+        let unsupportedMeeting = meeting?.isCompatible(currentOSVersion: currentOSVersion) == false
+        guard unsupportedDictation || unsupportedMeeting else { return false }
+        let available = compatibleOptions(downloadedOptions(), currentOSVersion: currentOSVersion)
+        var changed = false
+        if unsupportedDictation {
+            let replacement = available.first ?? .whisper
+            config.sttBackend = replacement.backend
+            config.sttModel = replacement.model
+            changed = true
+        }
+        if unsupportedMeeting {
+            let replacement = resolveDownloaded(
+                backend: config.meetingTranscriptionBackend,
+                model: config.meetingTranscriptionModel,
+                fallback: resolve(backend: config.sttBackend, model: config.sttModel),
+                downloadedOptions: available.filter(\.supportsMeetingTranscription),
+                currentOSVersion: currentOSVersion
+            ) ?? .whisper
+            config.meetingTranscriptionBackend = replacement.backend
+            config.meetingTranscriptionModel = replacement.model
+            changed = true
+        }
+        return changed
+    }
+
     /// Check if this model's files exist on disk.
     var isDownloaded: Bool {
         let fm = FileManager.default
@@ -287,22 +494,24 @@ struct BackendOption: Equatable {
         case "whisper":
             return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
-            let plan = model.contains("v2")
-                ? ManagedASRModelPlans.parakeetV2()
-                : ManagedASRModelPlans.parakeetV3()
+            let plan = FluidAudioModel.plan(for: model)
             return plan.isAvailableLocally(fileManager: fm)
+        case "parakeet-unified":
+            return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
-        case "indicasr":
-            return IndicASRModelStore.isAvailableLocally()
+        case "bodhan":
+            return BodhanModel(rawValue: model)?.isDownloaded ?? false
         case "sensevoice":
             return SenseVoiceTranscriber.isModelDownloaded(fileManager: fm)
         case "gemma4-litert":
-            return Gemma4LiteRTModelStore.isAvailableLocally()
+            return Gemma4LiteRTModelStore.isAvailableLocally(model: Gemma4LiteRTModel.resolved(model))
         case "apple-speech":
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
@@ -319,55 +528,262 @@ struct BackendOption: Equatable {
 /// `prompt_dictionary`). `auto` (101) lets the model detect the language.
 enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
     case auto
-    case english = "en"
-    case hindi = "hi"
-    case spanish = "es"
-    case french = "fr"
-    case german = "de"
-    case italian = "it"
-    case portuguese = "pt"
+    case arabic = "ar"
+    case bulgarian = "bg"
     case chinese = "zh"
+    case croatian = "hr"
+    case czech = "cs"
+    case danish = "da"
+    case dutch = "nl"
+    case english = "en"
+    case englishBritish = "en-gb"
+    case estonian = "et"
+    case finnish = "fi"
+    case french = "fr"
+    case frenchCanadian = "fr-ca"
+    case german = "de"
+    case hindi = "hi"
+    case hungarian = "hu"
+    case italian = "it"
     case japanese = "ja"
     case korean = "ko"
+    case norwegianBokmal = "nb"
+    case polish = "pl"
+    case portuguese = "pt"
+    case portugueseBrazil = "pt-br"
+    case romanian = "ro"
     case russian = "ru"
-    case arabic = "ar"
+    case slovak = "sk"
+    case spanish = "es"
+    case spanishSpain = "es-es"
+    case swedish = "sv"
+    case turkish = "tr"
+    case ukrainian = "uk"
+    case vietnamese = "vi"
 
     static let defaultLanguage: Self = .auto
 
-    /// `prompt_id` value fed to the encoder. 101 = auto-detect.
+    /// IDs from the multilingual/2240ms checkpoint's metadata.json, limited to NVIDIA's
+    /// transcription-ready and broad-coverage locales. Reserved and adaptation-ready
+    /// prompts need model changes, not just a picker entry. 101 = auto-detect.
     var promptId: Int32 {
         switch self {
         case .auto: return 101
-        case .english: return 0
-        case .hindi: return 6
-        case .spanish: return 3
-        case .french: return 8
-        case .german: return 9
-        case .italian: return 15
-        case .portuguese: return 13
+        case .arabic: return 7
+        case .bulgarian: return 30
         case .chinese: return 4
+        case .croatian: return 29
+        case .czech: return 22
+        case .danish: return 25
+        case .dutch: return 16
+        case .english: return 0
+        case .englishBritish: return 1
+        case .estonian: return 60
+        case .finnish: return 26
+        case .french: return 8
+        case .frenchCanadian: return 100
+        case .german: return 9
+        case .hindi: return 6
+        case .hungarian: return 23
+        case .italian: return 15
         case .japanese: return 10
         case .korean: return 14
+        case .norwegianBokmal: return 103
+        case .polish: return 17
+        case .portuguese: return 13
+        case .portugueseBrazil: return 12
+        case .romanian: return 20
         case .russian: return 11
-        case .arabic: return 7
+        case .slovak: return 28
+        case .spanish: return 3
+        case .spanishSpain: return 2
+        case .swedish: return 24
+        case .turkish: return 18
+        case .ukrainian: return 19
+        case .vietnamese: return 33
         }
     }
 
     var label: String {
         switch self {
         case .auto: return "Auto-detect"
+        case .arabic: return "Arabic"
+        case .bulgarian: return "Bulgarian"
+        case .chinese: return "Chinese"
+        case .croatian: return "Croatian"
+        case .czech: return "Czech"
+        case .danish: return "Danish"
+        case .dutch: return "Dutch"
         case .english: return "English"
+        case .englishBritish: return "English (UK)"
+        case .estonian: return "Estonian"
+        case .finnish: return "Finnish"
+        case .french: return "French"
+        case .frenchCanadian: return "French (Canada)"
+        case .german: return "German"
         case .hindi: return "Hindi"
+        case .hungarian: return "Hungarian"
+        case .italian: return "Italian"
+        case .japanese: return "Japanese"
+        case .korean: return "Korean"
+        case .norwegianBokmal: return "Norwegian Bokmål"
+        case .polish: return "Polish"
+        case .portuguese: return "Portuguese"
+        case .portugueseBrazil: return "Portuguese (Brazil)"
+        case .romanian: return "Romanian"
+        case .russian: return "Russian"
+        case .slovak: return "Slovak"
+        case .spanish: return "Spanish"
+        case .spanishSpain: return "Spanish (Spain)"
+        case .swedish: return "Swedish"
+        case .turkish: return "Turkish"
+        case .ukrainian: return "Ukrainian"
+        case .vietnamese: return "Vietnamese"
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        guard let rawValue,
+              let language = Self(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            return defaultLanguage
+        }
+        return language
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for the Qwen3 ASR backend.
+/// `auto` leaves detection to the model; explicit codes pin the decoding
+/// language (the vendored manager maps them to its own prompt languages).
+enum Qwen3AsrLanguage: Hashable, Sendable {
+    case auto
+    case pinned(MuesliQwen3AsrConfig.Language)
+
+    static let defaultLanguage: Self = .auto
+
+    static var allCases: [Qwen3AsrLanguage] {
+        [.auto] + MuesliQwen3AsrConfig.Language.allCases.map(Qwen3AsrLanguage.pinned)
+    }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .pinned(let language): return language.englishName
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .auto: return "auto"
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    /// ISO code passed to the model, or nil for automatic detection.
+    var pinnedCode: String? {
+        switch self {
+        case .auto: return nil
+        case .pinned(let language): return language.rawValue
+        }
+    }
+
+    static func resolved(_ rawValue: String?) -> Self {
+        let normalized = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let normalized, !normalized.isEmpty, normalized != "auto" else {
+            return defaultLanguage
+        }
+        if let language = MuesliQwen3AsrConfig.Language(rawValue: normalized) {
+            return .pinned(language)
+        }
+        if let language = MuesliQwen3AsrConfig.Language(from: normalized) {
+            return .pinned(language)
+        }
+        return defaultLanguage
+    }
+
+    static func resolvedCode(_ rawValue: String?) -> String {
+        resolved(rawValue).rawValue
+    }
+}
+
+/// Language selection for Parakeet TDT v2/v3.
+/// `auto` leaves decoding unfiltered; explicit codes enable FluidAudio's
+/// script-level token filter (v3 joint decoder; v2 ignores the hint).
+enum ParakeetLanguage: String, CaseIterable, Codable, Sendable {
+    case auto = "auto"
+    case english = "en"
+    case spanish = "es"
+    case french = "fr"
+    case german = "de"
+    case italian = "it"
+    case portuguese = "pt"
+    case romanian = "ro"
+    case dutch = "nl"
+    case danish = "da"
+    case swedish = "sv"
+    case finnish = "fi"
+    case hungarian = "hu"
+    case estonian = "et"
+    case latvian = "lv"
+    case lithuanian = "lt"
+    case maltese = "mt"
+    case polish = "pl"
+    case czech = "cs"
+    case slovak = "sk"
+    case slovenian = "sl"
+    case croatian = "hr"
+    case bosnian = "bs"
+    case russian = "ru"
+    case ukrainian = "uk"
+    case belarusian = "be"
+    case bulgarian = "bg"
+    case serbian = "sr"
+    case greek = "el"
+
+    static let defaultLanguage: Self = .auto
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto-detect"
+        case .english: return "English"
         case .spanish: return "Spanish"
         case .french: return "French"
         case .german: return "German"
         case .italian: return "Italian"
         case .portuguese: return "Portuguese"
-        case .chinese: return "Chinese"
-        case .japanese: return "Japanese"
-        case .korean: return "Korean"
+        case .romanian: return "Romanian"
+        case .dutch: return "Dutch"
+        case .danish: return "Danish"
+        case .swedish: return "Swedish"
+        case .finnish: return "Finnish"
+        case .hungarian: return "Hungarian"
+        case .estonian: return "Estonian"
+        case .latvian: return "Latvian"
+        case .lithuanian: return "Lithuanian"
+        case .maltese: return "Maltese"
+        case .polish: return "Polish"
+        case .czech: return "Czech"
+        case .slovak: return "Slovak"
+        case .slovenian: return "Slovenian"
+        case .croatian: return "Croatian"
+        case .bosnian: return "Bosnian"
         case .russian: return "Russian"
-        case .arabic: return "Arabic"
+        case .ukrainian: return "Ukrainian"
+        case .belarusian: return "Belarusian"
+        case .bulgarian: return "Bulgarian"
+        case .serbian: return "Serbian"
+        case .greek: return "Greek"
+        }
+    }
+
+    /// ISO code passed to FluidAudio's token language filter, or nil for auto.
+    var isoCode: String? {
+        switch self {
+        case .auto: return nil
+        default: return rawValue
         }
     }
 
@@ -388,36 +804,212 @@ enum Nemotron35Language: String, CaseIterable, Codable, Sendable {
 /// `auto` enables WhisperKit `detectLanguage`; explicit codes pin decoding language.
 enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
     case auto
-    case english = "en"
-    case hindi = "hi"
-    case spanish = "es"
-    case french = "fr"
-    case german = "de"
-    case italian = "it"
-    case portuguese = "pt"
-    case chinese = "zh"
-    case japanese = "ja"
-    case korean = "ko"
-    case russian = "ru"
+    case afrikaans = "af"
+    case albanian = "sq"
+    case amharic = "am"
     case arabic = "ar"
+    case armenian = "hy"
+    case assamese = "as"
+    case azerbaijani = "az"
+    case bashkir = "ba"
+    case basque = "eu"
+    case belarusian = "be"
+    case bengali = "bn"
+    case bosnian = "bs"
+    case breton = "br"
+    case bulgarian = "bg"
+    case burmese = "my"
+    case cantonese = "yue"
+    case catalan = "ca"
+    case chinese = "zh"
+    case croatian = "hr"
+    case czech = "cs"
+    case danish = "da"
+    case dutch = "nl"
+    case english = "en"
+    case estonian = "et"
+    case faroese = "fo"
+    case finnish = "fi"
+    case french = "fr"
+    case galician = "gl"
+    case georgian = "ka"
+    case german = "de"
+    case greek = "el"
+    case gujarati = "gu"
+    case haitianCreole = "ht"
+    case hausa = "ha"
+    case hawaiian = "haw"
+    case hebrew = "he"
+    case hindi = "hi"
+    case hungarian = "hu"
+    case icelandic = "is"
+    case indonesian = "id"
+    case italian = "it"
+    case japanese = "ja"
+    case javanese = "jw"
+    case kannada = "kn"
+    case kazakh = "kk"
+    case khmer = "km"
+    case korean = "ko"
+    case lao = "lo"
+    case latin = "la"
+    case latvian = "lv"
+    case lingala = "ln"
+    case lithuanian = "lt"
+    case luxembourgish = "lb"
+    case macedonian = "mk"
+    case malagasy = "mg"
+    case malay = "ms"
+    case malayalam = "ml"
+    case maltese = "mt"
+    case maori = "mi"
+    case marathi = "mr"
+    case mongolian = "mn"
+    case nepali = "ne"
+    case norwegian = "no"
+    case nynorsk = "nn"
+    case occitan = "oc"
+    case pashto = "ps"
+    case persian = "fa"
+    case polish = "pl"
+    case portuguese = "pt"
+    case punjabi = "pa"
+    case romanian = "ro"
+    case russian = "ru"
+    case sanskrit = "sa"
+    case serbian = "sr"
+    case shona = "sn"
+    case sindhi = "sd"
+    case sinhala = "si"
+    case slovak = "sk"
+    case slovenian = "sl"
+    case somali = "so"
+    case spanish = "es"
+    case sundanese = "su"
+    case swahili = "sw"
+    case swedish = "sv"
+    case tagalog = "tl"
+    case tajik = "tg"
+    case tamil = "ta"
+    case tatar = "tt"
+    case telugu = "te"
+    case thai = "th"
+    case tibetan = "bo"
+    case turkish = "tr"
+    case turkmen = "tk"
+    case ukrainian = "uk"
+    case urdu = "ur"
+    case uzbek = "uz"
+    case vietnamese = "vi"
+    case welsh = "cy"
+    case yiddish = "yi"
+    case yoruba = "yo"
 
     static let defaultLanguage: Self = .auto
 
     var label: String {
         switch self {
         case .auto: return "Auto-detect"
-        case .english: return "English"
-        case .hindi: return "Hindi"
-        case .spanish: return "Spanish"
-        case .french: return "French"
-        case .german: return "German"
-        case .italian: return "Italian"
-        case .portuguese: return "Portuguese"
-        case .chinese: return "Chinese"
-        case .japanese: return "Japanese"
-        case .korean: return "Korean"
-        case .russian: return "Russian"
+        case .afrikaans: return "Afrikaans"
+        case .albanian: return "Albanian"
+        case .amharic: return "Amharic"
         case .arabic: return "Arabic"
+        case .armenian: return "Armenian"
+        case .assamese: return "Assamese"
+        case .azerbaijani: return "Azerbaijani"
+        case .bashkir: return "Bashkir"
+        case .basque: return "Basque"
+        case .belarusian: return "Belarusian"
+        case .bengali: return "Bengali"
+        case .bosnian: return "Bosnian"
+        case .breton: return "Breton"
+        case .bulgarian: return "Bulgarian"
+        case .burmese: return "Burmese"
+        case .cantonese: return "Cantonese"
+        case .catalan: return "Catalan"
+        case .chinese: return "Chinese"
+        case .croatian: return "Croatian"
+        case .czech: return "Czech"
+        case .danish: return "Danish"
+        case .dutch: return "Dutch"
+        case .english: return "English"
+        case .estonian: return "Estonian"
+        case .faroese: return "Faroese"
+        case .finnish: return "Finnish"
+        case .french: return "French"
+        case .galician: return "Galician"
+        case .georgian: return "Georgian"
+        case .german: return "German"
+        case .greek: return "Greek"
+        case .gujarati: return "Gujarati"
+        case .haitianCreole: return "Haitian Creole"
+        case .hausa: return "Hausa"
+        case .hawaiian: return "Hawaiian"
+        case .hebrew: return "Hebrew"
+        case .hindi: return "Hindi"
+        case .hungarian: return "Hungarian"
+        case .icelandic: return "Icelandic"
+        case .indonesian: return "Indonesian"
+        case .italian: return "Italian"
+        case .japanese: return "Japanese"
+        case .javanese: return "Javanese"
+        case .kannada: return "Kannada"
+        case .kazakh: return "Kazakh"
+        case .khmer: return "Khmer"
+        case .korean: return "Korean"
+        case .lao: return "Lao"
+        case .latin: return "Latin"
+        case .latvian: return "Latvian"
+        case .lingala: return "Lingala"
+        case .lithuanian: return "Lithuanian"
+        case .luxembourgish: return "Luxembourgish"
+        case .macedonian: return "Macedonian"
+        case .malagasy: return "Malagasy"
+        case .malay: return "Malay"
+        case .malayalam: return "Malayalam"
+        case .maltese: return "Maltese"
+        case .maori: return "Maori"
+        case .marathi: return "Marathi"
+        case .mongolian: return "Mongolian"
+        case .nepali: return "Nepali"
+        case .norwegian: return "Norwegian"
+        case .nynorsk: return "Norwegian Nynorsk"
+        case .occitan: return "Occitan"
+        case .pashto: return "Pashto"
+        case .persian: return "Persian"
+        case .polish: return "Polish"
+        case .portuguese: return "Portuguese"
+        case .punjabi: return "Punjabi"
+        case .romanian: return "Romanian"
+        case .russian: return "Russian"
+        case .sanskrit: return "Sanskrit"
+        case .serbian: return "Serbian"
+        case .shona: return "Shona"
+        case .sindhi: return "Sindhi"
+        case .sinhala: return "Sinhala"
+        case .slovak: return "Slovak"
+        case .slovenian: return "Slovenian"
+        case .somali: return "Somali"
+        case .spanish: return "Spanish"
+        case .sundanese: return "Sundanese"
+        case .swahili: return "Swahili"
+        case .swedish: return "Swedish"
+        case .tagalog: return "Tagalog"
+        case .tajik: return "Tajik"
+        case .tamil: return "Tamil"
+        case .tatar: return "Tatar"
+        case .telugu: return "Telugu"
+        case .thai: return "Thai"
+        case .tibetan: return "Tibetan"
+        case .turkish: return "Turkish"
+        case .turkmen: return "Turkmen"
+        case .ukrainian: return "Ukrainian"
+        case .urdu: return "Urdu"
+        case .uzbek: return "Uzbek"
+        case .vietnamese: return "Vietnamese"
+        case .welsh: return "Welsh"
+        case .yiddish: return "Yiddish"
+        case .yoruba: return "Yoruba"
         }
     }
 
@@ -438,39 +1030,66 @@ enum WhisperKitLanguage: String, CaseIterable, Codable, Sendable {
         modelName.hasSuffix(".en")
     }
 
+    /// Cantonese's token was added in large-v3; older multilingual models have 99 languages.
+    func isSupported(by modelName: String) -> Bool {
+        if Self.isEnglishOnlyModel(modelName) { return self == .auto }
+        return self != .cantonese || modelName.contains("large-v3")
+    }
+
+    static func choices(for modelName: String) -> [Self] {
+        allCases.filter { $0.isSupported(by: modelName) }
+    }
+
     /// Preference to apply for a loaded WhisperKit model.
     /// Returns `nil` for English-only variants so callers use default `DecodingOptions`.
     static func preferenceForLoadedModel(
         _ preference: WhisperKitLanguage,
         modelName: String
     ) -> WhisperKitLanguage? {
-        isEnglishOnlyModel(modelName) ? nil : preference
+        guard !isEnglishOnlyModel(modelName) else { return nil }
+        // Missing Cantonese tokens must not silently fall back to English in WhisperKit.
+        return preference.isSupported(by: modelName) ? preference : .auto
     }
 }
 
 enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     case parakeetRealtimeEOU = "parakeet_realtime_eou"
+    case appleSpeech = "apple-speech"
     case nemotron35 = "nemotron35"
+    case selectedModelBuffered = "selected_model_buffered"
 
     static let defaultBackend: Self = .parakeetRealtimeEOU
 
     var label: String {
         switch self {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.label
+        case .appleSpeech: return BackendOption.appleSpeechAnalyzer.label
         case .nemotron35: return BackendOption.nemotron35Multilingual.label
+        case .selectedModelBuffered: return "Selected final model"
         }
     }
 
     var settingsLabel: String {
         switch self {
         case .parakeetRealtimeEOU: return "\(label) (live preview only)"
+        case .appleSpeech: return "\(label) (live + final)"
         case .nemotron35: return "\(label) (live + final)"
+        case .selectedModelBuffered: return "\(label) (experimental preview)"
         }
     }
+
+    var producesFinalTranscript: Bool { self == .nemotron35 || self == .appleSpeech }
 
     var isDownloaded: Bool {
         switch self {
         case .parakeetRealtimeEOU: return MeetingLiveCaptionModelStore.isDownloaded()
+        // This adapter has no model of its own. Callers also validate the selected model.
+        case .selectedModelBuffered: return true
+        case .appleSpeech:
+            if #available(macOS 26.0, *) {
+                return AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem
+            }
+            return false
         case .nemotron35:
             guard #available(macOS 15, *) else { return false }
             return BackendOption.nemotron35Multilingual.isDownloaded
@@ -485,35 +1104,135 @@ enum MeetingLiveCaptionBackend: String, CaseIterable, Codable, Sendable {
     }
 }
 
+enum ReasoningEffort: String, CaseIterable, Codable, Sendable {
+    case off = "none"
+    case minimal
+    case low
+    case medium
+    case high
+    case xhigh
+    case max
+
+    var label: String {
+        switch self {
+        case .off: return "None"
+        case .minimal: return "Minimal"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .xhigh: return "Extra High"
+        case .max: return "Maximum"
+        }
+    }
+}
+
+/// Centralizes the reasoning capabilities shared by OpenAI API and ChatGPT
+/// account-backed requests. Unsupported preferences fall back to the selected
+/// model's default rather than sending an invalid API value.
+enum ReasoningEffortPolicy {
+    private struct Capabilities {
+        let efforts: [ReasoningEffort]
+        let defaultEffort: ReasoningEffort
+    }
+
+    static func selectableEfforts(for model: String) -> [ReasoningEffort] {
+        capabilities(for: model)?.efforts ?? []
+    }
+
+    static func defaultEffort(for model: String) -> ReasoningEffort? {
+        capabilities(for: model)?.defaultEffort
+    }
+
+    static func resolvedEffort(
+        for model: String,
+        preferred: ReasoningEffort?
+    ) -> ReasoningEffort? {
+        guard let capabilities = capabilities(for: model) else { return nil }
+        if let preferred, capabilities.efforts.contains(preferred) {
+            return preferred
+        }
+        return capabilities.defaultEffort
+    }
+
+    static func apiValue(for model: String, preferred: ReasoningEffort? = nil) -> String? {
+        resolvedEffort(for: model, preferred: preferred)?.rawValue
+    }
+
+    private static func capabilities(for model: String) -> Capabilities? {
+        switch model.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "gpt-5.4-mini", "gpt-5.4", "gpt-5.4-nano", "gpt-5.2":
+            return Capabilities(
+                efforts: [.off, .low, .medium, .high, .xhigh],
+                defaultEffort: .off
+            )
+        case "gpt-5.4-pro":
+            return Capabilities(efforts: [.medium, .high, .xhigh], defaultEffort: .medium)
+        case "gpt-6-astra":
+            return Capabilities(
+                efforts: [.low, .medium, .high, .xhigh, .max],
+                defaultEffort: .high
+            )
+        case "gpt-6.1-sol":
+            return Capabilities(
+                efforts: [.low, .medium, .high, .xhigh, .max],
+                defaultEffort: .medium
+            )
+        case "gpt-6-sol", "gpt-6-luna":
+            return Capabilities(
+                efforts: [.off, .low, .medium, .high, .xhigh, .max],
+                defaultEffort: .medium
+            )
+        case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+            return Capabilities(
+                efforts: [.off, .low, .medium, .high, .xhigh, .max],
+                defaultEffort: .high
+            )
+        case "gpt-5-mini":
+            return Capabilities(efforts: [.minimal, .low, .medium, .high], defaultEffort: .medium)
+        default:
+            return nil
+        }
+    }
+}
+
 struct SummaryModelPreset {
     let id: String
     let label: String
+    var contextWindowTokens: Int? = nil
 
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini (default)"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
-        SummaryModelPreset(id: "gpt-5.4-nano", label: "GPT-5.4 Nano"),
-        SummaryModelPreset(id: "gpt-5.4", label: "GPT-5.4"),
-        SummaryModelPreset(id: "gpt-5.4-pro", label: "GPT-5.4 Pro"),
-        SummaryModelPreset(id: "gpt-5-mini", label: "GPT-5 Mini"),
-        SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini (default)"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+    ]
+
+    static let anthropicModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+    ]
+
+    static let claudeCodeModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "sonnet", label: "Claude Sonnet"),
+        SummaryModelPreset(id: "opus", label: "Claude Opus"),
+        SummaryModelPreset(id: "haiku", label: "Claude Haiku"),
     ]
 
     static let chatGPTTranscriptCleanupModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra (default)"),
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini"),
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol"),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
     ]
 
     private static let unsupportedChatGPTModelIDs: Set<String> = [
@@ -522,15 +1241,14 @@ struct SummaryModelPreset {
     ]
 
     static let computerUsePlannerModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-5.6-sol", label: "GPT-5.6 Sol (default)"),
-        SummaryModelPreset(id: "gpt-5.6-terra", label: "GPT-5.6 Terra"),
-        SummaryModelPreset(id: "gpt-5.6-luna", label: "GPT-5.6 Luna"),
-        SummaryModelPreset(id: "gpt-5.4", label: "GPT-5.4"),
-        SummaryModelPreset(id: "gpt-5.4-mini", label: "GPT-5.4 Mini"),
-        SummaryModelPreset(id: "gpt-5.2", label: "GPT-5.2"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let openRouterModels: [SummaryModelPreset] = [
+        SummaryModelPreset(id: "openrouter/free", label: "OpenRouter Free (default)"),
         SummaryModelPreset(id: "stepfun/step-3.5-flash:free", label: "Step 3.5 Flash (256k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-super-120b-a12b:free", label: "Nemotron 3 Super 120B (262k ctx)"),
         SummaryModelPreset(id: "nvidia/nemotron-3-nano-30b-a3b:free", label: "Nemotron 3 Nano 30B (256k ctx)"),
@@ -549,15 +1267,6 @@ struct SummaryModelPreset {
         return unsupportedChatGPTModelIDs.contains(trimmed) ? "" : trimmed
     }
 
-    static func reasoningEffort(for model: String) -> String? {
-        switch model.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-            return "high"
-        default:
-            return nil
-        }
-    }
-
     static func migratedFromGPT55(_ model: String) -> String {
         model.trimmingCharacters(in: .whitespacesAndNewlines) == "gpt-5.5"
             ? "gpt-5.6-sol"
@@ -567,6 +1276,23 @@ struct SummaryModelPreset {
 
 struct OpenRouterModelCatalog: Decodable {
     let data: [OpenRouterModel]
+}
+
+enum OpenRouterModelSelection {
+    static func persistedModelID(for selectedID: String) -> String {
+        selectedID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func presetsIncludingConfiguredModel(
+        _ presets: [SummaryModelPreset],
+        configuredModel: String
+    ) -> [SummaryModelPreset] {
+        let model = persistedModelID(for: configuredModel)
+        guard !model.isEmpty, !presets.contains(where: { $0.id == model }) else {
+            return presets
+        }
+        return presets + [SummaryModelPreset(id: model, label: "Custom: \(model)")]
+    }
 }
 
 struct OpenRouterModel: Decodable {
@@ -623,12 +1349,18 @@ extension OpenRouterModel {
         return outputModalities == ["text"]
     }
 
+    var producesTranscription: Bool {
+        architecture?.outputModalities?.contains("transcription") == true
+    }
+
     var summaryPresetLabel: String {
         if let contextLength, contextLength > 0 {
             return "\(name) (\(Self.formatContextLength(contextLength)) ctx)"
         }
         return name
     }
+
+    var transcriptionPresetLabel: String { name }
 
     private static func formatContextLength(_ value: Int) -> String {
         if value >= 1000 {
@@ -654,7 +1386,58 @@ enum OpenRouterModelCatalogFilter {
                 }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel) }
+            .map { SummaryModelPreset(id: $0.id, label: $0.summaryPresetLabel, contextWindowTokens: $0.contextLength) }
+    }
+
+    static func transcriptionPresets(from models: [OpenRouterModel]) -> [SummaryModelPreset] {
+        models
+            .filter(\.producesTranscription)
+            .sorted {
+                if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
+                    return $0.id < $1.id
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            .map { SummaryModelPreset(id: $0.id, label: $0.transcriptionPresetLabel) }
+    }
+}
+
+extension MeetingSummaryBackendOption {
+    var modelKeyPath: WritableKeyPath<AppConfig, String> {
+        switch self {
+        case .chatGPT: return \.chatGPTModel
+        case .openAI: return \.openAIModel
+        case .anthropic: return \.anthropicModel
+        case .openRouter: return \.openRouterModel
+        case .ollama: return \.ollamaModel
+        case .lmStudio: return \.lmStudioModel
+        case .claudeCode: return \.claudeCodeModel
+        default: return \.customLLMModel
+        }
+    }
+
+    /// Copies the settings for one request without persisting a new default.
+    func summaryConfiguration(from config: AppConfig, model: String) -> AppConfig {
+        var snapshot = config
+        snapshot.meetingSummaryBackend = backend
+        snapshot[keyPath: modelKeyPath] = model
+        return snapshot
+    }
+
+    func summaryModels(config: AppConfig, openRouterModels: [SummaryModelPreset]) -> [SummaryModelPreset] {
+        let presets: [SummaryModelPreset]
+        switch self {
+        case .chatGPT: presets = SummaryModelPreset.chatGPTModels
+        case .openAI: presets = SummaryModelPreset.openAIModels
+        case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
+        case .openRouter:
+            presets = [SummaryModelPreset.openRouterModels[0]]
+                + openRouterModels.filter { $0.id != "openrouter/free" }
+        case .ollama: presets = [SummaryModelPreset(id: "qwen3.5", label: "qwen3.5 (default)")]
+        default: presets = []
+        }
+        return SummaryModelPreset.menuPresets(presets, currentModel: config[keyPath: modelKeyPath])
     }
 }
 
@@ -665,6 +1448,11 @@ struct MeetingSummaryBackendOption: Equatable {
     static let openAI = MeetingSummaryBackendOption(
         backend: "openai",
         label: "OpenAI"
+    )
+
+    static let anthropic = MeetingSummaryBackendOption(
+        backend: "anthropic",
+        label: "Anthropic"
     )
 
     static let openRouter = MeetingSummaryBackendOption(
@@ -687,12 +1475,23 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "LM Studio"
     )
 
+    static let claudeCode = MeetingSummaryBackendOption(
+        backend: "claude_code",
+        label: "Claude Code"
+    )
+
     static let customLLM = MeetingSummaryBackendOption(
         backend: "custom_llm",
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
+        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+              selected != .claudeCode else { return all }
+        return all.filter { $0 != .claudeCode }
+    }
 
     static func resolved(_ backend: String?) -> MeetingSummaryBackendOption {
         guard let backend, let option = all.first(where: { $0.backend == backend }) else {
@@ -717,12 +1516,46 @@ enum CustomLLMFormat: String, Codable, CaseIterable {
 }
 
 struct PostProcessorOption: Identifiable, Equatable {
+    enum InputFormat: Hashable {
+        /// The existing Muesli/Qwen cleanup prompt, which users may customize.
+        case configurable
+        /// S1-mini is trained on a fixed prompt and control-line contract.
+        case s1Mini
+        case muesliTrainedV12LFM
+        case muesliTrainedV12Qwen
+        case muesliTrainedV12Qwen08
+
+        var isTrainedV12: Bool { self == .muesliTrainedV12LFM || self == .muesliTrainedV12Qwen || self == .muesliTrainedV12Qwen08 }
+    }
+
     let id: String
     let label: String
     let sizeLabel: String
     let description: String
     let downloadURL: URL
     let filename: String
+    let inputFormat: InputFormat
+    let isDownloadable: Bool
+
+    init(
+        id: String,
+        label: String,
+        sizeLabel: String,
+        description: String,
+        downloadURL: URL,
+        filename: String,
+        inputFormat: InputFormat = .configurable,
+        isDownloadable: Bool = true
+    ) {
+        self.id = id
+        self.label = label
+        self.sizeLabel = sizeLabel
+        self.description = description
+        self.downloadURL = downloadURL
+        self.filename = filename
+        self.inputFormat = inputFormat
+        self.isDownloadable = isDownloadable
+    }
 
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -734,18 +1567,50 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     var isDownloaded: Bool {
-        FileManager.default.fileExists(atPath: modelURL.path)
+        managedModel?.isPresent(at: cacheDirectory) ?? FileManager.default.fileExists(atPath: modelURL.path)
     }
 
-    // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
-    // HF repo must be public (or token-gated) before distributing alpha builds.
-    static let finetunedV2 = PostProcessorOption(
+    var managedModel: ManagedCleanupModel? {
+        switch inputFormat {
+        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12Qwen: .qwenMLX
+        case .muesliTrainedV12Qwen08: .qwen08MLX
+        default: nil
+        }
+    }
+
+    var logoResourceName: String {
+        if self == .qwen35_0_8b { return "qwen-logo" }
+        return inputFormat == .s1Mini ? "superwhisper-logo" : "muesli_app_icon"
+    }
+
+    /// Quill needs a general instruction-following model. Models fine-tuned for
+    /// transcript cleanup can emit their training schema (including JSON)
+    /// instead of following an arbitrary rewrite instruction.
+    var supportsQuil: Bool {
+        self == .qwen35_0_8b
+    }
+
+    var quilLabel: String {
+        self == .qwen35_0_8b ? "Qwen 3.5 0.8B (General)" : label
+    }
+
+    /// S1-mini normalizes English transcripts only. Bodhan can emit an
+    /// Indic-language transcript, so do not offer or run S1-mini for it.
+    func isCompatible(with transcriptionBackend: BackendOption) -> Bool {
+        inputFormat != .s1Mini || transcriptionBackend.backend != "bodhan"
+    }
+
+    /// Retired artifact metadata for migration and cache identification only.
+    /// Saved selections now resolve to the current Cleanup Lite model.
+    static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Muesli Cleanup (Legacy)",
+        label: "Muesli Cleanup Lite (Legacy)",
         sizeLabel: "~390 MB",
-        description: "An earlier cleanup model for Muesli dictation. It handles filler words, corrections, and spoken lists, but is less consistent than the current model.",
-        downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
-        filename: "qwen3-postproc-v2-q4_k_m.gguf"
+        description: "Fine-tuned from Qwen3. An earlier lightweight model for filler words, corrections, and spoken lists.",
+        downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
+        filename: "qwen3-postproc-v2-q4_k_m.gguf",
+        isDownloadable: false
     )
 
     // Vanilla Qwen3.5-0.8B. Stable for basic cleanup; does not reliably convert spoken list cues.
@@ -761,18 +1626,53 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Muesli Cleanup",
+        label: "Muesli Cleanup Lite",
         sizeLabel: "~505 MB",
-        description: "The best overall choice for everyday dictation. It removes filler words, follows “scratch that,” and turns spoken list cues into clean formatting.",
-        downloadURL: URL(string: "https://huggingface.co/phequals/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
-        filename: "qwen35-postproc-v3-Q4_K_M.gguf"
+        description: "Fine-tuned from Qwen3.5-0.8B. Small and fast for everyday cleanup, with lighter correction and context capabilities than Pro.",
+        downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
+        filename: "qwen35-postproc-v3-Q4_K_M.gguf", isDownloadable: false
     )
 
-    static let all: [PostProcessorOption] = [.finetunedV3, .finetunedV2, .qwen35_0_8b]
-    static let defaultOption: PostProcessorOption = .finetunedV3
+    static let finetunedV4 = PostProcessorOption(
+        id: "qwen35-postproc-v4",
+        label: "Muesli Cleanup Lite",
+        sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
+        description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
+        downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
+        filename: ManagedCleanupModel.qwen08MLX.modelFilename,
+        inputFormat: .muesliTrainedV12Qwen08
+    )
+
+    static let s1Mini = PostProcessorOption(
+        id: "superwhisper-s1-mini",
+        label: "S1-mini by Superwhisper",
+        sizeLabel: "~462 MB",
+        description: "English-only speech-to-text normalization with reliable filler removal, corrections, punctuation, capitalization, and written numbers, dates, times, currency, and email addresses.",
+        downloadURL: URL(string: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/main/s1-mini-q4_k_m.gguf")!,
+        filename: "s1-mini-q4_k_m.gguf",
+        inputFormat: .s1Mini
+    )
+
+    static let lfmV12 = PostProcessorOption(
+        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
+        description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
+        downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
+        filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
+    static let qwenV12 = PostProcessorOption(
+        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
+        description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
+        downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
+        filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+    static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
+
+    static let defaultOption: PostProcessorOption = .finetunedV4
+    static let defaultQuilOption: PostProcessorOption = .qwen35_0_8b
+
+    // Retired Lite artifacts are retained only as internal migration metadata.
+    private static let knownOptions: [PostProcessorOption] = all
 
     static var downloaded: [PostProcessorOption] {
-        all.filter(\.isDownloaded)
+        knownOptions.filter(\.isDownloaded)
     }
 
     static var downloadedIDs: Set<String> {
@@ -780,7 +1680,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     static func resolve(id: String) -> PostProcessorOption {
-        all.first { $0.id == id } ?? defaultOption
+        knownOptions.first { $0.id == id } ?? defaultOption
     }
 
     static func firstDownloaded(excluding excludedID: String? = nil) -> PostProcessorOption? {
@@ -788,7 +1688,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     static func firstDownloaded(excluding excludedID: String? = nil, downloadedIDs: Set<String>) -> PostProcessorOption? {
-        all.first { option in
+        knownOptions.first { option in
             option.id != excludedID && downloadedIDs.contains(option.id)
         }
     }
@@ -826,6 +1726,20 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
     """
+
+    /// S1-mini was trained on this exact system prompt and rejects prompt customization.
+    static let s1MiniSystemPrompt = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text."
+
+    func effectiveSystemPrompt(configuredSystemPrompt: String) -> String {
+        switch inputFormat {
+        case .configurable:
+            configuredSystemPrompt
+        case .s1Mini:
+            Self.s1MiniSystemPrompt
+        case .muesliTrainedV12LFM, .muesliTrainedV12Qwen, .muesliTrainedV12Qwen08:
+            MuesliCleanupV2Prompt.systemPrompt
+        }
+    }
 }
 
 struct TranscriptCleanupPromptPreset: Identifiable, Equatable {
@@ -959,7 +1873,20 @@ struct DictionarySuggestion: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+enum IndicatorHoverStyle: String, Codable, CaseIterable {
+    case classic = "classic"
+    case shortcutPill = "shortcut_pill"
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .shortcutPill: return "Shortcut pill"
+        }
+    }
+}
+
 enum IndicatorAnchor: String, Codable, CaseIterable {
+    case notch = "notch"
     case topLeading = "top_leading"
     case topCenter = "top_center"
     case topTrailing = "top_trailing"
@@ -972,6 +1899,7 @@ enum IndicatorAnchor: String, Codable, CaseIterable {
 
     var label: String {
         switch self {
+        case .notch: return "Notch"
         case .topLeading: return "Top Left"
         case .topCenter: return "Top Center"
         case .topTrailing: return "Top Right"
@@ -1044,6 +1972,23 @@ struct HotkeyConfig: Codable, Equatable {
         return letters[keyCode]
     }
 
+    /// US-layout labels for keys that can anchor a combination: letters, digits,
+    /// Space, punctuation, arrows, and function keys. Modifiers, Escape, and
+    /// editing keys such as Return, Tab, and Delete are not shortcut keys.
+    static func keyLabel(for keyCode: UInt16) -> String? {
+        if let letter = letterLabel(for: keyCode) { return letter }
+        let keys: [UInt16: String] = [
+            18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9", 29: "0",
+            49: "Space",
+            24: "=", 27: "-", 33: "[", 30: "]", 42: "\\", 41: ";", 39: "'", 43: ",", 47: ".", 44: "/", 50: "`",
+            123: "←", 124: "→", 125: "↓", 126: "↑",
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8",
+            101: "F9", 109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15",
+            106: "F16", 64: "F17", 79: "F18", 80: "F19", 90: "F20",
+        ]
+        return keys[keyCode]
+    }
+
     static func combinationLabel(modifiers: NSEvent.ModifierFlags, keyCode: UInt16) -> String {
         let modifiers = supportedCombinationModifiers(from: modifiers)
         var parts: [String] = []
@@ -1051,7 +1996,7 @@ struct HotkeyConfig: Codable, Equatable {
         if modifiers.contains(.control) { parts.append("⌃") }
         if modifiers.contains(.option) { parts.append("⌥") }
         if modifiers.contains(.shift) { parts.append("⇧") }
-        parts.append(letterLabel(for: keyCode) ?? "?")
+        parts.append(keyLabel(for: keyCode) ?? "?")
         return parts.joined()
     }
 
@@ -1075,7 +2020,31 @@ struct HotkeyConfig: Codable, Equatable {
         return Self.supportedCombinationModifiers(from: NSEvent.ModifierFlags(rawValue: raw))
     }
 
+    /// Dictation accepts one bare modifier, or a chord of a supported key with any
+    /// modifiers except Shift alone, which would capture ordinary typing. Command
+    /// alone is limited to keys that never type a letter: Automatic paste sends
+    /// Command plus whichever key types "v" in the current layout.
+    var isValidDictationShortcut: Bool {
+        guard combinationModifiers != nil || combinationKeyCode != nil else {
+            return Self.label(for: keyCode) != nil
+        }
+        guard let modifiers = resolvedCombinationModifiers,
+              let combinationKeyCode,
+              Self.keyLabel(for: combinationKeyCode) != nil else { return false }
+        if modifiers == .command {
+            return Self.layoutIndependentKeyCodes.contains(combinationKeyCode)
+        }
+        return !modifiers.subtracting(.shift).isEmpty
+    }
+
+    /// Digits, Space, arrows, and function keys.
+    private static let layoutIndependentKeyCodes: Set<UInt16> = [
+        18, 19, 20, 21, 22, 23, 25, 26, 28, 29, 49, 123, 124, 125, 126,
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+    ]
+
     static let `default` = HotkeyConfig()
+    static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
@@ -1089,18 +2058,48 @@ struct HotkeyConfig: Codable, Equatable {
     }
 }
 
+enum OnboardingCapability: String, Codable, CaseIterable, Hashable {
+    case voiceNotes = "voice_notes"
+    case dictation
+    case meetings
+}
+
 enum OnboardingUseCase: String, Codable, CaseIterable {
     case voiceNotes = "voice_notes"
     case dictation = "dictation"
     case meetings = "meetings"
+    case voiceNotesAndDictation = "voice_notes_and_dictation"
+    case voiceNotesAndMeetings = "voice_notes_and_meetings"
     case dictationAndMeetings = "dictation_and_meetings"
+    case everything = "everything"
+
+    static let allCapabilities = Set(OnboardingCapability.allCases)
+
+    var capabilities: Set<OnboardingCapability> {
+        switch self {
+        case .voiceNotes:
+            [.voiceNotes]
+        case .dictation:
+            [.dictation]
+        case .meetings:
+            [.meetings]
+        case .voiceNotesAndDictation:
+            [.voiceNotes, .dictation]
+        case .voiceNotesAndMeetings:
+            [.voiceNotes, .meetings]
+        case .dictationAndMeetings:
+            [.dictation, .meetings]
+        case .everything:
+            Self.allCapabilities
+        }
+    }
 
     var includesDictation: Bool {
-        self == .dictation || self == .dictationAndMeetings
+        capabilities.contains(.dictation)
     }
 
     var includesVoiceNotes: Bool {
-        self == .voiceNotes
+        capabilities.contains(.voiceNotes)
     }
 
     var includesPushToTalk: Bool {
@@ -1108,11 +2107,40 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 
     var includesMeetings: Bool {
-        self == .meetings || self == .dictationAndMeetings
+        capabilities.contains(.meetings)
     }
 
     var canSwitchToVoiceNotesOnly: Bool {
-        self == .dictation
+        includesDictation && !includesVoiceNotes
+    }
+
+    func toggling(_ capability: OnboardingCapability) -> OnboardingUseCase {
+        var updated = capabilities
+        if updated.contains(capability) {
+            guard updated.count > 1 else { return self }
+            updated.remove(capability)
+        } else {
+            updated.insert(capability)
+        }
+        return Self.from(capabilities: updated)
+    }
+
+    var replacingDictationWithVoiceNotes: OnboardingUseCase {
+        var updated = capabilities
+        updated.remove(.dictation)
+        updated.insert(.voiceNotes)
+        return Self.from(capabilities: updated)
+    }
+
+    static func from(capabilities: Set<OnboardingCapability>) -> OnboardingUseCase {
+        let normalized = capabilities.isEmpty ? Set([OnboardingCapability.dictation]) : capabilities
+        if normalized == [.voiceNotes] { return .voiceNotes }
+        if normalized == [.dictation] { return .dictation }
+        if normalized == [.meetings] { return .meetings }
+        if normalized == [.voiceNotes, .dictation] { return .voiceNotesAndDictation }
+        if normalized == [.voiceNotes, .meetings] { return .voiceNotesAndMeetings }
+        if normalized == [.dictation, .meetings] { return .dictationAndMeetings }
+        return .everything
     }
 
     static func resolved(_ rawValue: String?) -> OnboardingUseCase {
@@ -1123,8 +2151,94 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 }
 
+enum AppAppearanceMode: String, CaseIterable {
+    case light, system, dark
+
+    var label: String {
+        switch self {
+        case .light: "Light"
+        case .system: "Follow System"
+        case .dark: "Dark"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .light: "sun.max"
+        case .system: "desktopcomputer"
+        case .dark: "moon"
+        }
+    }
+
+    var appearanceName: NSAppearance.Name? {
+        switch self {
+        case .light: .aqua
+        case .system: nil
+        case .dark: .darkAqua
+        }
+    }
+}
+
+/// How much Cotypist suggests at once.
+enum CotypistSuggestionLength: String, Codable, CaseIterable {
+    case word, phrase, sentence
+
+    var label: String {
+        switch self {
+        case .word: "One word"
+        case .phrase: "Short phrase"
+        case .sentence: "Up to a sentence"
+        }
+    }
+
+    var maxWords: Int {
+        switch self {
+        case .word: 1
+        case .phrase: 3
+        case .sentence: 6
+        }
+    }
+}
+
+/// How sure the model must be before Cotypist shows anything.
+enum CotypistFrequency: String, Codable, CaseIterable {
+    case fewer, balanced, more
+
+    var label: String {
+        switch self {
+        case .fewer: "Fewer, more accurate"
+        case .balanced: "Balanced"
+        case .more: "More often"
+        }
+    }
+}
+
+/// How long a pause inside a word before Cotypist completes it.
+enum CotypistWordPause: String, Codable, CaseIterable {
+    case fast, normal, relaxed
+
+    var label: String {
+        switch self {
+        case .fast: "Short (0.3 s)"
+        case .normal: "Normal (0.5 s)"
+        case .relaxed: "Long (0.8 s)"
+        }
+    }
+
+    var seconds: Double {
+        switch self {
+        case .fast: 0.3
+        case .normal: 0.5
+        case .relaxed: 0.8
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
+    var enablePushToTalk: Bool = true
+    var quilHotkey: HotkeyConfig = .quilDefault
+    var enableQuilMode: Bool = false
     var computerUseHotkey: HotkeyConfig = .computerUseDefault
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
@@ -1132,15 +2246,22 @@ struct AppConfig: Codable {
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
+    var computerUseReasoningEffort: ReasoningEffort?
     var computerUseTimeoutSeconds: Int = 120
-    var sttBackend: String = BackendOption.whisper.backend
-    var sttModel: String = BackendOption.whisper.model
+    var sttBackend: String = BackendOption.parakeetUnified.backend
+    var sttModel: String = BackendOption.parakeetUnified.model
+    var dictationProvider: String = DictationProvider.defaultProvider.rawValue
+    var openaiDictationModel: String = OpenAITranscriptionClient.defaultModel
+    var openRouterDictationModel: String = ""
     var dictationInputDeviceUID: String? = nil
     var meetingInputDeviceUID: String? = nil
     var cohereLanguage: String = CohereTranscribeLanguage.defaultLanguage.rawValue
-    var indicASRLanguage: String = IndicASRLanguage.defaultLanguage.rawValue
+    var bodhanOutputMode: String = BodhanOutputMode.mixed.rawValue
+    var bodhanLanguage: String = BodhanLanguage.defaultLanguage.rawValue
     var nemotron35Language: String = Nemotron35Language.defaultLanguage.rawValue
     var whisperLanguage: String = WhisperKitLanguage.defaultLanguage.rawValue
+    var qwen3AsrLanguage: String = Qwen3AsrLanguage.defaultLanguage.rawValue
+    var parakeetLanguage: String = ParakeetLanguage.defaultLanguage.rawValue
     var appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier
     var meetingTranscriptionBackend: String = BackendOption.whisper.backend
     var meetingTranscriptionModel: String = BackendOption.whisper.model
@@ -1149,6 +2270,10 @@ struct AppConfig: Codable {
     var whisperModel: String = BackendOption.whisper.model
     var idleTimeout: Double = 120
     var autoRecordMeetings: Bool = false
+    var upcomingMeetingsHourCount: Int?
+    var upcomingMeetingsWindow: UpcomingMeetingsWindow {
+        .resolve(dayCount: upcomingMeetingsDayCount, hourCount: upcomingMeetingsHourCount)
+    }
     var upcomingMeetingsDayCount: Int = UpcomingMeetingsWindow.defaultDayCount
     var showScheduledMeetingNotifications: Bool = true
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
@@ -1157,24 +2282,57 @@ struct AppConfig: Codable {
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
+    /// Splits microphone audio into "Local speaker N" labels for in-person meetings.
+    var diarizeMicrophoneAudio: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
+    var followSystemAppearance: Bool = false
+    // Retain dark_mode for older configurations; following the system is opt-in.
+    var appearanceMode: AppAppearanceMode {
+        get { followSystemAppearance ? .system : (darkMode ? .dark : .light) }
+        set {
+            followSystemAppearance = newValue == .system
+            if newValue != .system { darkMode = newValue == .dark }
+        }
+    }
     var enableDoubleTapDictation: Bool = true
+    var enableBufferedLiveDictation: Bool = false
+    /// Only applies when the dictation shortcut is a key combination.
+    var dictationCombinationActivation: HotkeyMonitor.CombinationActivation = .pushToTalk
+    var isDictationCombinationToggle: Bool {
+        dictationHotkey.isCombination && dictationHotkey.isValidDictationShortcut
+            && dictationCombinationActivation == .toggle
+    }
+
+    var dictationStartPrompt: String {
+        "\(isDictationCombinationToggle ? "Press" : "Hold") \(dictationHotkey.label) to dictate"
+    }
+    var pasteShortcut: PasteShortcut = .automatic
     var hotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
+    var quilHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var computerUseHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultThresholdMilliseconds
     var meetingRecordingHotkeyTriggerThresholdMS: Int = HotkeyTriggerTiming.defaultMeetingThresholdMilliseconds
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
     var showHotkeyOnFloatingIndicator: Bool = false
+    var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
+    var savedFloatingIndicatorAnchor: IndicatorAnchor? = nil
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
     var openAIAPIKey: String = ""
+    var anthropicAPIKey: String = ""
+    var anthropicWorkspaceID: String = ""
     var openRouterAPIKey: String = ""
     var openAIModel: String = ""
+    var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var claudeCodeModel: String = ""
+    var claudeCodeExecutablePath: String = ""
+    var meetingSummaryReasoningEffort: ReasoningEffort?
+    var meetingSummaryMaxOutputTokens: Int? = nil
     var meetingSummaryRetryCount: Int = MeetingSummaryRetryPolicy.defaultRetryCount
     var ollamaURL: String = "http://localhost:11434"
     var ollamaModel: String = "qwen3.5"
@@ -1182,6 +2340,8 @@ struct AppConfig: Codable {
     var lmStudioModel: String = ""
     var customLLMURL: String = ""
     var customLLMAPIKey: String = ""
+    var customLLMAPIKeyCommand: String = ""
+    var customLLMHeaders: [CustomLLMRequestHeader] = []
     var customLLMModel: String = ""
     var customLLMFormat: String = CustomLLMFormat.openAI.rawValue
     var summaryModel: String = ""
@@ -1199,6 +2359,7 @@ struct AppConfig: Codable {
     var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
     var soundEnabled: Bool = true
+    var quilSoundEnabled: Bool = true
     var pauseMediaDuringDictation: Bool = false
     var muteSystemAudioDuringDictation: Bool = false
     var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
@@ -1211,20 +2372,38 @@ struct AppConfig: Codable {
     var hiddenCalendarEventIDs: [String] = []
     var hiddenCalendarEventSourceHints: [String: String] = [:]
     var disabledCalendarIDs: [String] = []
+    var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
+    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
+    var quilModel: String = PostProcessorOption.defaultQuilOption.id
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
+    var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
     var postProcessorChatGPTModel: String = ""
     var postProcessorOpenAIModel: String = ""
+    var postProcessorAnthropicModel: String = ""
+    var transcriptCleanupReasoningEffort: ReasoningEffort?
     var postProcessorOpenRouterModel: String = ""
     var postProcessorOllamaModel: String = ""
     var postProcessorLMStudioModel: String = ""
     var postProcessorCustomLLMModel: String = ""
     var activeTranscriptCleanupPromptId: String = TranscriptCleanupPrompts.defaultID
     var customTranscriptCleanupPrompts: [CustomTranscriptCleanupPrompt] = []
+    var dictationAppFormattingRules: [DictationAppFormattingRule] = []
+    var dictationFormattingTemplates: [DictationFormattingTemplate] = []
+    var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
+    var cotypistSuggestionLength: CotypistSuggestionLength = .sentence
+    var cotypistFrequency: CotypistFrequency = .balanced
+    var cotypistCompleteWords: Bool = true
+    var cotypistWordPause: CotypistWordPause = .normal
+    /// Bundle IDs of apps where Cotypist stays quiet.
+    var cotypistDisabledApps: [String] = []
+    /// Read on-screen text (OCR) as extra context when the field itself says little.
+    var cotypistUseScreenContext: Bool = true
+    var cotypistModel: CotypistModel = .defaultModel
     var useCoreAudioTap: Bool = true
     /// Enables the explicitly selected live meeting transcription mode.
     var enableLiveStreamingPartials: Bool = false
@@ -1250,6 +2429,9 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
+        case enablePushToTalk = "enable_push_to_talk"
+        case quilHotkey = "quil_hotkey"
+        case enableQuilMode = "enable_quil_mode"
         case computerUseHotkey = "computer_use_hotkey"
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
@@ -1257,15 +2439,23 @@ struct AppConfig: Codable {
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
+        case computerUseReasoningEffort = "computer_use_reasoning_effort"
         case computerUseTimeoutSeconds = "computer_use_timeout_seconds"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
+        case dictationProvider = "dictation_provider"
+        case openaiDictationModel = "openai_dictation_model"
+        case openRouterDictationModel = "openrouter_dictation_model"
         case dictationInputDeviceUID = "dictation_input_device_uid"
         case meetingInputDeviceUID = "meeting_input_device_uid"
         case cohereLanguage = "cohere_language"
-        case indicASRLanguage = "indic_asr_language"
+        // Retained wire key for existing language preferences and synced configs.
+        case bodhanOutputMode = "bodhan_output_mode"
+        case bodhanLanguage = "indic_asr_language"
         case nemotron35Language = "nemotron35_language"
         case whisperLanguage = "whisper_language"
+        case qwen3AsrLanguage = "qwen3_asr_language"
+        case parakeetLanguage = "parakeet_language"
         case appleSpeechLanguage = "apple_speech_language"
         case meetingTranscriptionBackend = "meeting_transcription_backend"
         case meetingTranscriptionModel = "meeting_transcription_model"
@@ -1274,6 +2464,7 @@ struct AppConfig: Codable {
         case whisperModel = "whisper_model"
         case idleTimeout = "idle_timeout"
         case autoRecordMeetings = "auto_record_meetings"
+        case upcomingMeetingsHourCount = "upcoming_meetings_hour_count"
         case upcomingMeetingsDayCount = "upcoming_meetings_day_count"
         case showScheduledMeetingNotifications = "show_scheduled_meeting_notifications"
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
@@ -1282,24 +2473,39 @@ struct AppConfig: Codable {
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
+        case diarizeMicrophoneAudio = "diarize_microphone_audio"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
+        case followSystemAppearance = "follow_system_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
+        case enableBufferedLiveDictation = "enable_buffered_live_dictation"
+        case dictationCombinationActivation = "dictation_combination_activation"
+        case pasteShortcut = "paste_shortcut"
         case hotkeyTriggerThresholdMS = "hotkey_trigger_threshold_ms"
+        case quilHotkeyTriggerThresholdMS = "quil_hotkey_trigger_threshold_ms"
         case computerUseHotkeyTriggerThresholdMS = "computer_use_hotkey_trigger_threshold_ms"
         case meetingRecordingHotkeyTriggerThresholdMS = "meeting_recording_hotkey_trigger_threshold_ms"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
+        case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
+        case savedFloatingIndicatorAnchor = "saved_floating_indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
         case openAIAPIKey = "openai_api_key"
+        case anthropicAPIKey = "anthropic_api_key"
+        case anthropicWorkspaceID = "anthropic_workspace_id"
         case openRouterAPIKey = "openrouter_api_key"
         case openAIModel = "openai_model"
+        case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case claudeCodeModel = "claude_code_model"
+        case claudeCodeExecutablePath = "claude_code_executable_path"
+        case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
+        case meetingSummaryMaxOutputTokens = "meeting_summary_max_output_tokens"
         case meetingSummaryRetryCount = "meeting_summary_retry_count"
         case ollamaURL = "ollama_url"
         case ollamaModel = "ollama_model"
@@ -1307,6 +2513,8 @@ struct AppConfig: Codable {
         case lmStudioModel = "lmstudio_model"
         case customLLMURL = "custom_llm_url"
         case customLLMAPIKey = "custom_llm_api_key"
+        case customLLMAPIKeyCommand = "custom_llm_api_key_command"
+        case customLLMHeaders = "custom_llm_headers"
         case customLLMModel = "custom_llm_model"
         case customLLMFormat = "custom_llm_format"
         case summaryModel = "summary_model"
@@ -1322,6 +2530,7 @@ struct AppConfig: Codable {
         case enableAutomaticDiagnosticIssuePrompts = "enable_automatic_diagnostic_issue_prompts"
         case folderOrder = "folder_order"
         case soundEnabled = "sound_enabled"
+        case quilSoundEnabled = "quil_sound_enabled"
         case pauseMediaDuringDictation = "pause_media_during_dictation"
         case muteSystemAudioDuringDictation = "mute_system_audio_during_dictation"
         case recordingColorHex = "recording_color_hex"
@@ -1334,20 +2543,36 @@ struct AppConfig: Codable {
         case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
         case hiddenCalendarEventSourceHints = "hidden_calendar_event_source_hints"
         case disabledCalendarIDs = "disabled_calendar_ids"
+        case calendarMeetingLinksOnly = "calendar_meeting_links_only"
         case enablePostProcessor = "enable_post_processor"
+        case quilBackend = "quil_backend"
+        case quilModel = "quil_model"
         case postProcessorBackend = "post_processor_backend"
+        case postProcessorGemmaModel = "post_processor_gemma_model"
         case activePostProcessorId = "active_post_processor_id"
         case postProcessorChatGPTModel = "post_processor_chatgpt_model"
         case postProcessorOpenAIModel = "post_processor_openai_model"
+        case postProcessorAnthropicModel = "post_processor_anthropic_model"
+        case transcriptCleanupReasoningEffort = "transcript_cleanup_reasoning_effort"
         case postProcessorOpenRouterModel = "post_processor_openrouter_model"
         case postProcessorOllamaModel = "post_processor_ollama_model"
         case postProcessorLMStudioModel = "post_processor_lmstudio_model"
         case postProcessorCustomLLMModel = "post_processor_custom_llm_model"
         case activeTranscriptCleanupPromptId = "active_transcript_cleanup_prompt_id"
         case customTranscriptCleanupPrompts = "custom_transcript_cleanup_prompts"
+        case dictationAppFormattingRules = "dictation_app_formatting_rules"
+        case dictationFormattingTemplates = "dictation_formatting_templates"
+        case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
+        case cotypistSuggestionLength = "cotypist_suggestion_length"
+        case cotypistFrequency = "cotypist_frequency"
+        case cotypistCompleteWords = "cotypist_complete_words"
+        case cotypistWordPause = "cotypist_word_pause"
+        case cotypistDisabledApps = "cotypist_disabled_apps"
+        case cotypistUseScreenContext = "cotypist_use_screen_context"
+        case cotypistModel = "cotypist_model"
         case useCoreAudioTap = "use_core_audio_tap"
         case enableLiveStreamingPartials = "enable_live_streaming_partials"
         case meetingLiveCaptionBackend = "meeting_live_caption_backend"
@@ -1374,7 +2599,11 @@ struct AppConfig: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppConfig()
-        dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
+        dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
+            .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
+        let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
+        quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
+        enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
             ?? HotkeyConfig.computerUseDefault(avoiding: dictationHotkey)
         let hasAppliedComputerUseHotkeyDefaultMigration = c.contains(.computerUseHotkeyDefaultDisabledMigrationApplied)
@@ -1388,23 +2617,42 @@ struct AppConfig: Codable {
         computerUsePlannerModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .computerUsePlannerModel)) ?? defaults.computerUsePlannerModel
         )
+        computerUseReasoningEffort = try? c.decode(
+            ReasoningEffort.self,
+            forKey: .computerUseReasoningEffort
+        )
         computerUseTimeoutSeconds = (try? c.decode(Int.self, forKey: .computerUseTimeoutSeconds)) ?? defaults.computerUseTimeoutSeconds
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        dictationProvider = DictationProvider.resolved(try? c.decode(String.self, forKey: .dictationProvider)).rawValue
+        openaiDictationModel = (try? c.decode(String.self, forKey: .openaiDictationModel)) ?? defaults.openaiDictationModel
+        openRouterDictationModel = (try? c.decode(String.self, forKey: .openRouterDictationModel))
+            ?? defaults.openRouterDictationModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
         cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
-        indicASRLanguage = IndicASRLanguage.resolvedCode(try? c.decode(String.self, forKey: .indicASRLanguage))
+        bodhanOutputMode = BodhanOutputMode.resolved(try? c.decode(String.self, forKey: .bodhanOutputMode)).rawValue
+        bodhanLanguage = BodhanLanguage.resolvedCode(try? c.decode(String.self, forKey: .bodhanLanguage))
         nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
         whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
+        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
+        parakeetLanguage = ParakeetLanguage.resolvedCode(try? c.decode(String.self, forKey: .parakeetLanguage))
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
+        if let migrated = BackendOption.resolve(backend: sttBackend, model: sttModel) {
+            sttBackend = migrated.backend; sttModel = migrated.model
+        }
+        if let migrated = BackendOption.resolve(backend: meetingTranscriptionBackend, model: meetingTranscriptionModel) {
+            meetingTranscriptionBackend = migrated.backend; meetingTranscriptionModel = migrated.model
+        }
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
         defaultMeetingTemplateID = (try? c.decode(String.self, forKey: .defaultMeetingTemplateID)) ?? defaults.defaultMeetingTemplateID
         whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
+        let decodedHours = try? c.decode(Int.self, forKey: .upcomingMeetingsHourCount)
+        upcomingMeetingsHourCount = [6, 12].contains(decodedHours ?? 0) ? decodedHours : nil
         if c.contains(.upcomingMeetingsDayCount) {
             upcomingMeetingsDayCount = UpcomingMeetingsWindow
                 .resolve(dayCount: try? c.decode(Int.self, forKey: .upcomingMeetingsDayCount))
@@ -1430,15 +2678,29 @@ struct AppConfig: Codable {
             ?? defaults.meetingRecordingFileFormat
         meetingRecordingFileFormat = MeetingRecordingFileFormat(rawValue: decodedMeetingRecordingFileFormat)?.rawValue
             ?? defaults.meetingRecordingFileFormat
+        diarizeMicrophoneAudio = (try? c.decode(Bool.self, forKey: .diarizeMicrophoneAudio)) ?? defaults.diarizeMicrophoneAudio
         waveformCacheOrphanCleanupMigrationApplied =
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
+        followSystemAppearance = (try? c.decode(Bool.self, forKey: .followSystemAppearance)) ?? defaults.followSystemAppearance
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
+        enableBufferedLiveDictation = (try? c.decode(Bool.self, forKey: .enableBufferedLiveDictation)) ?? defaults.enableBufferedLiveDictation
+        dictationCombinationActivation = (try? c.decode(
+            HotkeyMonitor.CombinationActivation.self,
+            forKey: .dictationCombinationActivation
+        )) ?? defaults.dictationCombinationActivation
+        if !dictationHotkey.isCombination {
+            dictationCombinationActivation = .pushToTalk
+        }
+        pasteShortcut = (try? c.decode(PasteShortcut.self, forKey: .pasteShortcut)) ?? defaults.pasteShortcut
         hotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .hotkeyTriggerThresholdMS)) ?? defaults.hotkeyTriggerThresholdMS
+        )
+        quilHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
+            (try? c.decode(Int.self, forKey: .quilHotkeyTriggerThresholdMS)) ?? defaults.quilHotkeyTriggerThresholdMS
         )
         computerUseHotkeyTriggerThresholdMS = HotkeyTriggerTiming.clampedMilliseconds(
             (try? c.decode(Int.self, forKey: .computerUseHotkeyTriggerThresholdMS)) ?? hotkeyTriggerThresholdMS
@@ -1453,20 +2715,36 @@ struct AppConfig: Codable {
         showHotkeyOnFloatingIndicator =
             (try? c.decode(Bool.self, forKey: .showHotkeyOnFloatingIndicator))
             ?? defaults.showHotkeyOnFloatingIndicator
+        indicatorHoverStyle =
+            (try? c.decode(IndicatorHoverStyle.self, forKey: .indicatorHoverStyle))
+            ?? defaults.indicatorHoverStyle
         indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
             ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
+        savedFloatingIndicatorAnchor = try? c.decode(IndicatorAnchor.self, forKey: .savedFloatingIndicatorAnchor)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
         indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
         openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
+        anthropicAPIKey = (try? c.decode(String.self, forKey: .anthropicAPIKey)) ?? defaults.anthropicAPIKey
+        anthropicWorkspaceID = (try? c.decode(String.self, forKey: .anthropicWorkspaceID)) ?? defaults.anthropicWorkspaceID
         openRouterAPIKey = (try? c.decode(String.self, forKey: .openRouterAPIKey)) ?? defaults.openRouterAPIKey
         openAIModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
         )
+        anthropicModel = (try? c.decode(String.self, forKey: .anthropicModel)) ?? defaults.anthropicModel
         openRouterModel = (try? c.decode(String.self, forKey: .openRouterModel)) ?? defaults.openRouterModel
         chatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             SummaryModelPreset.migratedFromGPT55(
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
+        )
+        claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
+        claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
+        meetingSummaryReasoningEffort = try? c.decode(
+            ReasoningEffort.self,
+            forKey: .meetingSummaryReasoningEffort
+        )
+        meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(
+            try? c.decode(Int.self, forKey: .meetingSummaryMaxOutputTokens)
         )
         meetingSummaryRetryCount = MeetingSummaryRetryPolicy.clampedRetryCount(
             (try? c.decode(Int.self, forKey: .meetingSummaryRetryCount)) ?? defaults.meetingSummaryRetryCount
@@ -1477,6 +2755,8 @@ struct AppConfig: Codable {
         lmStudioModel = (try? c.decode(String.self, forKey: .lmStudioModel)) ?? defaults.lmStudioModel
         customLLMURL = (try? c.decode(String.self, forKey: .customLLMURL)) ?? defaults.customLLMURL
         customLLMAPIKey = (try? c.decode(String.self, forKey: .customLLMAPIKey)) ?? defaults.customLLMAPIKey
+        customLLMAPIKeyCommand = (try? c.decode(String.self, forKey: .customLLMAPIKeyCommand)) ?? defaults.customLLMAPIKeyCommand
+        customLLMHeaders = (try? c.decode([CustomLLMRequestHeader].self, forKey: .customLLMHeaders)) ?? defaults.customLLMHeaders
         customLLMModel = (try? c.decode(String.self, forKey: .customLLMModel)) ?? defaults.customLLMModel
         let decodedCustomLLMFormat = (try? c.decode(String.self, forKey: .customLLMFormat)) ?? defaults.customLLMFormat
         customLLMFormat = CustomLLMFormat(rawValue: decodedCustomLLMFormat)?.rawValue ?? defaults.customLLMFormat
@@ -1492,6 +2772,10 @@ struct AppConfig: Codable {
         } else {
             onboardingUseCase = defaults.onboardingUseCase
         }
+        // Existing installs used the onboarding selection as runtime state. Preserve that
+        // behavior once, then persist future Push to Talk changes independently.
+        enablePushToTalk = decodedEnablePushToTalk
+            ?? OnboardingUseCase.resolved(onboardingUseCase).includesPushToTalk
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
@@ -1501,6 +2785,7 @@ struct AppConfig: Codable {
         enableAutomaticDiagnosticIssuePrompts = (try? c.decode(Bool.self, forKey: .enableAutomaticDiagnosticIssuePrompts)) ?? defaults.enableAutomaticDiagnosticIssuePrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
         soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
+        quilSoundEnabled = (try? c.decode(Bool.self, forKey: .quilSoundEnabled)) ?? defaults.quilSoundEnabled
         pauseMediaDuringDictation = (try? c.decode(Bool.self, forKey: .pauseMediaDuringDictation)) ?? defaults.pauseMediaDuringDictation
         muteSystemAudioDuringDictation = (try? c.decode(Bool.self, forKey: .muteSystemAudioDuringDictation)) ?? defaults.muteSystemAudioDuringDictation
         recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
@@ -1518,11 +2803,26 @@ struct AppConfig: Codable {
             forKey: .hiddenCalendarEventSourceHints
         )) ?? defaults.hiddenCalendarEventSourceHints
         disabledCalendarIDs = (try? c.decode([String].self, forKey: .disabledCalendarIDs)) ?? defaults.disabledCalendarIDs
+        calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
+        quilBackend = TranscriptCleanupBackendOption
+            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .backend
+        let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
+        quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend
+            && !PostProcessorOption.resolve(id: decodedQuilModel).supportsQuil
+            ? PostProcessorOption.defaultQuilOption.id
+            : decodedQuilModel
         postProcessorBackend = TranscriptCleanupBackendOption
             .resolved(try? c.decode(String.self, forKey: .postProcessorBackend))
             .backend
+        postProcessorGemmaModel = Gemma4LiteRTModel
+            .resolved(try? c.decode(String.self, forKey: .postProcessorGemmaModel))
+            .repoID
         activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
+        if [PostProcessorOption.legacyV2.id, PostProcessorOption.finetunedV3.id].contains(activePostProcessorId) {
+            activePostProcessorId = PostProcessorOption.defaultOption.id
+        }
         postProcessorChatGPTModel = SummaryModelPreset.supportedChatGPTModel(
             SummaryModelPreset.migratedFromGPT55(
                 (try? c.decode(String.self, forKey: .postProcessorChatGPTModel)) ?? defaults.postProcessorChatGPTModel
@@ -1531,10 +2831,18 @@ struct AppConfig: Codable {
         postProcessorOpenAIModel = SummaryModelPreset.migratedFromGPT55(
             (try? c.decode(String.self, forKey: .postProcessorOpenAIModel)) ?? defaults.postProcessorOpenAIModel
         )
+        postProcessorAnthropicModel = (try? c.decode(String.self, forKey: .postProcessorAnthropicModel)) ?? defaults.postProcessorAnthropicModel
+        transcriptCleanupReasoningEffort = try? c.decode(
+            ReasoningEffort.self,
+            forKey: .transcriptCleanupReasoningEffort
+        )
         postProcessorOpenRouterModel = (try? c.decode(String.self, forKey: .postProcessorOpenRouterModel)) ?? defaults.postProcessorOpenRouterModel
         postProcessorOllamaModel = (try? c.decode(String.self, forKey: .postProcessorOllamaModel)) ?? defaults.postProcessorOllamaModel
         postProcessorLMStudioModel = (try? c.decode(String.self, forKey: .postProcessorLMStudioModel)) ?? defaults.postProcessorLMStudioModel
         postProcessorCustomLLMModel = (try? c.decode(String.self, forKey: .postProcessorCustomLLMModel)) ?? defaults.postProcessorCustomLLMModel
+        dictationAppFormattingRules = (try? c.decode(DictationFormattingEntries<DictationAppFormattingRule>.self, forKey: .dictationAppFormattingRules).values) ?? []
+        dictationFormattingTemplates = (try? c.decode(DictationFormattingEntries<DictationFormattingTemplate>.self, forKey: .dictationFormattingTemplates).values) ?? []
+        dictationFormattingSetupDismissed = (try? c.decode(Bool.self, forKey: .dictationFormattingSetupDismissed)) ?? false
         customTranscriptCleanupPrompts = (try? c.decode([CustomTranscriptCleanupPrompt].self, forKey: .customTranscriptCleanupPrompts)) ?? defaults.customTranscriptCleanupPrompts
         activeTranscriptCleanupPromptId = (try? c.decode(String.self, forKey: .activeTranscriptCleanupPromptId)) ?? defaults.activeTranscriptCleanupPromptId
         postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt
@@ -1544,6 +2852,13 @@ struct AppConfig: Codable {
         }
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
+        cotypistSuggestionLength = (try? c.decode(CotypistSuggestionLength.self, forKey: .cotypistSuggestionLength)) ?? defaults.cotypistSuggestionLength
+        cotypistFrequency = (try? c.decode(CotypistFrequency.self, forKey: .cotypistFrequency)) ?? defaults.cotypistFrequency
+        cotypistCompleteWords = (try? c.decode(Bool.self, forKey: .cotypistCompleteWords)) ?? defaults.cotypistCompleteWords
+        cotypistWordPause = (try? c.decode(CotypistWordPause.self, forKey: .cotypistWordPause)) ?? defaults.cotypistWordPause
+        cotypistDisabledApps = (try? c.decode([String].self, forKey: .cotypistDisabledApps)) ?? defaults.cotypistDisabledApps
+        cotypistUseScreenContext = (try? c.decode(Bool.self, forKey: .cotypistUseScreenContext)) ?? defaults.cotypistUseScreenContext
+        cotypistModel = (try? c.decode(CotypistModel.self, forKey: .cotypistModel)) ?? defaults.cotypistModel
         useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
         enableLiveStreamingPartials = (try? c.decode(Bool.self, forKey: .enableLiveStreamingPartials)) ?? defaults.enableLiveStreamingPartials
         meetingLiveCaptionBackend = MeetingLiveCaptionBackend
@@ -1571,8 +2886,14 @@ struct AppConfig: Codable {
         CohereTranscribeLanguage.resolved(cohereLanguage)
     }
 
-    var resolvedIndicASRLanguage: IndicASRLanguage {
-        IndicASRLanguage.resolved(indicASRLanguage)
+    var resolvedDictationProvider: DictationProvider {
+        DictationProvider.resolved(dictationProvider)
+    }
+
+    var resolvedBodhanOutputMode: BodhanOutputMode { BodhanOutputMode.resolved(bodhanOutputMode) }
+
+    var resolvedBodhanLanguage: BodhanLanguage {
+        BodhanLanguage.resolved(bodhanLanguage)
     }
 
     var resolvedNemotron35Language: Nemotron35Language {
@@ -1581,6 +2902,14 @@ struct AppConfig: Codable {
 
     var resolvedWhisperLanguage: WhisperKitLanguage {
         WhisperKitLanguage.resolved(whisperLanguage)
+    }
+
+    var resolvedQwen3AsrLanguage: Qwen3AsrLanguage {
+        Qwen3AsrLanguage.resolved(qwen3AsrLanguage)
+    }
+
+    var resolvedParakeetLanguage: ParakeetLanguage {
+        ParakeetLanguage.resolved(parakeetLanguage)
     }
 
     var resolvedAppleSpeechLanguage: String {

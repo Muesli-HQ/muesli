@@ -5,6 +5,346 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("Anthropic output uses the model maximum unless a smaller cap is requested")
+    func anthropicOutputLimits() async throws {
+        let url = URL(string: "https://summary.example.test/v1/messages")!
+        for (model, requested, expected) in [("claude-sonnet-5-5", nil, 128_000), ("claude-haiku-4-5", nil, 64_000),
+                                             ("claude-sonnet-5-5", 5_000, 5_000), ("claude-haiku-4-5", 128_000, 64_000)] {
+            let limit = try await MeetingSummaryOutputPolicy.anthropicLimit(model: model, requested: requested,
+                messagesURL: url, apiKey: "test", send: { _ in
+                    Issue.record("Bundled models and explicit limits must not require a discovery request")
+                    throw URLError(.badServerResponse)
+                })
+            #expect(limit == expected)
+        }
+        let discovered = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "future/model", requested: nil,
+            messagesURL: url, apiKey: "test", workspaceID: "workspace", extraHeaders: ["source": "muesli"], send: { request in
+                #expect(request.httpMethod == "GET")
+                #expect(request.url?.absoluteString == "https://summary.example.test/v1/models/future%2Fmodel")
+                #expect(request.value(forHTTPHeaderField: "x-api-key") == "test")
+                #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "workspace")
+                #expect(request.value(forHTTPHeaderField: "source") == "muesli")
+                return (Data(#"{"max_tokens":96000}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+        #expect(discovered == 96_000)
+        for status in [401, 429, 503] {
+            do {
+                _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                    messagesURL: url, apiKey: "test", send: { request in
+                        (Data(), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+                    })
+                Issue.record("Expected failed model lookup")
+            } catch {
+                #expect(error.localizedDescription.contains("HTTP \(status)"))
+                #expect(MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: error)) == (status != 401))
+            }
+        }
+        do {
+            _ = try await MeetingSummaryOutputPolicy.anthropicLimit(model: "unknown", requested: nil,
+                messagesURL: url, apiKey: "test", send: { request in
+                    (Data(#"{}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                })
+            Issue.record("Expected configuration guidance instead of a hidden default cap")
+        } catch {
+            #expect(error.localizedDescription.contains("Advanced"))
+            #expect(!MeetingSummaryRetryPolicy.shouldRetry(MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: error)))
+        }
+    }
+
+    @Test("Anthropic streaming summaries require completion and ignore reasoning")
+    func streamedAnthropicOutput() throws {
+        let events = [
+            #"{"type":"message_start","message":{"content":[]}}"#,
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private"}}"#,
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private reasoning"}}"#,
+            #"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
+            #"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Complete notes"}}"#,
+        ].map { "data: " + $0 + "\n\n" }.joined()
+        for newline in ["\n", "\r\n"] {
+            let complete = (events + "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n").replacingOccurrences(of: "\n", with: newline)
+            #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(complete.utf8)) == "Complete notes")
+        }
+        #expect(throws: MeetingSummaryOutputPolicy.OutputError.self) {
+            try MeetingSummaryOutputPolicy.anthropicText(from: Data(events.utf8))
+        }
+        let failure = "data: {\"type\":\"error\",\"error\":{\"message\":\"reflected secret\"}}\n\n"
+        do {
+            _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(failure.utf8), redactProviderErrors: true)
+            Issue.record("Expected stream error")
+        } catch {
+            #expect(!error.localizedDescription.contains("reflected secret"))
+        }
+    }
+
+    @Test("Anthropic streams require a valid stop reason before message_stop",
+          arguments: ["\n", "\r\n"])
+    func streamedAnthropicCompletionSequence(newline: String) throws {
+        let text = #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Partial notes"}}"#
+        let terminal = #"{"type":"message_stop"}"#
+        let validDelta = #"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#
+        let sequences = [
+            [text, terminal],
+            [text, validDelta],
+            [text, terminal, validDelta],
+            [text, #"{"type":"message_delta"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":"invalid"}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{}}"#, terminal],
+            [text, #"{"type":"message_delta","delta":{"stop_reason":null}}"#, terminal],
+        ]
+        for events in sequences {
+            let stream = events.map { "data: " + $0 + newline + newline }.joined()
+            do {
+                _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(stream.utf8))
+                Issue.record("Missing, malformed or out-of-order completion must not return partial notes")
+            } catch MeetingSummaryOutputPolicy.OutputError.incompleteStream {
+                // Expected; transient interrupted streams remain eligible for retry.
+            }
+        }
+    }
+
+    @Test("Anthropic JSON and SSE distinguish token truncation from natural completion",
+          arguments: ["end_turn", "stop_sequence", "max_tokens", "model_context_window_exceeded"], ["\n", "\r\n"])
+    func anthropicStopReasons(reason: String, newline: String) throws {
+        let json = #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"Notes"}]}"#
+        let stream = [
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Notes"}}"#,
+            #"{"type":"message_delta","delta":{"stop_reason":"\#(reason)"}}"#,
+            #"{"type":"message_stop"}"#,
+        ].map { "data: " + $0 + newline + newline }.joined()
+        for payload in [json, stream] {
+            if reason == "max_tokens" || reason == "model_context_window_exceeded" {
+                do {
+                    _ = try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8))
+                    Issue.record("Truncated notes must not be treated as a complete summary")
+                } catch MeetingSummaryOutputPolicy.OutputError.outputLimitReached {
+                    #expect(reason == "max_tokens")
+                    // Expected even when the stream includes its terminal message_stop.
+                } catch MeetingSummaryOutputPolicy.OutputError.contextWindowExceeded {
+                    #expect(reason == "model_context_window_exceeded")
+                }
+            } else {
+                #expect(try MeetingSummaryOutputPolicy.anthropicText(from: Data(payload.utf8)) == "Notes")
+            }
+        }
+    }
+
+    @Test("Custom LLM transport failures explain HTTPS and trusted certificates")
+    func customLLMTransportGuidance() throws {
+        let error = MeetingSummaryError.requestFailed(
+            backend: "Custom LLM",
+            underlying: URLError(.appTransportSecurityRequiresSecureConnection)
+        )
+        let message = try #require(error.errorDescription)
+        #expect(message.contains("requires HTTPS"))
+        #expect(message.contains("Caddy"))
+        #expect(message.contains("Settings"))
+        #expect(!message.contains("retired"))
+
+        for code in [URLError.Code.serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid] {
+            let guidance = try #require(CustomLLMConnectionGuidance.message(for: URLError(code)))
+            #expect(guidance.contains("certificate"))
+            #expect(guidance.contains("trusted by your Mac"))
+        }
+        #expect(CustomLLMConnectionGuidance.message(for: URLError(.secureConnectionFailed))?.contains("TLS") == true)
+        #expect(CustomLLMConnectionGuidance.message(for: URLError(.timedOut)) == nil)
+        #expect(CustomLLMConnectionGuidance.message(for: CancellationError()) == nil)
+        let unrelated = MeetingSummaryError.requestFailed(backend: "OpenAI", underlying: URLError(.timedOut))
+        #expect(unrelated.errorDescription?.contains("Caddy") == false)
+    }
+
+    @Test("Transport policy and certificate failures do not retry without configuration changes")
+    func customLLMTransportFailuresDoNotRetry() {
+        for code in [URLError.Code.appTransportSecurityRequiresSecureConnection,
+                     .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid] {
+            let error = MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: URLError(code))
+            #expect(!MeetingSummaryRetryPolicy.shouldRetry(error))
+            #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(configuredCount: 3, after: error) == 0)
+        }
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(
+            MeetingSummaryError.requestFailed(backend: "Custom LLM", underlying: URLError(.timedOut))
+        ))
+    }
+
+    @Test("Custom summary request preserves transport guidance and stops retrying")
+    func customSummaryTransportFailure() async throws {
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 3,
+                sleep: { _ in Issue.record("Transport policy failures must not retry") }
+            ) { _ in
+                try await MeetingSummaryClient.summarizeWithAnthropicMessages(
+                    backend: "Custom LLM",
+                    requestURL: URL(string: "http://summary.example.test/v1/messages")!,
+                    apiKey: "test-key",
+                    model: "test-model",
+                    transcript: "Test transcript",
+                    meetingTitle: "Test",
+                    existingNotes: nil,
+                    manualNotes: nil,
+                    participantNames: [],
+                    config: AppConfig(),
+                    template: MeetingTemplates.auto.snapshot,
+                    visualContext: nil,
+                    previousMeetingNotes: nil,
+                    timeout: 300,
+                    send: { _ in
+                        attempts += 1
+                        throw URLError(.appTransportSecurityRequiresSecureConnection)
+                    }
+                )
+            }
+            Issue.record("Expected a transport policy failure")
+        } catch {
+            #expect(error.localizedDescription.contains("requires HTTPS"))
+            #expect(error.localizedDescription.contains("Caddy"))
+        }
+        #expect(attempts == 1)
+    }
+
+    @Test("Anthropic blank environment values preserve saved credentials")
+    func anthropicEnvironmentFallback() {
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: nil, savedValue: " saved ") == "saved")
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: "  \n", savedValue: " saved ") == "saved")
+        #expect(AnthropicAPISettings.resolvedValue(environmentValue: " override\n", savedValue: " saved ") == "override")
+    }
+
+    @Test("OpenAI summary key keeps non-empty environment precedence")
+    func openAIEnvironmentPrecedence() {
+        var config = AppConfig()
+        config.openAIAPIKey = " saved-key "
+        #expect(MeetingSummaryClient.resolvedOpenAIAPIKey(
+            config: config,
+            environment: ["OPENAI_API_KEY": " env-key\n"]
+        ) == "env-key")
+        #expect(MeetingSummaryClient.resolvedOpenAIAPIKey(
+            config: config,
+            environment: ["OPENAI_API_KEY": " \n"]
+        ) == "saved-key")
+        #expect(OpenAIAPISettings.resolvedAPIKey(environmentValue: " env-key\n", savedValue: " saved-key ") == "env-key")
+        #expect(OpenAIAPISettings.resolvedAPIKey(environmentValue: " \n", savedValue: " saved-key ") == "saved-key")
+    }
+
+    @Test("Anthropic Messages request sends trimmed credentials and optional workspace")
+    func anthropicRequestHeadersAndBody() throws {
+        let url = try #require(URL(string: "https://api.anthropic.com/v1/messages"))
+        let body: [String: Any] = [
+            "model": "claude-sonnet-5-5",
+            "max_tokens": 2500,
+            "system": "Summarize the meeting",
+            "messages": [["role": "user", "content": "Transcript"]],
+        ]
+        let request = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: " key-with-newline\n",
+            workspaceID: " wrkspc_test ",
+            body: body,
+            timeout: 300
+        )
+        #expect(request.url == url)
+        #expect(request.httpMethod == "POST")
+        #expect(request.timeoutInterval == 300)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
+        #expect(request.value(forHTTPHeaderField: "x-api-key") == "key-with-newline")
+        #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == "wrkspc_test")
+        let requestBody = try #require(request.httpBody)
+        let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+        #expect(payload["model"] as? String == "claude-sonnet-5-5")
+        #expect(payload["max_tokens"] as? Int == 2500)
+        #expect((payload["messages"] as? [[String: String]])?.first?["content"] == "Transcript")
+
+        let withoutWorkspace = try AnthropicAPIRequest.make(
+            url: url,
+            apiKey: "key",
+            workspaceID: " \n",
+            body: body
+        )
+        #expect(withoutWorkspace.value(forHTTPHeaderField: "anthropic-workspace-id") == nil)
+    }
+
+    @Test("hosted Anthropic summary sends a complete request and parses the response")
+    func hostedAnthropicSummaryRequest() async throws {
+        let url = try #require(URL(string: "https://api.anthropic.com/v1/messages"))
+        for workspaceID in ["", "wrkspc_test"] {
+            let notes = try await MeetingSummaryClient.summarizeWithAnthropicMessages(
+                backend: "Anthropic",
+                requestURL: url,
+                apiKey: " test-key\n",
+                model: "claude-sonnet-5-5",
+                transcript: "The team agreed to launch on Friday.",
+                meetingTitle: "Launch review",
+                existingNotes: nil,
+                manualNotes: nil,
+                participantNames: [],
+                config: AppConfig(),
+                template: MeetingTemplates.auto.snapshot,
+                visualContext: nil,
+                previousMeetingNotes: nil,
+                timeout: 300,
+                workspaceID: workspaceID,
+                send: { request in
+                    #expect(request.url == url)
+                    #expect(request.value(forHTTPHeaderField: "x-api-key") == "test-key")
+                    #expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
+                    #expect(request.value(forHTTPHeaderField: "anthropic-workspace-id") == (workspaceID.isEmpty ? nil : workspaceID))
+                    let requestBody = try #require(request.httpBody)
+                    let payload = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+                    #expect(payload["model"] as? String == "claude-sonnet-5-5")
+                    #expect(payload["max_tokens"] as? Int == 128_000)
+                    #expect(payload["stream"] as? Bool == true)
+                    #expect((payload["system"] as? String)?.contains("meeting notes assistant") == true)
+                    let messages = try #require(payload["messages"] as? [[String: String]])
+                    #expect(messages.first?["content"]?.contains("launch on Friday") == true)
+                    let response = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+                    let responseBody = try JSONSerialization.data(withJSONObject: [
+                        "content": [["type": "text", "text": "## Summary\nLaunch on Friday."]],
+                    ])
+                    return (responseBody, response)
+                }
+            )
+            #expect(notes == "## Summary\nLaunch on Friday.")
+        }
+    }
+
+    @Test("brief Anthropic tasks reserve output and use supported low effort")
+    func anthropicBriefTaskPolicy() {
+        #expect(AnthropicModelPolicy.titleMaxOutputTokens >= 1_024)
+        #expect(AnthropicModelPolicy.cleanupMaxOutputTokens >= 10_000)
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-opus-5-5") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-fable-5-1") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-sonnet-5-5") == "low")
+        #expect(AnthropicModelPolicy.briefTaskEffort(for: "claude-haiku-4-5-20251001") == nil)
+    }
+
+    @Test("one-request choices preserve settings and route each provider's model",
+          arguments: MeetingSummaryBackendOption.all)
+    func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
+        let config = AppConfig()
+        let selected = provider.summaryConfiguration(from: config, model: "chosen/model")
+        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
+                      "claude_code": "claude_code_model",
+                      "openrouter": "openrouter_model", "ollama": "ollama_model",
+                      "lmstudio": "lmstudio_model", "custom_llm": "custom_llm_model"]
+        var original = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        let encoded = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(selected)) as? [String: Any])
+        original["meeting_summary_backend"] = provider.backend
+        original[try #require(fields[provider.backend])] = "chosen/model"
+        #expect(NSDictionary(dictionary: original).isEqual(to: encoded))
+        #expect(provider.summaryModels(config: selected, openRouterModels: []).contains { $0.id == "chosen/model" })
+    }
+
+    @Test("re-summary catalog retains stable router and custom model with or without cached results",
+          arguments: [[], [SummaryModelPreset(id: "openrouter/free", label: "Router")]])
+    func resummaryCatalogRetention(catalog: [SummaryModelPreset]) {
+        var config = AppConfig()
+        config.openRouterModel = "custom/model"
+        let models = MeetingSummaryBackendOption.openRouter.summaryModels(config: config, openRouterModels: catalog)
+        #expect(models.map(\.id) == ["openrouter/free", "custom/model"])
+    }
+
     private let customTemplate = MeetingTemplateSnapshot(
         id: "custom-follow-up",
         name: "Customer Follow-Up",
@@ -20,20 +360,49 @@ struct MeetingSummaryClientTests {
         """
     )
 
-    @Test("summarize returns raw transcript fallback when no API key")
-    func fallbackWithoutKey() async throws {
+    @Test("OpenAI without a key fails instead of replacing existing notes")
+    func openAIWithoutKeyPreservesNotes() async {
+        guard MeetingSummaryClient.resolvedOpenAIAPIKey(config: AppConfig()).isEmpty else { return }
         var config = AppConfig()
         config.openAIAPIKey = ""
         config.meetingSummaryBackend = "openai"
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Hello world",
+                meetingTitle: "Test",
+                config: config,
+                existingNotes: "## Existing notes"
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "OpenAI")
+        }
+    }
 
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Hello world",
-            meetingTitle: "Test",
-            config: config
-        )
-
-        #expect(result.contains("## Raw Transcript"))
-        #expect(result.contains("Hello world"))
+    @Test("Anthropic without a key fails instead of replacing existing notes")
+    func anthropicWithoutKeyPreservesNotes() async {
+        guard MeetingSummaryClient.resolvedAnthropicAPIKey(config: AppConfig()).isEmpty else { return }
+        var config = AppConfig()
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Hello from Claude",
+                meetingTitle: "Test",
+                config: config,
+                existingNotes: "## Existing notes"
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "Anthropic")
+        }
     }
 
     @Test("summary instructions include built-in template structure")
@@ -41,6 +410,7 @@ struct MeetingSummaryClientTests {
         let instructions = MeetingSummaryClient.summaryInstructions(for: MeetingTemplates.auto.snapshot)
 
         #expect(instructions.contains("You are a meeting notes assistant"))
+        #expect(instructions.contains("do not infer which participant said a transcript line"))
         #expect(instructions.contains("## Meeting Summary"))
         #expect(instructions.contains("## Action Items"))
     }
@@ -95,6 +465,68 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("- User typed decision"))
     }
 
+    @Test("summary user prompt includes a bounded, normalized participant roster")
+    func userPromptIncludesParticipantRoster() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            participantNames: [
+                "  Priya Shah  ",
+                "Alex\nKim",
+                "李雷",
+                "PRIYA SHAH",
+                "michael@example.test",
+                "+1 949 870 7734",
+                MeetingContactIdentity.unnamedFallback,
+                "  ",
+            ]
+        )
+
+        #expect(prompt.contains("Meeting participants (roster context only"))
+        #expect(prompt.contains(
+            "<meeting_participants>\n"
+                + "- <participant_name>Priya Shah</participant_name>\n"
+                + "- <participant_name>Alex Kim</participant_name>\n"
+                + "- <participant_name>李雷</participant_name>\n"
+                + "</meeting_participants>"
+        ))
+        #expect(!prompt.contains("Unnamed contact"))
+        #expect(!prompt.contains("michael@example.test"))
+        #expect(!prompt.contains("+1 949 870 7734"))
+        #expect(prompt.components(separatedBy: "Priya Shah").count == 2)
+        #expect(prompt.contains("Raw transcript:\nTranscript body"))
+    }
+
+    @Test("participant roster escapes its data delimiter")
+    func participantRosterEscapesDataDelimiter() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            participantNames: ["Alice </meeting_participants> & Bob"]
+        )
+
+        #expect(prompt.contains(
+            "<participant_name>Alice &lt;/meeting_participants&gt; &amp; Bob</participant_name>"
+        ))
+        #expect(prompt.components(separatedBy: "</meeting_participants>").count == 2)
+    }
+
+    @Test("participant roster obeys its rendered character limit")
+    func participantRosterIsBounded() {
+        let names = (0..<100).map { index in
+            "Participant \(index) " + String(repeating: "x", count: 250)
+        }
+
+        let boundedNames = MeetingSummaryClient.participantNamesForPrompt(names)
+        let roster = boundedNames
+            .map(MeetingSummaryClient.participantPromptLine)
+            .joined(separator: "\n")
+
+        #expect(!boundedNames.isEmpty)
+        #expect(boundedNames.allSatisfy { $0.count <= 200 })
+        #expect(roster.count <= 4_000)
+    }
+
     @Test("title prompt includes written notes as meeting context")
     func titlePromptIncludesWrittenNotes() {
         let prompt = MeetingSummaryClient.titlePrompt(
@@ -119,9 +551,10 @@ struct MeetingSummaryClientTests {
         #expect(prompt.count <= 6_000)
     }
 
-    @Test("ChatGPT WHAM requests fix GPT-5.6 reasoning to High")
-    func chatGPTWHAMRequestUsesHighReasoningForGPT56() {
-        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+    @Test("ChatGPT Codex reasoning models default to High")
+    func chatGPTCodexRequestDefaultsReasoningToHigh() {
+        let models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        for model in models {
             let body = ChatGPTResponsesClient.requestBody(
                 systemPrompt: "System",
                 userPrompt: "User",
@@ -133,19 +566,85 @@ struct MeetingSummaryClientTests {
         }
     }
 
-    @Test("ChatGPT WHAM requests preserve GPT-5.4 Mini reasoning behavior")
-    func chatGPTWHAMRequestPreservesGPT54MiniReasoning() {
+    @Test("ChatGPT Codex requests forward selected Astra reasoning")
+    func chatGPTCodexRequestUsesSelectedAstraReasoning() {
         let body = ChatGPTResponsesClient.requestBody(
             systemPrompt: "System",
             userPrompt: "User",
+            model: "gpt-6-astra",
+            reasoningEffort: .max
+        )
+        let reasoning = body["reasoning"] as? [String: String]
+
+        #expect(reasoning?["effort"] == "max")
+    }
+
+    @Test("ChatGPT Codex requests support GPT-5.4 Mini reasoning")
+    func chatGPTCodexRequestSupportsGPT54MiniReasoning() {
+        let defaultBody = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
             model: "gpt-5.4-mini"
+        )
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini",
+            reasoningEffort: .xhigh
+        )
+        let invalidBody = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.4-mini",
+            reasoningEffort: .max
+        )
+
+        #expect((defaultBody["reasoning"] as? [String: String])?["effort"] == "none")
+        #expect((body["reasoning"] as? [String: String])?["effort"] == "xhigh")
+        #expect((invalidBody["reasoning"] as? [String: String])?["effort"] == "none")
+    }
+
+    @Test("OpenAI transcript cleanup forwards its own reasoning preference")
+    func openAITranscriptCleanupUsesSelectedReasoning() {
+        let body = TranscriptCleanupClient.openAIRequestBody(
+            systemPrompt: "Clean the transcript.",
+            userPrompt: "hello world",
+            model: "gpt-5.4-mini",
+            maxOutputTokens: 200,
+            reasoningEffort: .high
+        )
+
+        #expect((body["reasoning"] as? [String: String])?["effort"] == "high")
+        #expect(body["max_output_tokens"] as? Int == 200)
+    }
+
+    @Test("OpenAI transcript cleanup omits reasoning for non-reasoning models")
+    func openAITranscriptCleanupOmitsUnsupportedReasoning() {
+        let body = TranscriptCleanupClient.openAIRequestBody(
+            systemPrompt: "Clean the transcript.",
+            userPrompt: "hello world",
+            model: "chat-latest",
+            maxOutputTokens: 200,
+            reasoningEffort: .high
         )
 
         #expect(body["reasoning"] == nil)
     }
 
-    @Test("ChatGPT WHAM parser reads top-level output text")
-    func chatGPTWHAMParserReadsTopLevelOutputText() {
+    @Test("ChatGPT Codex requests forward explicit output budgets")
+    func chatGPTCodexRequestForwardsOutputBudget() {
+        let body = ChatGPTResponsesClient.requestBody(
+            systemPrompt: "System",
+            userPrompt: "User",
+            model: "gpt-5.6-terra",
+            maxOutputTokens: QuilModelPolicy.remoteMaximumOutputTokens
+        )
+
+        #expect(body["max_output_tokens"] as? Int == QuilModelPolicy.remoteMaximumOutputTokens)
+    }
+
+    @Test("ChatGPT Codex parser reads top-level output text")
+    func chatGPTCodexParserReadsTopLevelOutputText() {
         let payload: [String: Any] = [
             "output_text": "Cleaned dictation text",
         ]
@@ -153,8 +652,8 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Cleaned dictation text")
     }
 
-    @Test("ChatGPT WHAM parser reads streaming deltas")
-    func chatGPTWHAMParserReadsStreamingDeltas() {
+    @Test("ChatGPT Codex parser reads streaming deltas")
+    func chatGPTCodexParserReadsStreamingDeltas() {
         let payload: [String: Any] = [
             "type": "response.output_text.delta",
             "delta": "streamed text",
@@ -163,25 +662,25 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.extractOutputTextDelta(from: payload) == "streamed text")
     }
 
-    @Test("ChatGPT WHAM parser rejects malformed stream payloads")
-    func chatGPTWHAMParserRejectsMalformedStreamPayloads() {
+    @Test("ChatGPT Codex parser rejects malformed stream payloads")
+    func chatGPTCodexParserRejectsMalformedStreamPayloads() {
         #expect(throws: ChatGPTResponsesError.self) {
             _ = try ChatGPTResponsesClient.decodeStreamPayload("{", httpStatus: 200)
         }
     }
 
-    @Test("ChatGPT WHAM parser ignores heartbeat stream payloads")
-    func chatGPTWHAMParserIgnoresHeartbeatPayloads() throws {
+    @Test("ChatGPT Codex parser ignores heartbeat stream payloads")
+    func chatGPTCodexParserIgnoresHeartbeatPayloads() throws {
         #expect(try ChatGPTResponsesClient.decodeStreamPayload("ping", httpStatus: 200) == nil)
     }
 
-    @Test("ChatGPT WHAM parser ignores blank stream payloads")
-    func chatGPTWHAMParserIgnoresBlankStreamPayloads() throws {
+    @Test("ChatGPT Codex parser ignores blank stream payloads")
+    func chatGPTCodexParserIgnoresBlankStreamPayloads() throws {
         #expect(try ChatGPTResponsesClient.decodeStreamPayload("   ", httpStatus: 200) == nil)
     }
 
-    @Test("ChatGPT WHAM parser ignores valid unknown stream events")
-    func chatGPTWHAMParserIgnoresValidUnknownStreamEvents() throws {
+    @Test("ChatGPT Codex parser ignores valid unknown stream events")
+    func chatGPTCodexParserIgnoresValidUnknownStreamEvents() throws {
         var deltaText = "partial"
         var finalText = ""
         let decoded = try ChatGPTResponsesClient.decodeStreamPayload(
@@ -200,8 +699,8 @@ struct MeetingSummaryClientTests {
         #expect(finalText.isEmpty)
     }
 
-    @Test("ChatGPT WHAM parser prefers final output over streamed deltas")
-    func chatGPTWHAMParserPrefersFinalOutputOverDeltas() {
+    @Test("ChatGPT Codex parser prefers final output over streamed deltas")
+    func chatGPTCodexParserPrefersFinalOutputOverDeltas() {
         var deltaText = ""
         var finalText = ""
 
@@ -229,8 +728,8 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.accumulatedOutputText(deltaText: deltaText, finalText: finalText) == "final cleaned text")
     }
 
-    @Test("ChatGPT WHAM parser reads nested final response payload")
-    func chatGPTWHAMParserReadsNestedFinalResponsePayload() {
+    @Test("ChatGPT Codex parser reads nested final response payload")
+    func chatGPTCodexParserReadsNestedFinalResponsePayload() {
         let payload: [String: Any] = [
             "type": "response.completed",
             "response": [
@@ -252,8 +751,8 @@ struct MeetingSummaryClientTests {
         #expect(ChatGPTResponsesClient.extractOutputText(from: payload) == "Nested final response text")
     }
 
-    @Test("ChatGPT WHAM parser reads output content text")
-    func chatGPTWHAMParserReadsOutputContentText() {
+    @Test("ChatGPT Codex parser reads output content text")
+    func chatGPTCodexParserReadsOutputContentText() {
         let payload: [String: Any] = [
             "output": [
                 [
@@ -337,23 +836,210 @@ struct MeetingSummaryClientTests {
         #expect(result == "## Next steps\n- Follow up with Priy\n\n### Written notes\n\nNext steps")
     }
 
-    @Test("fallback summary retains manual notes")
-    func fallbackSummaryRetainsManualNotes() async throws {
-        var config = AppConfig()
-        config.openAIAPIKey = ""
-        config.meetingSummaryBackend = "openai"
-
-        let result = try await MeetingSummaryClient.summarize(
+    @Test("initial meeting failure notes retain manual notes")
+    func summaryFailureRetainsManualNotes() {
+        let result = MeetingSummaryClient.summaryFailureNotes(
             transcript: "Hello world",
             meetingTitle: "Test",
-            config: config,
-            existingNotes: "- Manual decision",
-            manualNotesToRetain: "- Manual decision"
+            error: MeetingSummaryError.notConfigured(backend: "OpenAI"),
+            manualNotes: "- Manual decision"
         )
 
         #expect(result.contains("## Raw Transcript"))
+        #expect(result.contains("## Summary failed"))
         #expect(result.contains("### Written notes"))
         #expect(result.contains("- Manual decision"))
+    }
+
+    @Test("failed regeneration preserves existing formatted notes")
+    func failedRegenerationKeepsExistingNotes() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let retained = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: "## Decision\nShip Friday",
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Written note"
+        )
+        #expect(retained == "## Decision\nShip Friday")
+
+        let initialFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: "",
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Written note"
+        )
+        #expect(initialFailure.contains("## Summary failed"))
+        #expect(initialFailure.contains("New transcript"))
+        #expect(initialFailure.contains("- Written note"))
+
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: "Old transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Old written note"
+        )
+        let regeneratedFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(regeneratedFailure.contains("New transcript"))
+        #expect(!regeneratedFailure.contains("Old transcript"))
+        #expect(regeneratedFailure.contains("### Written notes\n\n- Updated written note"))
+        #expect(regeneratedFailure.contains("### Earlier written-note text (preserved; may be outdated)\n\n- Old written note"))
+
+        let editedPrefix = previousFailure.replacingOccurrences(
+            of: "Muesli could not generate structured meeting notes.",
+            with: "My saved edit. Muesli could not generate structured meeting notes."
+        )
+        let regeneratedWithEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedPrefix,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(regeneratedWithEdit.contains("My saved edit."))
+        #expect(regeneratedWithEdit.contains("New transcript"))
+        #expect(!regeneratedWithEdit.contains("Old transcript"))
+        #expect(regeneratedWithEdit.contains("### Written notes\n\n- Updated written note"))
+
+        let editedTranscript = previousFailure.replacingOccurrences(
+            of: "## Raw Transcript\n\nOld transcript",
+            with: "## Raw Transcript\n\nCorrected old transcript"
+        )
+        let retainedTranscriptEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedTranscript,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Updated written note"
+        )
+        #expect(retainedTranscriptEdit.contains("Corrected old transcript"))
+        #expect(!retainedTranscriptEdit.contains("New transcript"))
+        #expect(retainedTranscriptEdit.contains("### Written notes\n\n- Updated written note"))
+
+        let repeatedFailure = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: regeneratedFailure,
+            previousTranscript: "New transcript",
+            transcript: "Newest transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "- Newest written note"
+        )
+        #expect(repeatedFailure.contains("### Written notes\n\n- Newest written note"))
+        #expect(repeatedFailure.contains("- Updated written note"))
+        #expect(repeatedFailure.contains("- Old written note"))
+        #expect(repeatedFailure.contains("Newest transcript"))
+        #expect(!repeatedFailure.contains("## Raw Transcript\n\nNew transcript"))
+    }
+
+    @Test("failed regeneration ignores transcript headings inside written notes")
+    func failedRegenerationFindsGeneratedTranscriptBoundary() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: "Old transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Agenda\n\n## Raw Transcript\n\nExample from the agenda"
+        )
+
+        let regenerated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Updated agenda\n\n## Raw Transcript\n\nAnother example"
+        )
+
+        #expect(regenerated.contains("### Written notes\n\nUpdated agenda\n\n## Raw Transcript\n\nAnother example"))
+        #expect(regenerated.contains("### Earlier written-note text (preserved; may be outdated)\n\nAgenda\n\n## Raw Transcript\n\nExample from the agenda"))
+        #expect(regenerated.hasSuffix("\n\n## Raw Transcript\n\nNew transcript"))
+        #expect(!regenerated.contains("Old transcript"))
+    }
+
+    @Test("failed regeneration ignores transcript headings inside the previous transcript")
+    func failedRegenerationPreservesTranscriptHeadings() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let previousTranscript = "Opening\n\n## Raw Transcript\n\nQuoted heading"
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: previousTranscript,
+            meetingTitle: "Launch review",
+            error: error
+        )
+
+        let regenerated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: previousFailure,
+            previousTranscript: previousTranscript,
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: nil
+        )
+
+        #expect(regenerated.hasSuffix("\n\n## Raw Transcript\n\nNew transcript"))
+        #expect(!regenerated.contains("Quoted heading"))
+    }
+
+    @Test("ambiguous edited transcript headings retain edits and refresh written notes")
+    func failedRegenerationRefreshesNotesWithAmbiguousTranscriptEdits() {
+        let error = MeetingSummaryError.notConfigured(backend: "Anthropic")
+        let previousFailure = MeetingSummaryClient.summaryFailureNotes(
+            transcript: "Old transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Agenda\n\n## Raw Transcript\n\nExample from the agenda"
+        )
+        let editedFailure = previousFailure.replacingOccurrences(
+            of: "## Raw Transcript\n\nOld transcript",
+            with: "## Raw Transcript\n\nCorrected old transcript"
+        )
+
+        let retained = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedFailure,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Updated agenda\n\n## Raw Transcript\n\nNew example"
+        )
+
+        #expect(retained.contains("### Written notes\n\nUpdated agenda\n\n## Raw Transcript\n\nNew example"))
+        #expect(retained.contains("### Earlier written-note text (preserved; may be outdated)\n\nAgenda\n\n## Raw Transcript\n\nExample from the agenda"))
+        #expect(retained.hasSuffix("\n\n## Raw Transcript\n\nCorrected old transcript"))
+        #expect(!retained.contains("New transcript"))
+
+        let repeated = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: retained,
+            previousTranscript: "New transcript",
+            transcript: "Newest transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Updated agenda\n\n## Raw Transcript\n\nNew example"
+        )
+        #expect(repeated == retained)
+
+        let shortened = MeetingSummaryClient.notesAfterFailedRegeneration(
+            existingNotes: editedFailure,
+            previousTranscript: "Old transcript",
+            transcript: "New transcript",
+            meetingTitle: "Launch review",
+            error: error,
+            manualNotes: "Agenda"
+        )
+        #expect(shortened.contains("### Written notes\n\nAgenda\n\n### Earlier written-note text (preserved; may be outdated)"))
+        #expect(shortened.contains("## Raw Transcript\n\nExample from the agenda"))
+        #expect(shortened.hasSuffix("\n\n## Raw Transcript\n\nCorrected old transcript"))
     }
 
     @Test("summary user prompt includes meeting context when provided")
@@ -377,20 +1063,27 @@ struct MeetingSummaryClientTests {
         #expect(prompt.contains("Raw transcript:\nTranscript body"))
     }
 
-    @Test("summarize routes to OpenRouter when configured")
-    func routesToOpenRouter() async throws {
+    @Test("OpenRouter without a key fails instead of replacing existing notes")
+    func openRouterWithoutKeyPreservesNotes() async {
         var config = AppConfig()
         config.openRouterAPIKey = ""
         config.meetingSummaryBackend = "openrouter"
-
-        let result = try await MeetingSummaryClient.summarize(
-            transcript: "Test transcript",
-            meetingTitle: "My Meeting",
-            config: config
-        )
-
-        // No key → falls back to raw transcript
-        #expect(result.contains("## Raw Transcript"))
+        do {
+            _ = try await MeetingSummaryClient.summarize(
+                transcript: "Test transcript",
+                meetingTitle: "My Meeting",
+                config: config,
+                existingNotes: "## Existing notes",
+                openRouterAPIKeyOverride: ""
+            )
+            Issue.record("Expected a missing-configuration error")
+        } catch {
+            guard case .notConfigured(let backend) = error as? MeetingSummaryError else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(backend == "OpenRouter")
+        }
     }
 
     @Test("summary failure notes make backend failure visible")
@@ -433,7 +1126,7 @@ struct MeetingSummaryClientTests {
         let result = try await MeetingSummaryClient.withSummaryRetries(
             maxRetries: 3,
             sleep: { _ in }
-        ) {
+        ) { _ in
             attempts += 1
             if attempts < 3 {
                 throw MeetingSummaryError.requestFailed(
@@ -448,6 +1141,138 @@ struct MeetingSummaryClientTests {
         #expect(attempts == 3)
     }
 
+    @Test("truncation failures stop automatic retries, while incomplete streams can recover", arguments: [false, true])
+    func summaryOutputRetryPolicy(contextWindow: Bool) async throws {
+        let outputError: MeetingSummaryOutputPolicy.OutputError = contextWindow ? .contextWindowExceeded : .outputLimitReached
+        let capped = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: outputError)
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(capped))
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(configuredCount: 3, after: capped) == 0)
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in
+                Issue.record("A capped summary must not automatically retry")
+            }) { _ in
+                attempts += 1
+                throw capped
+            }
+            Issue.record("Expected the output-limit guidance immediately")
+        } catch {
+            #expect(attempts == 1)
+            #expect(error.localizedDescription.contains(contextWindow ? "context window" : "output token limit"))
+        }
+
+        let interrupted = MeetingSummaryError.requestFailed(backend: "Anthropic", underlying: MeetingSummaryOutputPolicy.OutputError.incompleteStream)
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(interrupted))
+        attempts = 0
+        let recovered = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in }) { _ in
+            attempts += 1
+            if attempts == 1 { throw interrupted }
+            return "Complete notes"
+        }
+        #expect(recovered == "Complete notes")
+        #expect(attempts == 2)
+    }
+
+    @Test("streamed provider errors retain their type and retry only transient failures",
+          arguments: ["invalid_request_error", "authentication_error", "permission_error", "not_found_error", "request_too_large", "rate_limit_error", "api_error", "timeout_error", "overloaded_error", "unknown_error", ""], [false, true])
+    func streamedProviderErrorRetries(type: String, redact: Bool) async throws {
+        let transient = ["rate_limit_error", "api_error", "timeout_error", "overloaded_error"].contains(type)
+        var details = ["message": "reflected secret"]
+        if !type.isEmpty { details["type"] = type }
+        let json = try JSONSerialization.data(withJSONObject: ["type": "error", "error": details])
+        let stream = Data(("data: " + String(decoding: json, as: UTF8.self) + "\n\n").utf8)
+        var attempts = 0
+        var sleeps = 0
+        do {
+            let notes = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 3, sleep: { _ in sleeps += 1 }) { _ in
+                attempts += 1
+                if attempts > 1 { return "Complete notes" }
+                do {
+                    return try MeetingSummaryOutputPolicy.anthropicText(from: stream, redactProviderErrors: redact)
+                } catch let outputError as MeetingSummaryOutputPolicy.OutputError {
+                    guard case .provider(let parsedType, let message) = outputError else { throw outputError }
+                    #expect(parsedType == (type.isEmpty ? nil : type))
+                    #expect(message.contains("reflected secret") == !redact)
+                    let wrapped = MeetingSummaryError.requestFailed(backend: redact ? "Custom LLM" : "Anthropic", underlying: outputError)
+                    #expect(MeetingSummaryRetryPolicy.shouldRetry(wrapped) == transient)
+                    throw wrapped
+                }
+            }
+            #expect(transient)
+            #expect(notes == "Complete notes")
+        } catch {
+            #expect(!transient)
+            #expect(error.localizedDescription.contains("reflected secret") == !redact)
+        }
+        #expect(attempts == (transient ? 2 : 1))
+        #expect(sleeps == (transient ? 1 : 0))
+    }
+
+    @Test("summary retries transient Claude Code failures without changing their error text")
+    func summaryRetriesClaudeCodeEmptyResponse() async throws {
+        var attempts = 0
+        let result = try await MeetingSummaryClient.withSummaryRetries(maxRetries: 2, sleep: { _ in }) { _ in
+            attempts += 1
+            if attempts == 1 { throw ClaudeCodeSummaryError.emptyResponse }
+            return "Recovered Claude summary"
+        }
+        #expect(result == "Recovered Claude summary")
+        #expect(attempts == 2)
+    }
+
+    @Test("Claude Code timeout retries use the remaining summary time budget")
+    func summaryRetriesClaudeCodeTimeoutWithinBudget() async {
+        var attempts = 0
+        var currentTime = Date(timeIntervalSince1970: 0)
+        var retryTimeout: TimeInterval?
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 5,
+                timeBudget: 420,
+                now: { currentTime },
+                sleep: { currentTime.addTimeInterval($0) }
+            ) { remainingTime in
+                attempts += 1
+                if attempts == 1 {
+                    #expect(remainingTime == 420)
+                    currentTime.addTimeInterval(300)
+                } else {
+                    retryTimeout = remainingTime
+                    currentTime.addTimeInterval(remainingTime ?? 0)
+                }
+                throw ClaudeCodeSummaryError.timedOut
+            }
+            #expect(Bool(false), "Expected the timeout to propagate")
+        } catch ClaudeCodeSummaryError.timedOut {
+            #expect(attempts == 2)
+            #expect(retryTimeout == 119)
+        } catch {
+            #expect(Bool(false), "Expected Claude Code timeout, got \(error)")
+        }
+    }
+
+    @Test("Claude Code can recover on a timeout retry")
+    func summaryRecoversAfterClaudeCodeTimeout() async throws {
+        var attempts = 0
+        var currentTime = Date(timeIntervalSince1970: 0)
+        let result = try await MeetingSummaryClient.withSummaryRetries(
+            maxRetries: 2,
+            timeBudget: 420,
+            now: { currentTime },
+            sleep: { currentTime.addTimeInterval($0) }
+        ) { remainingTime in
+            attempts += 1
+            if attempts == 1 {
+                currentTime.addTimeInterval(300)
+                throw ClaudeCodeSummaryError.timedOut
+            }
+            #expect(remainingTime == 119)
+            return "Recovered Claude summary"
+        }
+        #expect(result == "Recovered Claude summary")
+        #expect(attempts == 2)
+    }
+
     @Test("summary retries stop after configured retry count")
     func summaryRetriesStopAfterConfiguredRetryCount() async {
         var attempts = 0
@@ -456,7 +1281,7 @@ struct MeetingSummaryClientTests {
             _ = try await MeetingSummaryClient.withSummaryRetries(
                 maxRetries: 2,
                 sleep: { _ in }
-            ) {
+            ) { _ in
                 attempts += 1
                 throw MeetingSummaryError.emptyResponse(backend: "OpenRouter")
             }
@@ -479,7 +1304,7 @@ struct MeetingSummaryClientTests {
             _ = try await MeetingSummaryClient.withSummaryRetries(
                 maxRetries: 5,
                 sleep: { _ in }
-            ) {
+            ) { _ in
                 attempts += 1
                 throw MeetingSummaryError.emptyResponse(backend: "Ollama")
             }
@@ -502,7 +1327,7 @@ struct MeetingSummaryClientTests {
             _ = try await MeetingSummaryClient.withSummaryRetries(
                 maxRetries: 5,
                 sleep: { _ in }
-            ) {
+            ) { _ in
                 attempts += 1
                 throw MeetingSummaryError.requestFailed(
                     backend: "LM Studio",
@@ -523,6 +1348,15 @@ struct MeetingSummaryClientTests {
     @Test("summary retry policy skips cancellation and permanent backend failures")
     func summaryRetryPolicySkipsCancellationAndPermanentBackendFailures() {
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(CancellationError()))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.unavailable))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.inputTooLarge))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.instructionsTooLarge))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.failed("Not signed in")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.invalidResponse(exitCode: 0, details: "Malformed JSON")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.processFailed(exitCode: 2, details: "Unknown option")))
+        #expect(!MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.launchFailed("Permission denied")))
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.timedOut))
+        #expect(MeetingSummaryRetryPolicy.shouldRetry(ClaudeCodeSummaryError.emptyResponse))
         #expect(!MeetingSummaryRetryPolicy.shouldRetry(
             MeetingSummaryError.requestFailed(backend: "OpenAI", underlying: URLError(.cancelled))
         ))
@@ -557,6 +1391,14 @@ struct MeetingSummaryClientTests {
 
     @Test("summary retry policy uses backend-aware retry budgets")
     func summaryRetryPolicyUsesBackendAwareRetryBudgets() {
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 5,
+            after: ClaudeCodeSummaryError.timedOut
+        ) == 5)
+        #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
+            configuredCount: 2,
+            after: ClaudeCodeSummaryError.emptyResponse
+        ) == 2)
         #expect(MeetingSummaryRetryPolicy.effectiveRetryCount(
             configuredCount: 5,
             after: MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: 503, message: "Unavailable")
@@ -627,7 +1469,8 @@ struct MeetingSummaryClientTests {
 
         let title = await MeetingSummaryClient.generateTitle(
             transcript: "Sprint planning discussion",
-            config: config
+            config: config,
+            openRouterAPIKeyOverride: ""
         )
 
         #expect(title == nil)
@@ -1025,4 +1868,55 @@ struct MeetingSummaryClientTests {
 
         #expect(title == nil)
     }
+
+    @Test("a recording with no transcript and no notes has nothing to summarize")
+    func emptyRecordingHasNothingToSummarize() {
+        #expect(MeetingSummaryClient.hasNothingToSummarize(transcript: "", manualNotes: nil))
+        #expect(MeetingSummaryClient.hasNothingToSummarize(transcript: " \n", manualNotes: "  "))
+    }
+
+    @Test("typed notes or any transcript text still get a summary")
+    func recordingWithContentIsSummarized() {
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "[00:01] You: hello", manualNotes: nil))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: "", manualNotes: "agenda"))
+    }
+    @Test("Empty meeting content bypasses every title and summary backend")
+    func emptyContentBypassesBackends() async throws {
+        for backend in MeetingSummaryBackendOption.all {
+            var config = AppConfig()
+            config.meetingSummaryBackend = backend.backend
+            let title = await MeetingSummaryClient.generateTitle(
+                transcript: " \n", manualNotes: nil, config: config)
+            #expect(title == nil)
+            let summary = try await MeetingSummaryClient.summarize(
+                transcript: "", meetingTitle: "Weekly meeting", config: config,
+                manualNotesToRetain: " ", participantNames: ["Alex"], visualContext: "\n",
+                previousMeetingNotes: " ")
+            #expect(summary == "No transcript available")
+        }
+    }
+
+    @Test("Screen context and retained notes are substantive summary inputs")
+    func summaryContentBeyondTranscript() {
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, visualContext: "Slide: launch on Friday"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: "Existing decisions"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, previousMeetingNotes: "Earlier action items"))
+        #expect(MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "\n", manualNotes: " ", visualContext: "\t",
+            existingNotes: " ", previousMeetingNotes: "\n"))
+    }
+
+    @Test("An earlier empty-recording result is not substantive notes")
+    func emptyRecordingResultIsNotContent() {
+        let empty = MeetingSummaryClient.emptyRecordingNotes
+        #expect(MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: empty, previousMeetingNotes: " \(empty)\n"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(
+            transcript: "", manualNotes: nil, existingNotes: empty, previousMeetingNotes: "Earlier action items"))
+        #expect(!MeetingSummaryClient.hasNothingToSummarize(transcript: empty, manualNotes: nil))
+    }
+
 }

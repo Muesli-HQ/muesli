@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
@@ -200,6 +201,36 @@ struct DictationAudioSessionManagerTests {
         })
     }
 
+    @Test("rapid toggle stop before queued startup never opens the microphone later")
+    func rapidToggleStopBeforeStartup() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.managerQueue.suspend()
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        let sessionID = harness.manager.currentSessionID
+        harness.manager.stop()
+        #expect(sessionID != nil)
+        #expect(harness.manager.currentSessionID == nil)
+        harness.managerQueue.resume()
+        harness.wait()
+
+        #expect(harness.recorder.startCalls == 0)
+        #expect(harness.manager.currentState == .idle)
+        #expect(harness.events.contains { event in
+            if case .stopped(let stoppedID, let url) = event {
+                return stoppedID == sessionID && url == nil
+            }
+            return false
+        })
+
+        harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
+        harness.wait()
+        #expect(harness.manager.currentSessionID != sessionID)
+        #expect(harness.recorder.startCalls == 1)
+        harness.manager.stop()
+        harness.wait()
+        #expect(harness.manager.currentState == .idle)
+    }
+
     @Test("stop restores ducking and emits wav URL")
     func stopRestoresDuckingAndEmitsWavURL() {
         let harness = Harness(routeKind: .speakerLike)
@@ -309,6 +340,22 @@ struct DictationAudioSessionManagerTests {
             }
             return false
         })
+    }
+
+    @Test("route callback consumes the controller cache without refreshing HAL again")
+    func routeCallbackAvoidsDuplicateRouteRefresh() {
+        let harness = Harness(routeKind: .speakerLike)
+
+        harness.manager.refreshRoute(
+            intent: .idlePrewarm(.routeChange),
+            canWarmUp: true,
+            refreshRoutingCache: false
+        )
+        harness.wait()
+
+        #expect(harness.route.refreshCalls == 0)
+        #expect(harness.recorder.warmUpCalls == 0)
+        #expect(harness.recorder.startCalls == 0)
     }
 
     @Test("speaker route skips idle warmup when default input is not built in")
@@ -868,5 +915,44 @@ private final class FakeDictationRoute: DictationAudioRouting {
 
     func refreshRouteAfterDictationSession() {
         restoreCalls += 1
+    }
+}
+
+// Reuse the fake recorder to exercise the controller without opening a microphone.
+extension ComputerUseRunDiagnosticsTests {
+    @Test("cancelling a prepared CUA command releases ownership before the next interaction")
+    @MainActor
+    func cancellationReleasesPreparedSession() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let harness = Harness(routeKind: .speakerLike)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store,
+            configStore: ConfigStore(supportDirectory: directory)
+        )
+        controller.computerUseAudioSessionManager = harness.manager
+        controller.handleComputerUsePrepare()
+        harness.wait()
+        #expect(harness.manager.hasActiveSession)
+        #expect(controller.appState.dictationState == .preparing)
+        #expect(!controller.canPrepareComputerUseCommand)
+
+        controller.handleComputerUseCancel()
+        harness.wait()
+        #expect(!harness.manager.hasActiveSession)
+        #expect(controller.appState.dictationState == .idle)
+        #expect(controller.canPrepareComputerUseCommand)
+
+        controller.handleComputerUsePrepare()
+        harness.wait()
+        #expect(harness.manager.hasActiveSession)
+        #expect(harness.manager.hasActiveSession)
+        #expect(harness.recorder.activateCalls == 2)
+        controller.handleComputerUseCancel()
+        harness.wait()
     }
 }

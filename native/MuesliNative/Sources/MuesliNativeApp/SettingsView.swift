@@ -2,20 +2,95 @@ import AppKit
 import AVFoundation
 import SwiftUI
 import MuesliCore
-
-private struct MeetingDetectionAppOption: Identifiable {
-    let bundleID: String
-    let name: String
-    let icon: String
-
-    var id: String { bundleID }
-}
+import TelemetryDeck
+import UniformTypeIdentifiers
 
 private struct MicrophoneOption: Identifiable {
     let uid: String?
     let label: String
 
     var id: String { uid ?? "__automatic__" }
+}
+
+enum SettingsPermissionRefreshReason {
+    case initialDisplay
+    case permissionRequested
+    case settingsSelected
+    case appActivated
+
+    var refreshesLaunchAtLogin: Bool {
+        self == .appActivated
+    }
+
+    var refreshesSystemAudio: Bool {
+        switch self {
+        case .initialDisplay, .settingsSelected, .appActivated:
+            true
+        case .permissionRequested:
+            false
+        }
+    }
+}
+
+struct ICloudLinkedDevicePresentation: Equatable {
+    let name: String
+    let platformLabel: String
+    let systemImage: String
+
+    init(name: String, platform: String?) {
+        self.name = name
+        switch platform?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ipados":
+            platformLabel = "iPad"
+            systemImage = "ipad"
+        case "ios":
+            platformLabel = "iPhone"
+            systemImage = "iphone.gen3"
+        default:
+            platformLabel = "Device"
+            systemImage = "iphone.gen3"
+        }
+    }
+}
+
+private struct ICloudLinkedDeviceRow: View {
+    let device: ICloudLinkedDevicePresentation
+
+    var body: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: device.systemImage)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(MuesliTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(MuesliTheme.accentSubtle)
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                Text("\(device.platformLabel) · Linked")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(MuesliTheme.success)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, MuesliTheme.spacing8)
+        .padding(.vertical, 6)
+        .background(MuesliTheme.success.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay {
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.success.opacity(0.18), lineWidth: 1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(device.platformLabel) \(device.name), linked")
+    }
 }
 
 struct SettingsView: View {
@@ -53,11 +128,27 @@ struct SettingsView: View {
 
     let appState: AppState
     let controller: MuesliController
+    @ObservedObject private var cotypist = CotypistSetup.shared
+
+    private enum OpenAIConnectionTestState: Equatable {
+        case idle
+        case testing
+        case success
+        case failed(String)
+    }
 
     @State private var chatGPTSignInError: String?
     @State private var isSigningInChatGPT = false
-    @State private var googleCalSignInError: String?
-    @State private var isSigningInGoogleCal = false
+    @State private var openRouterSignInError: String?
+    @State private var isSigningInOpenRouter = false
+    @State private var claudeCodeAuthStatus: ClaudeCodeAuthenticationStatus?
+    @State private var claudeCodeSignInError: String?
+    @State private var isShowingInvalidClaudeCodeExecutableAlert = false
+    @State private var isWaitingForClaudeCodeSignIn = false
+    @State private var isShowingClaudeCodeAdvanced = false
+    @State private var isShowingSummaryOutputAdvanced = false
+    @State private var isEnteringOpenRouterAPIKey = false
+    @State private var manualOpenRouterAPIKey = ""
     @State private var pendingDataDestruction: PendingDataDestruction?
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
@@ -66,20 +157,20 @@ struct SettingsView: View {
     @State private var downloadedPostProcOptions: [PostProcessorOption] = []
     @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
-    @State private var permissionPollTimer: Timer?
+    @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
+    @State private var permissionMonitoringClientID = UUID()
     @State private var isCleanupPromptManagerPresented = false
-    @State private var micGranted = false
-    @State private var accessibilityGranted = false
-    @State private var inputMonitoringGranted = false
-    @State private var screenRecordingGranted = false
     @AppStorage("settings.pendingScreenContextEnable") private var pendingScreenContextEnable = false
     @AppStorage("settings.pendingScreenContextRequestedAt") private var pendingScreenContextRequestedAt = 0.0
     @State private var systemAudioGranted = false
     @State private var isCheckingSystemAudioPermission = false
-    @State private var openRouterFreeModels: [SummaryModelPreset] = []
-    @State private var isLoadingOpenRouterFreeModels = false
-    @State private var openRouterFreeModelsError: String?
-    @State private var hasRefreshedMeetingCalendarSources = false
+    @State private var calendarPermission = CalendarPermissionState()
+    @State private var calendarSourcesRefresh = CalendarSourceRefreshState()
+    @State private var isShowingICloudSyncReconnectConfirmation = false
+    @State private var isShowingICloudSyncResetConfirmation = false
+    @State private var isShowingIPhoneBridgeQRCode = false
+    @State private var openAIDictationAPIKey: String = ""
+    @State private var openAITestState: OpenAIConnectionTestState = .idle
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -87,33 +178,46 @@ struct SettingsView: View {
         _selectedPane = State(initialValue: appState.selectedSettingsPane)
     }
 
+    private var micGranted: Bool {
+        appState.interactionPermissionSnapshot?.microphone ?? false
+    }
+
+    private var accessibilityGranted: Bool {
+        appState.interactionPermissionSnapshot?.accessibility ?? false
+    }
+
+    private var inputMonitoringGranted: Bool {
+        appState.interactionPermissionSnapshot?.inputMonitoring ?? false
+    }
+
+    private var screenRecordingGranted: Bool {
+        appState.interactionPermissionSnapshot?.screenRecording ?? false
+    }
+
     // Uniform width for standard right-side controls.
-    private let controlWidth: CGFloat = 220
-    // Wider controls keep model/provider selections visually consistent in Settings.
-    private let meetingControlWidth: CGFloat = 275
-    private let iOSCompanionURL = IPhoneBridgeLinks.installURL
-    private let screenContextGrantIntentTimeout: TimeInterval = 15 * 60
-    private let meetingDetectionAppOptions: [MeetingDetectionAppOption] = [
-        MeetingDetectionAppOption(bundleID: "com.google.Chrome", name: "Chrome", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "company.thebrowser.Browser", name: "Arc", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.apple.Safari", name: "Safari", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.microsoft.edgemac", name: "Edge", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.brave.Browser", name: "Brave", icon: "globe"),
-        MeetingDetectionAppOption(bundleID: "com.tinyspeck.slackmacgap", name: "Slack", icon: "message.fill"),
-        MeetingDetectionAppOption(bundleID: "us.zoom.xos", name: "Zoom", icon: "video.fill"),
-        MeetingDetectionAppOption(bundleID: "com.microsoft.teams2", name: "Teams", icon: "person.2.fill"),
-        MeetingDetectionAppOption(bundleID: "com.apple.FaceTime", name: "FaceTime", icon: "video.fill"),
-        MeetingDetectionAppOption(bundleID: "net.whatsapp.WhatsApp", name: "WhatsApp", icon: "phone.fill"),
-    ]
+    private let controlWidth: CGFloat = 275
+    // Model/provider rows use the same default as every other settings control.
+    private var meetingControlWidth: CGFloat { controlWidth }
 
     private var dictationBackendOptions: [BackendOption] {
-        backendOptions(including: appState.selectedBackend)
+        guard appState.dictationProvider.isHosted else {
+            return backendOptions(including: appState.selectedBackend)
+        }
+        return downloadedBackendOptions.filter(\.supportsHostedDictationFallback)
+    }
+
+    private var displayedDictationBackend: BackendOption? {
+        guard appState.dictationProvider.isHosted else { return appState.selectedBackend }
+        return BackendOption.resolveHostedDictationFallback(
+            selected: appState.selectedBackend,
+            available: dictationBackendOptions
+        )
     }
 
     private var disabledDictationBackendLabels: Set<String> {
         guard !appState.selectedPostProcessorBackend.isCompatible(with: .gemma4E2BLiteRT),
-              dictationBackendOptions.contains(.gemma4E2BLiteRT) else { return [] }
-        return [BackendOption.gemma4E2BLiteRT.label]
+              dictationBackendOptions.contains(where: { $0.backend == "gemma4-litert" }) else { return [] }
+        return Set(dictationBackendOptions.filter { $0.backend == "gemma4-litert" }.map(\.label))
     }
 
     private var meetingBackendOptions: [BackendOption] {
@@ -131,8 +235,8 @@ struct SettingsView: View {
 
     private var usesUnifiedMeetingTranscript: Bool {
         appState.config.enableLiveStreamingPartials
-            && appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35
-            && downloadedMeetingLiveCaptionBackends.contains(.nemotron35)
+            && appState.config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
+            && downloadedMeetingLiveCaptionBackends.contains(appState.config.resolvedMeetingLiveCaptionBackend)
     }
 
     private var meetingLiveTranscriptDescription: String {
@@ -143,6 +247,12 @@ struct SettingsView: View {
         }
         if usesUnifiedMeetingTranscript {
             return "Creates the live and final transcript."
+        }
+        if selected == .selectedModelBuffered {
+            guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
+                return "Choose Parakeet or Whisper as the final model to enable this preview."
+            }
+            return "Previews the selected Parakeet or Whisper model while recording. Completed segments remain authoritative."
         }
         return "Adds a low-latency preview."
     }
@@ -159,13 +269,62 @@ struct SettingsView: View {
     }
 
     private var cleanupBackendOptions: [TranscriptCleanupBackendOption] {
-        TranscriptCleanupBackendOption.all
+        TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }
     }
 
-    private var disabledCleanupBackendLabels: Set<String> {
-        Set(cleanupBackendOptions.lazy
-            .filter { !$0.isCompatible(with: appState.selectedBackend) }
-            .map(\.label))
+    private var selectedQuilBackend: TranscriptCleanupBackendOption {
+        TranscriptCleanupBackendOption.resolved(appState.config.quilBackend)
+    }
+
+    private var selectedQuilModelSource: QuilModelSourceOption {
+        QuilModelSourceOption.resolved(for: selectedQuilBackend)
+    }
+
+    private var quilLocalModels: [OnDeviceCleanupModel] {
+        var models = downloadedPostProcOptions
+            .filter(\.supportsQuil)
+            .map(OnDeviceCleanupModel.gguf)
+        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+            models.append(.gemma4(model))
+        }
+        return models
+    }
+
+    private var selectedQuilLocalModelLabel: String {
+        if selectedQuilBackend == .gemma4LiteRT {
+            return Gemma4LiteRTModel.resolved(appState.config.quilModel).label
+        }
+        return quilLocalModels.first(where: { $0.id == appState.config.quilModel })?.quilLabel
+            ?? quilLocalModels.first?.quilLabel
+            ?? "No compatible model"
+    }
+
+    private var selectedCleanupBackendLabel: String {
+        appState.selectedPostProcessorBackend.isOnDevice
+            ? TranscriptCleanupBackendOption.local.label
+            : appState.selectedPostProcessorBackend.label
+    }
+
+    private var onDeviceCleanupModels: [OnDeviceCleanupModel] {
+        var models = downloadedPostProcOptions
+            .filter { $0.isCompatible(with: appState.selectedBackend) }
+            .map(OnDeviceCleanupModel.gguf)
+        if TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
+            for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+                models.append(.gemma4(model))
+            }
+        }
+        return models
+    }
+
+    private var selectedOnDeviceCleanupModelLabel: String {
+        if appState.selectedPostProcessorBackend == .gemma4LiteRT {
+            return Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).label
+        }
+        let selectedID = appState.activePostProcessor.id
+        return onDeviceCleanupModels.first(where: { $0.id == selectedID })?.label
+            ?? onDeviceCleanupModels.first?.label
+            ?? ""
     }
 
     private var selectedCleanupPromptName: String {
@@ -173,16 +332,23 @@ struct SettingsView: View {
             ?? TranscriptCleanupPrompts.builtIns[0].name
     }
 
+    private var cleanupModelUsesFixedPrompt: Bool {
+        (appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat != .configurable)
+            || (appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).isCleanupOnly)
+    }
+
+    private var gemmaCleanupIsUnavailable: Bool {
+        Gemma4LiteRTModel.allCases.contains { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }
+            && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
+    }
+
     private var cleanupBackendDescription: String {
-        if appState.selectedPostProcessorBackend == .local {
-            return downloadedPostProcOptions.isEmpty
+        if appState.selectedPostProcessorBackend.isOnDevice {
+            return onDeviceCleanupModels.isEmpty
                 ? "Download a cleanup model from Models to refine dictations on this Mac."
                 : "Refines dictated text on this Mac."
-        }
-        if appState.selectedPostProcessorBackend == .gemma4LiteRT {
-            return Gemma4LiteRTModelStore.isAvailableLocally()
-                ? "Uses the downloaded Gemma 4 model to refine dictated text on this Mac."
-                : "Download Gemma 4 E2B from Models to use it for cleanup."
         }
         return "Sends dictated text to \(appState.selectedPostProcessorBackend.label) and may add latency."
     }
@@ -192,11 +358,11 @@ struct SettingsView: View {
     }
 
     private var selectedUpcomingMeetingsWindow: UpcomingMeetingsWindow {
-        UpcomingMeetingsWindow.resolve(dayCount: appState.config.upcomingMeetingsDayCount)
+        appState.config.upcomingMeetingsWindow
     }
 
-    private var selectedIndicASRLanguage: IndicASRLanguage {
-        appState.config.resolvedIndicASRLanguage
+    private var selectedBodhanLanguage: BodhanLanguage {
+        appState.config.resolvedBodhanLanguage
     }
 
     private var selectedNemotron35Language: Nemotron35Language {
@@ -238,6 +404,12 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        // Build once for this surface; Observation refreshes dynamic choices.
+        let _ = appState.config
+        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+    }
+
+    private var settingsContent: some View {
         ScrollViewReader { scrollProxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
@@ -256,23 +428,29 @@ struct SettingsView: View {
             .onAppear {
                 refreshDownloadedModelOptions()
                 refreshAudioInputDevices()
-                startPermissionPolling()
+                startPermissionMonitoring()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
+                }
+                if appState.dictationProvider == .openRouter,
+                   controller.hostedDictationModelVisibility.shows(.openRouter) {
+                    loadOpenRouterTranscriptionModelsIfNeeded()
                 }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
             .onDisappear {
                 SoundController.stopMaraudersMapClip()
                 isPreviewingClip = false
-                stopPermissionPolling()
+                audioInputDeviceRefreshTask?.cancel()
+                audioInputDeviceRefreshTask = nil
+                stopPermissionMonitoring()
             }
             .onChange(of: appState.selectedTab) { _, tab in
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
                     refreshDownloadedModelOptions()
                     refreshAudioInputDevices()
-                    refreshPermissionStatuses()
+                    refreshPermissionStatuses(for: .settingsSelected)
                 }
             }
             .onChange(of: appState.selectedSettingsPane) { _, pane in
@@ -280,8 +458,9 @@ struct SettingsView: View {
             }
             .onChange(of: selectedPane) { _, pane in
                 appState.selectedSettingsPane = pane
+                calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
-                    refreshAudioInputDevices()
+                    loadCachedAudioInputDevices()
                 }
                 scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
@@ -291,7 +470,15 @@ struct SettingsView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
                 refreshAudioInputDevices()
-                refreshPermissionStatuses(refreshLaunchAtLogin: true)
+                refreshPermissionStatuses(for: .appActivated)
+                if selectedPane == .meetings {
+                    if appState.selectedMeetingSummaryBackend == .claudeCode {
+                        Task { await refreshClaudeCodeAuthStatus() }
+                    }
+                }
+                if selectedPane == .general || selectedPane == .meetings {
+                    refreshCalendarSources(reconcileAccess: true)
+                }
             }
             .onChange(of: appState.selectedBackend) { _, _ in
                 refreshDownloadedModelOptions()
@@ -302,6 +489,8 @@ struct SettingsView: View {
             .onChange(of: appState.selectedMeetingSummaryBackend) { _, backend in
                 if backend == .openRouter {
                     loadOpenRouterFreeModelsIfNeeded()
+                } else if backend == .claudeCode {
+                    Task { await refreshClaudeCodeAuthStatus() }
                 }
             }
             .alert(
@@ -341,6 +530,36 @@ struct SettingsView: View {
             } message: {
                 Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
             }
+            .alert("Reconnect iCloud sync?", isPresented: $isShowingICloudSyncReconnectConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reconnect") {
+                    controller.reconnectICloudSyncToCurrentAccount()
+                }
+            } message: {
+                Text("Reconnect with this iCloud account. Local history and audio stay on this Mac.")
+            }
+            .alert("Reset iCloud sync?", isPresented: $isShowingICloudSyncResetConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reset sync", role: .destructive) {
+                    controller.resetICloudSync()
+                }
+            } message: {
+                Text("Clear this Mac's sync connection and set it up again. Local history, audio, and CloudKit data won't be deleted.")
+            }
+            .sheet(isPresented: $isShowingIPhoneBridgeQRCode, onDismiss: {
+                controller.cancelIPhoneBridgeDeviceDiscovery()
+            }) {
+                IPhoneBridgeQRCodeSheet(
+                    deepLinkURL: IPhoneBridgeLinks.iOSSyncDeepLinkURL,
+                    installURL: IPhoneBridgeLinks.installURL,
+                    isWaitingForDevice: appState.iCloudBridgeCompanionDiscoveryState == .waiting
+                )
+            }
+            .onChange(of: syncQRCodePresentationPhase) { _, phase in
+                guard phase == .dismiss else { return }
+                isShowingIPhoneBridgeQRCode = false
+                TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_settings"])
+            }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
                     appState: appState,
@@ -349,11 +568,17 @@ struct SettingsView: View {
                 )
             }
         }
+
     }
 
     private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
         guard let target,
-              target == .liveCaptionsSetting || target == .cloudCleanupSetting else { return }
+              target == .liveCaptionsSetting
+                || target == .cloudCleanupSetting
+                || target == .dictationProviderSetting
+                || target == .recordingIndicatorStyle
+                || target == .meetingSummaryProvider
+                || target == .quillSettings else { return }
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
                 proxy.scrollTo(target.rawValue, anchor: .center)
@@ -363,13 +588,30 @@ struct SettingsView: View {
 
     private func refreshDownloadedModelOptions() {
         controller.refreshMeetingTranscriptionSelectionForAvailability()
-        downloadedBackendOptions = BackendOption.downloaded
-        downloadedPostProcOptions = PostProcessorOption.downloaded
-        downloadedMeetingLiveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        // Only write changed values. Unconditional writes from onAppear re-render Settings
+        // and can feed a SwiftUI update loop (#632).
+        let backends = BackendOption.downloaded
+        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
+        let postProcessors = PostProcessorOption.downloaded
+        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
+        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
+        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
+            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
+        }
     }
 
     private func refreshAudioInputDevices() {
-        audioInputDevices = controller.availableDictationInputDevices()
+        loadCachedAudioInputDevices()
+        audioInputDeviceRefreshTask?.cancel()
+        audioInputDeviceRefreshTask = Task { @MainActor in
+            let devices = await controller.refreshDictationInputDevices()
+            guard !Task.isCancelled else { return }
+            audioInputDevices = devices
+        }
+    }
+
+    private func loadCachedAudioInputDevices() {
+        audioInputDevices = controller.cachedDictationInputDevices()
     }
 
     private func backendOptions(including selection: BackendOption) -> [BackendOption] {
@@ -379,16 +621,6 @@ struct SettingsView: View {
         }
         return options
     }
-
-    private static let accentPresets: [(hex: String, name: String)] = [
-        ("2563eb", "Blue"),
-        ("ef4444", "Red"),
-        ("f59e0b", "Amber"),
-        ("10b981", "Green"),
-        ("8b5cf6", "Purple"),
-        ("ec4899", "Pink"),
-        ("1e1e2e", "Dark"),
-    ]
 
     private func screenContextDescription(includesScreenOCR: Bool) -> String {
         if !accessibilityGranted {
@@ -509,9 +741,7 @@ struct SettingsView: View {
             settingsSection("General") {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     settingsRow("Launch at login") {
-                        settingsSwitch(isOn: appState.config.launchAtLogin) { newValue in
-                            controller.setLaunchAtLogin(newValue)
-                        }
+                        settingsControl("launch_at_login")
                     }
                     if appState.launchAtLoginRegistrationState == .requiresApproval {
                         launchAtLoginApprovalPrompt
@@ -519,20 +749,22 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Open dashboard on launch") {
-                    settingsSwitch(isOn: appState.config.openDashboardOnLaunch) { newValue in
-                        controller.updateConfig { $0.openDashboardOnLaunch = newValue }
-                    }
+                    settingsControl("open_dashboard")
                 }
             }
 
             permissionsSection
 
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
+
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
-                    actionButton("Clear dictation history", role: .destructive) {
+                    compactActionButton("Clear dictation history", role: .destructive) {
                         pendingDataDestruction = .dictations
                     }
-                    actionButton("Clear meeting history", role: .destructive) {
+                    compactActionButton("Clear meeting history", role: .destructive) {
                         pendingDataDestruction = .meetings
                     }
                     .disabled(controller.isMeetingRecording())
@@ -576,78 +808,156 @@ struct SettingsView: View {
 
     private var syncSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("iCloud Text Sync") {
-                settingsRow("Private iCloud sync") {
-                    settingsSwitch(isOn: appState.config.iCloudSyncEnabled) { newValue in
-                        controller.setICloudSyncEnabledFromSettings(newValue)
-                    }
-                }
-                settingsDescription("Sync dictation text, meeting transcripts, notes, summaries, and manual notes with Muesli for iPhone through your private iCloud account. Audio recordings are never synced.")
-
-                Divider().background(MuesliTheme.surfaceBorder)
-
+            settingsSection("iCloud Sync") {
                 HStack(spacing: MuesliTheme.spacing12) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        Text(syncStatusText)
+                        Text("Sync with iPhone or iPad")
                             .font(MuesliTheme.body())
                             .foregroundStyle(MuesliTheme.textPrimary)
+                        Text(syncStatusText)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                         if let lastSyncedText = syncLastSyncedText {
                             Text("Last synced: \(lastSyncedText)")
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textTertiary)
                         }
-                        if let linkedDeviceText = syncLinkedDeviceText {
-                            Text(linkedDeviceText)
+                        if let linkedDevice = syncLinkedDevice {
+                            ICloudLinkedDeviceRow(device: linkedDevice)
+                                .padding(.top, MuesliTheme.spacing4)
+                        } else if let unlinkedDeviceText = syncUnlinkedDeviceText {
+                            Text(unlinkedDeviceText)
                                 .font(MuesliTheme.caption())
                                 .foregroundStyle(MuesliTheme.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     Spacer(minLength: MuesliTheme.spacing16)
-                    actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                        controller.performICloudSync()
-                    }
-                    .frame(width: controlWidth)
-                    .disabled(!appState.config.iCloudSyncEnabled)
+                    syncFlowControls
+                        .frame(width: controlWidth)
                 }
+
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var syncFlowControls: some View {
+        VStack(spacing: MuesliTheme.spacing8) {
+            switch syncFlowAction {
+            case .setUp:
+                actionButton("Set up sync", systemImage: "icloud") {
+                    showSyncSetupQRCode(source: "macos_settings_setup")
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .continueSetup:
+                actionButton("Continue setup", systemImage: "qrcode") {
+                    showSyncSetupQRCode(source: "macos_settings_continue")
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .connectDevice:
+                actionButton("Connect device", systemImage: "qrcode") {
+                    showSyncSetupQRCode(source: "macos_settings")
+                }
+            case .waitingForDevice:
+                actionButton("Checking…", systemImage: "arrow.triangle.2.circlepath") {}
+                    .disabled(true)
+            case .syncNow:
+                actionButton("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                    controller.performICloudSync()
+                }
+            case .reconnect:
+                actionButton("Reconnect", systemImage: "arrow.triangle.2.circlepath") {
+                    isShowingICloudSyncReconnectConfirmation = true
+                }
+            case .reset:
+                actionButton("Reset sync", systemImage: "arrow.counterclockwise.icloud") {
+                    isShowingICloudSyncResetConfirmation = true
+                }
+            case .retry:
+                actionButton("Try again", systemImage: "arrow.triangle.2.circlepath") {
+                    controller.enableIPhoneBridgeSync()
+                }
+            case .working:
+                actionButton("Working…", systemImage: "arrow.triangle.2.circlepath") {}
+                    .disabled(true)
             }
 
-            settingsSection("iPhone Bridge") {
-                settingsRow("Show iOS companion prompt") {
-                    settingsSwitch(isOn: appState.config.showIOSCompanionPrompt) { newValue in
-                        controller.updateConfig { $0.showIOSCompanionPrompt = newValue }
-                    }
-                }
-                settingsDescription("Keep the timeline bridge card available while users connect Muesli on iPhone.")
-
-                Divider().background(MuesliTheme.surfaceBorder)
-
-                HStack(spacing: MuesliTheme.spacing12) {
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        Text("Muesli for iPhone")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                        Text("Use iPhone for offline meetings, keyboard dictation, and private iCloud text sync with this Mac.")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: MuesliTheme.spacing16)
-                    actionButton("Open iOS app page") {
-                        NSWorkspace.shared.open(iOSCompanionURL)
-                    }
-                    .frame(width: controlWidth)
+            if shouldOfferICloudSyncReset {
+                actionButton("Reset sync", systemImage: "arrow.counterclockwise.icloud") {
+                    isShowingICloudSyncResetConfirmation = true
                 }
             }
         }
     }
 
+    private func showSyncSetupQRCode(source: String) {
+        isShowingIPhoneBridgeQRCode = true
+        controller.beginIPhoneBridgeDeviceDiscovery()
+        TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": source])
+    }
+
+    private var syncFlowAction: ICloudSyncFlowAction {
+        ICloudSyncFlowPolicy.action(
+            for: displayedICloudBridgeState,
+            isEnabled: appState.config.iCloudSyncEnabled,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil,
+            companionDiscoveryState: appState.iCloudBridgeCompanionDiscoveryState
+        )
+    }
+
+    private var syncQRCodePresentationPhase: ICloudSyncQRCodePresentationPhase {
+        ICloudSyncQRCodePresentationPolicy.phase(
+            isPresented: isShowingIPhoneBridgeQRCode,
+            hasCompanionDevice: appState.iCloudBridgeCompanionDeviceName != nil
+        )
+    }
+
+    private var displayedICloudBridgeState: ICloudBridgeState {
+        appState.iCloudBridgeState
+    }
+
     private var syncStatusText: String {
-        if !appState.config.iCloudSyncEnabled {
-            return "Sync is off. Turn it on to bridge this Mac with Muesli for iPhone."
+        switch displayedICloudBridgeState {
+        case .checkingICloud:
+            return "Checking iCloud…"
+        case .syncing:
+            if appState.isICloudBridgeActivationPending {
+                return appState.iCloudBridgeCompanionDeviceName == nil
+                    ? "Setting up sync…"
+                    : "Device linked. Finishing sync…"
+            }
+            return "Syncing…"
+        case .needsICloud:
+            return "Sign in to iCloud to sync."
+        case .needsReconnection:
+            if ICloudSyncRecoveryPolicy.action(for: appState.iCloudBridgeState) == .resetAccountLink {
+                return "Reset sync to start again."
+            }
+            return "Reconnect to keep syncing."
+        case .needsAccountReplacement:
+            return "Reset sync to use this iCloud account."
+        case .error:
+            return appState.iCloudBridgeCompanionDeviceName == nil
+                ? "Setup was interrupted. Continue to pair your device."
+                : "Sync couldn't finish. Try again."
+        case .active:
+            guard appState.config.iCloudSyncEnabled else { return "Sync is off." }
+            if appState.iCloudBridgeCompanionDeviceName != nil {
+                return "Sync is on. Audio stays on this Mac."
+            }
+            switch appState.iCloudBridgeCompanionDiscoveryState {
+            case .waiting:
+                return "Finishing device setup…"
+            case .timedOut:
+                return "Couldn't find your device. Open Muesli there, then try again."
+            case .idle:
+                return "Ready to connect. Audio stays on this Mac."
+            }
+        case .notConfigured:
+            return "Set up private iCloud text sync."
         }
-        return appState.iCloudSyncStatus ?? "Private iCloud text sync is ready."
     }
 
     private var syncLastSyncedText: String? {
@@ -655,61 +965,198 @@ struct SettingsView: View {
         return DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
     }
 
-    private var syncLinkedDeviceText: String? {
-        guard appState.config.iCloudSyncEnabled else { return nil }
-        if let remoteDeviceName = appState.iCloudBridgeCompanionDeviceName {
-            if let platform = appState.iCloudBridgeRemoteDevicePlatform {
-                return "Linked \(syncDeviceLabel(for: platform)): \(remoteDeviceName)"
-            }
-            return "Linked device: \(remoteDeviceName)"
-        }
-        return "No linked iPhone yet."
+    private var syncLinkedDevice: ICloudLinkedDevicePresentation? {
+        guard let remoteDeviceName = appState.iCloudBridgeCompanionDeviceName else { return nil }
+        return ICloudLinkedDevicePresentation(
+            name: remoteDeviceName,
+            platform: appState.iCloudBridgeRemoteDevicePlatform
+        )
     }
 
-    private func syncDeviceLabel(for platform: String) -> String {
-        switch platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "ios":
-            return "iPhone"
-        case "ipados":
-            return "iPad"
-        default:
-            return platform
+    private var syncUnlinkedDeviceText: String? {
+        guard appState.config.iCloudSyncEnabled else { return nil }
+        switch appState.iCloudBridgeCompanionDiscoveryState {
+        case .waiting:
+            return "Waiting for iPhone or iPad…"
+        case .timedOut:
+            return "No device found yet."
+        case .idle:
+            return "No linked device yet."
         }
+    }
+
+    private var shouldOfferICloudSyncReset: Bool {
+        appState.config.iCloudSyncEnabled
+            && displayedICloudBridgeState == .active
+            && (syncFlowAction == .syncNow || syncFlowAction == .connectDevice)
     }
 
     private var dictationModelSettingsSection: some View {
         settingsSection("Speech Recognition") {
-            settingsRow("Dictation model", controlWidth: meetingControlWidth) {
-                settingsMenu(
-                    selection: appState.selectedBackend.label,
-                    options: dictationBackendOptions.map(\.label),
-                    disabledOptions: disabledDictationBackendLabels
-                ) { label in
-                    if let option = dictationBackendOptions.first(where: { $0.label == label }) {
-                        controller.selectBackend(option)
-                    }
+            settingsRow("Provider", controlWidth: meetingControlWidth) {
+                settingsControl("dictation_provider")
+            }
+            .id(FeatureTourTarget.dictationProviderSetting.rawValue)
+            .featureTourTarget(.dictationProviderSetting)
+            Divider().background(MuesliTheme.surfaceBorder)
+            if appState.dictationProvider == .openAI {
+                openAIDictationSettingsRows
+                Divider().background(MuesliTheme.surfaceBorder)
+            } else if appState.dictationProvider == .openRouter {
+                openRouterDictationSettingsRows
+                Divider().background(MuesliTheme.surfaceBorder)
+            }
+            settingsRow(appState.dictationProvider.isHosted ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
+                if displayedDictationBackend != nil {
+                    settingsControl(appState.dictationProvider.isHosted ? "dictation_fallback_model" : "dictation_model")
+                } else {
+                    Text("No compatible model installed")
+                        .foregroundStyle(.secondary)
                 }
+            }
+            if appState.dictationProvider.isHosted {
+                settingsDescription(
+                    displayedDictationBackend == nil
+                        ? "Download a non-streaming local model to enable automatic fallback."
+                        : "Used automatically if \(appState.dictationProvider.label) transcription fails."
+                )
             }
             if !disabledDictationBackendLabels.isEmpty {
                 settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
             }
-            if appState.selectedBackend.backend == BackendOption.cohereTranscribe.backend {
+            if appState.dictationProvider == .local,
+               displayedDictationBackend?.supportsBufferedLiveTranscription == true {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Watch text appear during hands-free mode") {
+                    settingsControl("buffered_live_dictation")
+                }
+                settingsDescription("Preview as you speak; apply enabled cleanup when you stop.")
+            }
+            if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
             }
-            if appState.selectedBackend.backend == BackendOption.indicASR.backend {
+            if displayedDictationBackend?.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu(model: displayedDictationBackend?.model ?? "")
                 }
+                bodhanOutputMenu(model: displayedDictationBackend?.model ?? "")
             }
-            if appState.selectedBackend.supportsWhisperLanguageSelection {
+            if displayedDictationBackend?.supportsWhisperLanguageSelection == true {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: displayedDictationBackend?.model ?? appState.config.sttModel)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openAIDictationSettingsRows: some View {
+        settingsRow("API Key", controlWidth: meetingControlWidth) {
+            PastableSecureField(
+                text: appState.config.openAIAPIKey,
+                placeholder: "sk-...",
+                onChange: { val in
+                    openAITestState = .idle
+                    controller.setOpenAIDictationAPIKey(val)
+                }
+            )
+            .frame(height: 22)
+        }
+        if controller.hostedDictationModelVisibility.shows(.openAI) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Model", controlWidth: meetingControlWidth) {
+                settingsControl("openai_dictation_model")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Connection", controlWidth: meetingControlWidth) {
+                openAITestControl
+            }
+        }
+    }
+
+    private var openAIDictationModelPresets: [SummaryModelPreset] {
+        OpenAITranscriptionClient.modelPresets.map { SummaryModelPreset(id: $0, label: $0) }
+    }
+
+    @ViewBuilder
+    private var openRouterDictationSettingsRows: some View {
+        settingsRow("Account", controlWidth: meetingControlWidth) {
+            openRouterAccountControl(selectMeetingSummaryBackend: false)
+        }
+        if controller.hostedDictationModelVisibility.shows(.openRouter) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Model", controlWidth: meetingControlWidth) {
+                openRouterTranscriptionModelMenu
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.openRouterDictationModel,
+                    placeholder: "provider/model"
+                ) { controller.selectOpenRouterDictationModel($0) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var openAITestControl: some View {
+        switch openAITestState {
+        case .idle:
+            HStack {
+                Spacer()
+                compactActionButton("Test connection") {
+                    testOpenAIConnection()
+                }
+            }
+        case .testing:
+            HStack(spacing: 8) {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Text("Testing…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+        case .success:
+            HStack(spacing: 6) {
+                Spacer()
+                Circle()
+                    .fill(MuesliTheme.success)
+                    .frame(width: 6, height: 6)
+                Text("Connected")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MuesliTheme.success)
+                compactActionButton("Test again") {
+                    testOpenAIConnection()
+                }
+            }
+        case .failed(let message):
+            HStack(spacing: 6) {
+                Spacer()
+                Text("Failed")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(MuesliTheme.recording)
+                    .help(message)
+                compactActionButton("Retry") {
+                    testOpenAIConnection()
+                }
+            }
+        }
+    }
+
+    private func testOpenAIConnection() {
+        openAITestState = .testing
+        Task {
+            do {
+                try await controller.testOpenAIConnection()
+                await MainActor.run { openAITestState = .success }
+            } catch {
+                await MainActor.run { openAITestState = .failed(error.localizedDescription) }
             }
         }
     }
@@ -721,51 +1168,25 @@ struct SettingsView: View {
                 description: "Only affects Muesli. Changes apply immediately.",
                 controlWidth: meetingControlWidth
             ) {
-                let options = meetingMicrophoneOptions
-                FixedWidthPopUp(
-                    selection: selectedMeetingMicrophoneLabel,
-                    options: options.map(\.label),
-                    onSelectIndex: { index in
-                        guard options.indices.contains(index) else { return }
-                        controller.selectMeetingInputDeviceUID(options[index].uid)
-                        refreshAudioInputDevices()
-                    }
-                )
+                settingsControl("meeting_microphone")
                 .frame(height: 24)
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
                 "Show transcript on hover",
-                description: "Show recent transcript beside the waveform.",
+                description: "Show live transcript when hovering over the pill or notch.",
                 controlWidth: meetingControlWidth
             ) {
-                settingsSwitch(isOn: appState.config.showMeetingTranscriptOnIndicatorHover) { newValue in
-                    controller.updateConfig { $0.showMeetingTranscriptOnIndicatorHover = newValue }
-                }
+                settingsControl("meeting_hover_transcript")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow(
-                "Live preview model",
+                "Live transcript model",
                 description: meetingLiveTranscriptDescription,
                 controlWidth: meetingControlWidth
             ) {
                 if !downloadedMeetingLiveCaptionBackends.isEmpty {
-                    settingsMenu(
-                        selection: selectedMeetingLiveCaptionLabel,
-                        options: downloadedMeetingLiveCaptionBackends.map(\.settingsLabel) + ["Off"]
-                    ) { label in
-                        guard label != "Off" else {
-                            controller.updateConfig { $0.enableLiveStreamingPartials = false }
-                            return
-                        }
-                        guard let backend = downloadedMeetingLiveCaptionBackends.first(where: { $0.settingsLabel == label }) else {
-                            return
-                        }
-                        controller.updateConfig {
-                            $0.meetingLiveCaptionBackend = backend.rawValue
-                            $0.enableLiveStreamingPartials = true
-                        }
-                    }
+                    settingsControl("live_transcript")
                 } else {
                     Text("Download from Models")
                         .font(.system(size: 12, weight: .medium))
@@ -777,9 +1198,17 @@ struct SettingsView: View {
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
             Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow(
+                "Identify in-room speakers",
+                description: "Speaker playback may cause duplicate labels; headphones help.",
+                controlWidth: meetingControlWidth
+            ) {
+                settingsControl("diarize_microphone")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
-                    Text("\(MeetingLiveCaptionBackend.nemotron35.label) (same model)")
+                    Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
                         .font(MuesliTheme.body())
                         .foregroundStyle(MuesliTheme.textSecondary)
                         .frame(width: meetingControlWidth, alignment: .trailing)
@@ -789,35 +1218,35 @@ struct SettingsView: View {
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    settingsMenu(
-                        selection: selectedMeetingBackendLabel,
-                        options: meetingBackendOptions.map(\.label)
-                    ) { label in
-                        if let option = meetingBackendOptions.first(where: { $0.label == label }) {
-                            controller.selectMeetingTranscriptionBackend(option)
-                        }
-                    }
+                    settingsControl("meeting_model")
                 }
             }
             if usesUnifiedMeetingTranscript {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Language", controlWidth: meetingControlWidth) {
-                    nemotron35LanguageMenu
+                    if appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
+                        nemotron35LanguageMenu
+                    } else {
+                        Text("Set in Models → Apple Speech")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                    }
                 }
             } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Cohere language", controlWidth: meetingControlWidth) {
                     cohereLanguageMenu
                 }
-            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.indicASR.backend {
+            } else if appState.selectedMeetingTranscriptionBackend.backend == BackendOption.bodhanFlex.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indic language", controlWidth: meetingControlWidth) {
-                    indicLanguageMenu
+                settingsRow("Bodhan language", controlWidth: meetingControlWidth) {
+                    indicLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
+                bodhanOutputMenu(model: appState.selectedMeetingTranscriptionBackend.model)
             } else if appState.selectedMeetingTranscriptionBackend.supportsWhisperLanguageSelection {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Whisper language", controlWidth: meetingControlWidth) {
-                    whisperLanguageMenu
+                    whisperLanguageMenu(model: appState.selectedMeetingTranscriptionBackend.model)
                 }
             }
         }
@@ -825,108 +1254,199 @@ struct SettingsView: View {
 
     private var dictationCleanupSettingsSection: some View {
         settingsSection("Dictation Cleanup") {
-            settingsRow(
-                "Cleanup backend",
-                description: cleanupBackendDescription,
-                controlWidth: meetingControlWidth
-            ) {
-                settingsMenu(
-                    selection: appState.selectedPostProcessorBackend.label,
-                    options: cleanupBackendOptions.map(\.label),
-                    disabledOptions: disabledCleanupBackendLabels
-                ) { label in
-                    if let option = cleanupBackendOptions.first(where: { $0.label == label }) {
-                        controller.selectPostProcessorBackend(option)
-                    }
-                }
+            settingsRow("AI transcript cleanup") {
+                settingsControl("transcript_cleanup")
             }
-            .id(FeatureTourTarget.cloudCleanupSetting.rawValue)
-            .featureTourTarget(.cloudCleanupSetting)
-            if !disabledCleanupBackendLabels.isEmpty {
-                settingsDescription("Gemma 4 cleanup is unavailable while Gemma 4 is the dictation model.")
-            }
-            if appState.selectedPostProcessorBackend == .local {
+            if appState.config.enablePostProcessor {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                    if downloadedPostProcOptions.isEmpty {
-                        compactActionButton("View cleanup models", systemImage: "arrow.right") {
-                            controller.showModels(category: .postProcessing)
-                        }
-                        .frame(width: meetingControlWidth, alignment: .trailing)
-                    } else {
-                        let selection = downloadedPostProcOptions.contains(where: { $0.id == appState.activePostProcessor.id })
-                            ? appState.activePostProcessor.label
-                            : (downloadedPostProcOptions.first?.label ?? "")
-                        settingsMenu(
-                            selection: selection,
-                            options: downloadedPostProcOptions.map(\.label)
-                        ) { label in
-                            if let option = downloadedPostProcOptions.first(where: { $0.label == label }) {
-                                controller.selectPostProcessor(option)
+                if cleanupModelUsesFixedPrompt {
+                    fixedCleanupPromptNotice
+                } else {
+                    cleanupPromptSettings
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Cleanup source",
+                    description: cleanupBackendDescription,
+                    controlWidth: meetingControlWidth
+                ) {
+                    settingsControl("cleanup_source")
+                }
+                .id(FeatureTourTarget.cloudCleanupSetting.rawValue)
+                .featureTourTarget(.cloudCleanupSetting)
+                if appState.selectedPostProcessorBackend.isOnDevice {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                        if onDeviceCleanupModels.isEmpty {
+                            compactActionButton("View cleanup models", systemImage: "arrow.right") {
+                                controller.showModels(category: .postProcessing)
                             }
-                        }
-                    }
-                }
-            } else if appState.selectedPostProcessorBackend == .gemma4LiteRT {
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                    if Gemma4LiteRTModelStore.isAvailableLocally() {
-                        Text("Gemma 4 E2B (Downloaded)")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(MuesliTheme.textSecondary)
                             .frame(width: meetingControlWidth, alignment: .trailing)
-                    } else {
-                        compactActionButton("View Gemma model", systemImage: "arrow.right") {
-                            controller.showModels(category: .postProcessing)
+                        } else {
+                            settingsControl("cleanup_on_device_model")
+                            .frame(height: 24)
                         }
-                        .frame(width: meetingControlWidth, alignment: .trailing)
                     }
+                    if gemmaCleanupIsUnavailable {
+                        Text("Gemma 4 is unavailable for cleanup while a Gemma 4 model is selected for dictation.")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
                 }
-            } else {
-                hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
+            }
+        }
+    }
+
+    private var quilSettingsSection: some View {
+        settingsSection("Quill", icon: QuillIcon.image()) {
+            settingsRow(
+                "Rewrite selected text",
+                description: "Highlight text to transform it. With no selection, Quill generates and pastes at the cursor."
+            ) {
+                settingsControl("quill")
+            }
+            if let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
+                isEnabled: appState.config.enableQuilMode
+            ) {
+                Text(quilPermissionMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.transcribing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Group {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow(
+                    "Play Quill sounds",
+                    description: "Play the activation and release cues for Quill mode."
+                ) {
+                    settingsControl("quill_sound")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Writing model source", description: "Shared by Quill and Computer Use writing tasks.", controlWidth: meetingControlWidth) {
+                    settingsControl("quill_source")
+                }
+                if selectedQuilBackend.isOnDevice {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Writing model", controlWidth: meetingControlWidth) {
+                        if quilLocalModels.isEmpty {
+                            compactActionButton("View local models", systemImage: "arrow.right") {
+                                controller.showModels(category: .quill)
+                            }
+                            .frame(width: meetingControlWidth, alignment: .trailing)
+                        } else {
+                            settingsControl("quill_local_model")
+                            .frame(height: 24)
+                        }
+                    }
+                } else {
+                    hostedQuilSettings(for: selectedQuilBackend)
+                }
+            }
+        }
+        .id(FeatureTourTarget.quillSettings.rawValue)
+        .featureTourTarget(.quillSettings)
+    }
+
+    @ViewBuilder
+    private func hostedQuilSettings(for backend: TranscriptCleanupBackendOption) -> some View {
+        if backend == .hosted(.chatGPT) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Account", controlWidth: meetingControlWidth) {
+                chatGPTAccountControl(selectMeetingSummaryBackend: false)
+            }
+        } else if backend == .hosted(.openAI) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("API Key", controlWidth: meetingControlWidth) {
+                PastableSecureField(
+                    text: appState.config.openAIAPIKey,
+                    placeholder: "sk-...",
+                    onChange: { value in controller.updateConfig { $0.openAIAPIKey = value } }
+                ).frame(height: 22)
+            }
+        } else if backend == .hosted(.anthropic) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("API Key", controlWidth: meetingControlWidth) {
+                PastableSecureField(
+                    text: appState.config.anthropicAPIKey,
+                    placeholder: "sk-ant-api...",
+                    onChange: { value in controller.updateConfig { $0.anthropicAPIKey = value } }
+                ).frame(height: 22)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.anthropicWorkspaceID,
+                    placeholder: "Optional workspace ID",
+                    onChange: { value in controller.updateConfig { $0.anthropicWorkspaceID = value } }
+                ).frame(height: 22)
+            }
+        } else if backend == .hosted(.openRouter) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Account", controlWidth: meetingControlWidth) {
+                openRouterAccountControl(selectMeetingSummaryBackend: false)
+            }
+        } else if backend == .hosted(.ollama) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.ollamaURL,
+                    placeholder: "http://localhost:11434",
+                    onChange: { value in controller.updateConfig { $0.ollamaURL = value } }
+                ).frame(height: 22)
+            }
+        } else if backend == .hosted(.lmStudio) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("LM Studio URL", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.lmStudioURL,
+                    placeholder: "http://localhost:1234",
+                    onChange: { value in controller.updateConfig { $0.lmStudioURL = value } }
+                ).frame(height: 22)
+            }
+        } else if backend == .hosted(.customLLM) {
+            customLLMSettingsRows(model: appState.config.quilModel) { value in
+                controller.updateConfig { $0.quilModel = value }
+            }
+        }
+        if backend != .hosted(.customLLM) {
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Writing model", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.quilModel,
+                    placeholder: TranscriptCleanupClient.defaultModel(for: backend)
+                ) { value in controller.updateConfig { $0.quilModel = value } }
             }
         }
     }
 
     private var cohereLanguageMenu: some View {
-        settingsMenu(
-            selection: selectedCohereLanguage.label,
-            options: CohereTranscribeLanguage.allCases.map(\.label)
-        ) { label in
-            guard let language = CohereTranscribeLanguage.allCases.first(where: { $0.label == label }) else { return }
-            controller.selectCohereLanguage(language)
-        }
+        settingsControl("cohere_language")
     }
 
     private var nemotron35LanguageMenu: some View {
-        settingsMenu(
-            selection: selectedNemotron35Language.label,
-            options: Nemotron35Language.allCases.map(\.label)
-        ) { label in
-            guard let language = Nemotron35Language.allCases.first(where: { $0.label == label }) else { return }
-            Task { await controller.setNemotron35Language(language) }
-        }
+        settingsControl("nemotron_language")
     }
 
-    private var whisperLanguageMenu: some View {
-        settingsMenu(
-            selection: selectedWhisperLanguage.label,
-            options: WhisperKitLanguage.allCases.map(\.label)
-        ) { label in
-            guard let language = WhisperKitLanguage.allCases.first(where: { $0.label == label }) else { return }
-            controller.selectWhisperLanguage(language)
-        }
+    private func whisperLanguageMenu(model: String) -> some View {
+        MuesliSettingControl(controller: controller, id: "whisper_language",
+            allowedChoiceIDs: Set(WhisperKitLanguage.choices(for: model).map(\.rawValue)))
     }
 
-    private var indicLanguageMenu: some View {
-        FixedWidthPopUp(
-            selection: selectedIndicASRLanguage.label,
-            options: IndicASRLanguage.allCases.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0, index < IndicASRLanguage.allCases.count else { return }
-                controller.selectIndicASRLanguage(IndicASRLanguage.allCases[index])
+    @ViewBuilder
+    private func bodhanOutputMenu(model: String) -> some View {
+        if BodhanModel(rawValue: model)?.isCore == false {
+            settingsRow("Bodhan output", controlWidth: meetingControlWidth) {
+                settingsControl("bodhan_output")
             }
-        )
+        }
+    }
+
+    private func indicLanguageMenu(model: String) -> some View {
+        return MuesliSettingControl(controller: controller, id: "bodhan_language",
+            allowedChoiceIDs: Set(BodhanLanguage.choices(for: model).map(\.rawValue)))
         .frame(height: 24)
     }
 
@@ -940,10 +1460,14 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorChatGPTModel,
-                    presets: SummaryModelPreset.chatGPTTranscriptCleanupModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_chatgpt_model")
+            }
+            let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
+            if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                    settingsControl("cleanup_thinking")
+                }
             }
         case .some(.openAI):
             Divider().background(MuesliTheme.surfaceBorder)
@@ -957,28 +1481,55 @@ struct SettingsView: View {
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorOpenAIModel,
-                    presets: SummaryModelPreset.openAIModels
-                ) { controller.updatePostProcessorModel($0, for: backend) }
+                settingsControl("cleanup_openai_model")
+            }
+            let model = TranscriptCleanupClient.configuredModel(for: backend, config: appState.config)
+            if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                    settingsControl("cleanup_thinking")
+                }
             }
             keyStatusRow(key: appState.config.openAIAPIKey)
-        case .some(.openRouter):
+        case .some(.anthropic):
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("API Key", controlWidth: meetingControlWidth) {
                 PastableSecureField(
-                    text: appState.config.openRouterAPIKey,
-                    placeholder: "sk-or-...",
-                    onChange: { val in controller.updateConfig { $0.openRouterAPIKey = val } }
+                    text: appState.config.anthropicAPIKey,
+                    placeholder: "sk-ant-api...",
+                    onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                 )
                 .frame(height: 22)
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Model preset", controlWidth: meetingControlWidth) {
-                settingsModelMenu(
-                    currentModel: appState.config.postProcessorOpenRouterModel,
-                    presets: SummaryModelPreset.openRouterModels
+            settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                settingsControl("cleanup_anthropic_model")
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                settingsModelTextField(
+                    currentModel: appState.config.postProcessorAnthropicModel,
+                    placeholder: "Optional model ID"
                 ) { controller.updatePostProcessorModel($0, for: backend) }
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                PastableTextField(
+                    text: appState.config.anthropicWorkspaceID,
+                    placeholder: "Optional workspace ID",
+                    onChange: { val in controller.updateConfig { $0.anthropicWorkspaceID = val } }
+                )
+                .frame(height: 22)
+            }
+            keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
+        case .some(.openRouter):
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Account", controlWidth: meetingControlWidth) {
+                openRouterAccountControl(selectMeetingSummaryBackend: false)
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            settingsRow("Model preset", controlWidth: meetingControlWidth) {
+                settingsControl("cleanup_openrouter_model")
             }
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
@@ -987,7 +1538,6 @@ struct SettingsView: View {
                     placeholder: "provider/model"
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
-            keyStatusRow(key: appState.config.openRouterAPIKey)
         case .some(.ollama):
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
@@ -1034,14 +1584,7 @@ struct SettingsView: View {
     private var cleanupPromptSettings: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             settingsRow("Cleanup preset", controlWidth: meetingControlWidth) {
-                FixedWidthPopUp(
-                    selection: selectedCleanupPromptName,
-                    options: cleanupPromptPresets.map(\.name),
-                    onSelectIndex: { index in
-                        guard index >= 0, index < cleanupPromptPresets.count else { return }
-                        controller.selectTranscriptCleanupPrompt(id: cleanupPromptPresets[index].id)
-                    }
-                )
+                settingsControl("cleanup_preset")
                 .frame(height: 24)
             }
 
@@ -1067,15 +1610,43 @@ struct SettingsView: View {
         }
     }
 
+    private var fixedCleanupPromptNotice: some View {
+        settingsRow(
+            "Cleanup prompt",
+            description: appState.selectedPostProcessorBackend == .gemma4LiteRT
+                ? "Muesli Pro Cleanup uses its trained cleanup instructions. Custom presets do not apply."
+                : (appState.activePostProcessor.inputFormat.isTrainedV12 ? "This model uses its trained cleanup instructions. Custom presets do not apply." : "S1-mini uses Superwhisper’s built-in normalization instructions."),
+            controlWidth: meetingControlWidth
+        ) {
+            Text("Built in")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: meetingControlWidth, alignment: .trailing)
+        }
+    }
+
     private var meetingSummarySettingsSection: some View {
         settingsSection("Meeting Summaries") {
-            settingsRow("Summary backend", controlWidth: meetingControlWidth) {
-                settingsMenu(
-                    selection: appState.selectedMeetingSummaryBackend.label,
-                    options: MeetingSummaryBackendOption.all.map(\.label)
-                ) { label in
-                    if let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) {
-                        controller.selectMeetingSummaryBackend(option)
+            settingsRow(
+                "Summary backend",
+                description: "Remote backends may receive meeting data.",
+                controlWidth: meetingControlWidth
+            ) {
+                VStack(alignment: .trailing, spacing: 4) {
+                    settingsControl("summary_source")
+                        .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
+                        .featureTourTarget(.meetingSummaryProvider)
+                        .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
+                    if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
+                       appState.selectedMeetingSummaryBackend != .claudeCode {
+                        Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
+                            .font(MuesliTheme.caption())
+                            .buttonStyle(.link)
+                            .alert("Couldn't Use Claude Code", isPresented: $isShowingInvalidClaudeCodeExecutableAlert) {
+                                Button("OK", role: .cancel) {}
+                            } message: {
+                                Text("The selected file isn't executable. Choose the installed Claude Code CLI.")
+                            }
                     }
                 }
             }
@@ -1087,10 +1658,16 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.chatGPTModel,
-                        presets: SummaryModelPreset.chatGPTModels
-                    ) { val in controller.updateConfig { $0.chatGPTModel = val } }
+                    settingsControl("summary_chatgpt_model")
+                }
+                let model = appState.config.chatGPTModel.isEmpty
+                    ? (SummaryModelPreset.chatGPTModels.first?.id ?? "")
+                    : appState.config.chatGPTModel
+                if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsControl("summary_thinking")
+                    }
                 }
             } else if appState.selectedMeetingSummaryBackend == .openAI {
                 settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -1103,12 +1680,80 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.openAIModel,
-                        presets: SummaryModelPreset.openAIModels
-                    ) { val in controller.updateConfig { $0.openAIModel = val } }
+                    settingsControl("summary_openai_model")
+                }
+                let model = appState.config.openAIModel.isEmpty
+                    ? (SummaryModelPreset.openAIModels.first?.id ?? "")
+                    : appState.config.openAIModel
+                if !ReasoningEffortPolicy.selectableEfforts(for: model).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsControl("summary_thinking")
+                    }
                 }
                 keyStatusRow(key: appState.config.openAIAPIKey)
+            } else if appState.selectedMeetingSummaryBackend == .anthropic {
+                settingsRow("API Key", description: "Use an Anthropic API key from the Claude Console.", controlWidth: meetingControlWidth) {
+                    PastableSecureField(
+                        text: appState.config.anthropicAPIKey,
+                        placeholder: "sk-ant-api...",
+                        onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
+                    )
+                    .frame(height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Model", controlWidth: meetingControlWidth) {
+                    settingsControl("summary_anthropic_model")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Custom model ID", description: "Use a Claude API model ID that is not in the list.", controlWidth: meetingControlWidth) {
+                    settingsModelTextField(
+                        currentModel: appState.config.anthropicModel,
+                        placeholder: "Optional model ID"
+                    ) { val in controller.updateConfig { $0.anthropicModel = val } }
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Workspace ID", description: "Only needed for API keys that are not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                    PastableTextField(
+                        text: appState.config.anthropicWorkspaceID,
+                        placeholder: "Optional workspace ID",
+                        onChange: { val in controller.updateConfig { $0.anthropicWorkspaceID = val } }
+                    )
+                    .frame(height: 22)
+                }
+                keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
+            } else if appState.selectedMeetingSummaryBackend == .claudeCode {
+                settingsRow("Account", description: "Uses the Claude Code sign-in on this Mac.", controlWidth: meetingControlWidth) {
+                    claudeCodeAccountControl()
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Model", description: "Uses your Claude Code model preference, or your account's default.", controlWidth: meetingControlWidth) {
+                    claudeCodeModelControl()
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                DisclosureGroup(isExpanded: $isShowingClaudeCodeAdvanced) {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                        settingsRow("Custom executable path", description: "Override the Claude Code CLI Muesli detected.", controlWidth: meetingControlWidth) {
+                            PastableTextField(
+                                text: appState.config.claudeCodeExecutablePath,
+                                placeholder: "Optional path",
+                                onChange: { val in controller.updateConfig { $0.claudeCodeExecutablePath = val } }
+                            )
+                            .frame(height: 22)
+                        }
+                        settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                            settingsModelTextField(
+                                currentModel: appState.config.claudeCodeModel,
+                                placeholder: "Optional model ID"
+                            ) { val in controller.updateConfig { $0.claudeCodeModel = val } }
+                        }
+                    }
+                    .padding(.top, MuesliTheme.spacing12)
+                } label: {
+                    Text("Advanced")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
             } else if appState.selectedMeetingSummaryBackend == .ollama {
                 settingsRow("Ollama URL", controlWidth: meetingControlWidth) {
                     PastableTextField(
@@ -1146,19 +1791,34 @@ struct SettingsView: View {
                     val in controller.updateConfig { $0.customLLMModel = val }
                 }
             } else {
-                settingsRow("API Key", controlWidth: meetingControlWidth) {
-                    PastableSecureField(
-                        text: appState.config.openRouterAPIKey,
-                        placeholder: "sk-or-...",
-                        onChange: { val in controller.updateConfig { $0.openRouterAPIKey = val } }
-                    )
-                    .frame(height: 22)
+                settingsRow("Account", controlWidth: meetingControlWidth) {
+                    openRouterAccountControl()
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Model", controlWidth: meetingControlWidth) {
                     openRouterFreeModelMenu
                 }
-                keyStatusRow(key: appState.config.openRouterAPIKey)
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Custom model ID", controlWidth: meetingControlWidth) {
+                    settingsModelTextField(
+                        currentModel: appState.config.openRouterModel,
+                        placeholder: "provider/model"
+                    ) { val in controller.updateConfig { $0.openRouterModel = val } }
+                }
+            }
+            if ![MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(appState.selectedMeetingSummaryBackend) {
+                Divider().background(MuesliTheme.surfaceBorder)
+                DisclosureGroup(isExpanded: $isShowingSummaryOutputAdvanced) {
+                    settingsRow("Output token limit", controlWidth: meetingControlWidth) {
+                        settingsControl("summary_output_limit")
+                    }
+                    .padding(.top, MuesliTheme.spacing12)
+                    settingsDescription("No added limit lets the model finish naturally. Provider and model limits still apply.")
+                } label: {
+                    Text("Advanced")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
             }
         }
     }
@@ -1167,13 +1827,7 @@ struct SettingsView: View {
     private func customLLMSettingsRows(model: String, onModelChange: @escaping (String) -> Void) -> some View {
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Format", controlWidth: meetingControlWidth) {
-            settingsMenu(
-                selection: CustomLLMFormat(rawValue: appState.config.customLLMFormat)?.label ?? CustomLLMFormat.openAI.label,
-                options: CustomLLMFormat.allCases.map(\.label)
-            ) { label in
-                guard let format = CustomLLMFormat.allCases.first(where: { $0.label == label }) else { return }
-                controller.updateConfig { $0.customLLMFormat = format.rawValue }
-            }
+            settingsControl("custom_llm_format")
         }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Endpoint", controlWidth: meetingControlWidth) {
@@ -1186,6 +1840,9 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
+        settingsDescription(CustomLLMConnectionGuidance.endpointHelp)
+            .lineLimit(1)
+            .help("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
@@ -1198,6 +1855,68 @@ struct SettingsView: View {
             .frame(height: 22)
         }
         Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("API Key Command", controlWidth: meetingControlWidth) {
+            PastableTextField(
+                text: appState.config.customLLMAPIKeyCommand,
+                placeholder: "e.g. /opt/homebrew/bin/vault print token",
+                commitsOnEndEditing: true,
+                onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
+            )
+            .frame(height: 22)
+            .help("Runs shell code via /bin/sh with your user permissions before each request. Use an absolute executable path. Non-empty output replaces the saved API key; failures fall back to it.")
+        }
+        settingsDescription("Optional shell command for an API key; falls back to the saved key.")
+            .lineLimit(1)
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow(
+            "Headers",
+            description: "Optional authentication or routing headers.",
+            controlWidth: meetingControlWidth
+        ) {
+            VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
+                ForEach(appState.config.customLLMHeaders) { header in
+                    HStack(spacing: 6) {
+                        PastableTextField(
+                            text: header.name,
+                            placeholder: "Header name",
+                            onChange: { updateCustomLLMHeader(id: header.id, name: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        PastableTextField(
+                            text: header.value,
+                            placeholder: "Value",
+                            onChange: { updateCustomLLMHeader(id: header.id, value: $0) }
+                        )
+                        .frame(width: 116, height: 22)
+                        Button {
+                            removeCustomLLMHeader(id: header.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .frame(width: 20, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove header")
+                    }
+                }
+                compactActionButton("Add Header", systemImage: "plus") {
+                    controller.updateConfig {
+                        $0.customLLMHeaders.append(CustomLLMRequestHeader())
+                    }
+                }
+                .disabled(appState.config.customLLMHeaders.count >= CustomLLMRequestHeaders.maximumCount)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(width: meetingControlWidth, alignment: .trailing)
+            .padding(.vertical, 5)
+        }
+        .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
+        if let message = customLLMHeadersValidationMessage {
+            settingsDescription(message)
+                .foregroundStyle(MuesliTheme.recording)
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
             settingsModelTextField(
                 currentModel: model,
@@ -1205,6 +1924,29 @@ struct SettingsView: View {
                     ? "claude-3-5-sonnet-20241022"
                     : "custom-model-id"
             ) { val in onModelChange(val) }
+        }
+    }
+
+    private var customLLMHeadersValidationMessage: String? {
+        do {
+            _ = try CustomLLMRequestHeaders.validated(appState.config.customLLMHeaders)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private func updateCustomLLMHeader(id: String, name: String? = nil, value: String? = nil) {
+        controller.updateConfig { config in
+            guard let index = config.customLLMHeaders.firstIndex(where: { $0.id == id }) else { return }
+            if let name { config.customLLMHeaders[index].name = name }
+            if let value { config.customLLMHeaders[index].value = value }
+        }
+    }
+
+    private func removeCustomLLMHeader(id: String) {
+        controller.updateConfig {
+            $0.customLLMHeaders.removeAll { $0.id == id }
         }
     }
 
@@ -1217,51 +1959,45 @@ struct SettingsView: View {
                     "Microphone",
                     description: "Automatic uses system input, or Mac mic with AirPods."
                 ) {
-                    let options = dictationMicrophoneOptions
-                    FixedWidthPopUp(
-                        selection: selectedDictationMicrophoneLabel,
-                        options: options.map(\.label),
-                        onSelectIndex: { index in
-                            guard index >= 0, index < options.count else { return }
-                            controller.selectDictationInputDeviceUID(options[index].uid)
-                            refreshAudioInputDevices()
-                        }
-                    )
+                    settingsControl("dictation_microphone")
                     .frame(height: 24)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("AI transcript cleanup") {
-                    settingsSwitch(isOn: appState.config.enablePostProcessor) { newValue in
-                        controller.setPostProcessorEnabled(newValue)
-                    }
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                cleanupPromptSettings
-                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow(
                     "Dictionary suggestions",
-                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                    description: "Suggest words from corrections using Accessibility."
                 ) {
-                    settingsSwitch(isOn: appState.config.enableDictionaryCorrectionPrompts) { newValue in
-                        handleDictionaryCorrectionPromptsToggle(newValue)
-                    }
+                    settingsControl("dictionary_suggestions")
                     .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
             }
 
             dictationCleanupSettingsSection
 
+            settingsSection("App Formatting") {
+                DictationFormattingSettingsView(appState: appState, controller: controller)
+            }
+
+            quilSettingsSection
+
+            if CotypistSetup.isAvailable {
+                cotypistSettingsSection
+            }
+
             settingsSection("Advanced") {
+                settingsRow("Paste shortcut", controlWidth: meetingControlWidth) {
+                    PasteShortcutControl(controller: controller, appState: appState)
+                        .help("Custom applies to keyboard paste in Dictation, Quill, and Computer Use. Browser Paste commands and live streaming are unchanged. Re-record custom shortcuts after changing keyboard layouts.")
+                }
+                settingsDescription("Uses your keyboard layout, or a custom paste shortcut.")
+                    .lineLimit(1)
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Pause media during dictation") {
-                    settingsSwitch(isOn: appState.config.pauseMediaDuringDictation) { newValue in
-                        controller.updateConfig { $0.pauseMediaDuringDictation = newValue }
-                    }
+                    settingsControl("pause_media")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Mute system audio during dictation") {
-                    settingsSwitch(isOn: appState.config.muteSystemAudioDuringDictation) { newValue in
-                        controller.updateConfig { $0.muteSystemAudioDuringDictation = newValue }
-                    }
+                    settingsControl("mute_audio")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
@@ -1271,41 +2007,417 @@ struct SettingsView: View {
         }
     }
 
+    /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
+    /// selects it, or opens Keyboard settings with a guide until the user has added it.
+    private var cotypistSettingsSection: some View {
+        settingsSection("Cotypist (experimental)") {
+            settingsRow("Typeahead suggestions", description: cotypistStatus) {
+                settingsControl("cotypist_enabled")
+            }
+            if cotypist.state == .addingInputSource {
+                compactActionButton("Show setup guide", systemImage: "keyboard") {
+                    cotypist.showGuide()
+                }
+                .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.modelState != .ready {
+                cotypistModelRow
+                    .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.state == .on {
+                cotypistKeyHints
+                    .padding(.bottom, MuesliTheme.spacing12)
+                cotypistOptions
+            }
+        }
+    }
+
+    /// Shown only while Cotypist is on: off, none of them do anything.
+    @ViewBuilder
+    private var cotypistOptions: some View {
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistModelLine
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Suggestion length", description: "How far ahead each suggestion reaches.") {
+            settingsControl("cotypist_length")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("How often to suggest", description: "Fewer shows only suggestions the model is sure of.") {
+            settingsControl("cotypist_frequency")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Finish half-typed words", description: appState.config.cotypistCompleteWords
+            ? "Pause inside a word to see the rest of it."
+            : "Off: suggestions appear only after a space or punctuation.") {
+            settingsControl("cotypist_complete_words")
+        }
+        if appState.config.cotypistCompleteWords {
+            cotypistSubRow("Pause before completing") {
+                settingsControl("cotypist_word_pause")
+            }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Use on-screen text", description: "Reads the window around the text field. Off while a meeting records.") {
+            settingsControl("cotypist_screen_context")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistQuietApps
+            .padding(.top, MuesliTheme.spacing4)
+    }
+
+    private var cotypistStatus: String {
+        switch cotypist.state {
+        case .on:
+            "Suggests the next words as you type, in any app."
+        case .addingInputSource:
+            cotypist.suggestsRelogin
+                ? "\(CotypistSetup.displayName) isn't listed yet. Log out and back in, then turn this on again."
+                : "Add \(CotypistSetup.displayName) in Keyboard settings. It turns on as soon as it's added."
+        case .off:
+            "Local typeahead in every app, running on this Mac."
+        }
+    }
+
+    /// The selected typeahead model, until it's on this Mac: its size, download progress, or what
+    /// went wrong. Models › Cotypist has the full choice.
+    private var cotypistModelRow: some View {
+        let model = appState.config.cotypistModel
+        return HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "cpu")
+                .font(.system(size: 14))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Typeahead model: \(model.label)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                switch cotypist.modelState {
+                case .downloading(let fraction):
+                    ProgressView(value: fraction).tint(MuesliTheme.accent)
+                    Text("Downloading… \(Int(fraction * 100))% of \(model.sizeLabel)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                case .failed(let message):
+                    Text("Download failed: \(message)")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.recording)
+                        .lineLimit(2)
+                case .unavailable:
+                    Text("Coming soon. Choose another model in Models.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                default:
+                    Text("\(model.sizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                }
+            }
+            Spacer(minLength: 0)
+            switch cotypist.modelState {
+            case .missing, .failed:
+                compactActionButton("Download", systemImage: "arrow.down.circle") { cotypist.downloadModelIfNeeded() }
+            default:
+                compactActionButton("Models", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    /// The model in use, with a way to change it, once Cotypist is set up.
+    private var cotypistModelLine: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Text("Model")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Spacer()
+            Text(appState.config.cotypistModel.label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            compactActionButton("Change", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+        }
+        .frame(minHeight: 32)
+    }
+
+    /// The keys, shown once Cotypist is on.
+    private var cotypistKeyHints: some View {
+        HStack(spacing: MuesliTheme.spacing16) {
+            cotypistKeyHint(["Tab"], "Accept")
+            cotypistKeyHint(["⌥", "→"], "Accept one word")
+            Text("Keep typing to ignore")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func cotypistKeyHint(_ keys: [String], _ action: String) -> some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+                }
+            }
+            Text(action)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A setting that refines the row above it: indented, without its own divider.
+    private func cotypistSubRow(_ label: String, @ViewBuilder control: () -> some View) -> some View {
+        HStack {
+            Text(label)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer(minLength: 20)
+            ZStack(alignment: .trailing) {
+                Color.clear.frame(width: controlWidth, height: 1)
+                control().frame(maxWidth: controlWidth)
+            }
+        }
+        .padding(.leading, MuesliTheme.spacing16)
+        .frame(minHeight: 32)
+        .padding(.bottom, MuesliTheme.spacing8)
+    }
+
+    // MARK: Cotypist quiet apps
+
+    private var cotypistQuietApps: some View {
+        let quiet = appState.config.cotypistDisabledApps
+        let recommended = CotypistQuietApps.recommended(excluding: quiet)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            settingsRow("Quiet in these apps", description: "Cotypist won't suggest anything in apps you add here.") {
+                cotypistAddAppMenu(excluding: quiet)
+            }
+            if quiet.isEmpty {
+                cotypistQuietAppsEmptyState
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: MuesliTheme.spacing8)],
+                          alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(quiet, id: \.self) { bundleID in
+                        cotypistQuietAppChip(bundleID)
+                    }
+                }
+            }
+            if !recommended.isEmpty {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text("Suggested")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    ForEach(recommended, id: \.self) { bundleID in
+                        cotypistRecommendedAppButton(bundleID)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.bottom, MuesliTheme.spacing4)
+    }
+
+    private var cotypistQuietAppsEmptyState: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("On in every app")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Text("Add password managers, or apps with their own autocomplete like code editors.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        )
+    }
+
+    private func cotypistQuietAppChip(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return HStack(spacing: MuesliTheme.spacing8) {
+            cotypistAppIcon(bundleID, size: 20)
+            Text(name)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button {
+                controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "off")
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .background(MuesliTheme.surfaceBorder.opacity(0.6))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Turn Cotypist back on in \(name)")
+            .accessibilityLabel("Remove \(name)")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+    }
+
+    private func cotypistRecommendedAppButton(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return Button {
+            controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on")
+        } label: {
+            HStack(spacing: 5) {
+                cotypistAppIcon(bundleID, size: 14)
+                Text(name).lineLimit(1)
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Keep Cotypist quiet in \(name)")
+    }
+
+    /// Open apps first, then any app from the Applications folder.
+    private func cotypistAddAppMenu(excluding quiet: [String]) -> some View {
+        Menu {
+            let running = CotypistQuietApps.running(excluding: quiet)
+            if !running.isEmpty {
+                Section("Open apps") {
+                    ForEach(running, id: \.bundleID) { app in
+                        Button {
+                            controller.setSettingFromUI(CotypistQuietApps.settingID(app.bundleID), value: "on")
+                        } label: {
+                            Label {
+                                Text(app.name)
+                            } icon: {
+                                if let icon = CotypistQuietApps.menuIcon(of: app.bundleID) { Image(nsImage: icon) }
+                            }
+                        }
+                    }
+                }
+            }
+            Button("Choose from Applications…") { chooseCotypistQuietApp(excluding: quiet) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
+                Text("Add app")
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private func chooseCotypistQuietApp(excluding quiet: [String]) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Cotypist won't suggest anything in the apps you choose."
+        panel.begin { response in
+            guard response == .OK else { return }
+            let chosen = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }.filter { !quiet.contains($0) }
+            CotypistQuietApps.chosen.append(contentsOf: chosen)
+            for bundleID in chosen { controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on") }
+        }
+    }
+
+    @ViewBuilder
+    private func cotypistAppIcon(_ bundleID: String, size: CGFloat) -> some View {
+        if let icon = CotypistQuietApps.icon(of: bundleID) {
+            Image(nsImage: icon).resizable().scaledToFit().frame(width: size, height: size)
+        } else {
+            Image(systemName: "app.dashed")
+                .resizable().scaledToFit().frame(width: size, height: size)
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+    }
+
+
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
                 settingsRow("Enable planner", controlWidth: meetingControlWidth) {
-                    settingsSwitch(isOn: appState.config.enableComputerUsePlanner) { newValue in
-                        controller.updateConfig { $0.enableComputerUsePlanner = newValue }
+                    settingsControl("cua_planner")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                let plannerModel = ComputerUsePlannerClient.plannerModel(for: appState.config)
+                let isLocalPlanner = ComputerUseLocalPlanner.isLocal(plannerModel)
+                settingsRow("Planner backend", controlWidth: meetingControlWidth) {
+                    settingsControl("cua_backend")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                if !isLocalPlanner {
+                    settingsRow("Account", controlWidth: meetingControlWidth) {
+                        chatGPTAccountControl(selectMeetingSummaryBackend: false)
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                }
+                settingsRow("Planner model", controlWidth: meetingControlWidth) {
+                    MuesliSettingControl(controller: controller, id: "cua_model",
+                        allowedChoiceIDs: isLocalPlanner
+                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
+                }
+                if isLocalPlanner {
+                    Text("Planning runs on this Mac. No ChatGPT sign-in is needed.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                } else if !ComputerUseLocalPlanner.models.contains(where: \.available) {
+                    Text("Download Gemma in Models to enable the On-device backend.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Thinking", controlWidth: meetingControlWidth) {
+                        settingsControl("cua_thinking")
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Account", controlWidth: meetingControlWidth) {
-                    chatGPTAccountControl()
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Planner model", controlWidth: meetingControlWidth) {
-                    settingsModelMenu(
-                        currentModel: appState.config.computerUsePlannerModel,
-                        presets: SummaryModelPreset.computerUsePlannerModels
-                    ) { val in controller.updateConfig { $0.computerUsePlannerModel = val } }
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Timeout", controlWidth: meetingControlWidth) {
-                    Stepper(
+                settingsRow("Execution timeout", controlWidth: meetingControlWidth) {
+                    integerInput(
+                        label: "Computer use execution timeout",
                         value: Binding(
                             get: { max(appState.config.computerUseTimeoutSeconds, 1) },
                             set: { newValue in
                                 controller.updateConfig { $0.computerUseTimeoutSeconds = max(newValue, 1) }
                             }
                         ),
-                        in: 1...600,
-                        step: 15
-                    ) {
-                        Text("\(max(appState.config.computerUseTimeoutSeconds, 1)) seconds")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
+                        range: 1...600,
+                        step: 15,
+                        unit: { $0 == 1 ? "second" : "seconds" }
+                    ).help("Limits desktop observation and actions. Model thinking and time spent answering questions are excluded.")
                 }
             }
         }
@@ -1323,13 +2435,12 @@ struct SettingsView: View {
 
             settingsSection("Meeting Notes") {
                 settingsRow("Default template", controlWidth: meetingControlWidth) {
-                    meetingTemplateMenu(selectionID: appState.config.defaultMeetingTemplateID) { id in
-                        controller.updateDefaultMeetingTemplate(id: id)
-                    }
+                    settingsControl("meeting_template")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Summary retries", controlWidth: meetingControlWidth) {
-                    Stepper(
+                    integerInput(
+                        label: "Summary retries",
                         value: Binding(
                             get: {
                                 MeetingSummaryRetryPolicy.clampedRetryCount(appState.config.meetingSummaryRetryCount)
@@ -1340,12 +2451,9 @@ struct SettingsView: View {
                                 }
                             }
                         ),
-                        in: 0...MeetingSummaryRetryPolicy.maximumRetryCount
-                    ) {
-                        Text(summaryRetryLabel(appState.config.meetingSummaryRetryCount))
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                    }
+                        range: 0...MeetingSummaryRetryPolicy.maximumRetryCount,
+                        unit: { $0 == 1 ? "retry" : "retries" }
+                    )
                 }
                 settingsDescription("Retry transient AI summary failures before saving failed notes.")
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1358,30 +2466,16 @@ struct SettingsView: View {
 
             settingsSection("Recording") {
                 settingsRow("Auto-record calendar meetings") {
-                    settingsSwitch(isOn: appState.config.autoRecordMeetings) { newValue in
-                        controller.updateConfig { $0.autoRecordMeetings = newValue }
-                    }
+                    settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
-                    settingsMenu(
-                        selection: recordingSaveLabel(for: appState.config.meetingRecordingSavePolicy),
-                        options: MeetingRecordingSavePolicy.allCases.map(recordingSaveLabel(for:))
-                    ) { label in
-                        guard let policy = recordingSavePolicy(for: label) else { return }
-                        controller.updateConfig { $0.meetingRecordingSavePolicy = policy }
-                    }
+                    settingsControl("recording_policy")
                 }
                 if appState.config.meetingRecordingSavePolicy != .never {
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Recording format") {
-                        settingsMenu(
-                            selection: appState.config.resolvedMeetingRecordingFileFormat.displayName,
-                            options: MeetingRecordingFileFormat.allCases.map(recordingFileFormatLabel(for:))
-                        ) { label in
-                            guard let format = recordingFileFormat(for: label) else { return }
-                            controller.updateConfig { $0.meetingRecordingFileFormat = format.rawValue }
-                        }
+                        settingsControl("recording_format")
                     }
                     settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
@@ -1389,9 +2483,7 @@ struct SettingsView: View {
 
             settingsSection("Auto Export") {
                 settingsRow("Auto-export meetings") {
-                    settingsSwitch(isOn: appState.config.autoExportMarkdownEnabled) { newValue in
-                        controller.updateConfig { $0.autoExportMarkdownEnabled = newValue }
-                    }
+                    settingsControl("auto_export_meetings")
                 }
                 if appState.config.autoExportMarkdownEnabled {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -1400,24 +2492,11 @@ struct SettingsView: View {
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Content") {
-                        settingsMenu(
-                            selection: appState.config.resolvedAutoExportMarkdownContent.displayName,
-                            options: MeetingExportContent.allCases.map(\.displayName)
-                        ) { label in
-                            guard let index = MeetingExportContent.allCases.firstIndex(where: { $0.displayName == label }) else { return }
-                            let content = MeetingExportContent.allCases[index]
-                            controller.updateConfig { $0.autoExportMarkdownContent = content.rawValue }
-                        }
+                        settingsControl("export_content")
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("File format") {
-                        settingsMenu(
-                            selection: appState.config.resolvedAutoExportFileFormat.displayName,
-                            options: MeetingAutoExportFileFormat.allCases.map(\.displayName)
-                        ) { label in
-                            guard let format = MeetingAutoExportFileFormat.allCases.first(where: { $0.displayName == label }) else { return }
-                            controller.updateConfig { $0.autoExportFileFormat = format.rawValue }
-                        }
+                        settingsControl("export_format")
                     }
                 }
                 Text("Automatically saves each completed meeting to the chosen folder in the selected format.")
@@ -1428,9 +2507,7 @@ struct SettingsView: View {
 
             settingsSection("Meeting Notifications") {
                 settingsRow("Scheduled meetings") {
-                    settingsSwitch(isOn: appState.config.showScheduledMeetingNotifications) { newValue in
-                        controller.updateConfig { $0.showScheduledMeetingNotifications = newValue }
-                    }
+                    settingsControl("meeting_reminders")
                 }
                 settingsDescription("Show notifications for calendar meetings with a join link.")
 
@@ -1438,13 +2515,7 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
 
                     settingsRow("Reminder timing") {
-                        settingsMenu(
-                            selection: scheduledMeetingLeadTimeLabel(for: appState.config.scheduledMeetingNotificationLeadTime),
-                            options: ScheduledMeetingNotificationLeadTime.allCases.map(scheduledMeetingLeadTimeLabel(for:))
-                        ) { label in
-                            guard let leadTime = scheduledMeetingLeadTime(for: label) else { return }
-                            controller.updateConfig { $0.scheduledMeetingNotificationLeadTime = leadTime }
-                        }
+                        settingsControl("meeting_reminder_time")
                     }
                     settingsDescription("At start time avoids early calendar-only prompts before you join.")
                 }
@@ -1452,22 +2523,14 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
 
                 settingsRow("Default action") {
-                    settingsMenu(
-                        selection: appState.config.meetingJoinDefaultAction.buttonLabel,
-                        options: MeetingJoinDefaultAction.allCases.map(\.buttonLabel)
-                    ) { label in
-                        guard let action = meetingJoinDefaultAction(for: label) else { return }
-                        controller.updateConfig { $0.meetingJoinDefaultAction = action }
-                    }
+                    settingsControl("meeting_join_action")
                 }
                 settingsDescription("Primary button for notifications and Coming Up. Pick “Transcribe Only” if you join in another browser.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
                 settingsRow("Auto-detected meetings") {
-                    settingsSwitch(isOn: appState.config.showMeetingDetectionNotification) { newValue in
-                        controller.updateConfig { $0.showMeetingDetectionNotification = newValue }
-                    }
+                    settingsControl("meeting_detection")
                 }
                 settingsDescription("Show notifications when a call is detected from browser, camera, microphone, or app audio activity.")
 
@@ -1478,34 +2541,46 @@ struct SettingsView: View {
             }
 
             settingsSection("Calendars") {
-                settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
-                    settingsMenu(
-                        selection: selectedUpcomingMeetingsWindow.label,
-                        options: UpcomingMeetingsWindow.allCases.map(\.label)
-                    ) { label in
-                        guard let window = UpcomingMeetingsWindow.allCases.first(where: { $0.label == label }) else { return }
-                        controller.updateUpcomingMeetingsWindow(dayCount: window.dayCount)
+                settingsRow("Calendar access", controlWidth: meetingControlWidth) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        if calendarPermission.granted {
+                            Text("Granted")
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.success)
+                        } else {
+                            Button(calendarPermission.requesting ? "Requesting…" : (calendarPermission.canRequest ? "Allow Access" : "Open Settings"), action: requestCalendarPermission)
+                                .buttonStyle(.borderedProminent)
+                                .disabled(calendarPermission.requesting)
+                        }
                     }
                 }
-                settingsDescription("Controls how many calendar days appear in Coming Up, the menu bar, and scheduled meeting checks.")
+                if !calendarPermission.granted {
+                    settingsDescription(calendarPermission.canRequest
+                        ? "Show meetings from calendars on your Mac."
+                        : "Allow full Calendar access in System Settings.")
+                }
+                if let errorMessage = calendarPermission.errorMessage {
+                    Text(errorMessage)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
+                    settingsControl("upcoming_meetings")
+                }
+                .help("How far ahead to show scheduled meetings and check meeting reminders.")
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Only show events with a meeting link", controlWidth: meetingControlWidth) {
+                    settingsControl("calendar_meeting_links_only")
+                }
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
-                    .padding(.bottom, MuesliTheme.spacing8)
-            }
-
-            if appState.isGoogleCalendarAvailable {
-                settingsSection("Calendar") {
-                    settingsRow("Google Calendar") {
-                        googleCalendarControl
-                    }
-                }
             }
 
             settingsSection("Advanced") {
                 settingsRow("Enable post-meeting hook", controlWidth: meetingControlWidth) {
-                    settingsSwitch(isOn: appState.config.meetingHookEnabled) { newValue in
-                        controller.updateConfig { $0.meetingHookEnabled = newValue }
-                    }
+                    settingsControl("meeting_hook")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Hook script", controlWidth: meetingControlWidth) {
@@ -1526,43 +2601,40 @@ struct SettingsView: View {
 
     private var appearanceSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("Floating Indicator") {
-                settingsRow("Show floating indicator") {
-                    settingsSwitch(isOn: appState.config.showFloatingIndicator) { newValue in
-                        controller.updateConfig { $0.showFloatingIndicator = newValue }
-                        controller.refreshIndicatorVisibility()
-                    }
+            settingsSection("Recording indicator") {
+                RecordingIndicatorStylePicker(selection: appState.config.recordingIndicatorStyle,
+                    accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
+                    controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Show hotkey on floating indicator") {
-                    settingsSwitch(isOn: appState.config.showHotkeyOnFloatingIndicator) { newValue in
-                        controller.updateConfig { $0.showHotkeyOnFloatingIndicator = newValue }
+                .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
+                .padding(.bottom, 12)
+                if appState.config.recordingIndicatorStyle == .notch {
+                    settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                    settingsDescription("On external displays, the notch appears at the top center.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    settingsRow("Keep visible when idle") {
+                        settingsControl("show_floating_indicator")
                     }
-                    .disabled(!appState.config.showFloatingIndicator)
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Indicator position") {
-                    let isCustom = appState.config.indicatorAnchor == .custom
-                    let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
-                    let options = (isCustom ? [customIndicatorPositionLabel] : [])
-                        + IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
-                    settingsMenu(
-                        selection: selection,
-                        options: options
-                    ) { label in
-                        if label == customIndicatorPositionLabel { return }
-                        guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
-                        controller.updateConfig { $0.indicatorAnchor = anchor }
-                        controller.refreshIndicatorVisibility()
+                    settingsDescription("When off, appears only during recording and processing.")
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Position") {
+                        settingsControl("indicator_position")
+                    }
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    settingsRow("Show keyboard shortcut on hover") {
+                        settingsControl("show_hotkey_hover")
+                        .disabled(!appState.config.showFloatingIndicator)
                     }
                 }
             }
 
             settingsSection("Appearance") {
-                settingsRow("Dark mode") {
-                    settingsSwitch(isOn: appState.config.darkMode) { newValue in
-                        controller.updateConfig { $0.darkMode = newValue }
-                    }
+                settingsRow("Theme") {
+                    settingsControl("appearance")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
@@ -1570,9 +2642,7 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Show hotkey in menu bar") {
-                    settingsSwitch(isOn: appState.config.showHotkeyInMenuBar) { newValue in
-                        controller.updateConfig { $0.showHotkeyInMenuBar = newValue }
-                    }
+                    settingsControl("show_hotkey_menu")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Accent color") {
@@ -1580,15 +2650,11 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Play sound effects") {
-                    settingsSwitch(isOn: appState.config.soundEnabled) { newValue in
-                        controller.updateConfig { $0.soundEnabled = newValue }
-                    }
+                    settingsControl("sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Show next meeting in menu bar") {
-                    settingsSwitch(isOn: appState.config.showNextMeetingInMenuBar) { newValue in
-                        controller.updateConfig { $0.showNextMeetingInMenuBar = newValue }
-                    }
+                    settingsControl("show_next_meeting")
                 }
             }
 
@@ -1617,13 +2683,13 @@ struct SettingsView: View {
 
     private var glassTintPicker: some View {
         HStack(spacing: 6) {
-            ForEach(Self.accentPresets, id: \.hex) { preset in
+            ForEach(MuesliSettings.accentPresets, id: \.hex) { preset in
                 let isSelected = appState.config.recordingColorHex.lowercased() == preset.hex
                 Button {
-                    controller.updateConfig { $0.recordingColorHex = preset.hex }
+                    controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
-                        .fill(Color(hex: preset.hex))
+                        .fill(preset.hex == "1e1e2e" ? MuesliTheme.defaultAccent : Color(hex: preset.hex))
                         .frame(width: 22, height: 22)
                         .overlay(
                             Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
@@ -1631,9 +2697,18 @@ struct SettingsView: View {
                         .overlay(
                             Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
                         )
+                        .overlay {
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .help(preset.name)
+                .help(preset.hex == "1e1e2e" ? "Default (adaptive blue)" : preset.name)
+                .accessibilityLabel(preset.name)
+                .accessibilityValue(isSelected ? "Selected" : "Not selected")
             }
         }
     }
@@ -1644,7 +2719,7 @@ struct SettingsView: View {
                 ForEach(MenuBarIconRenderer.options, id: \.id) { option in
                     let isSelected = appState.config.menuBarIcon == option.id
                     Button {
-                        controller.updateConfig { $0.menuBarIcon = option.id }
+                        controller.setSettingFromUI("menu_icon", value: option.id)
                     } label: {
                         Group {
                             if option.id == "muesli",
@@ -1676,28 +2751,99 @@ struct SettingsView: View {
         }
     }
 
+    private func claudeCodeAccountControl() -> some View {
+        VStack(alignment: .center, spacing: 5) {
+            switch claudeCodeAuthStatus {
+            case .signedIn:
+                Label("Connected to Claude Code", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(MuesliTheme.success)
+            case .unavailable:
+                Label("Claude Code unavailable", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            case .signedOut, .unknown:
+                if isWaitingForClaudeCodeSignIn {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Finish sign-in in Terminal or your browser")
+                    }
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                } else {
+                    ClaudeCodeSignInButton(compact: true) { beginClaudeCodeSignIn() }
+                }
+                Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
+                    .font(MuesliTheme.caption())
+                    .buttonStyle(.plain)
+            case nil:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking Claude Code…")
+                }
+                .foregroundStyle(MuesliTheme.textSecondary)
+            }
+            if let claudeCodeSignInError {
+                Text(claudeCodeSignInError)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(MuesliTheme.caption())
+        .frame(maxWidth: .infinity, alignment: .center)
+        .task(id: appState.config.claudeCodeExecutablePath) {
+            await refreshClaudeCodeAuthStatus()
+        }
+        .task(id: isWaitingForClaudeCodeSignIn) {
+            guard isWaitingForClaudeCodeSignIn else { return }
+            for _ in 0..<90 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                await refreshClaudeCodeAuthStatus()
+                if claudeCodeAuthStatus == .signedIn || claudeCodeAuthStatus == .unavailable {
+                    isWaitingForClaudeCodeSignIn = false
+                    return
+                }
+            }
+            isWaitingForClaudeCodeSignIn = false
+        }
+    }
+
+    private func claudeCodeModelControl() -> some View {
+        settingsControl("summary_claude_code_model")
+    }
+
+    @MainActor
+    private func refreshClaudeCodeAuthStatus() async {
+        claudeCodeAuthStatus = await ClaudeCodeSummarizer.authenticationStatus(
+            executablePath: appState.config.claudeCodeExecutablePath
+        )
+    }
+
+    @MainActor
+    private func beginClaudeCodeSignIn() {
+        claudeCodeSignInError = nil
+        do {
+            try ClaudeCodeSignInLauncher.start(executablePath: appState.config.claudeCodeExecutablePath)
+            isWaitingForClaudeCodeSignIn = true
+        } catch {
+            claudeCodeSignInError = error.localizedDescription
+        }
+    }
+
     @ViewBuilder
     private func chatGPTAccountControl(selectMeetingSummaryBackend: Bool = true) -> some View {
         if appState.isChatGPTAuthenticated {
-            Button {
-                controller.signOutChatGPT()
-            } label: {
-                HStack(spacing: 5) {
-                    OpenAILogoShape()
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                    Text("Signed in · Sign Out")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            HStack(spacing: 10) {
+                Label("Signed in", systemImage: "checkmark.circle.fill")
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.success)
+                Spacer(minLength: 8)
+                Button("Sign Out") { controller.signOutChatGPT() }
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .buttonStyle(.plain)
+                    .help("Sign out of ChatGPT")
             }
-            .buttonStyle(.plain)
+            .frame(minHeight: 28)
         } else if isSigningInChatGPT {
             HStack(spacing: 6) {
                 ProgressView()
@@ -1745,28 +2891,81 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var googleCalendarControl: some View {
-        if appState.isGoogleCalendarAuthenticated {
-            Button {
-                controller.signOutGoogleCalendar()
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white)
-                    Text("Connected · Disconnect")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+    private func openRouterAccountControl(
+        selectMeetingSummaryBackend: Bool = true
+    ) -> some View {
+        if appState.isOpenRouterAuthenticated {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 0) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.success)
+                        Text(appState.isOpenRouterEnvironmentManaged ? "Environment key" : "Connected")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    Divider()
+                        .background(MuesliTheme.surfaceBorder)
+                        .padding(.vertical, 5)
+
+                    Button {
+                        controller.manageOpenRouterKey()
+                    } label: {
+                        Text("Manage key")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .help("Manage this key at OpenRouter")
+
+                    Divider()
+                        .background(MuesliTheme.surfaceBorder)
+                        .padding(.vertical, 5)
+
+                    if appState.hasStoredOpenRouterCredential {
+                        Button {
+                            openRouterSignInError = controller.signOutOpenRouter()
+                        } label: {
+                            Text(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect")
+                                .font(.system(size: 10))
+                                .foregroundStyle(MuesliTheme.textSecondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .help("Remove Muesli's local copy of this OpenRouter key")
+                    } else {
+                        Text("Managed externally")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .lineLimit(1)
+                    }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.success)
+                .frame(height: 24)
+                .background(MuesliTheme.surfacePrimary)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+
+                if let openRouterSignInError {
+                    Text(openRouterSignInError)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
             }
-            .buttonStyle(.plain)
-        } else if isSigningInGoogleCal {
+        } else if isSigningInOpenRouter {
             HStack(spacing: 6) {
                 ProgressView()
                     .controlSize(.small)
@@ -1774,43 +2973,27 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
-        } else if !appState.isGoogleCalendarVerified {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Image(systemName: "calendar.badge.plus")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.4))
-                    Text("Connect Google Calendar")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.4))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.textTertiary.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-
-                Text("Google OAuth verification pending")
-                    .font(.system(size: 10))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
         } else {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Button {
-                    isSigningInGoogleCal = true
-                    googleCalSignInError = nil
+                    isSigningInOpenRouter = true
+                    openRouterSignInError = nil
                     Task {
-                        let error = await controller.signInWithGoogleCalendar()
-                        isSigningInGoogleCal = false
-                        googleCalSignInError = error
+                        let error = await controller.signInWithOpenRouter(
+                            selectMeetingSummaryBackend: selectMeetingSummaryBackend
+                        )
+                        isSigningInOpenRouter = false
+                        openRouterSignInError = error
+                        if error == nil, appState.dictationProvider == .openRouter {
+                            loadOpenRouterTranscriptionModelsIfNeeded()
+                        }
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: "calendar.badge.plus")
-                            .font(.system(size: 10))
+                        Image(systemName: "network")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white)
-                        Text("Connect Google Calendar")
+                        Text("Connect OpenRouter")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.white)
                             .lineLimit(1)
@@ -1823,8 +3006,42 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let googleCalSignInError {
-                    Text(googleCalSignInError)
+                Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
+                    isEnteringOpenRouterAPIKey.toggle()
+                    manualOpenRouterAPIKey = ""
+                    openRouterSignInError = nil
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 10))
+
+                if isEnteringOpenRouterAPIKey {
+                    HStack(spacing: 6) {
+                        PastableSecureField(
+                            text: manualOpenRouterAPIKey,
+                            placeholder: "sk-or-...",
+                            onChange: { manualOpenRouterAPIKey = $0 }
+                        )
+                        .frame(height: 22)
+
+                        Button("Save") {
+                            openRouterSignInError = controller.storeManualOpenRouterAPIKey(
+                                manualOpenRouterAPIKey,
+                                selectMeetingSummaryBackend: selectMeetingSummaryBackend
+                            )
+                            if openRouterSignInError == nil {
+                                manualOpenRouterAPIKey = ""
+                                isEnteringOpenRouterAPIKey = false
+                                if appState.dictationProvider == .openRouter {
+                                    loadOpenRouterTranscriptionModelsIfNeeded()
+                                }
+                            }
+                        }
+                        .disabled(manualOpenRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
+                if let openRouterSignInError {
+                    Text(openRouterSignInError)
                         .font(.system(size: 10))
                         .foregroundStyle(.red)
                         .lineLimit(2)
@@ -1833,28 +3050,11 @@ struct SettingsView: View {
         }
     }
 
+
     private var maraudersMapControl: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            settingsMenu(
-                selection: SoundController.labelForClip(
-                    id: appState.config.maraudersMapAudioClip,
-                    customPath: appState.config.maraudersMapCustomAudioPath
-                ),
-                options: SoundController.maraudersMapClipLabels
-            ) { label in
-                if label == "Custom\u{2026}" {
-                    pickCustomAudioFile()
-                } else if let preset = SoundController.maraudersMapPresets
-                    .first(where: { $0.label == label }) {
-                    SoundController.stopMaraudersMapClip()
-                    isPreviewingClip = false
-                    controller.updateConfig {
-                        $0.maraudersMapAudioClip = preset.id
-                        $0.maraudersMapCustomAudioPath = nil
-                    }
-                    controller.updateMaraudersMapAudioClip()
-                }
-            }
+            settingsControl("marauders_audio")
+            Button("Custom…") { pickCustomAudioFile() }
             Button {
                 if isPreviewingClip {
                     SoundController.stopMaraudersMapClip()
@@ -1920,6 +3120,29 @@ struct SettingsView: View {
 
         presentOpenPanel(panel) { url in
             controller.updateConfig { $0.meetingHookPath = url.standardizedFileURL.path }
+        }
+    }
+
+    private func pickExistingClaudeCodeExecutable() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose your existing Claude Code executable"
+        panel.prompt = "Use Claude Code"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.showsHiddenFiles = true
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+
+        presentOpenPanel(panel) { url in
+            let path = url.standardizedFileURL.path
+            guard ClaudeCodeSummarizer.executableURL(configuredPath: path) != nil else {
+                isShowingInvalidClaudeCodeExecutableAlert = true
+                return
+            }
+            controller.updateConfig {
+                $0.claudeCodeExecutablePath = path
+                $0.meetingSummaryBackend = MeetingSummaryBackendOption.claudeCode.backend
+            }
         }
     }
 
@@ -2020,16 +3243,43 @@ struct SettingsView: View {
                     "System Audio",
                     granted: systemAudioGranted,
                     action: {
-                        Task { await CoreAudioSystemRecorder.requestSystemAudioAccess() }
+                        guard !isCheckingSystemAudioPermission else { return }
+                        isCheckingSystemAudioPermission = true
+                        Task { @MainActor in
+                            defer { isCheckingSystemAudioPermission = false }
+                            systemAudioGranted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
+                        }
                     },
-                    pane: "Privacy_ScreenCapture"
+                    pane: "Privacy_ScreenCapture",
+                    isBusy: isCheckingSystemAudioPermission
                 )
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Calendars",
+                granted: calendarPermission.granted,
+                action: requestCalendarPermission,
+                pane: "Privacy_Calendars",
+                isBusy: calendarPermission.requesting,
+                actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
+            )
+            if let errorMessage = calendarPermission.errorMessage {
+                Text(errorMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.recording)
             }
         }
     }
 
     @ViewBuilder
-    private func permissionStatusRow(_ name: String, granted: Bool, action: @escaping () -> Void, pane: String) -> some View {
+    private func permissionStatusRow(
+        _ name: String,
+        granted: Bool,
+        action: @escaping () -> Void,
+        pane: String,
+        isBusy: Bool = false,
+        actionTitle: String = "Grant"
+    ) -> some View {
         HStack {
             HStack(spacing: 8) {
                 Circle()
@@ -2045,9 +3295,10 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(MuesliTheme.success)
             } else {
-                Button("Grant") {
+                Button(isBusy ? "Checking…" : actionTitle) {
                     action()
                 }
+                .disabled(isBusy)
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(MuesliTheme.accent)
@@ -2075,12 +3326,24 @@ struct SettingsView: View {
         }
     }
 
+    private func requestCalendarPermission() {
+        calendarPermission.refresh()
+        guard calendarPermission.canRequest else {
+            CalendarIntegration.openPrivacy()
+            return
+        }
+        Task { @MainActor in
+            await calendarPermission.requestAccess()
+            if calendarPermission.granted {
+                refreshCalendarSources(reconcileAccess: true)
+            }
+        }
+    }
+
     @ViewBuilder
     private func screenContextControl(width: CGFloat? = nil) -> some View {
         if accessibilityGranted {
-            settingsSwitch(isOn: appState.config.enableScreenContext) { newValue in
-                handleScreenContextToggle(newValue)
-            }
+            settingsControl("app_context")
             .frame(width: width, alignment: .trailing)
         } else {
             Button {
@@ -2101,18 +3364,16 @@ struct SettingsView: View {
     @ViewBuilder
     private func dictationOCRContextControl(width: CGFloat? = nil) -> some View {
         if !appState.config.enableScreenContext {
-            settingsSwitch(isOn: false) { _ in }
+            settingsControl("ocr_context")
                 .frame(width: width, alignment: .trailing)
                 .disabled(true)
         } else if screenRecordingGranted {
-            settingsSwitch(isOn: appState.config.enableDictationOCRContext) { newValue in
-                controller.updateConfig { $0.enableDictationOCRContext = newValue }
-            }
+            settingsControl("ocr_context")
             .frame(width: width, alignment: .trailing)
         } else {
             Button {
                 _ = CGRequestScreenCaptureAccess()
-                refreshPermissionStatuses()
+                refreshPermissionStatuses(for: .permissionRequested)
             } label: {
                 Text("Grant")
                     .font(.system(size: 13, weight: .semibold))
@@ -2141,79 +3402,35 @@ struct SettingsView: View {
             pendingScreenContextEnable = true
             pendingScreenContextRequestedAt = Date().timeIntervalSince1970
             let granted = controller.requestScreenContextEnable()
-            accessibilityGranted = AXIsProcessTrusted()
-            if granted || accessibilityGranted {
+            controller.refreshInteractionPermissionSnapshot()
+            if granted {
                 clearPendingScreenContextEnable()
             }
-            return granted || accessibilityGranted
+            return granted
         }
 
         clearPendingScreenContextEnable()
         return controller.requestScreenContextEnable()
     }
 
-    private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
-        if controller.setDictionaryCorrectionPromptsFromToggle(enabled) == .needsAccessibilityPermission {
-            isShowingDictionaryAccessibilityPrompt = true
-        }
+    private func startPermissionMonitoring() {
+        controller.beginInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
+        refreshPermissionStatuses(for: .initialDisplay)
     }
 
-    private func startPermissionPolling() {
-        // Startup already synchronizes this state. Querying SMAppService here can
-        // block the main thread long enough to make Settings appear unresponsive.
-        refreshPermissionStatuses()
-        permissionPollTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            refreshPermissionStatuses()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        permissionPollTimer = timer
+    private func stopPermissionMonitoring() {
+        controller.endInteractionPermissionMonitoring(clientID: permissionMonitoringClientID)
     }
 
-    private func stopPermissionPolling() {
-        permissionPollTimer?.invalidate()
-        permissionPollTimer = nil
-    }
-
-    private func refreshPermissionStatuses(refreshLaunchAtLogin: Bool = false) {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        accessibilityGranted = AXIsProcessTrusted()
-        controller.reconcilePendingDictionaryCorrectionAccessibilityEnable()
-        inputMonitoringGranted = CGPreflightListenEventAccess()
-        screenRecordingGranted = CGPreflightScreenCaptureAccess()
-        if refreshLaunchAtLogin {
+    private func refreshPermissionStatuses(for reason: SettingsPermissionRefreshReason) {
+        calendarPermission.refresh()
+        if reason.refreshesLaunchAtLogin {
             controller.refreshLaunchAtLoginState()
         }
-        if accessibilityGranted && pendingScreenContextEnable {
-            if controller.requestScreenContextEnable() {
-                clearPendingScreenContextEnable()
-            }
+        controller.refreshInteractionPermissionSnapshot()
+        if reason.refreshesSystemAudio {
+            refreshSystemAudioPermissionIfNeeded()
         }
-        if !accessibilityGranted && isPendingScreenContextGrantExpired {
-            clearPendingScreenContextEnable()
-        }
-        if !accessibilityGranted && appState.config.enableScreenContext {
-            clearPendingScreenContextEnable()
-            controller.updateConfig {
-                $0.enableScreenContext = false
-                $0.enableDictationOCRContext = false
-            }
-        }
-        if (!appState.config.enableScreenContext || !screenRecordingGranted) && appState.config.enableDictationOCRContext {
-            controller.updateConfig { $0.enableDictationOCRContext = false }
-        }
-        controller.reclassifyVoiceNotesAsDictationIfReady(
-            microphoneGranted: micGranted,
-            accessibilityGranted: accessibilityGranted,
-            inputMonitoringGranted: inputMonitoringGranted
-        )
-        refreshSystemAudioPermissionIfNeeded()
-    }
-
-    private var isPendingScreenContextGrantExpired: Bool {
-        guard pendingScreenContextEnable else { return false }
-        guard pendingScreenContextRequestedAt > 0 else { return true }
-        return Date().timeIntervalSince1970 - pendingScreenContextRequestedAt > screenContextGrantIntentTimeout
     }
 
     private func clearPendingScreenContextEnable() {
@@ -2239,13 +3456,26 @@ struct SettingsView: View {
     // MARK: - Layout Primitives
 
     @ViewBuilder
-    private func settingsSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+    private func settingsSection(
+        _ title: String,
+        icon: NSImage? = nil,
+        @ViewBuilder content: () -> some View
+    ) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .textCase(.uppercase)
-                .padding(.leading, 2)
+            HStack(spacing: 5) {
+                if let icon {
+                    Image(nsImage: icon)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 12, height: 12)
+                }
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+            }
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .padding(.leading, 2)
 
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -2318,45 +3548,10 @@ struct SettingsView: View {
             .padding(.bottom, MuesliTheme.spacing8)
     }
 
-    private func summaryRetryLabel(_ retryCount: Int) -> String {
-        let clamped = MeetingSummaryRetryPolicy.clampedRetryCount(retryCount)
-        switch clamped {
-        case 0:
-            return "No retries"
-        case 1:
-            return "1 retry"
-        default:
-            return "\(clamped) retries"
-        }
-    }
-
     // MARK: - Controls
 
-    @ViewBuilder
-    private func settingsSwitch(isOn: Bool, onChange: @escaping (Bool) -> Void) -> some View {
-        HStack {
-            Spacer()
-            Toggle("", isOn: Binding(get: { isOn }, set: { onChange($0) }))
-                .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
-                .labelsHidden()
-        }
-    }
-
-    @ViewBuilder
-    private func settingsMenu(
-        selection: String,
-        options: [String],
-        disabledOptions: Set<String> = [],
-        onChange: @escaping (String) -> Void
-    ) -> some View {
-        FixedWidthPopUp(
-            selection: selection,
-            options: options,
-            disabledOptions: disabledOptions,
-            onChange: onChange
-        )
-            .frame(height: 24)
+    private func settingsControl(_ id: String) -> some View {
+        MuesliSettingControl(controller: controller, id: id)
     }
 
     @ViewBuilder
@@ -2380,11 +3575,11 @@ struct SettingsView: View {
             .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+            .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .overlay(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isDestructive ? MuesliTheme.recording.opacity(0.25) : MuesliTheme.surfaceBorder, lineWidth: 1)
+                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -2401,7 +3596,7 @@ struct SettingsView: View {
                 GridItem(.flexible(), spacing: 8),
                 GridItem(.flexible(), spacing: 8),
             ], alignment: .leading, spacing: 8) {
-                ForEach(meetingDetectionAppOptions) { app in
+                ForEach(MuesliSettings.meetingDetectionAppOptions) { app in
                     mutedDetectionAppButton(app, isMuted: muted.contains(app.bundleID))
                 }
             }
@@ -2446,15 +3641,7 @@ struct SettingsView: View {
     }
 
     private func updateMutedMeetingDetectionApp(_ bundleID: String, isMuted: Bool) {
-        controller.updateConfig { config in
-            var muted = Set(config.mutedMeetingDetectionAppBundleIDs)
-            if isMuted {
-                muted.insert(bundleID)
-            } else {
-                muted.remove(bundleID)
-            }
-            config.mutedMeetingDetectionAppBundleIDs = muted.sorted()
-        }
+        controller.setSettingFromUI("mute_meeting_detection_" + bundleID, value: isMuted ? "on" : "off")
     }
 
     // MARK: - Calendars
@@ -2470,7 +3657,6 @@ struct SettingsView: View {
         let id: String
         let title: String
         let subtitle: String
-        let iconName: String
         let items: [CalendarToggleItem]
     }
 
@@ -2494,25 +3680,6 @@ struct SettingsView: View {
                 id: "ek::\(sourceTitle)",
                 title: sourceTitle,
                 subtitle: calendarSourceSubtitle(for: sourceTitle),
-                iconName: calendarSourceIconName(for: sourceTitle),
-                items: items
-            ))
-        }
-
-        if appState.isGoogleCalendarAuthenticated && !appState.availableGoogleCalendars.isEmpty {
-            let items = appState.availableGoogleCalendars.map { cal in
-                CalendarToggleItem(
-                    id: cal.id,
-                    title: cal.summary + (cal.isPrimary ? " (Primary)" : ""),
-                    colorHex: cal.colorHex,
-                    isEnabled: !disabled.contains(cal.id)
-                )
-            }
-            groups.append(CalendarSourceGroup(
-                id: "google_oauth",
-                title: "Google Calendar",
-                subtitle: "Connected directly to Muesli",
-                iconName: "calendar.badge.plus",
                 items: items
             ))
         }
@@ -2521,44 +3688,43 @@ struct SettingsView: View {
     }
 
     private var calendarSourcesControl: some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-            Text("Calendar sources are listed first, with their calendars underneath. Disabled calendars are hidden from Muesli — no notifications, no Coming Up, no meeting detection.")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if calendarSourceGroups.isEmpty {
-                Text("No calendars detected. Make sure Calendar permission is granted in System Settings > Privacy & Security > Calendars.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(calendarSourceGroups) { group in
-                    calendarSourceGroupView(group)
+        let sourceGroups = calendarSourceGroups
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            if calendarPermission.granted {
+                if sourceGroups.isEmpty {
+                    Text(calendarSourcesRefresh.isLoading ? "Loading calendars…" : "No calendars on this Mac.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                } else {
+                    Text("Choose calendars to show meetings from.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                    ForEach(sourceGroups) { group in
+                        calendarSourceGroupView(group)
+                    }
                 }
             }
-
-            if appState.isGoogleCalendarAuthenticated && !appState.availableEventKitCalendars.isEmpty {
-                Text("Google calendars may appear once from macOS Calendar and once from Muesli's Google connection. Turn off both copies to hide that calendar completely.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if appState.isGoogleCalendarAuthenticated {
-                googleCalendarListLoadStateView
+            HStack {
+                Button("Manage accounts…", action: CalendarIntegration.openAccounts)
+                    .buttonStyle(.link)
+                    .help("Add or remove accounts in macOS Internet Accounts. Changes also affect other apps on this Mac.")
+                Spacer()
+                Button("Open Calendar…", action: CalendarIntegration.openCalendar)
+                    .buttonStyle(.link)
+                    .help("Manage local calendars and subscriptions in Apple Calendar.")
             }
         }
+        .padding(.top, MuesliTheme.spacing8)
     }
 
     @ViewBuilder
     private func calendarSourceGroupView(_ group: CalendarSourceGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: group.iconName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .frame(width: 18, height: 18)
+                Image(nsImage: CalendarIntegration.calendarIcon)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.title)
@@ -2583,9 +3749,12 @@ struct SettingsView: View {
                     calendarToggleButton(item)
                 }
             }
-            .padding(.leading, 28)
         }
-        .padding(.vertical, 2)
+        .padding(MuesliTheme.spacing16)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
     }
 
     private func calendarSourceSubtitle(for sourceTitle: String) -> String {
@@ -2600,20 +3769,6 @@ struct SettingsView: View {
             return "System calendars from macOS"
         }
         return "Calendar account in macOS"
-    }
-
-    private func calendarSourceIconName(for sourceTitle: String) -> String {
-        let normalized = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "icloud" {
-            return "icloud"
-        }
-        if normalized == "subscribed calendars" {
-            return "calendar.badge.clock"
-        }
-        if normalized == "other" {
-            return "person.crop.circle.badge.clock"
-        }
-        return "calendar"
     }
 
     private func calendarToggleButton(_ item: CalendarToggleItem) -> some View {
@@ -2644,49 +3799,29 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private var googleCalendarListLoadStateView: some View {
-        switch appState.googleCalendarListLoadState {
-        case .loading:
-            Text("Loading Google calendars…")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-        case .failed(let message):
-            HStack(spacing: 8) {
-                Text("Failed to load Google calendars: \(message)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                Button("Retry") {
-                    Task { await controller.refreshGoogleCalendarList() }
-                }
-                .buttonStyle(.link)
-                .font(MuesliTheme.caption())
-            }
-        case .idle, .loaded:
-            EmptyView()
-        }
+        .accessibilityLabel(item.title)
+        .accessibilityValue(item.isEnabled ? "Included" : "Hidden")
     }
 
     private func refreshMeetingCalendarSourcesIfNeeded() {
-        guard !hasRefreshedMeetingCalendarSources else { return }
-        hasRefreshedMeetingCalendarSources = true
-        controller.refreshAvailableEventKitCalendars()
-        Task { await controller.refreshGoogleCalendarList() }
+        guard calendarSourcesRefresh.needsInitialRefresh else { return }
+        refreshCalendarSources()
+    }
+
+    private func refreshCalendarSources(reconcileAccess: Bool = false) {
+        calendarSourcesRefresh.begin()
+        Task { @MainActor in
+            defer { calendarSourcesRefresh.finish(completed: !Task.isCancelled) }
+            if reconcileAccess {
+                await controller.calendarAccessDidChange()
+            } else {
+                await controller.refreshAvailableEventKitCalendars()
+            }
+        }
     }
 
     private func updateDisabledCalendar(_ calendarID: String, isDisabled: Bool) {
-        controller.updateConfig { config in
-            var disabled = Set(config.disabledCalendarIDs)
-            if isDisabled {
-                disabled.insert(calendarID)
-            } else {
-                disabled.remove(calendarID)
-            }
-            config.disabledCalendarIDs = disabled.sorted()
-        }
-        Task { await controller.refreshUpcomingCalendarEvents() }
+        controller.setSettingFromUI("calendar_" + calendarID, value: isDisabled ? "off" : "on")
     }
 
     @ViewBuilder
@@ -2836,76 +3971,71 @@ struct SettingsView: View {
     }
 
     private var meetingHookTimeoutControl: some View {
-        Stepper(
+        integerInput(
+            label: "Meeting hook timeout",
             value: Binding(
                 get: { max(appState.config.meetingHookTimeoutSeconds, 1) },
                 set: { newValue in
                     controller.updateConfig { $0.meetingHookTimeoutSeconds = max(newValue, 1) }
                 }
             ),
-            in: 1...600
-        ) {
-            Text("\(max(appState.config.meetingHookTimeoutSeconds, 1)) seconds")
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textPrimary)
+            range: 1...600,
+            unit: { $0 == 1 ? "second" : "seconds" }
+        )
+    }
+
+    private func integerInput(
+        label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int = 1,
+        unit: @escaping (Int) -> String
+    ) -> some View {
+        let clampedValue = min(max(value.wrappedValue, range.lowerBound), range.upperBound)
+        let clampedBinding = Binding(
+            get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+            set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+        )
+
+        return HStack(spacing: MuesliTheme.spacing8) {
+            TextField(label, value: clampedBinding, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(minWidth: 92, alignment: .trailing)
+                .frame(width: 72)
+                .accessibilityLabel(label)
+
+            Text(unit(clampedValue))
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 58, alignment: .leading)
+
+            Stepper(label, value: clampedBinding, in: range, step: step)
+                .labelsHidden()
+                .fixedSize()
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     @ViewBuilder
-    private func meetingTemplateMenu(selectionID: String, onChange: @escaping (String) -> Void) -> some View {
-        let allItems: [(id: String, label: String)] = {
-            var items: [(String, String)] = [(MeetingTemplates.autoID, MeetingTemplates.auto.title)]
-            items += controller.builtInMeetingTemplates().map { ($0.id, $0.title) }
-            items += controller.customMeetingTemplates().map { ($0.id, $0.name) }
-            return items
-        }()
-        let selectedLabel = allItems.first(where: { $0.id == selectionID })?.label ?? "Auto"
-        FixedWidthPopUp(
-            selection: selectedLabel,
-            options: allItems.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0 && index < allItems.count else { return }
-                onChange(allItems[index].id)
-            }
-        )
-        .frame(height: 24)
-    }
-
-    @ViewBuilder
-    private func settingsModelMenu(currentModel: String, presets: [SummaryModelPreset], onChange: @escaping (String) -> Void) -> some View {
-        let menuPresets = SummaryModelPreset.menuPresets(presets, currentModel: currentModel)
-        let effectiveModel = currentModel.isEmpty ? (presets.first?.id ?? "") : currentModel
-        let selectedLabel = menuPresets.first(where: { $0.id == effectiveModel })?.label ?? menuPresets.first?.label ?? ""
-        FixedWidthPopUp(
-            selection: selectedLabel,
-            options: menuPresets.map(\.label),
-            onSelectIndex: { index in
-                guard index >= 0 && index < menuPresets.count else { return }
-                let selectedId = menuPresets[index].id
-                onChange(selectedId == presets.first?.id ? "" : selectedId)
-            }
-        )
-        .frame(height: 24)
-    }
-
-    @ViewBuilder
-    private func settingsModelTextField(currentModel: String, placeholder: String, onChange: @escaping (String) -> Void) -> some View {
-        PastableTextField(
+    private func settingsModelTextField(
+        currentModel: String,
+        placeholder: String,
+        onBeginEditing: (() -> Void)? = nil,
+        onChange: @escaping (String) -> Void
+    ) -> some View {
+        SettingsModelTextField(
             text: currentModel,
             placeholder: placeholder,
-            onChange: { value in
-                onChange(value.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+            onBeginEditing: onBeginEditing,
+            onChange: onChange
         )
-        .frame(height: 22)
     }
 
     @ViewBuilder
     private var openRouterFreeModelMenu: some View {
-        if isLoadingOpenRouterFreeModels {
+        if appState.openRouterSummaryCatalogState == .loading,
+           appState.openRouterSummaryModels.isEmpty {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
@@ -2914,21 +4044,27 @@ struct SettingsView: View {
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-        } else if !openRouterFreeModels.isEmpty {
-            settingsModelMenu(
-                currentModel: appState.config.openRouterModel,
-                presets: openRouterFreeModels
-            ) { val in controller.updateConfig { $0.openRouterModel = val } }
+        } else if !appState.openRouterSummaryModels.isEmpty {
+            HStack(spacing: 8) {
+                settingsControl("summary_openrouter_model")
+                .frame(height: 24)
+                if case .failed = appState.openRouterSummaryCatalogState {
+                    Button("Retry") {
+                        controller.loadOpenRouterModels(.text, force: true)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                }
+            }
         } else {
             HStack(spacing: 8) {
-                if let openRouterFreeModelsError {
-                    Text(openRouterFreeModelsError)
+                if case .failed(let message) = appState.openRouterSummaryCatalogState {
+                    Text(message)
                         .font(.system(size: 11))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .lineLimit(1)
                 }
-                Button("Load") {
-                    loadOpenRouterFreeModels(force: true)
+                Button(appState.openRouterSummaryCatalogState == .idle ? "Load" : "Retry") {
+                    controller.loadOpenRouterModels(.text, force: true)
                 }
                 .font(.system(size: 12, weight: .medium))
             }
@@ -2937,39 +4073,30 @@ struct SettingsView: View {
     }
 
     private func loadOpenRouterFreeModelsIfNeeded() {
-        guard openRouterFreeModels.isEmpty, !isLoadingOpenRouterFreeModels else { return }
-        loadOpenRouterFreeModels(force: false)
+        controller.loadOpenRouterModels(.text)
     }
 
-    private func loadOpenRouterFreeModels(force: Bool) {
-        guard force || openRouterFreeModels.isEmpty else { return }
-        isLoadingOpenRouterFreeModels = true
-        openRouterFreeModelsError = nil
+    @ViewBuilder
+    private var openRouterTranscriptionModelMenu: some View {
+        let presets = appState.openRouterTranscriptionModels
+        HStack(spacing: 8) {
+            if appState.openRouterTranscriptionCatalogState == .loading, presets.isEmpty {
+                ProgressView().controlSize(.small)
+            }
+            settingsControl("openrouter_dictation_model")
+            .frame(height: 24)
 
-        Task {
-            do {
-                let url = URL(string: "https://openrouter.ai/api/v1/models?output_modalities=text")!
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200..<300).contains(httpResponse.statusCode) {
-                    throw URLError(.badServerResponse)
+            if case .failed = appState.openRouterTranscriptionCatalogState {
+                Button("Retry") {
+                    controller.loadOpenRouterModels(.transcription, force: true)
                 }
-                let catalog = try JSONDecoder().decode(OpenRouterModelCatalog.self, from: data)
-                let presets = OpenRouterModelCatalogFilter.freeTextSummaryPresets(from: catalog.data)
-
-                await MainActor.run {
-                    openRouterFreeModels = presets
-                    openRouterFreeModelsError = presets.isEmpty ? "No free text models found" : nil
-                    isLoadingOpenRouterFreeModels = false
-                }
-            } catch {
-                await MainActor.run {
-                    openRouterFreeModels = []
-                    openRouterFreeModelsError = "Could not load"
-                    isLoadingOpenRouterFreeModels = false
-                }
+                .font(.system(size: 11, weight: .medium))
             }
         }
+    }
+
+    private func loadOpenRouterTranscriptionModelsIfNeeded() {
+        controller.loadOpenRouterModels(.transcription)
     }
 
     @ViewBuilder
@@ -3008,12 +4135,12 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
+                .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 .overlay(
                     RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                         .strokeBorder(
-                            isDestructive ? MuesliTheme.recording.opacity(0.2) : MuesliTheme.surfaceBorder,
+                            MuesliTheme.surfaceBorder,
                             lineWidth: 1
                         )
                 )
@@ -3021,67 +4148,6 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private func recordingSaveLabel(for policy: MeetingRecordingSavePolicy) -> String {
-        switch policy {
-        case .never:
-            return "Never"
-        case .prompt:
-            return "Ask every time"
-        case .always:
-            return "Always"
-        }
-    }
-
-    private func recordingSavePolicy(for label: String) -> MeetingRecordingSavePolicy? {
-        let policy = MeetingRecordingSavePolicy.allCases.first { recordingSaveLabel(for: $0) == label }
-        if policy == nil {
-            assertionFailure("Unexpected recording save label: \(label)")
-        }
-        return policy
-    }
-
-    private func recordingFileFormatLabel(for format: MeetingRecordingFileFormat) -> String {
-        format.displayName
-    }
-
-    private func recordingFileFormat(for label: String) -> MeetingRecordingFileFormat? {
-        let format = MeetingRecordingFileFormat.allCases.first { recordingFileFormatLabel(for: $0) == label }
-        if format == nil {
-            assertionFailure("Unexpected recording file format label: \(label)")
-        }
-        return format
-    }
-
-    private func scheduledMeetingLeadTimeLabel(for leadTime: ScheduledMeetingNotificationLeadTime) -> String {
-        switch leadTime {
-        case .atStart:
-            return "At start time"
-        case .oneMinute:
-            return "1 min before"
-        case .threeMinutes:
-            return "3 min before"
-        case .fiveMinutes:
-            return "5 min before"
-        }
-    }
-
-    private func scheduledMeetingLeadTime(for label: String) -> ScheduledMeetingNotificationLeadTime? {
-        let leadTime = ScheduledMeetingNotificationLeadTime.allCases.first {
-            scheduledMeetingLeadTimeLabel(for: $0) == label
-        }
-        if leadTime == nil {
-            assertionFailure("Unexpected scheduled meeting notification lead time label: \(label)")
-        }
-        return leadTime
-    }
-
-    private func meetingJoinDefaultAction(for label: String) -> MeetingJoinDefaultAction? {
-        let action = MeetingJoinDefaultAction.allCases.first { $0.buttonLabel == label }
-        if action == nil {
-            assertionFailure("Unexpected meeting join default action label: \(label)")
-        }
-        return action
-    }
 }
 
 // MARK: - Pastable Secure Field (NSViewRepresentable)
@@ -3154,6 +4220,7 @@ struct FixedWidthPopUp: NSViewRepresentable {
         button.removeAllItems()
         button.addItems(withTitles: options)
         button.menu?.autoenablesItems = false
+        button.isEnabled = context.environment.isEnabled
         updateEnabledItems(in: button)
         button.selectItem(withTitle: selection)
         button.target = context.coordinator
@@ -3164,6 +4231,7 @@ struct FixedWidthPopUp: NSViewRepresentable {
     }
 
     func updateNSView(_ button: NSPopUpButton, context: Context) {
+        button.isEnabled = context.environment.isEnabled
         let currentTitles = button.itemTitles
         if currentTitles != options {
             button.removeAllItems()
@@ -3235,11 +4303,50 @@ struct PastableSecureField: NSViewRepresentable {
     }
 }
 
+/// Model IDs stay local to the field editor until Return or focus loss.
+struct SettingsModelTextField: View {
+    let text: String
+    let placeholder: String
+    var onBeginEditing: (() -> Void)? = nil
+    let onChange: (String) -> Void
+
+    var body: some View {
+        PastableTextField(
+            text: text,
+            placeholder: placeholder,
+            onBeginEditing: onBeginEditing,
+            commitsOnEndEditing: true,
+            showsFullValueOnHover: true,
+            onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        )
+        .frame(height: 22)
+    }
+}
+
 /// Plain text field with the same accessory-app edit shortcuts as secure fields.
 struct PastableTextField: NSViewRepresentable {
     let text: String
     let placeholder: String
+    let onBeginEditing: (() -> Void)?
+    let commitsOnEndEditing: Bool
+    let showsFullValueOnHover: Bool
     let onChange: (String) -> Void
+
+    init(
+        text: String,
+        placeholder: String,
+        onBeginEditing: (() -> Void)? = nil,
+        commitsOnEndEditing: Bool = false,
+        showsFullValueOnHover: Bool = false,
+        onChange: @escaping (String) -> Void
+    ) {
+        self.text = text
+        self.placeholder = placeholder
+        self.onBeginEditing = onBeginEditing
+        self.commitsOnEndEditing = commitsOnEndEditing
+        self.showsFullValueOnHover = showsFullValueOnHover
+        self.onChange = onChange
+    }
 
     func makeNSView(context: Context) -> EditableNSTextField {
         let field = EditableNSTextField()
@@ -3250,29 +4357,120 @@ struct PastableTextField: NSViewRepresentable {
         field.bezelStyle = .roundedBezel
         field.delegate = context.coordinator
         field.stringValue = text
+        if commitsOnEndEditing {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.lineBreakMode = .byTruncatingMiddle
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
+        }
         return field
     }
 
     func updateNSView(_ nsView: EditableNSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
+        context.coordinator.onBeginEditing = onBeginEditing
+        context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+        Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: showsFullValueOnHover,
+                    onBeginEditing: onBeginEditing, onChange: onChange)
+    }
+
+    static func dismantleNSView(_ nsView: EditableNSTextField, coordinator: Coordinator) {
+        // AppKit does not guarantee an end-edit notification during removal.
+        // Save outside SwiftUI's teardown transaction to avoid publishing into it.
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
-        let onChange: (String) -> Void
+        var onBeginEditing: (() -> Void)?
+        var onChange: (String) -> Void
+        private let commitsOnEndEditing: Bool
+        private let showsFullValueOnHover: Bool
+        private var configuredText: String
+        private var editingStartText: String?
+        private var draftText: String?
+        private var isEditing = false
+        private weak var editingField: NSTextField?
 
-        init(onChange: @escaping (String) -> Void) {
+        init(text: String, commitsOnEndEditing: Bool, showsFullValueOnHover: Bool,
+             onBeginEditing: (() -> Void)?, onChange: @escaping (String) -> Void) {
+            self.configuredText = text
+            self.commitsOnEndEditing = commitsOnEndEditing
+            self.showsFullValueOnHover = showsFullValueOnHover
+            self.onBeginEditing = onBeginEditing
             self.onChange = onChange
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+            editingStartText = configuredText
+            if let field = obj.object as? NSTextField {
+                draftText = field.stringValue
+                editingField = field
+                if commitsOnEndEditing, let window = field.window {
+                    NotificationCenter.default.addObserver(
+                        self, selector: #selector(windowWillClose(_:)),
+                        name: NSWindow.willCloseNotification, object: window
+                    )
+                }
+            }
+            onBeginEditing?()
         }
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
+            if commitsOnEndEditing {
+                draftText = field.stringValue
+                if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+                return
+            }
             onChange(field.stringValue)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            finishEditing(field)
+        }
+
+        @objc private func windowWillClose(_ notification: Notification) {
+            guard let field = editingField else { return }
+            finishEditing(field)
+        }
+
+        func finishEditing(_ field: NSTextField, deferCommit: Bool = false) {
+            guard isEditing else { return }
+            isEditing = false
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            editingField = nil
+            let value = draftText ?? field.stringValue
+            let changed = value != editingStartText
+            editingStartText = nil
+            draftText = nil
+            guard commitsOnEndEditing else { return }
+            if changed {
+                configuredText = value
+                let commit = onChange
+                if deferCommit {
+                    DispatchQueue.main.async { commit(value) }
+                } else {
+                    commit(value)
+                }
+            } else {
+                // An external update may have arrived during an unchanged edit.
+                field.stringValue = configuredText
+            }
+            if showsFullValueOnHover { field.toolTip = field.stringValue.isEmpty ? nil : field.stringValue }
+        }
+
+        func synchronize(_ field: NSTextField, text: String) {
+            configuredText = text
+            // SwiftUI can refresh from unrelated state while the user types.
+            // Replacing stringValue here resets the live field editor/caret.
+            guard !isEditing, field.currentEditor() == nil else { return }
+            if field.stringValue != text { field.stringValue = text }
+            if showsFullValueOnHover { field.toolTip = text.isEmpty ? nil : text }
         }
     }
 }

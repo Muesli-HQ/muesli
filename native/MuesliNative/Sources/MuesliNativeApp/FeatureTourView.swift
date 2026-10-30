@@ -48,13 +48,16 @@ private enum FeatureTourCalloutEdge {
 
 struct FeatureTourCalloutLayout {
     static func position(
-        spotlight: CGRect,
+        spotlight: CGRect?,
         containerSize: CGSize,
         calloutSize: CGSize,
-        target: FeatureTourTarget,
+        target: FeatureTourTarget?,
         margin: CGFloat = 20,
         gap: CGFloat = 24
     ) -> CGPoint {
+        guard let spotlight, let target else {
+            return CGPoint(x: containerSize.width / 2, y: containerSize.height / 2)
+        }
         let bounds = CGRect(
             x: margin,
             y: margin,
@@ -84,9 +87,9 @@ struct FeatureTourCalloutLayout {
         switch target {
         case .timelineSidebar, .meetingsSidebar:
             return [.trailing, .leading, .below, .above]
-        case .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting:
+        case .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
             return [.below, .above, .trailing, .leading]
-        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels:
+        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings:
             return [.above, .below, .trailing, .leading]
         }
     }
@@ -175,7 +178,7 @@ extension View {
 struct FeatureTourOverlay: View {
     let tour: FeatureTour
     let stepIndex: Int
-    let spotlightRect: CGRect
+    let spotlightRect: CGRect?
     let containerSize: CGSize
     let onBack: () -> Void
     let onNext: () -> Void
@@ -188,28 +191,37 @@ struct FeatureTourOverlay: View {
         tour.steps[stepIndex]
     }
 
-    private var expandedSpotlight: CGRect {
-        spotlightRect.insetBy(dx: -8, dy: -8)
+    private var expandedSpotlight: CGRect? {
+        spotlightRect?.insetBy(dx: -8, dy: -8)
     }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear
-                .contentShape(Rectangle())
+            if let expandedSpotlight {
+                // Consume background clicks but let the real highlighted control
+                // receive input, including its native popup menu.
+                Color.clear
+                    .contentShape(FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10), eoFill: true)
+                    .onTapGesture {}
 
-            FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10)
-                .fill(
-                    Color.black.opacity(0.72),
-                    style: FillStyle(eoFill: true, antialiased: true)
-                )
-                .allowsHitTesting(false)
+                FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10)
+                    .fill(
+                        Color.black.opacity(0.72),
+                        style: FillStyle(eoFill: true, antialiased: true)
+                    )
+                    .allowsHitTesting(false)
 
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(MuesliTheme.accent, lineWidth: 2)
-                .frame(width: expandedSpotlight.width, height: expandedSpotlight.height)
-                .position(x: expandedSpotlight.midX, y: expandedSpotlight.midY)
-                .shadow(color: MuesliTheme.accent.opacity(0.55), radius: 10)
-                .allowsHitTesting(false)
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(MuesliTheme.accent, lineWidth: 2)
+                    .frame(width: expandedSpotlight.width, height: expandedSpotlight.height)
+                    .position(x: expandedSpotlight.midX, y: expandedSpotlight.midY)
+                    .shadow(color: MuesliTheme.accent.opacity(0.55), radius: 10)
+                    .allowsHitTesting(false)
+            } else {
+                Color.black.opacity(0.72)
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
+            }
 
             callout
                 .frame(width: 380)
@@ -387,7 +399,7 @@ struct FeatureTourInvitationView: View {
     }
 }
 
-private struct FeatureTourDimmingShape: Shape {
+struct FeatureTourDimmingShape: Shape {
     let spotlight: CGRect
     let cornerRadius: CGFloat
 

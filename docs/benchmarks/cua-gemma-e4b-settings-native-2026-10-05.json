@@ -1,0 +1,427 @@
+[
+  {
+    "actual": "off",
+    "coldStart": true,
+    "command": "Turn sound effects off.",
+    "expected": "off",
+    "message": "Sound effects: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "sound"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 1,
+    "seconds": 9.95189516665414,
+    "setting": "sound",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn dark mode on.",
+    "expected": "on",
+    "message": "Dark mode: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "dark_mode"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 1,
+    "seconds": 7.085278708371334,
+    "setting": "dark_mode",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn pause media during dictation on.",
+    "expected": "on",
+    "message": "Pause media during dictation: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "pause_media"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 1,
+    "seconds": 7.093598625040613,
+    "setting": "pause_media",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn open dashboard on launch off.",
+    "expected": "off",
+    "message": "Open dashboard on launch: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "open_dashboard"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 1,
+    "seconds": 7.128656458342448,
+    "setting": "open_dashboard",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "notch",
+    "coldStart": false,
+    "command": "Change recording indicator style to notch.",
+    "expected": "notch",
+    "message": "Recording indicator style: Notch",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "indicator_style"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 1,
+    "seconds": 7.146595958271064,
+    "setting": "indicator_style",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn sound effects off.",
+    "expected": "off",
+    "message": "Sound effects: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "sound"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 2,
+    "seconds": 7.081371875014156,
+    "setting": "sound",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn dark mode on.",
+    "expected": "on",
+    "message": "Dark mode: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "dark_mode"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 2,
+    "seconds": 7.109210000024177,
+    "setting": "dark_mode",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn pause media during dictation on.",
+    "expected": "on",
+    "message": "Pause media during dictation: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "pause_media"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 2,
+    "seconds": 7.11657929175999,
+    "setting": "pause_media",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn open dashboard on launch off.",
+    "expected": "off",
+    "message": "Open dashboard on launch: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "open_dashboard"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 2,
+    "seconds": 7.187697333283722,
+    "setting": "open_dashboard",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "notch",
+    "coldStart": false,
+    "command": "Change recording indicator style to notch.",
+    "expected": "notch",
+    "message": "Recording indicator style: Notch",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "indicator_style"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 2,
+    "seconds": 7.059526541735977,
+    "setting": "indicator_style",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn sound effects off.",
+    "expected": "off",
+    "message": "Sound effects: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "sound"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 3,
+    "seconds": 7.024424375034869,
+    "setting": "sound",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn dark mode on.",
+    "expected": "on",
+    "message": "Dark mode: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "dark_mode"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 3,
+    "seconds": 7.132880208315328,
+    "setting": "dark_mode",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn pause media during dictation on.",
+    "expected": "on",
+    "message": "Pause media during dictation: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "pause_media"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 3,
+    "seconds": 7.1577665416989475,
+    "setting": "pause_media",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn open dashboard on launch off.",
+    "expected": "off",
+    "message": "Open dashboard on launch: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "open_dashboard"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 3,
+    "seconds": 7.081329041626304,
+    "setting": "open_dashboard",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "notch",
+    "coldStart": false,
+    "command": "Change recording indicator style to notch.",
+    "expected": "notch",
+    "message": "Recording indicator style: Notch",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "indicator_style"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 3,
+    "seconds": 7.067957083345391,
+    "setting": "indicator_style",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn sound effects off.",
+    "expected": "off",
+    "message": "Sound effects: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "sound"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 4,
+    "seconds": 6.984251291723922,
+    "setting": "sound",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn dark mode on.",
+    "expected": "on",
+    "message": "Dark mode: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "dark_mode"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 4,
+    "seconds": 7.07031708327122,
+    "setting": "dark_mode",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn pause media during dictation on.",
+    "expected": "on",
+    "message": "Pause media during dictation: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "pause_media"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 4,
+    "seconds": 7.099149791756645,
+    "setting": "pause_media",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn open dashboard on launch off.",
+    "expected": "off",
+    "message": "Open dashboard on launch: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "open_dashboard"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 4,
+    "seconds": 7.100598666584119,
+    "setting": "open_dashboard",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "notch",
+    "coldStart": false,
+    "command": "Change recording indicator style to notch.",
+    "expected": "notch",
+    "message": "Recording indicator style: Notch",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "indicator_style"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 4,
+    "seconds": 7.064900083234534,
+    "setting": "indicator_style",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn sound effects off.",
+    "expected": "off",
+    "message": "Sound effects: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "sound"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 5,
+    "seconds": 7.0161235416308045,
+    "setting": "sound",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn dark mode on.",
+    "expected": "on",
+    "message": "Dark mode: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "dark_mode"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 5,
+    "seconds": 7.087531624943949,
+    "setting": "dark_mode",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "on",
+    "coldStart": false,
+    "command": "Turn pause media during dictation on.",
+    "expected": "on",
+    "message": "Pause media during dictation: On",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "pause_media"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 5,
+    "seconds": 7.070513916667551,
+    "setting": "pause_media",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "off",
+    "coldStart": false,
+    "command": "Turn open dashboard on launch off.",
+    "expected": "off",
+    "message": "Open dashboard on launch: Off",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "open_dashboard"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 5,
+    "seconds": 7.123111208318733,
+    "setting": "open_dashboard",
+    "status": "done",
+    "success": true
+  },
+  {
+    "actual": "notch",
+    "coldStart": false,
+    "command": "Change recording indicator style to notch.",
+    "expected": "notch",
+    "message": "Recording indicator style: Notch",
+    "model": "local:gemma4-litert:litert-community/gemma-4-E4B-it-litert-lm",
+    "mutations": [
+      "indicator_style"
+    ],
+    "otherSettingsUnchanged": true,
+    "round": 5,
+    "seconds": 7.070077208336443,
+    "setting": "indicator_style",
+    "status": "done",
+    "success": true
+  }
+]

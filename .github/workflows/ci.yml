@@ -2,25 +2,45 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      warm_blacksmith_cache:
+        description: 'Warm Blacksmith release cache on main (paid; maintainer only)'
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
   push:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Ignore unrelated labels without cancelling real checks; warming is independent of main CI.
+  group: ci-${{ github.ref }}${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && format('-ignored-label-{0}', github.run_id) || (inputs.warm_blacksmith_cache && '-blacksmith-warm' || '') }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+# Blacksmith is opt-in for labelled PRs triggered by pHequals7, or manual main warming.
+# Pushes (including merges), unlabelled PRs and other actors use GitHub.
 jobs:
   # Detect which files changed. This gates expensive native CI only; security
   # checks live in security.yml and are intentionally not path-filtered here.
   changes:
-    runs-on: ubuntu-latest
+    if: >-
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
+      warm_blacksmith_cache: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
+      cache_write_allowed: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true) }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
       app_source: ${{ steps.classify.outputs.app_source }}
       release_surface: ${{ steps.classify.outputs.release_surface }}
@@ -35,6 +55,16 @@ jobs:
       review_worthy: ${{ steps.classify.outputs.review_worthy }}
       native_or_packaging: ${{ steps.classify.outputs.native_or_packaging }}
     steps:
+      - name: Validate manual cache warm-up
+        if: github.event_name == 'workflow_dispatch' && inputs.warm_blacksmith_cache
+        env:
+          WARM_ALLOWED: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: |
+          if [[ "$WARM_ALLOWED" != "true" || "$CACHE_DISABLED" == "true" ]]; then
+            echo "::error::Blacksmith warming requires pHequals7, upstream main, and enabled release caching."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -54,7 +84,9 @@ jobs:
               FILES=""
             fi
           else
-            FILES=$(git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+            # Manual dispatch is an explicit request for the complete pipeline.
+            # Empty input makes the classifier fail closed to all checks.
+            FILES=""
           fi
 
           echo "Changed files:"
@@ -62,7 +94,16 @@ jobs:
           printf '%s\n' "$FILES" | ./scripts/classify_changed_files.sh
 
   classifier-tests:
-    runs-on: ubuntu-latest
+    if: >-
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Check out repository
@@ -73,6 +114,9 @@ jobs:
       - name: Test changed-file classifier
         run: ./scripts/test_classify_changed_files.sh
 
+      - name: Test runner routing policy
+        run: python3 ./scripts/test_ci_runner_routing.py
+
       - name: Test CI test shard assignments
         run: ./scripts/test_ci_test_shards.sh
 
@@ -82,31 +126,251 @@ jobs:
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
-  # Release build — validate the app product compiles in release mode
+      - name: Test release cache identity and workflow policy
+        run: |
+          python3 ./scripts/test_ci_release_cache.py
+          python3 ./scripts/test_ci_release_cache_cleanup.py
+          python3 ./scripts/test_ci_blacksmith_cache.py
+
+  # MLX Swift 0.31.6 requires Swift 6.3; Xcode 26.6 is available on macos-26.
+  # Drafts get debug tests and packaging feedback; release compilation is
+  # required once ready for review, and on main/manual runs.
   build_release:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    outputs:
+      cache_key: ${{ steps.release-cache.outputs.key }}
+      cache_save_outcome: ${{ steps.save-release.outcome }}
+      cache_lookup_outcome: ${{ steps.lookup-release.outcome }}
+      cache_lookup_hit: ${{ steps.lookup-release.outputs.cache-hit }}
+      cache_existing_key: ${{ steps.lookup-release.outputs.cache-matched-key }}
+      cache_ready: ${{ steps.save-release.outcome == 'success' || (steps.lookup-release.outcome == 'success' && steps.lookup-release.outputs.cache-hit == 'true') }}
+      cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
+    if: >-
+      needs.changes.outputs.native_or_packaging == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Build (release)
-        run: swift build --package-path native/MuesliNative -c release --product MuesliNativeApp
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
-  # Swift tests — sharded by domain to reduce end-to-end wall time
+      - name: Identify compatible release cache
+        id: release-cache
+        env:
+          CACHE_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: python3 scripts/ci_release_cache.py prepare
+
+      - name: Begin measured release pipeline
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin pipeline
+
+      - name: Begin restore timing
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin restore
+
+      # Only PRs restore; main and manual runs always compile from a clean scratch
+      # directory. The sole fallback retains the complete compatibility fingerprint.
+      - name: Restore compatible main release artifacts
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        id: restore-release
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+          restore-keys: ${{ steps.release-cache.outputs.prefix }}
+
+      - name: End restore timing
+        if: github.event_name == 'pull_request' && vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end restore
+
+      - name: Build (release)
+        # Always compile, including on an exact hit. Missing/evicted caches build cold.
+        run: python3 scripts/ci_release_cache.py build
+
+      # Metadata lookup only: never download artifacts into the clean main build.
+      # Exact commit only: an older compatible snapshot must not suppress refresh.
+      - name: Check for existing exact main cache
+        if: >-
+          needs.changes.outputs.cache_write_allowed == 'true' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true'
+        id: lookup-release
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+          lookup-only: true
+
+      - name: Begin save timing
+        if: >-
+          needs.changes.outputs.cache_write_allowed == 'true' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py begin save
+
+      - name: Save clean main release artifacts
+        if: >-
+          needs.changes.outputs.cache_write_allowed == 'true' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        id: save-release
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.release-cache.outputs.scratch }}
+          key: ${{ steps.release-cache.outputs.key }}
+
+      - name: End save timing
+        if: >-
+          needs.changes.outputs.cache_write_allowed == 'true' &&
+          vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+          steps.lookup-release.outcome == 'success' &&
+          steps.lookup-release.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end save
+
+      - name: Verify requested Blacksmith warm-up succeeded
+        if: needs.changes.outputs.warm_blacksmith_cache == 'true'
+        env:
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
+          CACHE_BACKEND: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
+          CACHE_KEY: ${{ steps.release-cache.outputs.key }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-release.outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ steps.lookup-release.outcome }}
+          CACHE_LOOKUP_HIT: ${{ steps.lookup-release.outputs.cache-hit }}
+          CACHE_EXISTING_KEY: ${{ steps.lookup-release.outputs.cache-matched-key }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: |
+          PYTHONPATH=scripts python3 - <<'PYTHON'
+          import os
+          from ci_release_cache_cleanup import trusted_context
+          trusted_context(os.environ)
+          print("Blacksmith main cache is saved or already available for this commit.")
+          PYTHON
+
+      - name: End measured release pipeline
+        continue-on-error: true
+        run: python3 scripts/ci_release_cache.py end pipeline
+
+      - name: Report release build and cache overhead
+        if: always()
+        continue-on-error: true
+        env:
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
+          CACHE_MATCHED_KEY: ${{ steps.restore-release.outputs.cache-matched-key }}
+          CACHE_EXACT_HIT: ${{ steps.restore-release.outputs.cache-hit }}
+          CACHE_RESTORE_OUTCOME: ${{ steps.restore-release.outcome }}
+          CACHE_SAVE_OUTCOME: ${{ steps.save-release.outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ steps.lookup-release.outcome }}
+          CACHE_EXISTING_KEY: ${{ steps.lookup-release.outputs.cache-matched-key }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: python3 scripts/ci_release_cache.py report
+
+      - name: Upload release build measurements
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-measurements
+          path: ci-release-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Only this trusted-main maintenance job can delete caches. PR build jobs keep
+  # read-only repository permissions. Retention uses the build runner's backend
+  # and never receives credentials on PRs or manual feature-branch runs.
+  release_cache_cleanup:
+    needs: [changes, build_release]
+    if: >-
+      needs.changes.outputs.cache_write_allowed == 'true' &&
+      vars.MUESLI_CI_RELEASE_CACHE_DISABLED != 'true' &&
+      needs.build_release.result == 'success' &&
+      needs.build_release.outputs.cache_ready == 'true'
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    concurrency:
+      group: release-cache-retention-${{ needs.build_release.outputs.cache_backend }}
+      cancel-in-progress: false
+    env:
+      BLACKSMITH_DISABLE_AUTO_UPDATE: '1'
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Blacksmith CLI
+        if: needs.build_release.outputs.cache_backend == 'blacksmith'
+        run: bash scripts/install_blacksmith_cli.sh
+      - name: Authenticate Blacksmith cache maintenance
+        if: needs.build_release.outputs.cache_backend == 'blacksmith'
+        env:
+          BLACKSMITH_CACHE_TOKEN: ${{ secrets.BLACKSMITH_CACHE_TOKEN }}
+        run: |
+          if [[ -z "$BLACKSMITH_CACHE_TOKEN" ]]; then
+            echo "::error::Configure BLACKSMITH_CACHE_TOKEN for Blacksmith cache retention."
+            exit 1
+          fi
+          printf '%s' "$BLACKSMITH_CACHE_TOKEN" | blacksmith auth login \
+            --api-token - --non-interactive --organization Muesli-HQ
+      - name: Retain the newest three main release caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_WARM_BLACKSMITH: ${{ inputs.warm_blacksmith_cache }}
+          CACHE_BACKEND: ${{ needs.build_release.outputs.cache_backend }}
+          CACHE_KEY: ${{ needs.build_release.outputs.cache_key }}
+          CACHE_SAVE_OUTCOME: ${{ needs.build_release.outputs.cache_save_outcome }}
+          CACHE_LOOKUP_OUTCOME: ${{ needs.build_release.outputs.cache_lookup_outcome }}
+          CACHE_LOOKUP_HIT: ${{ needs.build_release.outputs.cache_lookup_hit }}
+          CACHE_EXISTING_KEY: ${{ needs.build_release.outputs.cache_existing_key }}
+          CACHE_DISABLED: ${{ vars.MUESLI_CI_RELEASE_CACHE_DISABLED }}
+        run: python3 scripts/ci_release_cache_cleanup.py --backend "$CACHE_BACKEND" --delete
+
+  # Swift tests — includes AppleSpeechAnalyzerBackendTests on macOS 26 in
+  # dictation-transcription; a separate same-toolchain job would duplicate it.
   test_shards:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     strategy:
       fail-fast: false
       matrix:
@@ -118,45 +382,65 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
-  # Compile and exercise Apple Speech on macOS 26. Hosted runners do not
-  # guarantee that SpeechTranscriber language assets are provisioned, so the
-  # catalogue's available/unavailable policy is covered deterministically.
-  apple_speech_macos26:
+  # Dependency test targets are not executed by the application's test shards.
+  ai-elements:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-26
-    timeout-minutes: 30
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
+    timeout-minutes: 10
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Test Apple Speech on macOS 26
+      - name: Test reusable chat components
+        run: swift test --package-path native/AIElementsSwift
+      - name: Verify generated icons
         run: |
-          swift test \
-            --package-path native/MuesliNative \
-            --scratch-path "${RUNNER_TEMP}/muesli-apple-speech-macos26" \
-            --filter AppleSpeechAnalyzerBackendTests
+          python3 native/AIElementsSwift/Scripts/generate_icons.py
+          git diff --exit-code -- native/AIElementsSwift/Sources/AIElementsSwift/AIIcon.swift
 
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: macos-15
+    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 30
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Cache LocalVQE runtime build
         uses: actions/cache@v4
@@ -175,8 +459,15 @@ jobs:
   # missing signatures, accidental delta entries, and malformed appcast XML.
   update-flow:
     needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: ubuntu-latest
+    if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Check out repository
@@ -190,24 +481,48 @@ jobs:
       - name: Test CloudKit release entitlement contract
         run: python3 ./scripts/test_verify_cloud_entitlements.py
 
-  # Gate job — always runs, always reports a status
-  # This is the only required check in branch protection
+  # Unrelated labels must not publish a skipped check named ci-gate.
+  # Warm-up has its own name because it does not execute the full test suite.
   ci-gate:
-    if: always()
-    needs: [changes, classifier-tests, build_release, test_shards, apple_speech_macos26, cli-smoke, update-flow]
-    runs-on: ubuntu-latest
+    name: ${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && 'ignored-label-event' || (inputs.warm_blacksmith_cache && 'blacksmith-cache-warm' || 'ci-gate') }}
+    if: >-
+      always() && !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
+    needs: [changes, classifier-tests, build_release, release_cache_cleanup, test_shards, ai-elements, cli-smoke, update-flow]
+    runs-on: >-
+      ${{ github.repository == 'Muesli-HQ/muesli' &&
+          github.actor == 'pHequals7' &&
+          ((github.event_name == 'pull_request' &&
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+            inputs.warm_blacksmith_cache == true)) &&
+          'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
-      - name: Check result
+      # A successful draft gate could otherwise be reused on the same SHA when
+      # the PR becomes ready, before its release build finishes.
+      - name: Require a ready-for-review run
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
         run: |
+          echo "::notice::Draft validation finished. Mark the PR ready for review to run the required merge checks."
+          exit 1
+
+      - name: Check result
+        env:
+          RELEASE_REQUIRED: ${{ needs.changes.outputs.native_or_packaging == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+        run: |
+          if [[ "$RELEASE_REQUIRED" == "true" && "${{ needs.build_release.result }}" != "success" ]]; then
+            echo "Required release build did not succeed."
+            exit 1
+          fi
           if [[ "${{ needs.changes.result }}" == "success" ]] && \
              [[ "${{ needs.classifier-tests.result }}" == "success" ]] && \
              [[ "${{ needs.build_release.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.release_cache_cleanup.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.test_shards.result }}" =~ ^(success|skipped)$ ]] && \
-             [[ "${{ needs.apple_speech_macos26.result }}" =~ ^(success|skipped)$ ]] && \
+             [[ "${{ needs.ai-elements.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.cli-smoke.result }}" =~ ^(success|skipped)$ ]] && \
              [[ "${{ needs.update-flow.result }}" =~ ^(success|skipped)$ ]]; then
-            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, apple_speech_macos26: ${{ needs.apple_speech_macos26.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI passed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, release_cache_cleanup: ${{ needs.release_cache_cleanup.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
           else
-            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, test_shards: ${{ needs.test_shards.result }}, apple_speech_macos26: ${{ needs.apple_speech_macos26.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
+            echo "CI failed (changes: ${{ needs.changes.result }}, classifier-tests: ${{ needs.classifier-tests.result }}, build_release: ${{ needs.build_release.result }}, release_cache_cleanup: ${{ needs.release_cache_cleanup.result }}, test_shards: ${{ needs.test_shards.result }}, ai-elements: ${{ needs.ai-elements.result }}, cli-smoke: ${{ needs.cli-smoke.result }}, update-flow: ${{ needs.update-flow.result }})"
             exit 1
           fi

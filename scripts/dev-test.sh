@@ -38,6 +38,8 @@ Options:
   --cloud-entitlements    Sign with the default cloud entitlements file.
                           Alias: --with-cloud-entitlements.
   --reset                 Reset onboarding only for the selected lane.
+  --release               Build optimized (Release) instead of Debug, e.g. to judge
+                          on-device model latency. Uses its own build cache.
   --help                  Show this help text.
 
 Default behavior without --lane is unchanged for the app identity: MuesliDev,
@@ -47,6 +49,8 @@ com.muesli.dev, ~/Library/Application Support/MuesliDev, and
 
 Cloud-entitled dev builds require a provisioning profile whose app identifier
 matches the selected bundle ID and a signing identity included by that profile.
+Cloud-entitled MuesliDev builds always use the CloudKit Development environment;
+only production/preproduction release builds may use CloudKit Production.
 For the maintainer's plain MuesliDev lane, this script auto-selects the local
 com.muesli.dev CloudKit profile from ../muesli-ios/secrets when
 --cloud-entitlements is provided and the profile exists.
@@ -55,6 +59,7 @@ EOF
 
 # Parse args
 RESET=0
+BUILD_CONFIG="debug"
 LANE=""
 ENTITLEMENTS_MODE=""
 ENTITLEMENTS_MODE_EXPLICIT=0
@@ -67,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reset)
       RESET=1
+      shift
+      ;;
+    --release)
+      BUILD_CONFIG="release"
       shift
       ;;
     --lane)
@@ -166,6 +175,13 @@ case "$ENTITLEMENTS_MODE" in
     use_local_only_entitlements
     ;;
   cloud)
+    REQUESTED_CLOUDKIT_ENVIRONMENT="${MUESLI_ICLOUD_CONTAINER_ENVIRONMENT:-Development}"
+    if [[ "$(printf '%s' "$REQUESTED_CLOUDKIT_ENVIRONMENT" | tr '[:upper:]' '[:lower:]')" != "development" ]]; then
+      echo "Error: MuesliDev builds must use the CloudKit Development environment." >&2
+      echo "Use the production Muesli release workflow for CloudKit Production." >&2
+      exit 2
+    fi
+    BUILD_ENV+=(MUESLI_ICLOUD_CONTAINER_ENVIRONMENT="Development")
     if [[ -z "$RESOLVED_PROVISIONING_PROFILE" && "$DEV_BUNDLE_ID" == "com.muesli.dev" && -f "$DEFAULT_DEV_CLOUD_PROFILE" ]]; then
       RESOLVED_PROVISIONING_PROFILE="$DEFAULT_DEV_CLOUD_PROFILE"
       if [[ -z "$RESOLVED_SIGN_IDENTITY" ]]; then
@@ -230,7 +246,7 @@ print('  Onboarding reset (data preserved)')
 fi
 
 # Build with isolated identity
-echo "Building $DEV_APP_NAME (debug, signed)..."
+echo "Building $DEV_APP_NAME ($BUILD_CONFIG, signed)..."
 echo "  Bundle ID:    $DEV_BUNDLE_ID"
 echo "  Data:         $DEV_SUPPORT_DIR"
 echo "  Entitlements: $ENTITLEMENTS_MODE"
@@ -240,7 +256,7 @@ fi
 if [[ -n "$RESOLVED_SIGN_IDENTITY" ]]; then
   echo "  Sign identity: $RESOLVED_SIGN_IDENTITY"
 fi
-env "${BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" debug
+env "${BUILD_ENV[@]}" "$ROOT/scripts/build_native_app.sh" "$BUILD_CONFIG"
 
 echo ""
 echo "Launching $DEV_APP_NAME..."

@@ -1,8 +1,80 @@
+import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("OnboardingFlow")
 struct OnboardingFlowTests {
+    @Test("Restored supported models outside onboarding must be reconfirmed", arguments: [2, 3, 4, 5, 6])
+    func replacedModelReturnsToSelection(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        let initial = BackendOption.gemma4E2BLiteRT
+        #expect(initial.isCompatible(currentOSVersion: version))
+        let resolved = BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version)
+        #expect(resolved != initial)
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: resolved, currentOSVersion: version
+        ) == 1)
+    }
+
+    @Test("Unchanged supported onboarding models preserve the permission-gated step", arguments: [0, 1, 2, 3, 4, 5, 6])
+    func unchangedModelPreservesResumeStep(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+        let initial = BackendOption.parakeetUnified
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version),
+            currentOSVersion: version
+        ) == requestedStep)
+    }
+
+    @Test("OS-incompatible restored models return to selection without skipping welcome", arguments: [0, 1, 3, 4])
+    func incompatibleModelRespectsEarlierSteps(_ requestedStep: Int) {
+        let version = OperatingSystemVersion(majorVersion: 14, minorVersion: 8, patchVersion: 0)
+        let initial = BackendOption.nemotron35Multilingual
+        #expect(OnboardingFlow.modelGatedResumeStep(
+            requestedStep: requestedStep, initialBackend: initial,
+            resolvedBackend: BackendOption.resolvedOnboardingBackend(initial, currentOSVersion: version),
+            currentOSVersion: version
+        ) == min(requestedStep, 1))
+    }
+
+    @Test("Everything restores the prior capability union when toggled off")
+    func everythingRestoresPriorSelection() {
+        let prior = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .voiceNotesAndMeetings,
+            selectionBeforeEverything: nil
+        )
+        let everything = OnboardingFlow.togglingEverything(in: prior)
+
+        #expect(everything.selectedUseCase == .everything)
+        #expect(everything.selectionBeforeEverything == .voiceNotesAndMeetings)
+        #expect(OnboardingFlow.togglingEverything(in: everything) == prior)
+    }
+
+    @Test("Everything remains selected after resume without an in-memory prior selection")
+    func resumedEverythingDoesNotDiscardCapabilities() {
+        let resumed = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .everything,
+            selectionBeforeEverything: nil
+        )
+
+        #expect(OnboardingFlow.togglingEverything(in: resumed) == resumed)
+    }
+
+    @Test("Individual capability changes clear the Everything restoration state")
+    func capabilityToggleClearsEverythingHistory() {
+        let everything = OnboardingFlow.UseCaseSelectionState(
+            selectedUseCase: .everything,
+            selectionBeforeEverything: .voiceNotesAndMeetings
+        )
+        let updated = OnboardingFlow.toggling(.voiceNotes, in: everything)
+
+        #expect(updated.selectedUseCase == .dictationAndMeetings)
+        #expect(updated.selectionBeforeEverything == nil)
+    }
+
     @Test("voice notes orders push-to-talk steps without paste permission")
     func voiceNotesOrderedSteps() {
         #expect(OnboardingFlow.orderedSteps(for: .voiceNotes) == [0, 1, 2, 3, 4])
@@ -21,6 +93,21 @@ struct OnboardingFlowTests {
     @Test("dictation and meetings orders combined steps")
     func dictationAndMeetingsOrderedSteps() {
         #expect(OnboardingFlow.orderedSteps(for: .dictationAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+    }
+
+    @Test("multi-select unions include every required workflow step")
+    func multiSelectUnionOrderedSteps() {
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndMeetings) == [0, 1, 2, 3, 4, 5, 6])
+        #expect(OnboardingFlow.orderedSteps(for: .voiceNotesAndDictation) == [0, 1, 2, 3, 4])
+        #expect(OnboardingFlow.orderedSteps(for: .everything) == [0, 1, 2, 3, 4, 5, 6])
+    }
+
+    @Test("restored calendar step uses macOS calendar access")
+    func restoredRemovedCalendarStep() {
+        for useCase: OnboardingUseCase in [.meetings, .dictationAndMeetings, .voiceNotesAndMeetings, .everything] {
+            #expect(OnboardingFlow.normalizedStep(6, for: useCase) == OnboardingFlow.Step.calendarAccess.rawValue)
+            #expect(OnboardingFlow.orderedSteps(for: useCase).last == OnboardingFlow.Step.calendarAccess.rawValue)
+        }
     }
 
     @Test("normalized step advances over skipped steps")
@@ -65,6 +152,85 @@ struct OnboardingFlowTests {
         #expect(OnboardingFlow.completionTab(for: .voiceNotes) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictation) == .dictations)
         #expect(OnboardingFlow.completionTab(for: .dictationAndMeetings) == .dictations)
+    }
+
+    @Test("permission advancement has one capability-derived destination")
+    func permissionAdvanceAction() {
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .dictation,
+            currentStepIndex: 3,
+            orderedStepCount: 5
+        ) == .restartForDictationTest)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .meetings,
+            currentStepIndex: 2,
+            orderedStepCount: 3
+        ) == .finish)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .meetings,
+            currentStepIndex: 2,
+            orderedStepCount: 5
+        ) == .next)
+        #expect(OnboardingFlow.permissionAdvanceAction(
+            for: .dictation,
+            currentStepIndex: 3,
+            orderedStepCount: 5,
+            hasCompletedPermissionsStep: true
+        ) == .next)
+    }
+
+    @Test("completed permission steps do not auto-advance again on re-entry")
+    func completedPermissionStepDoesNotAutoAdvanceAgain() {
+        let resumedAfterPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.dictationTest.rawValue
+        )
+        let resumedAtPermissions = OnboardingFlow.hasCompletedPermissionsStep(
+            resumingAt: OnboardingFlow.Step.permissions.rawValue
+        )
+        let schedulesAfterCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: true,
+            hasScheduledTask: false
+        )
+        let schedulesInitialCompletion = OnboardingFlow.shouldSchedulePermissionAdvance(
+            currentStep: OnboardingFlow.Step.permissions.rawValue,
+            requiredPermissionsGranted: true,
+            hasCompletedPermissionsStep: false,
+            hasScheduledTask: false
+        )
+
+        #expect(resumedAfterPermissions)
+        #expect(!resumedAtPermissions)
+        #expect(!schedulesAfterCompletion)
+        #expect(schedulesInitialCompletion)
+    }
+
+    @Test("automatic dictation reclassification applies only to legacy Voice Notes")
+    func voiceNoteReclassificationPolicy() {
+        let granted = OnboardingPermissionSnapshot(
+            microphone: true,
+            accessibility: true,
+            inputMonitoring: true,
+            systemAudio: false,
+            screenRecording: false
+        )
+
+        #expect(OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotes,
+            permissions: granted
+        ))
+        #expect(!OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotesAndMeetings,
+            permissions: granted
+        ))
+
+        var missingAccessibility = granted
+        missingAccessibility.accessibility = false
+        #expect(!OnboardingFlow.shouldReclassifyVoiceNotesAsDictation(
+            previousUseCase: .voiceNotes,
+            permissions: missingAccessibility
+        ))
     }
 
     @Test("dictation monitor stops and cancels active testing when readiness is lost")
@@ -120,4 +286,24 @@ struct OnboardingFlowTests {
         #expect(ModelDownloadDisplayFormatting.eta(.infinity) == nil)
         #expect(ModelDownloadDisplayFormatting.eta(3_600) == "1h 00m")
     }
+    @Test("Indicator reports whole-download percentage and transfer ETA only")
+    func indicatorDownloadProgress() {
+        let progress = ModelDownloadProgress(modelID: "test", phase: .downloading,
+            currentFile: "weights", completedBytes: 42, totalBytes: 100,
+            currentFileCompletedBytes: 42, currentFileTotalBytes: 50,
+            bytesPerSecond: 2, estimatedSecondsRemaining: 29, retryCount: 0,
+            completedFileCount: 0, totalFileCount: 2, message: nil)
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(progress, modelName: "Bodhan Core Lite")
+            == "Downloading Bodhan Core Lite · 42% · ~29s left")
+        let preparing = progress.replacing(phase: .preparing, message: "Warming up Bodhan Core Lite…")
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(preparing, modelName: "Bodhan Core Lite")
+            == "Warming up Bodhan Core Lite…")
+        let unknown = ModelDownloadProgress(modelID: "test", phase: .downloading,
+            currentFile: "weights", completedBytes: 42, totalBytes: nil,
+            currentFileCompletedBytes: 42, currentFileTotalBytes: 50,
+            bytesPerSecond: 2, estimatedSecondsRemaining: 4, retryCount: 0,
+            completedFileCount: 0, totalFileCount: 2, message: nil)
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(unknown, modelName: "Model") == "Downloading Model")
+    }
+
 }

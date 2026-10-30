@@ -321,12 +321,23 @@ enum DiagnosticErrorCatalog {
     ]
 
     private static let exactMeanings: [String: [String: DiagnosticErrorMeaning]] = [
+        "MuesliClaudeCode": [
+            "1": .init(summary: "Claude Code executable was not found", area: "meeting_summary_configuration"),
+            "2": .init(summary: "Claude Code summary input exceeded its size limit", area: "meeting_summary_input"),
+            "3": .init(summary: "Claude Code summary instructions exceeded their size limit", area: "meeting_summary_input"),
+            "4": .init(summary: "Claude Code summary request timed out", area: "meeting_summary_request"),
+            "5": .init(summary: "Claude Code reported a summary generation error", area: "meeting_summary_request"),
+            "6": .init(summary: "Claude Code returned no meeting notes", area: "meeting_summary_response"),
+            "7": .init(summary: "Claude Code returned an unexpected response format", area: "meeting_summary_response"),
+            "8": .init(summary: "Claude Code exited unsuccessfully", area: "meeting_summary_process"),
+            "9": .init(summary: "Claude Code process could not start", area: "meeting_summary_process"),
+        ],
         "MuesliTranscriptionRuntime": [
             "1": .init(summary: "Nemotron 3.5 requires a newer macOS version", area: "transcription_runtime"),
             "2": .init(summary: "Qwen3 ASR requires a newer macOS version", area: "transcription_runtime"),
             "4": .init(summary: "Cohere Transcribe requires a newer macOS version", area: "transcription_runtime"),
             "5": .init(summary: "Unknown transcription backend was requested", area: "transcription_runtime"),
-            "6": .init(summary: "Indic ASR requires a newer macOS version", area: "transcription_runtime"),
+            "6": .init(summary: "Bodhan requires a newer macOS version", area: "transcription_runtime"),
         ],
         "Muesli": [
             "1": .init(summary: "Selected transcription backend requires a newer macOS version", area: "transcription_runtime"),
@@ -373,23 +384,21 @@ enum DiagnosticErrorCatalog {
             "22": .init(summary: "Cohere mel window asset was too small", area: "cohere_model_assets"),
             "23": .init(summary: "Cohere FFT setup could not be created", area: "cohere_audio_frontend"),
         ],
-        "IndicASR": [
-            "1": .init(summary: "Indic ASR CoreML artifacts were not installed correctly", area: "indic_model_assets"),
-            "2": .init(summary: "Indic ASR models were not loaded", area: "indic_model_assets"),
-            "20": .init(summary: "Indic ASR vocabulary was missing language tokens", area: "indic_model_assets"),
-            "21": .init(summary: "Indic ASR FFT setup could not be created", area: "indic_audio_frontend"),
-            "22": .init(summary: "Indic ASR preprocessor constants were truncated", area: "indic_model_assets"),
-            "23": .init(summary: "Indic ASR preprocessor constants had an unsupported format", area: "indic_model_assets"),
-            "24": .init(summary: "Indic ASR preprocessor constants did not match expected shape", area: "indic_model_assets"),
-            "30": .init(summary: "Indic ASR joint post-net was missing for the selected language", area: "indic_model_assets"),
-            "31": .init(summary: "Indic ASR encoder outputs were missing", area: "indic_coreml_inference"),
-            "32": .init(summary: "Indic ASR RNNT decoder state outputs were missing", area: "indic_coreml_inference"),
-            "33": .init(summary: "Indic ASR CoreML model output was missing", area: "indic_coreml_inference"),
-            "40": .init(summary: "Indic ASR encoder output rank was unexpected", area: "indic_runtime_shape"),
-            "41": .init(summary: "Indic ASR decoder output shape was unexpected", area: "indic_runtime_shape"),
-            "42": .init(summary: "Indic ASR encoder hidden dimension was unexpected", area: "indic_runtime_shape"),
-            "43": .init(summary: "Indic ASR frame index exceeded available frames", area: "indic_runtime_shape"),
-            "44": .init(summary: "Indic ASR decoder hidden dimension was unexpected", area: "indic_runtime_shape"),
+        "BodhanASR": [
+            "1": .init(summary: "Bodhan frontend constants were invalid", area: "bodhan_model_assets"),
+            "2": .init(summary: "Bodhan FFT setup failed", area: "bodhan_audio_frontend"),
+            "3": .init(summary: "Bodhan model output was missing", area: "bodhan_inference"),
+            "4": .init(summary: "Bodhan input chunk length was invalid", area: "bodhan_inference"),
+            "5": .init(summary: "Bodhan language was unsupported", area: "bodhan_inference"),
+            "6": .init(summary: "Bodhan decoding reached its token limit", area: "bodhan_inference"),
+            "7": .init(summary: "Bodhan language prompt was missing", area: "bodhan_model_assets"),
+            "8": .init(summary: "Bodhan MLX decoder weights were missing", area: "bodhan_model_assets"),
+            "9": .init(summary: "Bodhan MLX decoder weights were incompatible", area: "bodhan_model_assets"),
+            "10": .init(summary: "Bodhan model data or dimensions were invalid", area: "bodhan_model_assets"),
+            "11": .init(summary: "Bodhan manifest or quantization configuration was invalid", area: "bodhan_model_assets"),
+            "12": .init(summary: "Bodhan manifest or projection weights were incompatible", area: "bodhan_model_assets"),
+            "13": .init(summary: "Bodhan quantization runtime was unsupported", area: "bodhan_inference"),
+            "15": .init(summary: "Bodhan model was unknown", area: "bodhan_model_assets"),
         ],
     ]
 }

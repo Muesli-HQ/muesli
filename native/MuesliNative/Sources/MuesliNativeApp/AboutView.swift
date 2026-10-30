@@ -3,6 +3,7 @@ import MuesliCore
 
 struct AboutView: View {
     let appState: AppState
+    let onShare: (ContributionMilestoneAction) -> Void
     let onOpenManualDiagnosticReport: () -> Void
     let onSetAutomaticDiagnosticIssuePrompts: (Bool) -> Void
 
@@ -102,6 +103,21 @@ struct AboutView: View {
                     }
                 }
 
+                if ContributionSocialShare.completedWordMilestone(totalWords: appState.dictationStats.totalWords) != nil {
+                    sectionHeader("Spread the Word")
+                    aboutCard {
+                        aboutRow("Share Muesli") {
+                            HStack(spacing: MuesliTheme.spacing12) {
+                                Button("Post on X") { onShare(.tweetAboutMuesli) }
+                                Button("LinkedIn") { onShare(.postOnLinkedIn) }
+                            }
+                            .buttonStyle(.plain)
+                            .font(MuesliTheme.callout())
+                            .foregroundStyle(MuesliTheme.accent)
+                        }
+                    }
+                }
+
                 // MARK: - Data
                 sectionHeader("Data")
                 aboutCard {
@@ -142,6 +158,12 @@ struct AboutView: View {
                         name: "WhisperKit by Argmax",
                         description: "Swift Whisper inference on CoreML/ANE powering the app's Whisper Small, Medium, and Large Turbo backends."
                     )
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(name: "MLX and MLX Swift LM by ml-explore",
+                        description: "Native Gemma inference and multi-token prediction. MIT licenses included with the app.")
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    acknowledgement(name: "Hugging Face Transformers and XGrammar",
+                        description: "Swift tokenization, Gemma audio algorithms, and constrained tool generation. Apache 2.0 licenses and notices included with the app.")
                 }
 
                 Spacer(minLength: MuesliTheme.spacing32)

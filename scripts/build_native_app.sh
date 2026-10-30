@@ -18,7 +18,7 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.3"
+DEFAULT_APP_VERSION="0.8.5"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -126,7 +126,15 @@ if [[ "$USE_XCODE_BUILD" == "1" ]]; then
 
   echo "Building app target via xcodebuild ($XCODE_CONFIG)..."
   set +e
-  xcodebuild build \
+  plugin_validation_args=()
+  if [[ "${MUESLI_TRUST_PACKAGE_PLUGINS:-0}" == "1" ]]; then
+    plugin_validation_args=(-skipPackagePluginValidation)
+  fi
+  performance_args=()
+  if [[ "${MUESLI_PROFILE_OPTIMIZED:-0}" == "1" ]]; then
+    performance_args=(SWIFT_OPTIMIZATION_LEVEL=-O GCC_OPTIMIZATION_LEVEL=3)
+  fi
+  xcodebuild build ${plugin_validation_args[@]+"${plugin_validation_args[@]}"} ${performance_args[@]+"${performance_args[@]}"} \
     -project "$XCODE_PROJECT_DIR/MuesliXcode.xcodeproj" \
     -scheme Muesli \
     -configuration "$XCODE_CONFIG" \
@@ -199,6 +207,7 @@ if [[ "$USE_XCODE_BUILD" != "1" ]]; then
   # ship as dylibs instead of frameworks.
   for dylib in "$BIN_DIR"/*.dylib; do
     [[ -f "$dylib" ]] || continue
+    [[ "$(basename "$dylib")" == libCLiteRTLM_mac.dylib ]] && continue
     target="$STAGED_APP_DIR/Contents/MacOS/$(basename "$dylib")"
     cp -RL "$dylib" "$target"
     thin_macho_to_bundle_arch "$target"
@@ -329,18 +338,23 @@ cp "$ROOT/assets/Nvidia_logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/nvidia
 cp "$ROOT/assets/OpenAI_Logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/openai-logo.png"
 cp "$ROOT/assets/cohere.png" "$STAGED_APP_DIR/Contents/Resources/cohere-logo.png"
 cp "$ROOT/assets/Qwen_logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/qwen-logo.png"
-cp "$ROOT/assets/AI4Bharat_logo.png" "$STAGED_APP_DIR/Contents/Resources/ai4bharat-logo.png"
+cp "$ROOT/assets/superwhisper-logo.png" "$STAGED_APP_DIR/Contents/Resources/superwhisper-logo.png"
+cp "$ROOT/assets/bodhan-logo.png" "$STAGED_APP_DIR/Contents/Resources/bodhan-logo.png"
+cp "$ROOT/assets/fermion-logo.svg" "$STAGED_APP_DIR/Contents/Resources/fermion-logo.svg"
 cp "$ROOT/assets/google-logo.svg" "$STAGED_APP_DIR/Contents/Resources/google-logo.svg"
 cp "$ROOT/assets/x-logo.png" "$STAGED_APP_DIR/Contents/Resources/x-logo.png"
 cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin-logo.png"
 cp "$ROOT/assets/insights-share-background.png" "$STAGED_APP_DIR/Contents/Resources/insights-share-background.png"
 cp "$ROOT/assets/muesli_app_icon.png" "$STAGED_APP_DIR/Contents/Resources/muesli_app_icon.png"
+cp "$ROOT/assets/quill-icon.svg" "$STAGED_APP_DIR/Contents/Resources/quill-icon.svg"
 if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
 fi
 if [[ -d "$ROOT/assets/audio" ]]; then
   ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
+
+rm -f "$STAGED_APP_DIR/Contents/Frameworks/libCLiteRTLM_mac.dylib" "$STAGED_APP_DIR/Contents/MacOS/libCLiteRTLM_mac.dylib"
 
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -394,6 +408,92 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Gemma's reference-tested FP32 encoder policy is process-wide in MLX. Bodhan
+# uses FP16 activations; retain its regression checks when updating this policy.
+/usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$STAGED_APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MLX_ENABLE_TF32 string 0' "$STAGED_APP_DIR/Contents/Info.plist"
+if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then
+  # Legacy name is still read by Gemma4LiteRTLogging for saved diagnostic tooling.
+  /usr/bin/plutil -insert LSEnvironment.MUESLI_GEMMA4_LITERT_PROFILE_PATH -string "$HOME/Library/Application Support/$APP_SUPPORT_DIR_NAME/gemma-native-audio-profile.log" "$STAGED_APP_DIR/Contents/Info.plist"
+fi
+# Gemma MTP defaults on in the shared Swift policy; no lane-specific activation flags.
+
+bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME"
+
+# Cotypist (experimental): the typeahead input method lives inside the app and is registered by
+# Muesli at launch. It owns keys and the inline ghost; Muesli does the rest. Muesli enables the
+# feature only when this helper is bundled, so this flag is the single switch. Dev bundle IDs get
+# it by default; a public release opts in with MUESLI_INCLUDE_COTYPIST=1 and then goes through the
+# same Developer ID signing, hardened runtime, timestamp and notarization as the app.
+INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-}"
+if [[ -z "$INCLUDE_COTYPIST" ]]; then
+  [[ "$BUNDLE_ID" == com.muesli.dev* ]] && INCLUDE_COTYPIST=1 || INCLUDE_COTYPIST=0
+fi
+if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
+  COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
+  COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"
+  mkdir -p "$COTYPIST_DIR/Contents/MacOS" "$COTYPIST_DIR/Contents/Resources"
+  xcrun clang -fobjc-arc -O2 -arch arm64 -mmacosx-version-min=14.2 \
+    -framework Cocoa -framework InputMethodKit -framework Security \
+    "$ROOT/native/CotypistInputMethod/main.m" "$ROOT/native/CotypistInputMethod/CotypistController.m" \
+    -o "$COTYPIST_DIR/Contents/MacOS/MuesliCotypist"
+  # The white Muesli mark the menu bar uses, as a template: macOS tints it for the menu bar and the
+  # input-switch indicator, like other keyboard icons, instead of showing the blue app icon.
+  tiffutil -cathidpicheck "$ROOT/assets/menu_m_template.png" "$ROOT/assets/menu_m_template@2x.png" \
+    -out "$COTYPIST_DIR/Contents/Resources/icon.tiff" >/dev/null
+  # The input mode's display name in System Settings and the input menu (otherwise its raw ID).
+  mkdir -p "$COTYPIST_DIR/Contents/Resources/en.lproj"
+  printf '"%s" = "%s";\n"%s" = "%s";\n"CFBundleName" = "%s";\n' \
+    "$COTYPIST_ID" "$APP_DISPLAY_NAME Cotypist" "$COTYPIST_ID.en" "$APP_DISPLAY_NAME Cotypist" "$APP_DISPLAY_NAME Cotypist" \
+    > "$COTYPIST_DIR/Contents/Resources/en.lproj/InfoPlist.strings"
+  cat > "$COTYPIST_DIR/Contents/Info.plist" <<COTYPIST_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleIdentifier</key><string>$COTYPIST_ID</string>
+  <key>CFBundleName</key><string>$APP_DISPLAY_NAME Cotypist</string>
+  <key>CFBundleDisplayName</key><string>$APP_DISPLAY_NAME Cotypist</string>
+  <key>CFBundleExecutable</key><string>MuesliCotypist</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>$APP_BUNDLE_VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$APP_SHORT_VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>14.2</string>
+  <key>LSBackgroundOnly</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>MuesliSupportDirectoryName</key><string>$APP_SUPPORT_DIR_NAME</string>
+  <key>InputMethodConnectionName</key><string>${COTYPIST_ID}_Connection</string>
+  <key>InputMethodServerControllerClass</key><string>CotypistController</string>
+  <key>TISInputSourceID</key><string>$COTYPIST_ID</string>
+  <key>TISIntendedLanguage</key><string>en</string>
+  <key>tsInputMethodCharacterRepertoireKey</key><array><string>Latn</string></array>
+  <key>tsInputMethodIconFileKey</key><string>icon.tiff</string>
+  <key>TISIconIsTemplate</key><true/>
+  <key>ComponentInputModeDict</key>
+  <dict>
+    <key>tsInputModeListKey</key>
+    <dict>
+      <key>$COTYPIST_ID.en</key>
+      <dict>
+        <key>TISInputSourceID</key><string>$COTYPIST_ID.en</string>
+        <key>TISIntendedLanguage</key><string>en</string>
+        <key>tsInputModeMenuIconFileKey</key><string>icon.tiff</string>
+        <key>tsInputModeAlternateMenuIconFileKey</key><string>icon.tiff</string>
+        <key>tsInputModePaletteIconFileKey</key><string>icon.tiff</string>
+        <key>TISIconIsTemplate</key><true/>
+        <key>tsInputModeDefaultStateKey</key><true/>
+        <key>tsInputModeIsVisibleKey</key><true/>
+        <key>tsInputModePrimaryInScriptKey</key><true/>
+        <key>tsInputModeScriptKey</key><string>smRoman</string>
+      </dict>
+    </dict>
+    <key>tsVisibleInputModeOrderedArrayKey</key><array><string>$COTYPIST_ID.en</string></array>
+  </dict>
+</dict>
+</plist>
+COTYPIST_PLIST
+fi
 
 # Replace existing app (no prompt — that's what this script is for)
 if [[ -d "$APP_DIR" ]]; then
@@ -460,6 +560,23 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   codesign --force --options runtime "$CODESIGN_TIMESTAMP" \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
+
+  COTYPIST_APP="$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
+  if [[ -d "$COTYPIST_APP" ]]; then
+    # Nested code is signed before the app. Notarization rejects nested executables without
+    # hardened runtime or a secure timestamp, so check both here rather than at the notary.
+    codesign --force --options runtime "$CODESIGN_TIMESTAMP" --sign "$SIGN_IDENTITY" "$COTYPIST_APP"
+    codesign --verify --strict --verbose=2 "$COTYPIST_APP"
+    COTYPIST_SIGNATURE="$(codesign -dvv "$COTYPIST_APP" 2>&1)"
+    if ! grep -q "flags=.*runtime" <<<"$COTYPIST_SIGNATURE"; then
+      echo "ERROR: Cotypist input method is not signed with hardened runtime." >&2
+      exit 1
+    fi
+    if [[ "$CODESIGN_TIMESTAMP" != "--timestamp=none" ]] && ! grep -q "^Timestamp=" <<<"$COTYPIST_SIGNATURE"; then
+      echo "ERROR: Cotypist input method signature has no secure timestamp." >&2
+      exit 1
+    fi
+  fi
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
   ENTITLEMENTS="${MUESLI_ENTITLEMENTS:-$ROOT/scripts/Muesli.entitlements}"
@@ -645,6 +762,10 @@ else
 
   if [[ -f "$APP_DIR/Contents/MacOS/muesli-cli" ]]; then
     codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/muesli-cli"
+  fi
+
+  if [[ -d "$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app" ]]; then
+    codesign --force --sign "$LOCAL_SIGN_IDENTITY" "$APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   fi
 
   # Sign the bundle last so the Info.plist binding / identity stick.

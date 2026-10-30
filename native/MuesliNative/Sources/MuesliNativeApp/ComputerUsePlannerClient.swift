@@ -24,8 +24,7 @@ enum ComputerUsePlannerError: LocalizedError, Equatable {
 }
 
 enum ComputerUsePlannerClient {
-    private static let whamURL = URL(string: "https://chatgpt.com/backend-api/wham/responses")!
-    static let defaultModel = "gpt-5.6-sol"
+    static let defaultModel = "gpt-6.1-sol"
 
     static var instructions: String {
         """
@@ -45,6 +44,7 @@ enum ComputerUsePlannerClient {
     - Browser DOM/page tools are optional accelerators. Use page_get_text/page_query_dom when useful, but do not depend on them as the control path.
     - If page_get_text, page_query_dom, or list_browser_tabs fails, is blocked by Chrome Apple Events JavaScript permission, returns insufficient content, or returns no tabs, immediately continue with get_app_state plus AX/screenshot actions such as click_element/click_point, paste_text/type_text, press_key/hotkey, and scroll.
     - For text entry, prefer app-scoped calls: include app_name/app_bundle_id, and include element_index/element_id when an editable target is visible in the latest state.
+    - Use edit_text for writing, rewriting, summarizing or translating in an observed editable text field. It delegates to the shared Quill writing model. Use scope selection for a highlight or insertion at the cursor, and field only when the user requests the whole field. Do not generate prose yourself and bypass this tool with paste_text/set_value. If it fails, report the limitation; do not overwrite another target or silently switch models. Literal typing/pasting remains appropriate for exact text supplied by the user. Writing does not send or submit.
     - type_text sends literal keyboard input after Muesli activates the requested app and verifies a focused editable target. Use it for normal typing into focused text fields.
     - For Apple Notes and native rich-text editors, first focus the editable note body/title, then prefer paste_text for multi-word text. Use type_text only for short direct key-event text entry when paste_text is inappropriate.
     - Do not use fail only because a browser DOM/page tool failed. Use fail only after trying the available AX/screenshot fallback path or when the requested task is unsafe or truly unsupported.
@@ -64,12 +64,19 @@ enum ComputerUsePlannerClient {
         config: AppConfig
     ) async throws -> ComputerUsePlannerResponse {
         do {
-            return try await callWHAM(
+            let call = try await callTool(
                 systemPrompt: instructions,
                 userPrompt: requestPrompt(for: request),
                 imageDataURL: request.latestWindowState.screenshot?.imageDataURL,
-                model: plannerModel(for: config)
+                model: plannerModel(for: config),
+                reasoningEffort: config.computerUseReasoningEffort
             )
+            do {
+                return try ComputerUsePlannerResponse.decodeNativeToolCall(name: call.name, arguments: call.arguments)
+            } catch {
+                throw ComputerUsePlannerError.invalidToolCall(name: call.name, arguments: call.arguments,
+                    message: ComputerUsePlannerResponse.decodingFailureDetail(error))
+            }
         } catch ChatGPTAuthError.notAuthenticated {
             throw ComputerUsePlannerError.notAuthenticated
         } catch let error as ComputerUsePlannerError {
@@ -93,28 +100,33 @@ enum ComputerUsePlannerClient {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func callWHAM(
+    static func callTool(
         systemPrompt: String,
         userPrompt: String,
         imageDataURL: String?,
-        model: String
-    ) async throws -> ComputerUsePlannerResponse {
+        model: String,
+        reasoningEffort: ReasoningEffort?,
+        tools: [[String: Any]] = ComputerUseToolRegistry.nativeToolDefinitions()
+    ) async throws -> (name: String, arguments: String) {
+        if ComputerUseLocalPlanner.isLocal(model) {
+            return try await ComputerUseLocalPlanner.callTool(systemPrompt: systemPrompt,
+                userPrompt: userPrompt, model: model, tools: tools)
+        }
         let (token, accountId) = try await ChatGPTAuthManager.shared.validAccessToken()
         let body = requestBody(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             imageDataURL: imageDataURL,
-            model: model
+            model: model,
+            reasoningEffort: reasoningEffort,
+            tools: tools
         )
 
-        var urlRequest = URLRequest(url: whamURL)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if !accountId.isEmpty {
-            urlRequest.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
-        }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let urlRequest = try ChatGPTResponsesTransport.makeRequest(
+            body: body,
+            token: token,
+            accountId: accountId
+        )
 
         let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
         let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -138,6 +150,10 @@ enum ComputerUsePlannerClient {
             guard let data = jsonString.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
+            if let failure = streamedFailure(in: json) {
+                throw ComputerUsePlannerError.backendFailed(statusCode: httpStatus, message: failure)
+            }
+
             if let outputText = json["output_text"] as? String, !outputText.isEmpty {
                 fullText = outputText
             }
@@ -151,18 +167,7 @@ enum ComputerUsePlannerClient {
         }
 
         if let nativeToolCall = parsedNativeToolCall {
-            do {
-                return try ComputerUsePlannerResponse.decodeNativeToolCall(
-                    name: nativeToolCall.name,
-                    arguments: nativeToolCall.arguments
-                )
-            } catch {
-                throw ComputerUsePlannerError.invalidToolCall(
-                    name: nativeToolCall.name,
-                    arguments: nativeToolCall.arguments,
-                    message: error.localizedDescription
-                )
-            }
+            return nativeToolCall
         }
 
         let trimmedText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -173,11 +178,30 @@ enum ComputerUsePlannerClient {
         )
     }
 
+    static func streamedFailure(in json: [String: Any]) -> String? {
+        guard let type = json["type"] as? String,
+              type == "error" || type == "response.failed" else { return nil }
+        return String((streamErrorMessage(in: json) ?? "The provider reported a failed response.").prefix(800))
+    }
+
+    private static func streamErrorMessage(in json: [String: Any], depth: Int = 0) -> String? {
+        guard depth <= 16 else { return nil }
+        if let message = json["message"] as? String, !message.isEmpty { return message }
+        for key in ["error", "response"] {
+            if let nested = json[key] as? [String: Any],
+               let message = streamErrorMessage(in: nested, depth: depth + 1) { return message }
+        }
+        if let code = json["code"] as? String, !code.isEmpty { return code }
+        return nil
+    }
+
     static func requestBody(
         systemPrompt: String,
         userPrompt: String,
         imageDataURL: String?,
-        model: String
+        model: String,
+        reasoningEffort: ReasoningEffort? = nil,
+        tools: [[String: Any]] = ComputerUseToolRegistry.nativeToolDefinitions()
     ) -> [String: Any] {
         var content: [[String: Any]] = [
             ["type": "input_text", "text": userPrompt],
@@ -190,7 +214,7 @@ enum ComputerUsePlannerClient {
             "store": false,
             "stream": true,
             "instructions": systemPrompt,
-            "tools": ComputerUseToolRegistry.nativeToolDefinitions(),
+            "tools": tools,
             "tool_choice": "required",
             "parallel_tool_calls": false,
             "input": [
@@ -200,7 +224,7 @@ enum ComputerUsePlannerClient {
                 ] as [String: Any],
             ],
         ]
-        if let effort = SummaryModelPreset.reasoningEffort(for: model) {
+        if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {
             body["reasoning"] = ["effort": effort]
         }
         return body

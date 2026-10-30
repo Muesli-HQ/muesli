@@ -54,8 +54,12 @@ struct DictationsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageTitle("Dictations")
-                .padding(.horizontal, MuesliTheme.spacing24)
+            DashboardPageHeader(
+                title: "Dictations",
+                appState: appState,
+                controller: controller
+            )
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.top, MuesliTheme.pageTop)
 
             StatsHeaderView(
@@ -65,9 +69,11 @@ struct DictationsView: View {
                 onSelect: { controller.openInsights(section: $0) }
             )
 
+            DictationFormattingSetupCard(appState: appState, controller: controller)
+
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
-                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     .padding(.bottom, MuesliTheme.spacing12)
             }
 
@@ -76,12 +82,12 @@ struct DictationsView: View {
                     Spacer()
                     voiceNoteButton
                 }
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
             }
 
             dictationFilterBar
-                .padding(.horizontal, MuesliTheme.spacing24)
+                .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
             if appState.dictationRows.isEmpty {
@@ -110,7 +116,7 @@ struct DictationsView: View {
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
 
-                                VStack(spacing: 1) {
+                                VStack(spacing: 0) {
                                     ForEach(group.records) { record in
                                         DictationRowView(
                                             record: record,
@@ -141,11 +147,7 @@ struct DictationsView: View {
                                         }
                                     }
                                 }
-                                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                                )
+
                             }
                         }
 
@@ -158,7 +160,7 @@ struct DictationsView: View {
                                 }
                         }
                     }
-                    .padding(.horizontal, MuesliTheme.spacing24)
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     .padding(.bottom, MuesliTheme.spacing24)
                 }
             }
@@ -171,9 +173,15 @@ struct DictationsView: View {
             || appState.dictationApplicationFilter != nil {
             return "Try another source, app, or time range"
         }
-        return appState.config.resolvedOnboardingUseCase.includesVoiceNotes
-            ? "Click Record Voice Note to capture your first note"
-            : "Hold \(appState.config.dictationHotkey.label) to start dictating"
+        let useCase = appState.config.resolvedOnboardingUseCase
+        if appState.config.enablePushToTalk
+            && (useCase.includesDictation || !useCase.includesVoiceNotes) {
+            return appState.config.dictationStartPrompt
+        }
+        if useCase.includesVoiceNotes {
+            return "Click Record Voice Note to capture your first note"
+        }
+        return "No dictations yet"
     }
 
     private var emptyStateTitle: String {

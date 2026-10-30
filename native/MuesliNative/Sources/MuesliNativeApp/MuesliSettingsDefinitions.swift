@@ -1,0 +1,700 @@
+import AppKit
+import MuesliCore
+
+/// Canonical definitions for app controls and voice tools. Add a setting here
+/// once; MuesliSettingControl renders it and CUA discovers it automatically.
+@MainActor
+extension MuesliController {
+    /// Static appearance choices shared by the sidebar and full settings catalog.
+    /// Does not enumerate models, calendars, or their availability on disk.
+    func appearanceDefinition() -> MuesliSetting {
+        MuesliSetting(
+            id: "appearance", label: "Appearance",
+            choices: AppAppearanceMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.appearanceMode.rawValue },
+            unavailable: { _ in nil },
+            apply: { value in
+                guard let mode = AppAppearanceMode(rawValue: value) else { return }
+                self.updateConfig { $0.appearanceMode = mode }
+            })
+    }
+
+    /// The menu and voice executor share the same persisted mode and controller
+    /// validation. Only the manual menu may prepare a missing chord by capture.
+    private func recordingModeDefinition(capturedShortcut: HotkeyConfig?) -> MuesliSetting {
+        typealias Mode = HotkeyMonitor.CombinationActivation
+        let modes: [Mode] = [.pushToTalk, .toggle]
+        var definition = MuesliSetting(
+            id: "dictation_activation", label: "Dictation recording mode",
+            choices: modes.map { mode in
+                MuesliSetting.Choice(id: mode.rawValue,
+                    label: mode == .toggle ? "Press to toggle" : "Hold to talk")
+            },
+            read: { config in config.dictationCombinationActivation.rawValue },
+            unavailable: { selection in
+                if let busy = self.dictationActivationUnavailableReason { return busy }
+                switch Mode(rawValue: selection) {
+                case .toggle:
+                    let candidate = capturedShortcut ?? self.config.dictationHotkey
+                    return candidate.isCombination ? nil : "Choose a modifier + key before enabling Press to toggle."
+                case .pushToTalk: return nil
+                case nil: return "Unknown dictation recording mode."
+                }
+            },
+            apply: { selection in
+                guard let mode = Mode(rawValue: selection) else {
+                    throw MuesliSettings.Failure.rejected("Unknown dictation recording mode.")
+                }
+                try self.updateDictationCombinationActivation(mode, shortcut: capturedShortcut)
+            })
+        definition.shortcutCapturePreparation = { selection in
+            if Mode(rawValue: selection) == .toggle && self.dictationActivationUnavailableReason == nil {
+                return self.config.dictationHotkey.isCombination ? nil : .dictation
+            }
+            return nil
+        }
+        return definition
+    }
+
+    /// Voice applies to selected transcription models; manual model cards can
+    /// also configure a shared preference before switching to another model.
+    private func voiceTranscriptionModels() -> [(backend: String, model: String)] {
+        var models = [(config.sttBackend, config.sttModel)]
+        // The saved meeting model is only a recovery fallback when live speech
+        // produces the final transcript; it must not restrict active dictation.
+        if !(config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript) {
+            models.append((config.meetingTranscriptionBackend, config.meetingTranscriptionModel))
+        }
+        return models
+    }
+
+    private func voiceBodhanModels() -> [BodhanModel] {
+        voiceTranscriptionModels().compactMap { backend, model in
+            backend == "bodhan" ? BodhanModel(rawValue: model) : nil
+        }
+    }
+
+    /// Shared cleanup-model definitions without constructing unrelated dynamic settings.
+    func cleanupModelDefinitions() -> [MuesliSetting] {
+        typealias Choice = MuesliSetting.Choice
+        var settings: [MuesliSetting] = []
+        func add(_ id: String, _ label: String, _ choices: [Choice],
+                 read: @escaping (AppConfig) -> String,
+                 presentation: MuesliSetting.Presentation = .automatic,
+                 followUpSelections: [String: String] = [:],
+                 discovery: MuesliSetting.Discovery? = nil,
+                 voiceRestriction: String? = nil,
+                 requestPermission: (() -> Void)? = nil,
+                 voiceUnavailable: @escaping (String) -> String? = { _ in nil },
+                 activation: MuesliSettingActivation? = nil,
+                 unavailable: @escaping (String) -> String? = { _ in nil },
+                 apply: @escaping (String) async throws -> Void) {
+            settings.append(.init(publicDiscovery: discovery, id: id, label: label, choices: choices, read: read,
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission, voiceUnavailable: voiceUnavailable, activation: activation))
+        }
+        func presets(_ id: String, _ label: String, _ options: [SummaryModelPreset], _ key: WritableKeyPath<AppConfig, String>,
+                     apply: ((String) -> Void)? = nil) {
+            add(id, label, options.map { Choice(id: $0.id, label: $0.label) },
+                read: { $0[keyPath: key].isEmpty ? options.first?.id ?? "" : $0[keyPath: key] }) { value in
+                let stored = value == options.first?.id ? "" : value
+                if let apply { apply(stored) }
+                else { self.updateConfig { $0[keyPath: key] = stored } }
+            }
+        }
+
+        presets("cleanup_chatgpt_model", "ChatGPT cleanup model", SummaryModelPreset.chatGPTTranscriptCleanupModels, \.postProcessorChatGPTModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.chatGPT))
+        }
+        presets("cleanup_openai_model", "OpenAI cleanup model", SummaryModelPreset.openAIModels, \.postProcessorOpenAIModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.openAI))
+        }
+        presets("cleanup_anthropic_model", "Anthropic cleanup model", SummaryModelPreset.anthropicModels, \.postProcessorAnthropicModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.anthropic))
+        }
+        presets("cleanup_openrouter_model", "OpenRouter cleanup model", SummaryModelPreset.openRouterModels, \.postProcessorOpenRouterModel) {
+            self.updatePostProcessorModel($0, for: .hosted(.openRouter))
+        }
+
+        let allLocalCleanup = PostProcessorOption.all.map(OnDeviceCleanupModel.gguf)
+            + Gemma4LiteRTModel.allCases.map(OnDeviceCleanupModel.gemma4)
+        add("cleanup_on_device_model", "On-device cleanup model", allLocalCleanup.map { .init(id: $0.quilModelID, label: $0.label) },
+            read: { $0.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend ? $0.postProcessorGemmaModel : $0.activePostProcessorId },
+            unavailable: { value in
+                guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return "Unknown model." }
+                switch model {
+                case .gguf(let option): return option.isDownloaded && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
+                case .gemma4(let model):
+                    guard BackendOption.gemma4LiteRT(model).isCompatible() else {
+                        return "Gemma cleanup requires macOS 15 or later."
+                    }
+                    return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
+                }
+            }) { value in
+            guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return }
+            switch model {
+            case .gguf(let option): self.selectPostProcessor(option)
+            case .gemma4(let model): self.selectGemma4PostProcessor(model)
+            }
+        }
+        return settings
+    }
+
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
+        typealias Choice = MuesliSetting.Choice
+        var settings: [MuesliSetting] = []
+        func add(_ id: String, _ label: String, _ choices: [Choice],
+                 read: @escaping (AppConfig) -> String,
+                 presentation: MuesliSetting.Presentation = .automatic,
+                 followUpSelections: [String: String] = [:],
+                 discovery: MuesliSetting.Discovery? = nil,
+                 voiceRestriction: String? = nil,
+                 requestPermission: (() -> Void)? = nil,
+                 voiceUnavailable: @escaping (String) -> String? = { _ in nil },
+                 activation: MuesliSettingActivation? = nil,
+                 unavailable: @escaping (String) -> String? = { _ in nil },
+                 apply: @escaping (String) async throws -> Void) {
+            settings.append(.init(publicDiscovery: discovery, id: id, label: label, choices: choices, read: read,
+                                  unavailable: unavailable, apply: apply, presentation: presentation, followUpSelections: followUpSelections, voiceRestriction: voiceRestriction, requestPermission: requestPermission, voiceUnavailable: voiceUnavailable, activation: activation))
+        }
+        func toggle(_ id: String, _ label: String, _ key: WritableKeyPath<AppConfig, Bool>,
+                    requestPermission: (() -> Void)? = nil,
+                    unavailable: @escaping (Bool) -> String? = { _ in nil },
+                    apply: ((Bool) throws -> Void)? = nil) {
+            add(id, label, [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+                read: { $0[keyPath: key] ? "on" : "off" }, requestPermission: requestPermission,
+                unavailable: { unavailable($0 == "on") }) { value in
+                if let apply { try apply(value == "on") }
+                else { self.updateConfig { $0[keyPath: key] = value == "on" } }
+            }
+        }
+        func menu<T: RawRepresentable>(_ id: String, _ label: String, _ options: [T],
+                                      _ key: WritableKeyPath<AppConfig, T>, title: (T) -> String,
+                                      unavailable: @escaping (String) -> String? = { _ in nil }) where T.RawValue == String {
+            add(id, label, options.map { Choice(id: $0.rawValue, label: title($0)) },
+                read: { $0[keyPath: key].rawValue }, unavailable: unavailable) { value in
+                guard let option = options.first(where: { $0.rawValue == value }) else { return }
+                self.updateConfig { $0[keyPath: key] = option }
+            }
+        }
+        func textMenu(_ id: String, _ label: String, _ choices: [Choice], _ key: WritableKeyPath<AppConfig, String>) {
+            add(id, label, choices, read: { $0[keyPath: key] }) { value in
+                self.updateConfig { $0[keyPath: key] = value }
+            }
+        }
+        func presets(_ id: String, _ label: String, _ options: [SummaryModelPreset], _ key: WritableKeyPath<AppConfig, String>,
+                     apply: ((String) -> Void)? = nil) {
+            add(id, label, options.map { Choice(id: $0.id, label: $0.label) },
+                read: { $0[keyPath: key].isEmpty ? options.first?.id ?? "" : $0[keyPath: key] }) { value in
+                let stored = value == options.first?.id ? "" : value
+                if let apply { apply(stored) }
+                else { self.updateConfig { $0[keyPath: key] = stored } }
+            }
+        }
+
+        // Per-app formatting is mechanical, so these controls are voice eligible.
+        // App identities remain behind one static discovery group.
+        for rule in config.dictationAppFormattingRules {
+            let bundleID = rule.bundleID
+            let discovery = MuesliSetting.Discovery(id: "dictation_app_formatting", label: "Dictation formatting by app")
+            let unavailable: (String) -> String? = { _ in
+                self.config.dictationAppFormattingRules.contains { $0.bundleID == bundleID }
+                    ? nil : "This app rule was removed."
+            }
+            let templates = DictationFormattingTemplate.builtIns + config.dictationFormattingTemplates
+            add("dictation_format_preset_" + bundleID, "Template for " + rule.appName,
+                templates.map { .init(id: $0.id, label: $0.name) },
+                read: { config in
+                    guard let rule = config.dictationAppFormattingRules.first(where: { $0.bundleID == bundleID }) else { return "unchanged" }
+                    // A customized combination is a read-only menu placeholder, not another template.
+                    return DictationFormattingTemplate.selected(for: rule, saved: config.dictationFormattingTemplates)?.id ?? "Custom"
+                },
+                discovery: discovery, unavailable: { value in
+                    if let reason = unavailable(value) { return reason }
+                    return (DictationFormattingTemplate.builtIns + self.config.dictationFormattingTemplates)
+                        .contains(where: { $0.id == value }) ? nil : "This template was removed."
+                }) { value in
+                    self.applyDictationFormattingTemplate(bundleID: bundleID, templateID: value)
+                }
+            add("dictation_format_case_" + bundleID, "Capitalization in " + rule.appName,
+                DictationAppFormatting.LetterCase.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+                read: { $0.dictationAppFormattingRules.first { $0.bundleID == bundleID }?.formatting.letterCase.rawValue ?? "unchanged" },
+                discovery: discovery, unavailable: unavailable) { value in
+                    guard let option = DictationAppFormatting.LetterCase(rawValue: value) else { return }
+                    self.updateDictationFormatting(bundleID: bundleID) { $0.letterCase = option }
+                }
+            add("dictation_format_period_" + bundleID, "Final period in " + rule.appName,
+                DictationAppFormatting.FinalPeriod.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+                read: { $0.dictationAppFormattingRules.first { $0.bundleID == bundleID }?.formatting.finalPeriod.rawValue ?? "keep" },
+                discovery: discovery, unavailable: unavailable) { value in
+                    guard let option = DictationAppFormatting.FinalPeriod(rawValue: value) else { return }
+                    self.updateDictationFormatting(bundleID: bundleID) { $0.finalPeriod = option }
+                }
+        }
+
+        toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
+        toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
+        settings.append(appearanceDefinition())
+        toggle("sound", "Sound effects", \.soundEnabled)
+        toggle("quill_sound", "Quill sounds", \.quilSoundEnabled)
+        toggle("pause_media", "Pause media during dictation", \.pauseMediaDuringDictation)
+        toggle("mute_audio", "Mute system audio during dictation", \.muteSystemAudioDuringDictation)
+        toggle("show_hotkey_menu", "Show shortcut in menu bar", \.showHotkeyInMenuBar)
+        toggle("show_next_meeting", "Show next meeting in menu bar", \.showNextMeetingInMenuBar)
+        toggle("show_floating_indicator", "Always show floating indicator", \.showFloatingIndicator) { enabled in
+            self.updateConfig { $0.showFloatingIndicator = enabled }
+            self.refreshIndicatorVisibility()
+        }
+        toggle("show_hotkey_hover", "Show shortcut on floating indicator hover", \.showHotkeyOnFloatingIndicator)
+        add("indicator_style", "Recording indicator style", RecordingIndicatorStyle.allCases.map {
+            Choice(id: $0.rawValue, label: $0 == .classic ? "Classic floating pill" : $0.title)
+        }, read: { $0.recordingIndicatorStyle.rawValue }) { value in
+            guard let style = RecordingIndicatorStyle(rawValue: value) else { return }
+            self.updateConfig { $0.selectRecordingIndicatorStyle(style) }
+            self.refreshIndicatorVisibility()
+        }
+        add("indicator_position", "Floating indicator position",
+            IndicatorAnchor.allCases.filter { $0 != .custom && $0 != .notch }.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.indicatorAnchor.rawValue }, unavailable: { _ in
+                self.config.recordingIndicatorStyle == .notch ? "Switch to a floating indicator before changing its position." : nil
+            }) { value in
+            guard let anchor = IndicatorAnchor(rawValue: value) else { return }
+            self.updateConfig { $0.indicatorAnchor = anchor }
+            self.refreshIndicatorVisibility()
+        }
+        textMenu("menu_icon", "Menu bar icon", MenuBarIconRenderer.options.map { .init(id: $0.id, label: $0.label) }, \.menuBarIcon)
+        textMenu("accent_color", "Accent color", MuesliSettings.accentPresets.map { .init(id: $0.hex, label: $0.name) }, \.recordingColorHex)
+
+        toggle("cua_planner", "Computer use model planner", \.enableComputerUsePlanner)
+        func checkShortcut(_ result: ShortcutHotkeyUpdateResult) throws {
+            if !result.didUpdate {
+                throw MuesliSettings.Failure.rejected(result.message ?? "This shortcut could not be changed.")
+            }
+        }
+        func shortcutPermission(_ enabled: Bool) -> String? {
+            self.settingsShortcutPermission(enabled: enabled, pushToTalk: false)
+        }
+        var pasteChoices = [Choice(id: "automatic", label: PasteShortcut.automatic.displayLabel)]
+        if case .custom = config.pasteShortcut {
+            pasteChoices.append(Choice(id: "custom", label: config.pasteShortcut.displayLabel))
+        }
+        add("paste_shortcut", "Paste shortcut", pasteChoices, read: {
+            if case .custom = $0.pasteShortcut { return "custom" }
+            return "automatic"
+        }) { value in
+            // Custom recording is a freeform interaction; this menu only selects
+            // Automatic or revalidates the currently saved custom chord.
+            try checkShortcut(self.updatePasteShortcut(value == "automatic" ? .automatic : self.config.pasteShortcut))
+        }
+        for target in ShortcutAssignment.allCases {
+            settings.append(MuesliSetting(id: target.settingID, label: target.label,
+                choices: ShortcutAssignment.singleKeys.map {
+                    Choice(id: ShortcutAssignment.value(for: $0), label: $0.label)
+                }, read: { ShortcutAssignment.value(for: $0[keyPath: target.keyPath]) },
+                unavailable: { _ in nil }, apply: { value in
+                    guard let hotkey = target.hotkey(for: value) else {
+                        throw MuesliSettings.Failure.rejected("This shortcut is unsupported.")
+                    }
+                    let result = target.update(hotkey, controller: self)
+                    guard result.didUpdate else {
+                        throw MuesliSettings.Failure.rejected(result.message ?? "This shortcut could not be changed.")
+                    }
+                }, shortcutAssignment: target))
+        }
+        settings.append(recordingModeDefinition(capturedShortcut: dictationToggleShortcut))
+        toggle("cua_shortcut", "Computer use shortcut enabled", \.enableComputerUseHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateComputerUseHotkeyEnabled($0)) }
+        toggle("meeting_shortcut", "Meeting recording shortcut enabled", \.enableMeetingRecordingHotkey, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateMeetingRecordingHotkeyEnabled($0)) }
+        toggle("push_to_talk", "Push to talk dictation", \.enablePushToTalk, requestPermission: self.requestPushToTalkSettingsPermissions, unavailable: { self.settingsShortcutPermission(enabled: $0, pushToTalk: true) }) { enabled in
+            if self.updatePushToTalkEnabled(enabled, requestPermissions: enabled) == .needsPermissions {
+                throw MuesliSettings.Failure.rejected("Push to talk needs permission. Complete setup in Settings before using the shortcut.")
+            }
+        }
+        toggle("double_tap_dictation", "Double tap dictation", \.enableDoubleTapDictation)
+        toggle("buffered_live_dictation", "Watch text appear during hands-free mode", \.enableBufferedLiveDictation,
+            unavailable: { enabled in
+                guard enabled else { return nil }
+                guard self.selectedDictationProvider == .local,
+                      self.selectedBackend.supportsBufferedLiveTranscription else {
+                    return "Select a local Parakeet, Whisper, or Bodhan model first."
+                }
+                return self.selectedBackend.isDownloaded ? nil : "Download the selected dictation model first."
+            })
+        let localPlanners = ComputerUseLocalPlanner.models.filter(\.available)
+        // Backend is derived from the selected model, so existing configurations
+        // and direct voice model selections remain consistent without migration.
+        add("cua_backend", "Computer use planner backend",
+            [Choice(id: "chatgpt", label: "ChatGPT"), Choice(id: "local", label: "On-device")],
+            read: { ComputerUseLocalPlanner.isLocal(ComputerUsePlannerClient.plannerModel(for: $0)) ? "local" : "chatgpt" },
+            unavailable: { value in
+                value == "local" && !ComputerUseLocalPlanner.models.contains(where: \.available)
+                    ? "Download Gemma in Models to use an on-device planner." : nil
+            }) { value in
+                let current = ComputerUsePlannerClient.plannerModel(for: self.config)
+                guard (value == "local") != ComputerUseLocalPlanner.isLocal(current) else { return }
+                if value == "local" {
+                    guard let model = ComputerUseLocalPlanner.models.first(where: \.available) else {
+                        throw MuesliSettings.Failure.rejected("Download Gemma in Models to use an on-device planner.")
+                    }
+                    self.updateConfig { $0.computerUsePlannerModel = model.id }
+                } else {
+                    self.updateConfig { $0.computerUsePlannerModel = "" }
+                }
+            }
+        add("cua_model", "Computer use planner model",
+            SummaryModelPreset.computerUsePlannerModels.map { Choice(id: $0.id, label: $0.label) }
+                + localPlanners.map { Choice(id: $0.id, label: $0.label) },
+            read: { ComputerUsePlannerClient.plannerModel(for: $0) }, unavailable: { value in
+                if ComputerUseLocalPlanner.isLocal(value),
+                   !ComputerUseLocalPlanner.models.contains(where: { $0.id == value && $0.available }) {
+                    return "Download this on-device planner in Models first."
+                }
+                return nil
+            }) { value in
+                self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
+            }
+        toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
+               requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
+               unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
+            _ = self.setDictionaryCorrectionPromptsFromToggle($0)
+        }
+        toggle("app_context", "App context", \.enableScreenContext,
+               requestPermission: { _ = self.requestScreenContextEnable() },
+               unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable app context." : nil }) { enabled in
+            if enabled { _ = self.requestScreenContextEnable() }
+            else { self.updateConfig { $0.enableScreenContext = false; $0.enableDictationOCRContext = false } }
+        }
+        toggle("ocr_context", "Screen OCR context for dictation", \.enableDictationOCRContext,
+               unavailable: { enabled in
+            guard enabled else { return nil }
+            if !self.config.enableScreenContext { return "Enable app context first." }
+            return CGPreflightScreenCaptureAccess() ? nil : "Grant Screen Recording in System Settings to enable screen OCR context."
+        })
+        // Cotypist (experimental): its Settings section and input method exist only in builds that bundle it.
+        // Builds without it refuse every Cotypist change, so nothing (a model download included) runs there.
+        let cotypistMissing: String? = CotypistSetup.isAvailable ? nil : "Cotypist isn't included in this build."
+        // On only once the Cotypist input source is selected. Turning it on before the user has added
+        // the input source opens Keyboard settings with a guide, and says so instead of claiming "On".
+        add("cotypist_enabled", "Cotypist typeahead suggestions", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in CotypistSetup.shared.state == .on ? "on" : "off" },
+            unavailable: { $0 == "on" ? cotypistMissing : nil }) { value in
+            CotypistSetup.shared.setOn(value == "on")
+            if value == "on", CotypistSetup.shared.state == .addingInputSource {
+                throw MuesliSettings.Failure.rejected(
+                    "Add \(CotypistSetup.displayName) in Keyboard settings to finish turning Cotypist on. It turns on as soon as it's added.")
+            }
+        }
+        for app in CotypistQuietApps.candidates(quiet: config.cotypistDisabledApps) {
+            add(CotypistQuietApps.settingID(app.bundleID), "Cotypist quiet in \(app.name)",
+                [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+                read: { $0.cotypistDisabledApps.contains(app.bundleID) ? "on" : "off" },
+                // App names and bundle IDs are private: voice sees one group until it inspects it.
+                discovery: .init(id: "cotypist_quiet_apps", label: "Keep Cotypist quiet in an app"),
+                unavailable: { _ in cotypistMissing }) { value in
+                self.updateConfig { config in
+                    config.cotypistDisabledApps.removeAll { $0 == app.bundleID }
+                    if value == "on" { config.cotypistDisabledApps.append(app.bundleID) }
+                }
+            }
+        }
+        add("cotypist_model", "Cotypist model", CotypistModel.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.cotypistModel.rawValue },
+            unavailable: { value in
+                if let cotypistMissing { return cotypistMissing }
+                guard let model = CotypistModel(rawValue: value) else { return "Unknown Cotypist model." }
+                return CotypistSetup.shared.state(of: model) == .unavailable ? "\(model.label) isn't available to download yet." : nil
+            }) { value in
+            guard let model = CotypistModel(rawValue: value) else { return }
+            self.updateConfig { $0.cotypistModel = model }
+            CotypistSetup.shared.download(model)
+            CotypistService.shared.modelChanged()
+        }
+        menu("cotypist_length", "Cotypist suggestion length", CotypistSuggestionLength.allCases,
+             \.cotypistSuggestionLength, title: \.label, unavailable: { _ in cotypistMissing })
+        add("cotypist_frequency", "Cotypist suggestion frequency",
+            CotypistFrequency.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.cotypistFrequency.rawValue }, presentation: .discreteSlider,
+            unavailable: { _ in cotypistMissing }) { value in
+            guard let frequency = CotypistFrequency(rawValue: value) else { return }
+            self.updateConfig { $0.cotypistFrequency = frequency }
+        }
+        toggle("cotypist_complete_words", "Cotypist finishes half-typed words", \.cotypistCompleteWords,
+               unavailable: { _ in cotypistMissing })
+        menu("cotypist_word_pause", "Cotypist pause before completing a word", CotypistWordPause.allCases,
+             \.cotypistWordPause, title: \.label, unavailable: { _ in cotypistMissing })
+        toggle("cotypist_screen_context", "Cotypist uses on-screen text", \.cotypistUseScreenContext,
+               unavailable: { cotypistMissing ?? ($0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil) })
+
+        add("dictation_provider", "Dictation provider", DictationProvider.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.dictationProvider }) { value in
+            if let provider = DictationProvider(rawValue: value) { self.selectDictationProvider(provider) }
+        }
+        let backends = BackendOption.compatibleOptions()
+        func backendID(_ option: BackendOption) -> String { option.backend + ":" + option.model }
+        add("dictation_model", "Dictation model", backends.map { .init(id: backendID($0), label: $0.label) },
+            read: { ($0.dictationProvider == DictationProvider.local.rawValue ? "" : "fallback:") + $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
+                guard let option = backends.first(where: { backendID($0) == value }) else {
+                    return "Unknown dictation model."
+                }
+                if let reason = option.incompatibilityReason() { return reason }
+                if option == .medASR, !self.medASRTerms.isAccepted {
+                    return "Review and accept MedASR's terms in Models first."
+                }
+                guard option.isDownloaded else { return "Download this dictation model from Models first." }
+                if !TranscriptCleanupBackendOption.resolved(self.config.postProcessorBackend).isCompatible(with: option) {
+                    return "This model conflicts with the selected cleanup backend. Change cleanup first."
+                }
+                return nil
+            }) { value in
+            if let option = backends.first(where: { backendID($0) == value }) { self.selectPrimaryDictationModelForComputerUse(option) }
+        }
+        presets("openai_dictation_model", "OpenAI dictation model", OpenAITranscriptionClient.modelPresets.map { SummaryModelPreset(id: $0, label: $0) }, \.openaiDictationModel,
+                apply: selectOpenAIDictationModel)
+        textMenu("parakeet_language", "Parakeet language", ParakeetLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.parakeetLanguage)
+        textMenu("qwen_language", "Qwen language", Qwen3AsrLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.qwen3AsrLanguage)
+        add("apple_speech_language", "Apple Speech language", appState.settingsAppleSpeechLanguages.map { .init(id: $0.id, label: $0.label) },
+            read: { $0.resolvedAppleSpeechLanguage }) { self.selectAppleSpeechLanguage($0) }
+        textMenu("cohere_language", "Cohere language", CohereTranscribeLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.cohereLanguage)
+        add("whisper_language", "Whisper language", WhisperKitLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.whisperLanguage }, voiceUnavailable: { value in
+                guard value == WhisperKitLanguage.cantonese.rawValue else { return nil }
+                return self.voiceTranscriptionModels().contains {
+                    $0.backend == "whisper" && !WhisperKitLanguage.cantonese.isSupported(by: $0.model)
+                }
+                    ? "Cantonese requires Whisper Large Turbo. Change the Whisper model in Models first." : nil
+            }) { value in
+                self.updateConfig { $0.whisperLanguage = value }
+            }
+        let bodhanTargets = [MuesliSettingActivation.Target(id: "dictation_model", label: "Dictation"),
+                             .init(id: "meeting_model", label: "Meetings")]
+        func bodhanActivation(supports: @escaping (BodhanModel, String) -> Bool) -> MuesliSettingActivation {
+            .init(label: "Bodhan", targets: bodhanTargets, compatibleChoices: { value in
+                Set(BodhanModel.allCases.filter { supports($0, value) }.map { "bodhan:" + $0.rawValue })
+            }, unavailable: { value in
+                let models = self.voiceBodhanModels()
+                return !models.isEmpty && models.allSatisfy { supports($0, value) }
+                    ? nil : "A compatible Bodhan model is not active everywhere this preference applies. Choose where to activate it, or save the preference for later."
+            })
+        }
+        add("bodhan_language", "Bodhan language", BodhanLanguage.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.bodhanLanguage }, activation: bodhanActivation { model, value in
+                BodhanLanguage.choices(for: model.rawValue).contains { $0.rawValue == value }
+            }) { value in
+                if let language = BodhanLanguage(rawValue: value) { self.selectBodhanLanguage(language) }
+            }
+        add("bodhan_output", "Bodhan Flex output script", BodhanOutputMode.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.resolvedBodhanOutputMode.rawValue }, activation: bodhanActivation { model, value in
+                !model.isCore || value == BodhanOutputMode.native.rawValue
+            }) { value in
+                if let mode = BodhanOutputMode(rawValue: value) { self.selectBodhanOutputMode(mode) }
+            }
+        add("nemotron_language", "Nemotron language", Nemotron35Language.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.nemotron35Language }) { value in
+            if let language = Nemotron35Language(rawValue: value) { await self.setNemotron35Language(language) }
+        }
+        for (id, label, key, setter) in [
+            ("dictation_microphone", "Dictation microphone", \AppConfig.dictationInputDeviceUID, selectDictationInputDeviceUID),
+            ("meeting_microphone", "Meeting microphone", \AppConfig.meetingInputDeviceUID, selectMeetingInputDeviceUID)
+        ] {
+            let devices = cachedDictationInputDevices()
+            add(id, label, [Choice(id: "automatic", label: "Automatic")] + devices.map { .init(id: $0.uid, label: $0.name) },
+                read: { $0[keyPath: key] ?? "automatic" }, unavailable: { value in
+                    value == "automatic" || self.cachedDictationInputDevices().contains(where: { $0.uid == value }) ? nil : "This microphone is no longer available."
+                }) { setter($0 == "automatic" ? nil : $0) }
+        }
+
+        toggle("transcript_cleanup", "AI transcript cleanup", \.enablePostProcessor, apply: setPostProcessorEnabled)
+        toggle("quill", "Quill rewrite selected text", \.enableQuilMode, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateQuilModeEnabled($0)) }
+        add("cleanup_source", "Cleanup source", TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }.map { .init(id: $0.backend, label: $0.label) },
+            read: { TranscriptCleanupBackendOption.resolved($0.postProcessorBackend).isOnDevice ? TranscriptCleanupBackendOption.local.backend : $0.postProcessorBackend }) { value in
+                self.selectPostProcessorBackend(.resolved(value))
+            }
+        add("cleanup_preset", "Cleanup prompt preset", TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts).map { .init(id: $0.id, label: $0.name) },
+            read: { $0.activeTranscriptCleanupPromptId },
+            voiceRestriction: "Prompt settings can only be changed manually in Settings.") { self.selectTranscriptCleanupPrompt(id: $0) }
+        settings.append(contentsOf: cleanupModelDefinitions())
+
+        toggle("meeting_hover_transcript", "Show meeting transcript on hover", \.showMeetingTranscriptOnIndicatorHover)
+        toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
+        toggle("auto_export_meetings", "Auto-export meetings", \.autoExportMarkdownEnabled)
+        toggle("meeting_reminders", "Scheduled meeting notifications", \.showScheduledMeetingNotifications)
+        toggle("calendar_meeting_links_only", "Only show events with a meeting link", \.calendarMeetingLinksOnly,
+               apply: updateCalendarMeetingLinkFilter)
+        toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
+        toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
+        toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)
+        menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })
+        menu("meeting_reminder_time", "Meeting reminder timing", ScheduledMeetingNotificationLeadTime.allCases, \.scheduledMeetingNotificationLeadTime,
+             title: { $0 == .atStart ? "At start" : "\(Int($0.seconds / 60)) minutes before" })
+        menu("meeting_join_action", "Default meeting join action", MeetingJoinDefaultAction.allCases, \.meetingJoinDefaultAction, title: { $0.buttonLabel })
+        textMenu("recording_format", "Meeting recording format", MeetingRecordingFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.meetingRecordingFileFormat)
+        textMenu("export_content", "Meeting export content", MeetingExportContent.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportMarkdownContent)
+        textMenu("export_format", "Meeting export format", MeetingAutoExportFileFormat.allCases.map { .init(id: $0.rawValue, label: $0.displayName) }, \.autoExportFileFormat)
+        add("upcoming_meetings", "Upcoming meetings window", UpcomingMeetingsWindow.allCases.map { .init(id: $0.settingID, label: $0.label) },
+            read: { $0.upcomingMeetingsWindow.settingID }) { value in
+            if let window = UpcomingMeetingsWindow.fromSettingID(value) { self.updateUpcomingMeetingsWindow(window) }
+        }
+        add("dictation_fallback_model", "Hosted dictation fallback model", backends.filter(\.supportsHostedDictationFallback).map { .init(id: backendID($0), label: $0.label) },
+            read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
+                guard let option = backends.first(where: { backendID($0) == value }) else { return "Unknown dictation model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                if option == .medASR, !self.medASRTerms.isAccepted {
+                    return "Review and accept MedASR's terms in Models first."
+                }
+                return option.isDownloaded ? nil : "Download this model first."
+            }) { value in
+            if let option = backends.first(where: { backendID($0) == value }) { self.selectBackend(option) }
+        }
+        let meetingModels = backends.filter(\.supportsMeetingTranscription)
+        add("meeting_model", "Final meeting transcript model", meetingModels.map { .init(id: backendID($0), label: $0.label) },
+            read: { $0.meetingTranscriptionBackend + ":" + $0.meetingTranscriptionModel }, unavailable: { value in
+                if self.config.enableLiveStreamingPartials && self.config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript {
+                    return "The live transcript model also produces the final transcript. Change the live transcript model instead."
+                }
+                guard let option = meetingModels.first(where: { backendID($0) == value }) else { return "Unknown meeting model." }
+                if let reason = option.incompatibilityReason() { return reason }
+                return option.isDownloaded ? nil : "Download this meeting model from Models first."
+            }) { value in
+            if let option = meetingModels.first(where: { backendID($0) == value }) { self.selectMeetingTranscriptionBackend(option) }
+        }
+        add("live_transcript", "Meeting live transcript model", [Choice(id: "off", label: "Off")] + MeetingLiveCaptionBackend.allCases.map { .init(id: $0.rawValue, label: $0.settingsLabel) },
+            read: { $0.enableLiveStreamingPartials ? $0.resolvedMeetingLiveCaptionBackend.rawValue : "off" }, unavailable: { value in
+                if value == MeetingLiveCaptionBackend.selectedModelBuffered.rawValue {
+                    let selected = self.appState.selectedMeetingTranscriptionBackend
+                    return selected.supportsBufferedLiveTranscription && selected.isDownloaded
+                        ? nil : "Select a downloaded Parakeet, Whisper, or Bodhan final meeting model first."
+                }
+                return value == "off" || MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true ? nil : "Download this live transcript model from Models first."
+            }) { value in
+            self.updateConfig {
+                $0.enableLiveStreamingPartials = value != "off"
+                if value != "off" { $0.meetingLiveCaptionBackend = value }
+            }
+        }
+        add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.selectable(config: config, selected: appState.selectedMeetingSummaryBackend).map { .init(id: $0.backend, label: $0.label) },
+            read: { $0.meetingSummaryBackend }) { value in
+            if let option = MeetingSummaryBackendOption.all.first(where: { $0.backend == value }) { self.selectMeetingSummaryBackend(option) }
+        }
+        presets("summary_chatgpt_model", "ChatGPT meeting summary model", SummaryModelPreset.chatGPTModels, \.chatGPTModel)
+        presets("summary_openai_model", "OpenAI meeting summary model", SummaryModelPreset.openAIModels, \.openAIModel)
+        presets("summary_anthropic_model", "Anthropic meeting summary model", SummaryModelPreset.anthropicModels, \.anthropicModel)
+        let configuredClaudeModel = config.claudeCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let claudeModels = SummaryModelPreset.claudeCodeModels
+        let claudeChoices = [Choice(id: "", label: "Follow Claude Code settings")]
+            + claudeModels.map { Choice(id: $0.id, label: $0.label) }
+            + (configuredClaudeModel.isEmpty || claudeModels.contains(where: { $0.id == configuredClaudeModel })
+                ? [] : [Choice(id: configuredClaudeModel, label: "Custom: \(configuredClaudeModel)")])
+        add("summary_claude_code_model", "Claude Code meeting summary model", claudeChoices,
+            read: { $0.claudeCodeModel.trimmingCharacters(in: .whitespacesAndNewlines) }) { value in
+            self.updateConfig { $0.claudeCodeModel = value }
+        }
+        textMenu("summary_openrouter_model", "OpenRouter meeting summary model", appState.openRouterSummaryModels.map { .init(id: $0.id, label: $0.label) }, \.openRouterModel)
+        add("openrouter_dictation_model", "OpenRouter dictation model", appState.openRouterTranscriptionModels.map { .init(id: $0.id, label: $0.label) },
+            read: { $0.openRouterDictationModel }) { self.selectOpenRouterDictationModel($0) }
+        textMenu("custom_llm_format", "Custom LLM API format", CustomLLMFormat.allCases.map { .init(id: $0.rawValue, label: $0.label) }, \.customLLMFormat)
+
+        let templates = [Choice(id: MeetingTemplates.autoID, label: MeetingTemplates.auto.title)]
+            + builtInMeetingTemplates().map { Choice(id: $0.id, label: $0.title) }
+            + customMeetingTemplates().map { Choice(id: $0.id, label: $0.name) }
+        add("meeting_template", "Default meeting template", templates, read: { $0.defaultMeetingTemplateID }) {
+            self.updateDefaultMeetingTemplate(id: $0)
+        }
+        let allLocalCleanup = PostProcessorOption.all.map(OnDeviceCleanupModel.gguf)
+            + Gemma4LiteRTModel.allCases.map(OnDeviceCleanupModel.gemma4)
+        let localQuill = allLocalCleanup.filter {
+            switch $0 {
+            case .gguf(let option): return option.supportsQuil && option.isDownloaded
+            case .gemma4(let model): return !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
+            }
+        }
+        add("quill_source", "Quill writing model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
+            read: { QuilModelSourceOption.resolved(for: .resolved($0.quilBackend)).id },
+            followUpSelections: [QuilModelSourceOption.localModels.id: "quill_local_model"], unavailable: { value in
+                value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
+            }) { value in
+            guard let source = QuilModelSourceOption.all.first(where: { $0.id == value }) else { return }
+            self.updateConfig {
+                if let backend = source.hostedBackend {
+                    $0.quilBackend = backend.backend
+                    $0.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
+                } else if let model = localQuill.first(where: { $0.quilModelID == self.config.quilModel && $0.quilBackend.backend == self.config.quilBackend }) ?? localQuill.first {
+                    $0.quilBackend = model.quilBackend.backend
+                    $0.quilModel = model.quilModelID
+                }
+            }
+            if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }
+        }
+        add("quill_local_model", "Local Quill writing model", localQuill.map { .init(id: $0.quilModelID, label: $0.quilLabel) },
+            read: { $0.quilModel }) { value in
+            guard let model = localQuill.first(where: { $0.quilModelID == value }) else { return }
+            self.updateConfig { $0.quilBackend = model.quilBackend.backend; $0.quilModel = model.quilModelID }
+            if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }
+        }
+        func thinking(_ id: String, _ label: String, model: @escaping (AppConfig) -> String, key: WritableKeyPath<AppConfig, ReasoningEffort?>) {
+            let efforts = ReasoningEffortPolicy.selectableEfforts(for: model(config))
+            guard !efforts.isEmpty else { return }
+            add(id, label, efforts.map { .init(id: $0.rawValue, label: $0.label) },
+                read: { ReasoningEffortPolicy.resolvedEffort(for: model($0), preferred: $0[keyPath: key])?.rawValue ?? "" },
+                presentation: .discreteSlider,
+                unavailable: { value in
+                    ReasoningEffortPolicy.selectableEfforts(for: model(self.config)).contains(where: { $0.rawValue == value }) ? nil : "This thinking level is unavailable for the selected model."
+                }) { value in self.updateConfig { $0[keyPath: key] = ReasoningEffort(rawValue: value) } }
+        }
+        thinking("cua_thinking", "Computer use thinking", model: { ComputerUsePlannerClient.plannerModel(for: $0) }, key: \.computerUseReasoningEffort)
+        thinking("cleanup_thinking", "Transcript cleanup thinking", model: {
+            TranscriptCleanupClient.configuredModel(for: .resolved($0.postProcessorBackend), config: $0)
+        }, key: \.transcriptCleanupReasoningEffort)
+        thinking("summary_thinking", "Meeting summary thinking", model: {
+            if $0.meetingSummaryBackend == MeetingSummaryBackendOption.chatGPT.backend {
+                return $0.chatGPTModel.isEmpty ? SummaryModelPreset.chatGPTModels.first?.id ?? "" : $0.chatGPTModel
+            }
+            if $0.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend {
+                return $0.openAIModel.isEmpty ? SummaryModelPreset.openAIModels.first?.id ?? "" : $0.openAIModel
+            }
+            return ""
+        }, key: \.meetingSummaryReasoningEffort)
+        let summaryLimits = Set(MeetingSummaryOutputPolicy.presets + [config.meetingSummaryMaxOutputTokens].compactMap { $0 }).sorted()
+        add("summary_output_limit", "Meeting summary output token limit",
+            [Choice(id: "0", label: "No added limit (default)")] + summaryLimits.map {
+                Choice(id: String($0), label: "\($0.formatted()) tokens")
+            }, read: { String($0.meetingSummaryMaxOutputTokens ?? 0) }, unavailable: { value in
+                guard value != "0" else { return nil }
+                return [MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(.resolved(self.config.meetingSummaryBackend))
+                    ? "ChatGPT and Claude Code manage their own output limits. Select an API backend to set a limit."
+                    : nil
+            }) { value in
+                self.updateConfig { $0.meetingSummaryMaxOutputTokens = MeetingSummaryOutputPolicy.normalizedLimit(Int(value)) }
+            }
+        for calendar in appState.availableEventKitCalendars {
+            add("calendar_" + calendar.id, "Include calendar: " + calendar.sourceTitle + " / " + calendar.title,
+                [.init(id: "on", label: "Included"), .init(id: "off", label: "Hidden")],
+                read: { $0.disabledCalendarIDs.contains(calendar.id) ? "off" : "on" },
+                discovery: .init(id: "calendars", label: "Include or hide calendars")) { value in
+                self.updateConfig {
+                    var disabled = Set($0.disabledCalendarIDs)
+                    if value == "off" { disabled.insert(calendar.id) } else { disabled.remove(calendar.id) }
+                    $0.disabledCalendarIDs = disabled.sorted()
+                }
+                await self.refreshUpcomingCalendarEvents()
+            }
+        }
+        for app in MuesliSettings.meetingDetectionAppOptions {
+            add("mute_meeting_detection_" + app.bundleID, "Mute meeting detection for " + app.name,
+                [.init(id: "on", label: "Muted"), .init(id: "off", label: "Not muted")],
+                read: { $0.mutedMeetingDetectionAppBundleIDs.contains(app.bundleID) ? "on" : "off" }) { value in
+                self.updateConfig {
+                    var muted = Set($0.mutedMeetingDetectionAppBundleIDs)
+                    if value == "on" { muted.insert(app.bundleID) } else { muted.remove(app.bundleID) }
+                    $0.mutedMeetingDetectionAppBundleIDs = muted.sorted()
+                }
+            }
+        }
+        if config.maraudersMapUnlocked {
+            add("marauders_audio", "Meeting countdown audio", SoundController.maraudersMapPresets.map { .init(id: $0.id, label: $0.label) },
+                read: { $0.maraudersMapAudioClip }) { value in
+                SoundController.stopMaraudersMapClip()
+                self.updateConfig { $0.maraudersMapAudioClip = value; $0.maraudersMapCustomAudioPath = nil }
+                self.updateMaraudersMapAudioClip()
+            }
+        }
+        return settings
+    }
+}

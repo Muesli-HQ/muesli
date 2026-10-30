@@ -116,19 +116,19 @@
   <a href="./" class="back">&larr; freedspeech.xyz</a>
 
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: July 10, 2026</p>
+  <p class="updated">Last updated: August 28, 2026</p>
 
   <div class="highlight">
-    <p><strong>Muesli is local-first.</strong> All speech-to-text processing runs on your Mac. Audio never leaves your device. We do not operate servers that receive, store, or process your data.</p>
+    <p><strong>Muesli is local-first.</strong> By default, speech-to-text processing runs on your Mac and audio never leaves your device. If you explicitly select an optional hosted dictation provider, Muesli sends that dictation audio to OpenAI or through OpenRouter to your selected upstream model for transcription. We do not operate servers that receive, store, or process your data.</p>
   </div>
 
   <h2>What Muesli Does</h2>
-  <p>Muesli is a macOS application for dictation and meeting transcription. It uses on-device machine learning models (CoreML / Apple Neural Engine) to convert speech to text entirely on your Mac.</p>
+  <p>Muesli is a macOS application for dictation and meeting transcription. It uses on-device machine learning models (CoreML / Apple Neural Engine) to convert speech to text entirely on your Mac by default. Optional OpenAI and OpenRouter dictation providers are available only when you choose and configure them.</p>
 
   <h2>Data That Stays on Your Device</h2>
-  <p>The following data is created and stored locally on your Mac. It is never transmitted to any external server:</p>
+  <p>The following data is created and stored locally on your Mac. It is not transmitted to any external server unless you explicitly enable an optional cloud service described below:</p>
   <ul>
-    <li><strong>Audio recordings</strong> &mdash; microphone and system audio captured during dictation and meetings</li>
+    <li><strong>Audio recordings</strong> &mdash; microphone and system audio captured during dictation and meetings; dictation audio is sent to a hosted service only while you have explicitly selected OpenAI or OpenRouter as the dictation provider</li>
     <li><strong>Transcripts and meeting notes</strong> &mdash; stored in a local SQLite database</li>
     <li><strong>Configuration and preferences</strong> &mdash; stored in a local JSON file</li>
     <li><strong>Speech-to-text models</strong> &mdash; downloaded once from public model repositories (HuggingFace) and cached locally</li>
@@ -137,6 +137,8 @@
   <h2>Optional Cloud Services</h2>
   <p>Muesli offers optional integrations that connect to external services. These are opt-in and require explicit user action:</p>
   <ul>
+    <li><strong>OpenAI dictation (OpenAI API)</strong> &mdash; if you select OpenAI as your dictation provider and add your own API key, microphone audio is streamed directly to OpenAI's Realtime transcription API. OpenAI's API data controls explain how API data is used, retained, and excluded from model training by default; see <a href="https://platform.openai.com/docs/models/default-usage-policies-by-endpoint">OpenAI's API data-controls documentation</a> for the current retention and data-sharing settings.</li>
+    <li><strong>OpenRouter dictation</strong> &mdash; if you select OpenRouter as your dictation provider, connect an account or key, and choose a transcription model, the completed dictation recording is sent through OpenRouter to that selected upstream model. Processing is governed by OpenRouter's and the selected model provider's policies.</li>
     <li><strong>Meeting summarization (OpenAI API / OpenRouter)</strong> &mdash; if configured, meeting transcripts are sent to the selected API provider to generate summaries. This is governed by the respective provider's privacy policy.</li>
     <li><strong>Meeting summarization (ChatGPT subscription)</strong> &mdash; if you sign in with your ChatGPT account, transcripts are sent to OpenAI's API for summarization using your existing subscription.</li>
     <li><strong>Sparkle update checks</strong> &mdash; Muesli checks for new versions via an appcast feed hosted on GitHub. No personal data is transmitted.</li>
@@ -166,7 +168,7 @@
   <p>Muesli uses <a href="https://telemetrydeck.com">TelemetryDeck</a> to collect minimal, anonymized usage signals (e.g., which features are used and app launch counts). When Muesli detects a hard failure, it may also send an allowlisted diagnostic category, workflow stage, selected on-device transcription backend/model, app version and build, operating system and device model, and a random incident ID. These diagnostics never include raw error messages, audio, transcripts, meeting or calendar titles, clipboard or screen contents, API keys, auth tokens, local file paths, raw logs, database contents, or other personal content. TelemetryDeck does not store IP addresses, and identifiers used for anonymous user and session counts cannot be traced back to a person. You can learn more about TelemetryDeck's privacy practices on their <a href="https://telemetrydeck.com/privacy">privacy page</a>.</p>
 
   <h2>No Personal Data Collection</h2>
-  <p><strong>Muesli does not collect, transmit, or store any personal data on external servers.</strong> Apart from the anonymous usage signals described above, no data leaves your device. The application is fully functional without an internet connection (except for optional cloud summarization and calendar sync).</p>
+  <p><strong>Muesli does not collect, transmit, or store personal data on external servers that we operate.</strong> Apart from the anonymous usage signals described above, data remains on your device unless you choose an optional cloud provider such as OpenAI or OpenRouter dictation, hosted cleanup or meeting summaries, or Google Calendar sync. The application remains functional without an internet connection when you use its local features.</p>
 
   <h2>Open Source</h2>
   <p>Muesli's source code is publicly available on <a href="https://github.com/Muesli-HQ/muesli">GitHub</a> under the MIT license. You can inspect exactly what the application does with your data.</p>

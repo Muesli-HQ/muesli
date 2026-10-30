@@ -18,6 +18,40 @@ struct DictationStoreTests {
         return store
     }
 
+    @Test("startup interrupts only running CUA traces and preserves their events")
+    func reconcileRunningComputerUseTraces() throws {
+        let store = try makeStore()
+        let event = ComputerUseTraceEvent(kind: "tool_result", title: "Listed apps", body: "OK")
+        var ids: [Int64] = []
+        for status in ["running", "done", "cancelled"] {
+            let id = try store.insertDictation(text: status, durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+            try store.insertComputerUseTrace(dictationID: id, finalStatus: status, finalMessage: status, events: [event])
+            ids.append(id)
+        }
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 1)
+        #expect(try store.markRunningComputerUseTracesInterrupted() == 0)
+        let rows = try store.recentDictations(limit: 10)
+        for (index, status) in ["interrupted", "done", "cancelled"].enumerated() {
+            let row = try #require(rows.first { $0.id == ids[index] })
+            #expect(row.computerUseTrace?.finalStatus == status)
+            #expect(row.computerUseTrace?.events == [event])
+        }
+    }
+
+    @Test("malformed CUA trace JSON keeps the trace status with an empty event list")
+    func malformedComputerUseTraceIsReadable() throws {
+        let store = try makeStore()
+        let id = try store.insertDictation(text: "test", durationSeconds: 1, source: "cua", startedAt: Date(), endedAt: Date())
+        try store.insertComputerUseTrace(dictationID: id, finalStatus: "interrupted", finalMessage: "Stopped", events: [])
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE computer_use_traces SET trace_json = 'invalid json'", nil, nil, nil) == SQLITE_OK)
+        let trace = try #require(store.dictation(id: id)?.computerUseTrace)
+        #expect(trace.finalStatus == "interrupted")
+        #expect(trace.events.isEmpty)
+    }
+
     private func makeLegacyStore() throws -> DictationStore {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-legacy-test-\(UUID().uuidString).db")
@@ -164,6 +198,46 @@ struct DictationStoreTests {
         #expect(try store.claimCloudSyncAccountScope("scope-a", forKey: "account-owner"))
         #expect(try !store.claimCloudSyncAccountScope("scope-b", forKey: "account-owner"))
         #expect(try store.cloudSyncStateData(forKey: "account-owner") == Data("scope-a".utf8))
+    }
+
+    @Test("legacy reconnect refuses a different account without mutating sync state")
+    func legacyReconnectCannotCrossAccountBoundary() throws {
+        let store = try makeStore()
+        _ = try store.insertDictation(
+            text: "Keep account A text private",
+            durationSeconds: 1,
+            startedAt: Date().addingTimeInterval(-1),
+            endedAt: Date()
+        )
+        let record = try #require(try store.textRecordsNeedingSync().first)
+        #expect(try store.markTextRecordSynced(
+            kind: record.kind,
+            recordName: record.id,
+            changeTag: "account-a-tag",
+            systemFields: Data([0x01, 0x02]),
+            recordUpdatedAt: record.updatedAt
+        ))
+        try store.saveCloudSyncStateData(Data("scope-a".utf8), forKey: "legacy-owner")
+        try store.saveCloudSyncStateData(Data("legacy-cursor".utf8), forKey: "legacy-state")
+        try store.saveCloudSyncStateData(Data("current-cursor".utf8), forKey: "current-state")
+
+        #expect(try !store.reconnectCloudSyncAccountScope(
+            expectedScope: "scope-b",
+            accountScopeKey: "current-owner",
+            stateKey: "current-state",
+            legacyAccountScopeKey: "legacy-owner",
+            legacyStateKey: "legacy-state"
+        ))
+
+        #expect(try store.cloudSyncStateData(forKey: "current-owner") == nil)
+        #expect(try store.cloudSyncStateData(forKey: "current-state") == Data("current-cursor".utf8))
+        #expect(try store.cloudSyncStateData(forKey: "legacy-owner") == Data("scope-a".utf8))
+        #expect(try store.cloudSyncStateData(forKey: "legacy-state") == Data("legacy-cursor".utf8))
+        #expect(try !store.hasTextRecordsNeedingSync())
+        let preserved = try #require(try store.textRecordForSync(recordName: record.id))
+        #expect(preserved.text == "Keep account A text private")
+        #expect(preserved.cloudChangeTag == "account-a-tag")
+        #expect(preserved.cloudSystemFields == Data([0x01, 0x02]))
     }
 
     @Test("account verification ignores local-only rows and includes cloud-backed rows")
@@ -2720,6 +2794,26 @@ struct DictationStoreTests {
         #expect(updated?.savedRecordingPath == "/tmp/retained.wav")
     }
 
+    @Test("live meetings retain their creation folder through completion", arguments: ["all", "folder", "nested"])
+    func liveMeetingKeepsCreationFolder(destination: String) throws {
+        let store = try makeStore()
+        let parentID = try store.createFolder(name: "Project")
+        let nestedID = try store.createFolder(name: "Subproject", parentID: parentID)
+        let folderID: Int64? = destination == "all" ? nil : (destination == "nested" ? nestedID : parentID)
+        let start = Date()
+        let id = try store.createLiveMeeting(title: "Quick Note", calendarEventID: nil, startTime: start, folderID: folderID)
+        #expect(try store.meeting(id: id)?.folderID == folderID)
+        try store.completeLiveMeeting(id: id, title: "Recorded meeting", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(60), rawTranscript: "Meeting transcript",
+            formattedNotes: "Summary", micAudioPath: nil, systemAudioPath: nil)
+        let completed = try #require(try store.meeting(id: id))
+        #expect(completed.status == .completed)
+        #expect(completed.folderID == folderID)
+        if let folderID {
+            #expect(try store.recentMeetings(folderID: folderID).contains { $0.id == id })
+        }
+    }
+
     // MARK: - Folder CRUD
 
     @Test("create and list folders")
@@ -3364,6 +3458,206 @@ struct DictationStoreTests {
 
         #expect(results.map(\.id).contains(dictationID))
         #expect(results.first(where: { $0.id == dictationID })?.computerUseTrace?.finalStatus == "done")
+    }
+
+    @Test("Quill dictation persists formatted output and expandable inputs")
+    func quilTransformationHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_000)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "- First point\n- Second point",
+            originalText: "First point. Second point.",
+            instruction: "Turn this into bullet points",
+            backend: "local",
+            model: "qwen35-0.8b",
+            durationSeconds: 1.4,
+            targetAppName: "Notes",
+            targetAppBundleID: "com.apple.Notes",
+            startedAt: now.addingTimeInterval(-1.4),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        #expect(row.source == "quil")
+        #expect(row.rawText == "- First point\n- Second point")
+        #expect(row.wordCount == 5)
+        #expect(row.targetAppName == "Notes")
+        #expect(row.computerUseTrace?.events.map(\.title) == [
+            "Original highlighted text",
+            "Spoken instruction",
+            "Model",
+        ])
+        #expect(row.computerUseTrace?.events.map(\.body) == [
+            "First point. Second point.",
+            "Turn this into bullet points",
+            "local · qwen35-0.8b",
+        ])
+
+        let timeline = try store.timelineEntries(limit: 10)
+        #expect(timeline.contains { entry in
+            guard case .dictation(let record) = entry else { return false }
+            return record.id == dictationID && record.computerUseTrace != nil
+        })
+        #expect(try store.searchDictations(query: "First point.").map(\.id).contains(dictationID))
+        #expect(try store.searchDictations(query: "bullet points").map(\.id).contains(dictationID))
+    }
+
+    @Test("Quill statistics count only the spoken rewrite instruction")
+    func quillStatisticsCountSpokenInstruction() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_050)
+        try store.insertDictation(
+            text: "ordinary dictation",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+        try store.insertQuilDictation(
+            outputText: "generated output has many words that must never count",
+            originalText: "highlighted source text must not count either",
+            instruction: "Rewrite this politely",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 60,
+            startedAt: now.addingTimeInterval(-60),
+            endedAt: now
+        )
+
+        let stats = try store.dictationStats()
+        #expect(stats.totalWords == 5)
+        #expect(stats.totalSessions == 2)
+        #expect(stats.averageWordsPerSession == 2.5)
+        #expect(stats.averageWPM == 2.5)
+    }
+
+    @Test("migration repairs existing Quill output word counts")
+    func migrationRepairsExistingQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_075)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "a deliberately verbose generated response that should not count",
+            originalText: "source",
+            instruction: "Make concise",
+            backend: "local",
+            model: "qwen35-0.8b",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "UPDATE dictations SET word_count = 99 WHERE id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 2)
+        #expect(try store.dictationStats().totalWords == 2)
+    }
+
+    @Test("migration preserves synced Quill counts when the local trace is absent")
+    func migrationPreservesTraceFreeSyncedQuillWordCounts() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_090)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated output that is not available as analytics context",
+            originalText: "source",
+            instruction: "Rewrite with warmth",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1,
+            startedAt: now.addingTimeInterval(-1),
+            endedAt: now
+        )
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            "UPDATE dictations SET word_count = 3, cloud_record_name = 'quill-sync-test', sync_dirty = 0 WHERE id = \(dictationID)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM computer_use_traces WHERE dictation_id = \(dictationID)", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DELETE FROM local_migrations WHERE identifier = 'quill_statistics_spoken_instruction_v1'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        try store.migrateIfNeeded()
+
+        #expect(try store.dictation(id: dictationID)?.wordCount == 3)
+        #expect(try store.textRecordsNeedingSync().isEmpty)
+    }
+
+    @Test("Quill generation at cursor persists its mode and spoken instruction")
+    func quilGenerationAtCursorHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_100)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Hi team, just a friendly reminder about tomorrow's meeting.",
+            originalText: "",
+            instruction: "Draft a friendly reminder about tomorrow's meeting",
+            backend: "gemma4LiteRT",
+            model: "gemma-4-e2b-it",
+            durationSeconds: 1.1,
+            targetAppName: "Mail",
+            targetAppBundleID: "com.apple.mail",
+            startedAt: now.addingTimeInterval(-1.1),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        #expect(row.source == "quil")
+        #expect(row.computerUseTrace?.events.map(\.kind) == [
+            "quil_mode",
+            "quil_instruction",
+            "quil_model",
+        ])
+        #expect(row.computerUseTrace?.events.map(\.body) == [
+            "No highlighted text — generated at cursor",
+            "Draft a friendly reminder about tomorrow's meeting",
+            "gemma4LiteRT · gemma-4-e2b-it",
+        ])
+        #expect(try store.searchDictations(query: "generated at cursor").map(\.id).contains(dictationID))
+        #expect(try store.searchDictations(query: "friendly reminder").map(\.id).contains(dictationID))
+    }
+
+    @Test("Quill persists generated output when automatic paste needs attention")
+    func quilPasteFallbackHydrates() throws {
+        let store = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_777_000_200)
+        let dictationID = try store.insertQuilDictation(
+            outputText: "Generated text ready to paste",
+            originalText: "",
+            instruction: "Draft a short update",
+            backend: "gemma4-litert",
+            model: "gemma-4-e4b-it",
+            durationSeconds: 1.2,
+            targetAppName: "Google Chrome",
+            targetAppBundleID: "com.google.Chrome",
+            finalStatus: "needs_attention",
+            finalMessage: "Generated text is ready for manual paste",
+            additionalTraceEvents: [
+                ComputerUseTraceEvent(
+                    kind: "quil_delivery",
+                    title: "Delivery",
+                    body: "Automatic paste was not accepted; generated text was retained on the clipboard"
+                ),
+            ],
+            startedAt: now.addingTimeInterval(-1.2),
+            endedAt: now
+        )
+
+        let row = try #require(try store.dictation(id: dictationID))
+        let trace = try #require(row.computerUseTrace)
+        #expect(row.rawText == "Generated text ready to paste")
+        #expect(trace.finalStatus == "needs_attention")
+        #expect(trace.finalMessage == "Generated text is ready for manual paste")
+        #expect(trace.events.last?.kind == "quil_delivery")
+        #expect(trace.events.last?.title == "Delivery")
+        #expect(trace.events.last?.body.contains("retained on the clipboard") == true)
     }
 
     @Test("insertComputerUseTrace replaces existing trace atomically")

@@ -1,0 +1,988 @@
+import AppKit
+import SwiftUI
+import MuesliCore
+import os
+
+/// A bounded display summary. Full tool responses belong in the Timeline trace.
+struct NotchToolResult: Identifiable, Equatable {
+    let id: UUID
+    let message: String
+    let failed: Bool
+
+    init?(_ event: ComputerUseTraceEvent) {
+        guard event.kind == "tool_result", let summary = event.compactSummary else { return nil }
+        let text = summary.prefix(181).split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        id = event.id
+        message = text.count > 180 ? String(text.prefix(179)) + "…" : text
+        failed = ["failed", "unsupported", "cancelled", "needsConfirmation"].contains(event.status ?? "")
+    }
+}
+
+enum NotchStatus: Equatable {
+    case loading, warning, success, cursor
+}
+
+enum NotchOutcome: Equatable {
+    case success, needsInput, failure
+
+    var color: NSColor {
+        switch self {
+        case .success: return .systemGreen
+        case .needsInput: return .systemYellow
+        case .failure: return .systemRed
+        }
+    }
+    var title: String {
+        switch self {
+        case .success: return "Done"
+        case .needsInput: return "Needs input"
+        case .failure: return "Failed"
+        }
+    }
+    var duration: TimeInterval? {
+        switch self {
+        case .success: return 2
+        case .needsInput: return nil
+        case .failure: return 5
+        }
+    }
+
+    static func quillFailure(_ error: Error) -> Self {
+        guard let error = error as? QuilTransformationError else { return .failure }
+        switch error {
+        case .noTextTarget, .accessibilityPermissionRequired, .selectionTooLong,
+             .emptyInstruction, .selectionChanged, .unsupportedModel, .modelUnavailable:
+            return .needsInput
+        case .emptyResponse, .responseTooLong, .nonReplacementResponse:
+            return .failure
+        }
+    }
+
+    static func computerUse(_ status: ComputerUsePlannerRuntimeResult.Status) -> Self? {
+        switch status {
+        case .done: return .success
+        case .needsConfirmation: return .needsInput
+        case .failed, .timedOut: return .failure
+        case .cancelled: return nil
+        }
+    }
+}
+
+/// Visual noise gate only; never changes captured audio or transcription.
+enum NotchWaveformLevel {
+    static func amplitude(decibels: Float) -> CGFloat {
+        guard decibels.isFinite, decibels > -50 else { return 0 }
+        let normalized = CGFloat(min(1, (decibels + 50) / 30))
+        return normalized * normalized
+    }
+}
+
+struct NotchActivityVisibility {
+    private(set) var active = false
+    private(set) var dismissAt: Date?
+
+    mutating func update(active: Bool, now: Date) -> Bool {
+        let wasActive = self.active
+        if active {
+            dismissAt = nil
+        } else if self.active {
+            // Defer only to the next UI turn so the synchronous successful-paste
+            // callback can request its completion pulse. No idle grace period.
+            dismissAt = now
+        }
+        self.active = active
+        return active || wasActive || (dismissAt.map { now < $0 } ?? false)
+    }
+
+    mutating func complete(now: Date) {
+        guard !active else { return }
+        dismissAt = now.addingTimeInterval(NotchCompletionTiming.duration)
+    }
+}
+
+/// Screen coordinates come from AppKit, in points, including nonzero display origins.
+struct NotchIndicatorGeometry: Equatable {
+    let cutout: CGRect
+    let wingWidth: CGFloat
+
+    // First-pass menu-bar clearance: shorten the original 110-point right wing
+    // by 32 points without moving the camera gap. This does not detect the system
+    // privacy item's frame; verify clearance on the user's display/layout.
+    var rightWingWidth: CGFloat { cutout.width > 0 ? min(wingWidth, 78) : wingWidth }
+
+    static func resolve(screen: CGRect, topInset: CGFloat, left: CGRect?, right: CGRect?) -> Self? {
+        guard topInset.isFinite, topInset > 0, topInset < screen.height / 4,
+              let left, let right,
+              left.width > 0, right.width > 0,
+              left.maxX < right.minX,
+              left.minX >= screen.minX, right.maxX <= screen.maxX,
+              abs(left.maxY - screen.maxY) < 1,
+              abs(right.maxY - screen.maxY) < 1 else { return nil }
+        let width = right.minX - left.maxX
+        guard width < screen.width / 2 else { return nil }
+        let wing = min(110, left.width, right.width)
+        guard wing >= 80 else { return nil }
+        return Self(cutout: CGRect(x: left.maxX, y: screen.maxY - topInset,
+                                  width: width, height: topInset), wingWidth: wing)
+    }
+
+    /// External displays use the same surface, with no space reserved for a camera.
+    static func presentation(screen: CGRect, visibleFrame: CGRect, topInset: CGFloat,
+                             left: CGRect?, right: CGRect?) -> Self {
+        if let physical = resolve(screen: screen, topInset: topInset, left: left, right: right) {
+            return physical
+        }
+        // Keep controls usable when the menu bar is hidden, and stay at the screen's top edge.
+        let height = max(CGFloat(28), min(32, screen.maxY - visibleFrame.maxY))
+        return Self(cutout: CGRect(x: screen.midX, y: screen.maxY - height, width: 0, height: height),
+                    wingWidth: min(110, screen.width / 2))
+    }
+
+    func frame() -> CGRect {
+        let height = cutout.height
+        return CGRect(x: cutout.minX - wingWidth, y: cutout.maxY - height,
+                      width: wingWidth + cutout.width + rightWingWidth, height: height)
+    }
+
+    func instructionFrame(in screen: CGRect, requiresReview: Bool = false, resultCount: Int = 0) -> CGRect {
+        let width = min(440, screen.width)
+        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 30
+        return CGRect(x: expandedOriginX(width: width, in: screen),
+                      y: cutout.minY - height, width: width, height: height)
+    }
+
+    func expandedOriginX(width: CGFloat, in screen: CGRect) -> CGFloat {
+        // Match the visible asymmetric bar without shifting the physical camera gap.
+        min(max(frame().midX - width / 2, screen.minX), screen.maxX - width)
+    }
+}
+
+@MainActor
+private final class NotchIndicatorPanel: NSPanel {
+    var acceptsKeyboardInput = false
+    override var canBecomeKey: Bool { acceptsKeyboardInput }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Owns only presentation; recording and meeting state remain in the existing controller.
+@MainActor
+final class NotchIndicatorController {
+    #if DEBUG
+    private static let lifecycleLogger = Logger(subsystem: "com.muesli.native", category: "NotchLifecycle")
+    #endif
+
+    /// Local debug metadata only: no transcript, tool response, or application names.
+    private func logPresentation(_ action: String) {
+        #if DEBUG
+        let frame = panel.map { NSStringFromRect($0.frame) } ?? "none"
+        Self.lifecycleLogger.notice("\(action, privacy: .public) active=\(self.visibility.active) visible=\(self.isVisible) appHidden=\(NSApp?.isHidden ?? false) hasContent=\(self.panel?.contentView != nil) frame=\(frame, privacy: .public)")
+        #endif
+    }
+
+    private var panel: NSPanel?
+    private var geometry: NotchIndicatorGeometry?
+    private var title = "Ready"
+    private var detail = ""
+    private var recording = false
+    private(set) var cursorInsertionStopped = false
+    private var paused = false
+    private var meeting = false
+    private var handsFree = false
+    private var activationID = 0
+    private var completionID = 0
+    private var dismissActivity: DispatchWorkItem?
+    private var visibility = NotchActivityVisibility()
+    private var icon = NSImage()
+    private var accent = RecordingIndicatorPalette.accent(hex: "")
+    private var instructionPanel: NSPanel?
+    private var question: ComputerUseQuestionSession?
+    private var instruction: String?
+    private var instructionStatus = ""
+    private var toolResults: [NotchToolResult] = []
+    private var appName = ""
+    private var appIcon: NSImage?
+    private var transcriptHovered = false
+    private var transcriptDismissed = false
+    private var transcriptExit: DispatchWorkItem?
+    var meetingTranscriptEnabled = false {
+        didSet {
+            guard oldValue != meetingTranscriptEnabled else { return }
+            transcriptDismissed = false
+            if !meetingTranscriptEnabled { closeMeetingTranscript() }
+        }
+    }
+    private lazy var meetingTranscript = FloatingMeetingTranscriptPanelController(
+        usesNotchBackground: true,
+        onHoverChanged: { [weak self] in self?.setMeetingTranscriptHovered($0) },
+        onOpenNotes: { [weak self] in self?.closeMeetingTranscript(); self?.onOpenMeetingNotes?() },
+        onDismiss: { [weak self] in self?.dismissMeetingTranscript() },
+        onTogglePause: { [weak self] in self?.onToggleMeetingPause?() }
+    )
+    var onOpenMeetingNotes: (() -> Void)?
+    var meetingTranscriptFrame: CGRect? {
+        meetingTranscript.isVisible ? instructionPanel?.frame : nil
+    }
+
+    func updateMeetingTranscript(transcript: String, partialYou: String, partialOthers: String) {
+        meetingTranscript.update(transcript: transcript, partialYou: partialYou, partialOthers: partialOthers)
+    }
+
+    func setMeetingTranscriptHovered(_ hovered: Bool) {
+        transcriptExit?.cancel()
+        guard meeting, recording, meetingTranscriptEnabled else { return }
+        if hovered {
+            guard !transcriptDismissed else { return }
+            transcriptHovered = true
+            renderInstruction()
+        } else {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let point = self.pointerLocation()
+                guard self.panel?.frame.contains(point) != true,
+                      self.meetingTranscriptFrame?.contains(point) != true else { return }
+                self.transcriptDismissed = false
+                self.closeMeetingTranscript()
+            }
+            transcriptExit = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
+    }
+
+    func dismissMeetingTranscript() {
+        transcriptDismissed = true
+        closeMeetingTranscript()
+    }
+
+    var expandedPanelFrame: CGRect? {
+        instructionPanel?.isVisible == true ? instructionPanel?.frame : nil
+    }
+
+    private func closeMeetingTranscript() {
+        transcriptExit?.cancel()
+        transcriptHovered = false
+        meetingTranscript.hide()
+        renderInstruction()
+    }
+
+    private var expanded = true
+    private var screenBounds = CGRect.zero
+    private var requiresReview = false
+    private(set) var outcome: NotchOutcome?
+    private(set) var status: NotchStatus?
+    private(set) var statusDismissAt: Date?
+    var statusMessage: String? { status == nil ? nil : instruction }
+    private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
+
+    private let pointerLocation: () -> NSPoint
+
+    init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
+         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+        self.pointerLocation = pointerLocation
+        self.resolveGeometry = resolveGeometry
+    }
+    var onReview: (() -> Void)?
+    var onOpenHome: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onToggleMeetingPause: (() -> Void)?
+    var onStopMeeting: (() -> Void)?
+    var onStopRecording: (() -> Void)?
+    var powerProvider: (() -> Float)?
+
+    var isVisible: Bool { panel?.isVisible == true }
+    var screenFrame: CGRect? { isVisible ? panel?.frame : nil }
+
+    static func geometry(for screen: NSScreen) -> NotchIndicatorGeometry? {
+        NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
+            topInset: screen.safeAreaInsets.top,
+            left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
+    }
+
+    @discardableResult
+    func show(on screen: NSScreen, title: String, detail: String,
+              recording: Bool, paused: Bool, meeting: Bool, handsFree: Bool, active: Bool, icon: NSImage,
+              accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
+              appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
+              toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
+              cursorInsertionStopped: Bool = false) -> Bool {
+        guard let geometry = resolveGeometry(screen) else { hide(); return false }
+        let continuesStatus = status != nil && self.status == status && isVisible
+        requiresReview = false
+        self.status = status
+        statusDismissAt = nil
+        outcome = status == .warning ? .needsInput : (status == .success ? .success : nil)
+        dismissActivity?.cancel()
+        dismissActivity = nil
+        let now = Date()
+        if active && !visibility.active {
+            expanded = true
+            activationID += 1
+            completionID = 0
+        }
+        guard visibility.update(active: active, now: now) else {
+            hide()
+            // Supported but intentionally hidden: do not show the floating fallback.
+            return true
+        }
+        self.icon = icon
+        if self.question?.id != question?.id { expanded = true }
+        self.question = question
+        self.instruction = instruction
+        self.instructionStatus = instructionStatus
+        self.toolResults = toolResults
+        self.appName = appName
+        self.appIcon = appIcon
+        if self.screenBounds != screen.visibleFrame {
+            transcriptDismissed = false
+        }
+        self.screenBounds = screen.visibleFrame
+        self.accent = accent
+        self.geometry = geometry
+        self.title = title
+        self.detail = detail
+        self.recording = recording
+        self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
+        self.paused = paused
+        if !meeting || !recording {
+            closeMeetingTranscript()
+            meetingTranscript.reset()
+            transcriptDismissed = false
+        }
+        meetingTranscript.setPaused(paused)
+        self.meeting = meeting
+        self.handsFree = handsFree
+        if panel == nil {
+            let panel = NotchIndicatorPanel(contentRect: .zero,
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.level = .statusBar
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            self.panel = panel
+        }
+        if status != nil && !continuesStatus { expanded = true }
+        render()
+        panel?.orderFrontRegardless()
+        logPresentation("show")
+        scheduleDismissal()
+        return true
+    }
+
+    private func scheduleDismissal() {
+        dismissActivity?.cancel()
+        dismissActivity = nil
+        if let deadline = visibility.dismissAt {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.visibility.active,
+                      self.visibility.dismissAt == deadline else { return }
+                self.hide()
+            }
+            dismissActivity = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline.timeIntervalSinceNow), execute: work)
+        }
+    }
+
+    func hide(reason: String = #function) {
+        closeMeetingTranscript()
+        transcriptDismissed = false
+        logPresentation("hide from \(reason)")
+        status = nil
+        cursorInsertionStopped = false
+        statusDismissAt = nil
+        outcome = nil
+        requiresReview = false
+        instructionPanel?.orderOut(nil)
+        instructionPanel?.contentView = nil
+        instruction = nil
+        question = nil
+        dismissActivity?.cancel()
+        dismissActivity = nil
+        visibility = NotchActivityVisibility()
+        completionID = 0
+        panel?.orderOut(nil)
+        // Releasing the hosted view cancels waveform/activation tasks while hidden.
+        panel?.contentView = nil
+    }
+
+    /// Geometry-only update: retain the result, disclosure state, callbacks and
+    /// original dismissal task. A detached built-in display must not lose a
+    /// pending review; show that existing result below the external menu bar.
+    @discardableResult
+    func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
+        guard outcome != nil || status != nil else { return false }
+        guard let screen else { return true }
+        let resolved = resolveGeometry(screen)
+        if status != nil && resolved == nil { return false }
+        screenBounds = screen.visibleFrame
+        geometry = resolved ?? NotchIndicatorGeometry(
+            cutout: CGRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.maxY - 32,
+                           width: 0, height: 32), wingWidth: 110)
+        render()
+        panel?.orderFrontRegardless()
+        return true
+    }
+
+    @discardableResult
+    func showStatus(on screen: NSScreen, kind: NotchStatus, message: String,
+                    duration: TimeInterval? = nil) -> Bool {
+        if duration == nil, status == kind, instruction == message, isVisible {
+            if refreshOutcomePlacement(on: screen) { return true }
+            hide()
+            return false
+        }
+        let title: String
+        let color: NSColor
+        switch kind {
+        case .loading: title = "Working"; color = .systemBlue
+        case .warning: title = "Notice"; color = .systemYellow
+        case .success: title = "Done"; color = .systemGreen
+        case .cursor: title = "Computer use"; color = .systemBlue
+        }
+        guard show(on: screen, title: title, detail: message, recording: false,
+                   paused: false, meeting: false, handsFree: false, active: true,
+                   icon: NSImage(systemSymbolName: "waveform", accessibilityDescription: nil) ?? NSImage(),
+                   accent: color, instruction: message, status: kind) else { return false }
+        if let duration {
+            statusDismissAt = Date().addingTimeInterval(duration)
+            let work = DispatchWorkItem { [weak self] in self?.hide() }
+            dismissActivity = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+        }
+        return true
+    }
+
+    func showCompletion() {
+        guard outcome == nil else { return }
+        guard isVisible, !visibility.active else { return }
+        visibility.complete(now: Date())
+        completionID += 1
+        render()
+        scheduleDismissal()
+    }
+
+    @discardableResult
+    func showOutcome(on screen: NSScreen, outcome: NotchOutcome, instruction: String?, message: String, icon: NSImage) -> Bool {
+        guard show(on: screen, title: outcome.title, detail: message, recording: false, paused: false,
+                   meeting: false, handsFree: false, active: true,
+                   icon: icon, accent: outcome.color,
+                   instruction: outcome == .success ? nil : (instruction ?? message), instructionStatus: message) else { return false }
+        self.outcome = outcome
+        requiresReview = outcome == .needsInput
+        expanded = true
+        render()
+        if let duration = outcome.duration {
+            let work = DispatchWorkItem { [weak self] in self?.hide() }
+            dismissActivity = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+        }
+        return true
+    }
+
+    func toggleInstructionExpansion() {
+        expanded.toggle()
+        render()
+    }
+
+    private func render() {
+        guard let geometry, let panel else { return }
+        let frame = geometry.frame()
+        panel.setFrame(frame, display: true)
+        let view = NotchIndicatorView(geometry: geometry, active: visibility.active, activationID: activationID,
+            completionID: completionID, handsFree: handsFree, accent: accent,
+            title: title, detail: detail, recording: recording, paused: paused, meeting: meeting, icon: icon,
+            onCancel: { [weak self] in self?.cancelOrDismiss() },
+            onToggleMeetingPause: { [weak self] in self?.onToggleMeetingPause?() },
+            onStopMeeting: { [weak self] in self?.onStopMeeting?() },
+            onStopRecording: { [weak self] in self?.onStopRecording?() },
+            onOpenHome: { [weak self] in self?.onOpenHome?() },
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
+            onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
+            power: { [weak self] in self?.powerProvider?() ?? -160 },
+            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) },
+            cursorInsertionStopped: cursorInsertionStopped)
+        if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
+            hosting.rootView = view
+        } else {
+            panel.contentView = NSHostingView(rootView: view)
+        }
+        renderInstruction()
+    }
+
+    private func renderInstruction() {
+        let showsTranscript = meeting && recording && meetingTranscriptEnabled && transcriptHovered
+        guard let geometry, visibility.active,
+              showsTranscript || (expanded && (question != nil || instruction?.isEmpty == false)) else {
+            meetingTranscript.hide()
+            instructionPanel?.orderOut(nil)
+            instructionPanel?.contentView = nil
+            return
+        }
+        if instructionPanel == nil {
+            let panel = NotchIndicatorPanel(contentRect: .zero,
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.level = .statusBar
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            instructionPanel = panel
+        }
+        if showsTranscript, let instructionPanel {
+            let size = FloatingMeetingTranscriptPlacement.panelSize
+            let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - size.height),
+                width: size.width, height: size.height)
+            (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = false
+            if !meetingTranscript.isVisible {
+                instructionPanel.contentView = NSView(frame: CGRect(origin: .zero, size: size))
+            }
+            instructionPanel.setFrame(frame, display: true)
+            if let container = instructionPanel.contentView {
+                meetingTranscript.show(in: container, frame: container.bounds)
+            }
+            instructionPanel.orderFrontRegardless()
+            return
+        }
+        meetingTranscript.hide()
+        (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if status != nil {
+            let width = min(CGFloat(380), screenBounds.width)
+            let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - 64), width: width, height: 64)
+            let view = NotchStatusView(message: instruction ?? "")
+            if let hosting = instructionPanel?.contentView as? NSHostingView<NotchStatusView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
+        if let question {
+            let size = ComputerUseQuestionLayout.size(in: screenBounds)
+            let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - size.height), width: size.width, height: size.height)
+            let view = ComputerUseQuestionView(session: question, notch: true,
+                onCollapse: { [weak self] in self?.expanded = false; self?.render() }, accent: Color(nsColor: accent))
+            if let hosting = instructionPanel?.contentView as? NSHostingView<ComputerUseQuestionView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
+        if instructionPanel?.isKeyWindow == true { instructionPanel?.resignKey() }
+        let frame = geometry.instructionFrame(in: screenBounds, requiresReview: requiresReview, resultCount: toolResults.count)
+        let view = NotchLiveInstructionView(instruction: instruction ?? "", status: instructionStatus,
+            appName: appName, appIcon: appIcon, accent: Color(nsColor: accent),
+            requiresReview: requiresReview, outcome: outcome, toolResults: toolResults,
+            onReview: { [weak self] in self?.onReview?(); self?.hide() },
+            onCollapse: { [weak self] in self?.expanded = false; self?.render() },
+            onCancel: { [weak self] in self?.cancelOrDismiss() })
+        if let hosting = instructionPanel?.contentView as? NSHostingView<NotchLiveInstructionView> {
+            hosting.rootView = view
+        } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+        instructionPanel?.setFrame(frame, display: true)
+        instructionPanel?.orderFrontRegardless()
+    }
+
+    private func cancelOrDismiss() {
+        if outcome != nil || status != nil { hide() } else { onCancel?() }
+    }
+}
+
+private struct NotchStatusView: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.white)
+            .lineLimit(2)
+            .help(message)
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18))
+            .preferredColorScheme(.dark)
+    }
+}
+
+struct NotchLiveInstructionView: View {
+    let instruction: String
+    let status: String
+    let appName: String
+    let appIcon: NSImage?
+    let accent: Color
+    var requiresReview = false
+    var outcome: NotchOutcome? = nil
+    var toolResults: [NotchToolResult] = []
+    var onReview: () -> Void = {}
+    let onCollapse: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if let appIcon { Image(nsImage: appIcon).resizable().frame(width: 18, height: 18) }
+                Text(appName.isEmpty ? "Instruction" : appName).font(.caption).foregroundStyle(.white.opacity(0.65))
+                Spacer()
+                Button(action: onCollapse) { Image(systemName: "chevron.up") }
+                    .accessibilityLabel("Collapse instruction")
+            }
+            ScrollView {
+                Text(instruction).font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                if outcome != nil || requiresReview {
+                    Image(systemName: "exclamationmark.bubble").foregroundStyle(accent)
+                } else { ProgressView().controlSize(.small).tint(accent) }
+                Text(status).font(.caption).lineLimit(2)
+                Spacer()
+                Button(outcome != nil || requiresReview ? "Dismiss" : "Cancel", action: onCancel).buttonStyle(.bordered)
+            }
+            if !requiresReview && outcome == nil {
+                ForEach(toolResults.suffix(3)) { result in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: result.failed ? "exclamationmark.circle" : "checkmark.circle")
+                            .foregroundStyle(result.failed ? Color.orange : accent)
+                            .accessibilityLabel(result.failed ? "Tool did not complete" : "Tool response")
+                        Text(result.message)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(height: 24, alignment: .top)
+                    .help("Full response available in Timeline")
+                }
+            }
+            if requiresReview {
+                Text("Your attention is needed. Review the details in Muesli.")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
+                Button("Review in app", action: onReview).buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(white: 0.055))
+        .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18))
+        .overlay {
+            UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
+                .strokeBorder(accent.opacity(0.5), lineWidth: 0.75).allowsHitTesting(false)
+        }
+        .foregroundStyle(.white).tint(accent).preferredColorScheme(.dark)
+    }
+}
+
+private struct NotchIndicatorView: View {
+    let geometry: NotchIndicatorGeometry
+    let active: Bool
+    let activationID: Int
+    let completionID: Int
+    let handsFree: Bool
+    let accent: NSColor
+    let title: String
+    let detail: String
+    let recording: Bool
+    let paused: Bool
+    let meeting: Bool
+    let icon: NSImage
+    let onCancel: () -> Void
+    let onToggleMeetingPause: () -> Void
+    let onStopMeeting: () -> Void
+    let onStopRecording: () -> Void
+    let onOpenHome: () -> Void
+    let hasInstruction: Bool
+    let expanded: Bool
+    let requiresReview: Bool
+    let outcome: NotchOutcome?
+    var isStatus = false
+    let onToggleInstruction: () -> Void
+    let power: () -> Float
+    var onHover: (Bool) -> Void = { _ in }
+    var cursorInsertionStopped = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var edgeIntensity = 0.18
+
+    private var silhouette: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
+    }
+
+    private var waveformWidth: CGFloat {
+        let controlWidth: CGFloat = active ? (meeting ? 40 : (recording && handsFree ? 42 : 22)) : 0
+        let gaps: CGFloat = active ? ((meeting || (recording && handsFree)) ? 8 : 4) : 0
+        return max(0, min(58, geometry.rightWingWidth - 12 - controlWidth - gaps))
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 4) {
+                if active && meeting {
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Discard meeting")
+                    .help("Discard meeting…")
+                }
+                Button(action: onOpenHome) {
+                    HStack(spacing: 5) {
+                        Image(nsImage: icon).resizable().scaledToFit().frame(width: 16, height: 16)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(title).font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
+                            if cursorInsertionStopped {
+                                Text("Still recording").font(.system(size: 9))
+                            }
+                        }.lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open Muesli home")
+                .help(cursorInsertionStopped ? detail : "Open Muesli home")
+                if hasInstruction {
+                    Button(action: onToggleInstruction) {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .frame(width: 20, height: 22)
+                    }.accessibilityLabel(expanded ? "Collapse instruction" : "Expand instruction")
+                }
+            }
+            .padding(.horizontal, 7)
+            .frame(width: geometry.wingWidth)
+
+            // The physical camera region must stay black and noninteractive.
+            Color.black.frame(width: geometry.cutout.width).allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            HStack(spacing: 4) {
+                Group {
+                    if recording && !paused {
+                        NotchWaveform(power: power, scrolling: handsFree, reduceMotion: reduceMotion, accent: accent)
+                            .frame(width: waveformWidth,
+                                   height: min(20, geometry.cutout.height - 8))
+                    } else if paused {
+                        Image(systemName: "pause.fill")
+                    } else if let outcome {
+                        Image(systemName: outcome == .success ? "circle.fill" : "exclamationmark.triangle.fill")
+                    } else if active {
+                        ProgressView().controlSize(.mini).tint(Color(nsColor: accent))
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityHidden(true)
+                if active && meeting {
+                    Button(action: onToggleMeetingPause) {
+                        Image(systemName: paused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(paused ? "Resume meeting" : "Pause meeting")
+                    .help(paused ? "Resume meeting" : "Pause meeting")
+                    Button(action: onStopMeeting) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 20, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Stop meeting recording")
+                    .help("Stop and save meeting")
+                } else if active {
+                    if recording && handsFree {
+                        Button(action: onStopRecording) {
+                            Image(systemName: "stop.fill").font(.system(size: 10))
+                                .frame(width: 20, height: 22)
+                        }.accessibilityLabel("Finish instruction recording")
+                    }
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                            .frame(width: 22, height: 22)
+                            .background {
+                                Circle().fill(LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.06)],
+                                                             startPoint: .top, endPoint: .bottom))
+                            }
+                            .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5) }
+                            .contentShape(Circle())
+                    }
+                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : "Cancel activity"))
+                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
+                }
+            }
+            .padding(.horizontal, 6)
+            .frame(width: geometry.rightWingWidth)
+        }
+        .onHover(perform: onHover)
+        .buttonStyle(.plain)
+        .foregroundStyle(outcome == .needsInput || outcome == .success ? .black : .white)
+        .frame(width: geometry.frame().width, height: geometry.frame().height)
+        .background(outcome.map { Color(nsColor: $0.color) } ?? .black)
+        .overlay {
+            silhouette.strokeBorder(
+                LinearGradient(colors: [Color(nsColor: accent).opacity(edgeIntensity), .white.opacity(0.07),
+                                        Color(nsColor: accent).opacity(edgeIntensity * 0.6)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing),
+                lineWidth: 0.75
+            ).allowsHitTesting(false)
+        }
+        // Clip after lighting so neither the waveform glow nor the edge spills
+        // below the menu bar. The AppKit panel itself has no shadow.
+        .overlay {
+            NotchCompletionAnimation(completionID: completionID, reduceMotion: reduceMotion, accent: accent)
+                .allowsHitTesting(false)
+        }
+        .clipShape(silhouette)
+        .task(id: activationID) {
+            edgeIntensity = reduceMotion ? 0.25 : 0.7
+            guard !reduceMotion else { return }
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            withAnimation(.easeOut(duration: 1.2)) { edgeIntensity = 0.18 }
+        }
+        .preferredColorScheme(.dark)
+        .ignoresSafeArea()
+    }
+}
+
+/// Keep per-frame work out of SwiftUI layout, matching the floating pill's
+/// common-mode timer + fixed CALayer bars. The representable owns its timer.
+private struct NotchWaveform: NSViewRepresentable {
+    let power: () -> Float
+    let scrolling: Bool
+    let reduceMotion: Bool
+    let accent: NSColor
+
+    func makeNSView(context: Context) -> NotchWaveformView { NotchWaveformView() }
+    func updateNSView(_ view: NotchWaveformView, context: Context) {
+        view.configure(power: power, scrolling: scrolling, reduceMotion: reduceMotion, accent: accent)
+    }
+    static func dismantleNSView(_ view: NotchWaveformView, coordinator: ()) { view.stop() }
+}
+
+@MainActor
+private final class NotchWaveformView: NSView {
+    private var bars: [CALayer] = []
+    private var timer: Timer?
+    private var power: () -> Float = { -160 }
+    private var scrolling = false
+    private var reduceMotion = false
+    private var smoothed: CGFloat = 0
+    private var samples = Array(repeating: CGFloat(0), count: 15)
+    private var nextSample = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        // Keep both bars and their glow inside the space reserved beside controls.
+        layer?.masksToBounds = true
+        for _ in 0..<15 {
+            let bar = CALayer()
+            bar.cornerRadius = 1
+            bar.shadowRadius = 3
+            bar.shadowOffset = .zero
+            layer?.addSublayer(bar)
+            bars.append(bar)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(power: @escaping () -> Float, scrolling: Bool, reduceMotion: Bool, accent: NSColor) {
+        self.power = power
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for bar in bars {
+            bar.backgroundColor = accent.cgColor
+            bar.shadowColor = accent.cgColor
+        }
+        CATransaction.commit()
+        let changed = self.scrolling != scrolling
+        self.scrolling = scrolling
+        if changed {
+            samples = Array(repeating: smoothed, count: 15)
+            nextSample = 0
+        }
+        if self.reduceMotion != reduceMotion { stop() }
+        self.reduceMotion = reduceMotion
+        startIfNeeded()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { stop() } else { startIfNeeded() }
+    }
+
+    override func layout() {
+        super.layout()
+        drawBars()
+    }
+
+    private func startIfNeeded() {
+        guard window != nil, timer == nil else { return }
+        tick()
+        let timer = Timer(timeInterval: reduceMotion ? 0.1 : 1.0 / 30.0,
+                          target: self, selector: #selector(timerFired(_:)),
+                          userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @objc private func timerFired(_ timer: Timer) { tick() }
+
+    private func tick() {
+        let level = NotchWaveformLevel.amplitude(decibels: power())
+        smoothed = IndicatorWaveformDynamics.smooth(level, previous: smoothed)
+        if level == 0 {
+            for index in samples.indices { samples[index] *= 0.55 }
+        }
+        samples[nextSample] = smoothed
+        nextSample = (nextSample + 1) % samples.count
+        drawBars()
+    }
+
+    private func drawBars() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let isStanding = !scrolling || reduceMotion
+        let count = isStanding ? 7 : bars.count
+        for (index, bar) in bars.enumerated() {
+            bar.isHidden = index >= count
+            guard index < count else { continue }
+            let amplitude = scrolling && !reduceMotion
+                ? samples[(nextSample + index) % samples.count]
+                : smoothed * IndicatorWaveformDynamics.standingWeight(index: index, count: count)
+            if isStanding {
+                bar.frame = IndicatorWaveformDynamics.standingBarFrame(
+                    index: index, count: count, amplitude: amplitude, bounds: bounds)
+            } else {
+                let height = 0.75 + amplitude * max(0, min(14, bounds.height) - 0.75)
+                let stride = bounds.width / CGFloat(count)
+                let width = min(1.25, stride * 0.5)
+                bar.frame = CGRect(x: CGFloat(index) * stride + (stride - width) / 2,
+                                   y: (bounds.height - height) / 2, width: width, height: height)
+            }
+            bar.cornerRadius = min(bar.frame.width, bar.frame.height) / 2
+            bar.shadowOpacity = Float(amplitude * 0.2)
+            bar.shadowPath = CGPath(roundedRect: bar.bounds, cornerWidth: bar.cornerRadius,
+                                   cornerHeight: bar.cornerRadius, transform: nil)
+        }
+        CATransaction.commit()
+    }
+}

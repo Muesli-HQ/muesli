@@ -1,23 +1,105 @@
 import SwiftUI
 import MuesliCore
 
+enum DashboardWindowLayout {
+    /// Narrow enough to sit beside a call window while preserving a useful
+    /// notes editor when the sidebar is collapsed or hidden.
+    static let minimumContentWidth: CGFloat = 520
+    static let minimumContentHeight: CGFloat = 600
+    static let compactQuickNotesThreshold: CGFloat = 600
+
+    static func usesCompactQuickNotes(width: CGFloat, hasOpenMeeting: Bool) -> Bool {
+        hasOpenMeeting && width < compactQuickNotesThreshold
+    }
+}
+
+private struct CompactQuickNotesEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var usesCompactQuickNotes: Bool {
+        get { self[CompactQuickNotesEnvironmentKey.self] }
+        set { self[CompactQuickNotesEnvironmentKey.self] = newValue }
+    }
+}
+
+@Observable
+final class DashboardSidebarPresentation {
+    var isCollapsed = false
+
+    func toggle() {
+        isCollapsed.toggle()
+    }
+}
+
+struct DashboardContentLayout<SidebarContent: View, DetailContent: View>: View {
+    let usesCompactQuickNotes: Bool
+    @ViewBuilder let sidebar: () -> SidebarContent
+    @ViewBuilder let detail: () -> DetailContent
+
+    var body: some View {
+        HSplitView {
+            if !usesCompactQuickNotes {
+                sidebar()
+            }
+
+            detail()
+                .environment(\.usesCompactQuickNotes, usesCompactQuickNotes)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
+        }
+    }
+}
+
 struct DashboardRootView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var featureTourTargetFrames: [FeatureTourTarget: CGRect] = [:]
+    @State private var sidebarPresentation: DashboardSidebarPresentation
+
+    init(
+        appState: AppState,
+        controller: MuesliController,
+        sidebarPresentation: DashboardSidebarPresentation = DashboardSidebarPresentation()
+    ) {
+        self.appState = appState
+        self.controller = controller
+        _sidebarPresentation = State(initialValue: sidebarPresentation)
+    }
+
+    var sidebarView: SidebarView {
+        SidebarView(
+            appState: appState,
+            controller: controller,
+            isCollapsed: sidebarPresentation.isCollapsed,
+            onToggleCollapsed: {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    sidebarPresentation.toggle()
+                }
+            }
+        )
+    }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(appState: appState, controller: controller)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
-        } detail: {
-            detailContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MuesliTheme.backgroundBase)
+        GeometryReader { proxy in
+            let usesCompactQuickNotes = DashboardWindowLayout.usesCompactQuickNotes(
+                width: proxy.size.width,
+                hasOpenMeeting: hasOpenMeeting
+            )
+
+            DashboardContentLayout(usesCompactQuickNotes: usesCompactQuickNotes) {
+                sidebarView
+                .frame(width: sidebarPresentation.isCollapsed ? 68 : 240)
+            } detail: {
+                detailContent
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 900, minHeight: 600)
-        .preferredColorScheme(appState.config.darkMode ? .dark : .light)
+        .tint(MuesliTheme.accent)
+        .frame(
+            minWidth: DashboardWindowLayout.minimumContentWidth,
+            minHeight: DashboardWindowLayout.minimumContentHeight
+        )
         .onPreferenceChange(FeatureTourTargetPreferenceKey.self) { frames in
             guard FeatureTourFrameTracking.hasMeaningfulChange(
                 from: featureTourTargetFrames,
@@ -36,13 +118,19 @@ struct DashboardRootView: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .zIndex(101)
                 } else if let tour = appState.activeFeatureTour,
-                   tour.steps.indices.contains(appState.featureTourStepIndex),
-                   let globalTargetFrame = featureTourTargetFrames[tour.steps[appState.featureTourStepIndex].target] {
+                          tour.steps.indices.contains(appState.featureTourStepIndex) {
+                    let step = tour.steps[appState.featureTourStepIndex]
                     let globalRootFrame = proxy.frame(in: .global)
-                    let targetFrame = globalTargetFrame.offsetBy(
-                        dx: -globalRootFrame.minX,
-                        dy: -globalRootFrame.minY
-                    )
+                    let targetFrame = step.target
+                        .flatMap { featureTourTargetFrames[$0] }
+                        .map {
+                            $0.offsetBy(
+                                dx: -globalRootFrame.minX,
+                                dy: -globalRootFrame.minY
+                            )
+                        }
+                    // Missing or not-yet-laid-out targets use the centered callout.
+                    // Keep navigation available even for an empty meeting library.
                     FeatureTourOverlay(
                         tour: tour,
                         stepIndex: appState.featureTourStepIndex,
@@ -109,6 +197,13 @@ struct DashboardRootView: View {
         }
     }
 
+    private var hasOpenMeeting: Bool {
+        if case .document = appState.meetingsNavigationState {
+            return true
+        }
+        return false
+    }
+
     @ViewBuilder
     private var detailContent: some View {
         if appState.isSearchActive,
@@ -148,11 +243,16 @@ struct DashboardRootView: View {
                 InsightsView(
                     initialSection: appState.insightsInitialSection,
                     loadSnapshot: { range in try await controller.insightsSnapshot(range: range) },
+                    loadCuriosity: { range, now in
+                        try await controller.insightsWordsBeforeCodeSwitch(range: range, now: now)
+                    },
                     onBack: { controller.closeInsights() },
                     backLabel: appState.insightsBackLabel
                 )
             case .meetings:
                 MeetingsView(appState: appState, controller: controller)
+            case .meetingChat:
+                MeetingChatView(appState: appState, controller: controller, coordinator: controller.meetingChatCoordinator)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:
@@ -164,6 +264,7 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
+                    onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }
                 )

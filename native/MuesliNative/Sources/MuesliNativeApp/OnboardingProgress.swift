@@ -1,6 +1,6 @@
 import Foundation
 
-struct OnboardingPermissionSnapshot: Equatable {
+struct OnboardingPermissionSnapshot: Equatable, Sendable {
     var microphone: Bool
     var accessibility: Bool
     var inputMonitoring: Bool
@@ -17,7 +17,19 @@ enum OnboardingPermissionGate {
         permissions.microphone && permissions.inputMonitoring
     }
 
-    static func hasRequiredPermissions(
+    static func hasRequiredMeetingPermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        useCoreAudioTap: Bool = true
+    ) -> Bool {
+        permissions.microphone
+            && (useCoreAudioTap ? permissions.systemAudio : permissions.screenRecording)
+    }
+
+    /// Runtime startup remains gated only by permissions needed for the app's
+    /// always-on interaction surfaces. Meeting system audio is requested during
+    /// onboarding, but a later revocation is repaired when meeting capture starts
+    /// instead of trapping an existing user back in onboarding.
+    static func hasRequiredStartupPermissions(
         _ permissions: OnboardingPermissionSnapshot,
         for useCase: OnboardingUseCase
     ) -> Bool {
@@ -30,15 +42,37 @@ enum OnboardingPermissionGate {
         return permissions.microphone
     }
 
+    static func hasRequiredPermissions(
+        _ permissions: OnboardingPermissionSnapshot,
+        for useCase: OnboardingUseCase,
+        useCoreAudioTap: Bool = true
+    ) -> Bool {
+        guard permissions.microphone else { return false }
+        if useCase.includesDictation,
+           (!permissions.accessibility || !permissions.inputMonitoring) {
+            return false
+        }
+        if useCase.includesVoiceNotes, !permissions.inputMonitoring {
+            return false
+        }
+        if useCase.includesMeetings,
+           !hasRequiredMeetingPermissions(permissions, useCoreAudioTap: useCoreAudioTap) {
+            return false
+        }
+        return true
+    }
+
     static func resumeStep(
         requestedStep: Int,
         permissions: OnboardingPermissionSnapshot,
         useCase: OnboardingUseCase,
         permissionsStep: Int,
-        dictationTestStep: Int
+        dictationTestStep: Int,
+        useCoreAudioTap: Bool = true
     ) -> Int {
         let gatedStep = useCase.includesPushToTalk ? dictationTestStep : permissionsStep + 1
-        if requestedStep >= gatedStep && !hasRequiredPermissions(permissions, for: useCase) {
+        if requestedStep >= gatedStep
+            && !hasRequiredPermissions(permissions, for: useCase, useCoreAudioTap: useCoreAudioTap) {
             return permissionsStep
         }
         return requestedStep
@@ -56,6 +90,8 @@ struct OnboardingProgress: Codable {
     var selectedCohereLanguageCode: String
     var hotkeyKeyCode: UInt16
     var hotkeyLabel: String
+    var hotkeyCombinationModifiers: UInt?
+    var hotkeyCombinationKeyCode: UInt16?
     var systemAudioRequested: Bool = false
     var onboardingUseCaseRawValue: String = OnboardingUseCase.dictation.rawValue
     var modelDownloadProgress: Double?
@@ -68,8 +104,7 @@ struct OnboardingProgress: Codable {
         selectedBackendKey: String,
         selectedModelKey: String,
         selectedCohereLanguageCode: String = CohereTranscribeLanguage.defaultLanguage.rawValue,
-        hotkeyKeyCode: UInt16,
-        hotkeyLabel: String,
+        hotkey: HotkeyConfig,
         systemAudioRequested: Bool = false,
         onboardingUseCaseRawValue: String = OnboardingUseCase.dictation.rawValue,
         modelDownloadProgress: Double? = nil,
@@ -81,8 +116,10 @@ struct OnboardingProgress: Codable {
         self.selectedBackendKey = selectedBackendKey
         self.selectedModelKey = selectedModelKey
         self.selectedCohereLanguageCode = CohereTranscribeLanguage.resolvedCode(selectedCohereLanguageCode)
-        self.hotkeyKeyCode = hotkeyKeyCode
-        self.hotkeyLabel = hotkeyLabel
+        self.hotkeyKeyCode = hotkey.keyCode
+        self.hotkeyLabel = hotkey.label
+        self.hotkeyCombinationModifiers = hotkey.combinationModifiers
+        self.hotkeyCombinationKeyCode = hotkey.combinationKeyCode
         self.systemAudioRequested = systemAudioRequested
         self.onboardingUseCaseRawValue = OnboardingUseCase.resolved(onboardingUseCaseRawValue).rawValue
         self.modelDownloadProgress = modelDownloadProgress
@@ -96,17 +133,34 @@ struct OnboardingProgress: Codable {
         userName = try c.decode(String.self, forKey: .userName)
         selectedBackendKey = try c.decode(String.self, forKey: .selectedBackendKey)
         selectedModelKey = try c.decode(String.self, forKey: .selectedModelKey)
+        if let selected = BackendOption.resolve(backend: selectedBackendKey, model: selectedModelKey) {
+            selectedBackendKey = selected.backend
+            selectedModelKey = selected.model
+        }
         selectedCohereLanguageCode = CohereTranscribeLanguage.resolvedCode(
             try c.decodeIfPresent(String.self, forKey: .selectedCohereLanguageCode)
         )
         hotkeyKeyCode = try c.decode(UInt16.self, forKey: .hotkeyKeyCode)
         hotkeyLabel = try c.decode(String.self, forKey: .hotkeyLabel)
+        hotkeyCombinationModifiers = try c.decodeIfPresent(UInt.self, forKey: .hotkeyCombinationModifiers)
+        hotkeyCombinationKeyCode = try c.decodeIfPresent(UInt16.self, forKey: .hotkeyCombinationKeyCode)
         systemAudioRequested = try c.decodeIfPresent(Bool.self, forKey: .systemAudioRequested) ?? false
         onboardingUseCaseRawValue = OnboardingUseCase.resolved(
             try c.decodeIfPresent(String.self, forKey: .onboardingUseCaseRawValue)
         ).rawValue
         modelDownloadProgress = try c.decodeIfPresent(Double.self, forKey: .modelDownloadProgress)
         modelDownloadStatus = try c.decodeIfPresent(String.self, forKey: .modelDownloadStatus)
+    }
+
+    /// Invalid saved shortcuts resume with the default rather than a dead hotkey.
+    var hotkey: HotkeyConfig {
+        let saved = HotkeyConfig(
+            keyCode: hotkeyKeyCode,
+            label: hotkeyLabel,
+            combinationModifiers: hotkeyCombinationModifiers,
+            combinationKeyCode: hotkeyCombinationKeyCode
+        )
+        return saved.isValidDictationShortcut ? saved : .default
     }
 
     private static var fileURL: URL {
