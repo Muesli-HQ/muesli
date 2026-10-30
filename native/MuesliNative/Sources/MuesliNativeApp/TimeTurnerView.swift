@@ -22,7 +22,7 @@ struct MemoryImageView: View {
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable().scaledToFit() }
-            else if unavailable { Label("Capture unavailable or incomplete", systemImage: "photo.badge.exclamationmark").font(.caption).multilineTextAlignment(.center) }
+            else if unavailable { Label("Capture unavailable or incomplete", systemImage: "photo.badge.exclamationmark").font(MuesliTheme.font(.caption)).multilineTextAlignment(.center) }
             else { ProgressView().controlSize(.small) }
         }
         .task(id: item.id + item.path) {
@@ -73,14 +73,14 @@ struct TimeTurnerControls: View {
                 HStack(spacing: 8) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption.weight(.semibold)).frame(width: 12)
-                    Label { Text("Time Turner") } icon: { Image(nsImage: TimeTurnerIcon.image()) }.font(.headline)
+                    Label { Text("Time Turner") } icon: { Image(nsImage: TimeTurnerIcon.image()) }.font(MuesliTheme.font(.headline))
                 }.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse Time Turner" : "Expand Time Turner")
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             Text(memory.ambientStatus)
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                 .help(memory.ambientStatus == "Skipping this app" ? "The current app is excluded from screen capture. Capture resumes when you switch to an allowed app." : memory.ambientStatus)
             Spacer()
             if appState.config.timeTurnerEnabled {
@@ -99,7 +99,7 @@ struct TimeTurnerControls: View {
         .sheet(isPresented: $showsSettings) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("Time Turner").font(.title2.bold())
+                    Text("Time Turner").font(MuesliTheme.font(.title2).bold())
                     Spacer()
                     Button("Open in Settings") {
                         showsSettings = false
@@ -223,7 +223,7 @@ struct MemoryExplorerView: View {
                 Text("\(index + 1) / \(ordered.count)").monospacedDigit().foregroundStyle(.secondary)
                 Button { select(min(ordered.count - 1, index + 1)) } label: { Image(systemName: "chevron.right") }
                     .disabled(index == ordered.count - 1).accessibilityLabel("Next moment").keyboardShortcut(.rightArrow, modifiers: [])
-            }.font(.caption)
+            }.font(MuesliTheme.font(.caption))
             GeometryReader { geometry in
                 ZStack(alignment: .topLeading) {
                     Capsule().fill(.primary.opacity(0.07)).frame(height: 4).offset(y: 14)
@@ -283,11 +283,11 @@ struct MemoryExplorerView: View {
             HStack(spacing: 12) {
                 if !inline {
                     Image(systemName: "clock.arrow.circlepath").foregroundStyle(Color.accentColor)
-                    Text("Time Turner").font(.system(size: 16, weight: .semibold))
+                    Text("Time Turner").font(MuesliTheme.font(size: 16, weight: .semibold))
                 } else if let selected {
                     appIcon(selected, size: 20)
                     Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·")))
-                        .font(.caption).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
+                        .font(MuesliTheme.font(.caption)).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
                 }
                 Spacer()
                 HStack(spacing: 8) {
@@ -310,7 +310,7 @@ struct MemoryExplorerView: View {
                             showsSearch = false
                         }
                     }
-                Label("On this Mac", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
+                Label("On this Mac", systemImage: "lock").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 if inline {
                     Button { expandExplorer() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 26, height: 26) }
                         .buttonStyle(.plain).accessibilityLabel("Expand screen history").disabled(selected == nil)
@@ -330,7 +330,7 @@ struct MemoryExplorerView: View {
                         HStack(spacing: 12) {
                             Image(systemName: "macwindow")
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))).lineLimit(1).font(.system(size: 12, weight: .medium))
+                                Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))).lineLimit(1).font(MuesliTheme.font(size: 12, weight: .medium))
                                 Text(selected.capturedAt.formatted(date: .abbreviated, time: .standard)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 8)
@@ -349,7 +349,7 @@ struct MemoryExplorerView: View {
                     if showsText {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
-                                Text("Captured text").font(.headline)
+                                Text("Captured text").font(MuesliTheme.font(.headline))
                                 Spacer()
                                 Button { showsText = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Hide captured text")
                             }
@@ -413,7 +413,7 @@ private struct TimeTurnerSearchView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Search screen history").font(.headline)
+            Text("Search screen history").font(MuesliTheme.font(.headline))
             TextField("Search captured text or window titles", text: $query)
                 .textFieldStyle(.roundedBorder).accessibilityLabel("Search captured text")
             HStack {
@@ -444,10 +444,10 @@ private struct TimeTurnerSearchView: View {
                                     MemoryImageView(item: item, memory: memory, maximumSize: 200)
                                         .frame(width: 100, height: 64).clipped()
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.source).font(.callout.weight(.medium)).lineLimit(1)
+                                        Text(item.source).font(MuesliTheme.font(.callout).weight(.medium)).lineLimit(1)
                                         Text(item.capturedAt.formatted(date: .abbreviated, time: .standard))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                        Text(item.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                            .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
+                                        Text(item.text).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(2)
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: "arrow.up.right")
@@ -464,7 +464,7 @@ private struct TimeTurnerSearchView: View {
             }
             if loading { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
             Text("Matches captured words and phrases · newest first")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
         }
         .padding(18).frame(width: 580, height: 460)
         .onAppear { date = initialDay }
