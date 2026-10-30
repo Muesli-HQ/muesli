@@ -1605,7 +1605,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     /// Saved selections now resolve to the current Cleanup Lite model.
     static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Muesli Cleanup Lite (Legacy)",
+        label: "muesli Cleanup Lite (Legacy)",
         sizeLabel: "~390 MB",
         description: "Fine-tuned from Qwen3. An earlier lightweight model for filler words, corrections, and spoken lists.",
         downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
@@ -1626,7 +1626,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Muesli Cleanup Lite",
+        label: "muesli Cleanup Lite",
         sizeLabel: "~505 MB",
         description: "Fine-tuned from Qwen3.5-0.8B. Small and fast for everyday cleanup, with lighter correction and context capabilities than Pro.",
         downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
@@ -1635,7 +1635,7 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     static let finetunedV4 = PostProcessorOption(
         id: "qwen35-postproc-v4",
-        label: "Muesli Cleanup Lite",
+        label: "muesli Cleanup Lite",
         sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
         downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
@@ -1654,12 +1654,12 @@ struct PostProcessorOption: Identifiable, Equatable {
     )
 
     static let lfmV12 = PostProcessorOption(
-        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
+        id: "lfm25-cleanup-v12", label: "muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
         description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
         filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
+        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
         downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
         filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)

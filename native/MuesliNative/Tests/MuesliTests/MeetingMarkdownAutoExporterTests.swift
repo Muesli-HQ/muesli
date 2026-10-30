@@ -195,7 +195,7 @@ struct MeetingMarkdownAutoExporterTests {
         #expect(url.lastPathComponent == "2026-04-14-weekly-standup-notes.pdf")
         #expect(try Data(contentsOf: url).starts(with: Data("%PDF".utf8)))
         let document = try #require(PDFDocument(url: url))
-        #expect(document.string?.contains("Exported with Muesli") == true)
+        #expect(document.string?.contains("Exported with muesli") == true)
         #expect(document.string?.contains("base64") == false)
     }
 
@@ -219,7 +219,7 @@ struct MeetingMarkdownAutoExporterTests {
             if url.pathExtension == "md" {
                 #expect(try String(contentsOf: url, encoding: .utf8).hasSuffix(MeetingExportBranding.markdownFooter))
             } else {
-                #expect(PDFDocument(url: url)?.string?.contains("Exported with Muesli") == true)
+                #expect(PDFDocument(url: url)?.string?.contains("Exported with muesli") == true)
             }
         }
     }

@@ -23,7 +23,7 @@ struct GranolaImportView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let report {
-                        Label(report.imported > 0 ? "Your meetings have been imported." : "These meetings are already in Muesli.", systemImage: "checkmark.circle")
+                        Label(report.imported > 0 ? "Your meetings have been imported." : "These meetings are already in muesli.", systemImage: "checkmark.circle")
                             .font(MuesliTheme.font(.headline))
                     } else {
                         if showsExportGuide {

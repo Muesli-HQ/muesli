@@ -106,7 +106,7 @@ struct AboutView: View {
                 if ContributionSocialShare.completedWordMilestone(totalWords: appState.dictationStats.totalWords) != nil {
                     sectionHeader("Spread the Word")
                     aboutCard {
-                        aboutRow("Share Muesli") {
+                        aboutRow("Share muesli") {
                             HStack(spacing: MuesliTheme.spacing12) {
                                 Button("Post on X") { onShare(.tweetAboutMuesli) }
                                 Button("LinkedIn") { onShare(.postOnLinkedIn) }
@@ -233,7 +233,7 @@ struct AboutView: View {
             return UpdateBanner(
                 icon: "arrow.triangle.2.circlepath",
                 title: "Checking for updates",
-                message: "Muesli is checking the appcast for the latest version.",
+                message: "muesli is checking the appcast for the latest version.",
                 tint: MuesliTheme.transcribing
             )
         case .busy(let message):
@@ -246,28 +246,28 @@ struct AboutView: View {
         case .available(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
-                title: "Muesli \(version) is available",
+                title: "muesli \(version) is available",
                 message: "An update is available. Use the menu bar icon > Check for Updates... to open the updater.",
                 tint: MuesliTheme.transcribing
             )
         case .downloaded(let version):
             return UpdateBanner(
                 icon: "exclamationmark.triangle.fill",
-                title: "Muesli \(version) is ready to install",
+                title: "muesli \(version) is ready to install",
                 message: "The update is downloaded. Use the menu bar updater to finish installation.",
                 tint: MuesliTheme.transcribing
             )
         case .installing(let version):
             return UpdateBanner(
                 icon: "arrow.down.circle.fill",
-                title: "Installing Muesli \(version)",
-                message: "Sparkle is preparing the update. Muesli may relaunch when installation finishes.",
+                title: "Installing muesli \(version)",
+                message: "Sparkle is preparing the update. muesli may relaunch when installation finishes.",
                 tint: MuesliTheme.transcribing
             )
         case .upToDate:
             return UpdateBanner(
                 icon: "checkmark.circle.fill",
-                title: "Muesli is up to date",
+                title: "muesli is up to date",
                 message: "No newer version was found in the appcast.",
                 tint: MuesliTheme.success
             )

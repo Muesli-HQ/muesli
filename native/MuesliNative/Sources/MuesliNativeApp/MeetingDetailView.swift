@@ -245,7 +245,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
         } message: {
-            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting muesli.")
         }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {

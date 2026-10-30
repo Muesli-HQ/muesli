@@ -44,6 +44,37 @@ Meetings composer and recording previews must measure the face they draw.
 tables, tool status, reasoning summaries and Markdown headings. The reusable
 package keeps system-font defaults and contains no Muesli font resources.
 
+## Settings hierarchy and copy
+
+Settings and Models use `SettingsSectionHeading` (12 pt semibold, secondary)
+for compact group headings. Settings labels are 14 pt regular, control values
+13 pt, helpers 12 pt regular, and statuses/errors 12 pt medium. Reserve
+`MuesliTheme.metadata()` (11 pt medium) for badges and keyboard hints, not
+instructions or errors. Page titles remain 26 pt bold.
+
+`SettingsRow` aligns controls with the label's first line. Compact switches use
+intrinsic width; menus and fields use a bounded 275 pt column and stack below
+their labels when the Settings content is narrower than 540 pt. A single
+page-level breakpoint supplies the layout environment. Row helpers and section
+notes share the label edge, without extra horizontal insets or negative spacing.
+
+A setting does not require a subtitle. Keep a short explanation only when it
+clarifies a choice, consequence or prerequisite. Keep privacy, executable
+behavior and recovery guidance visible; optional setup instructions can use a
+disclosure. Let meaningful text wrap instead of truncating it to meet a line
+count. Use previews to explain formatting rather than repeating the controls.
+
+The Settings section selector uses segmented tabs when they fit and a labeled
+menu in narrow windows, so navigation cannot force the whole page wider.
+
+## Brand spelling
+
+Use lowercase **muesli** in user-facing copy, accessibility labels, exports and
+app display names (including lane suffixes such as `muesliDevC`). Keep bundle
+filenames, executable names, bundle IDs, support directories, model repository
+IDs and diagnostic domains stable; those are compatibility identifiers. The
+packager sets the display name separately from the existing support directory.
+
 ## Intentional exceptions
 
 - SF Symbols retain system font sizing and weight; custom font metrics must not

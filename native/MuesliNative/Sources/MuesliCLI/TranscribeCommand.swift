@@ -123,7 +123,7 @@ struct TranscribeJSONPayload: Encodable {
 struct TranscribeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "transcribe",
-        abstract: "Transcribe a local audio file with Muesli's bundled local ASR models."
+        abstract: "Transcribe a local audio file with muesli's bundled local ASR models."
     )
 
     @OptionGroup var global: GlobalOptions
@@ -133,9 +133,9 @@ struct TranscribeCommand: AsyncParsableCommand {
     var format: TranscribeOutputFormat = .text
     @Option(name: .long, help: ArgumentHelp(TranscribeModel.modelHelp))
     var model: TranscribeModel = .parakeetUnified
-    @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
+    @Flag(name: .long, help: "Generate meeting notes using the configured muesli summary backend when available.")
     var summarize = false
-    @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")
+    @Flag(name: .long, help: "Save the transcript as an imported muesli meeting.")
     var saveMeeting = false
     @Option(name: .long, help: "Optional title override for saved meetings and markdown output.")
     var title: String?
@@ -418,7 +418,7 @@ struct MuesliAudioTranscriptionPipeline {
         if summaryRequested {
             sections.append("## Summary unavailable")
             if warnings.isEmpty {
-                sections.append("Muesli could not generate structured notes from the configured summary backend.")
+                sections.append("muesli could not generate structured notes from the configured summary backend.")
             } else {
                 sections.append(warnings.joined(separator: "\n"))
             }
@@ -1411,7 +1411,7 @@ enum CLISummaryClient {
                 extraHeaders: extraHeaders
             )
         default:
-            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
+            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in muesli settings for `muesli-cli transcribe --summarize`.")
         }
     }
 

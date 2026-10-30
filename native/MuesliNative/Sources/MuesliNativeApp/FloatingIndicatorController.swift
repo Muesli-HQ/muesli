@@ -833,7 +833,7 @@ final class FloatingIndicatorController: NSObject {
            let screen = NSScreen.main {
             let title: String
             switch state {
-            case .idle: title = "Muesli"
+            case .idle: title = "muesli"
             case .preparing: title = "Preparing"
             case .recording: title = insertionStopReason?.compactTitle ?? (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)

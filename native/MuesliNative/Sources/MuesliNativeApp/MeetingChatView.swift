@@ -462,7 +462,7 @@ struct MeetingChatView: View {
             if attachedMeetingIDs == nil {
                 Divider()
                 Text("Attaching a meeting narrows this chat to attached meetings and clears date filters.")
-                    .font(MuesliTheme.font(size: 10)).foregroundStyle(.secondary).padding(10)
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary).padding(10)
             }
         }.background(MuesliTheme.backgroundBase, in: RoundedRectangle(cornerRadius: 12))
             .clipShape(RoundedRectangle(cornerRadius: 12))

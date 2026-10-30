@@ -666,7 +666,7 @@ struct NotchLiveInstructionView: View {
                 }
             }
             if requiresReview {
-                Text("Your attention is needed. Review the details in Muesli.")
+                Text("Your attention is needed. Review the details in muesli.")
                     .font(MuesliTheme.font(.caption2)).foregroundStyle(.white.opacity(0.65))
                 Button("Review in app", action: onReview).buttonStyle(.borderedProminent)
             }
@@ -752,8 +752,8 @@ private struct NotchIndicatorView: View {
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open Muesli home")
-                .help(cursorInsertionStopped ? detail : "Open Muesli home")
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open muesli home")
+                .help(cursorInsertionStopped ? detail : "Open muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")

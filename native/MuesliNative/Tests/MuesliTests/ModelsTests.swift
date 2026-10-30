@@ -709,7 +709,7 @@ struct PostProcessorOptionTests {
             let config = try JSONDecoder().decode(AppConfig.self, from: data)
             #expect(config.activePostProcessorId == PostProcessorOption.finetunedV4.id)
         }
-        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
+        #expect(PostProcessorOption.finetunedV4.label == "muesli Cleanup Lite")
     }
 
     @Test("resolveDownloaded prefers selected downloaded option")

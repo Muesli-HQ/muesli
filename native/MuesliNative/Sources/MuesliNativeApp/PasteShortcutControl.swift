@@ -80,7 +80,7 @@ final class PasteShortcutRecorder {
             if let chord = self.state.completedChord(flags: flags) {
                 if conflicts(chord) {
                     self.cancel()
-                    self.message = "That shortcut activates another Muesli feature. Choose a different chord."
+                    self.message = "That shortcut activates another muesli feature. Choose a different chord."
                 } else {
                     // End the capture before updating config (which may refresh monitors).
                     self.cancel()

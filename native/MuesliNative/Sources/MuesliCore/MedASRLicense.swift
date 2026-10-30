@@ -54,7 +54,7 @@ public struct MedASRLicense: Sendable {
         return """
         MedASR model terms
 
-        By accepting, you agree that your use and redistribution of MedASR are governed by Google's HAI-DEF Terms of Use below. Section 3.2 and the Prohibited Use Policy are incorporated as binding restrictions on your use and redistribution. Muesli's MIT license does not replace these model terms. No Google endorsement is implied.
+        By accepting, you agree that your use and redistribution of MedASR are governed by Google's HAI-DEF Terms of Use below. Section 3.2 and the Prohibited Use Policy are incorporated as binding restrictions on your use and redistribution. muesli's MIT license does not replace these model terms. No Google endorsement is implied.
 
         \(license)
 
@@ -74,7 +74,7 @@ public enum MedASRLicenseError: LocalizedError, Sendable {
         case .acceptanceRequired:
             "Review and accept MedASR's terms in Models, or run muesli-cli model-terms medasr, then repeat with --accept."
         case .missingAgreement:
-            "MedASR's terms are missing from this installation. Reinstall Muesli before using this model."
+            "MedASR's terms are missing from this installation. Reinstall muesli before using this model."
         }
     }
 }

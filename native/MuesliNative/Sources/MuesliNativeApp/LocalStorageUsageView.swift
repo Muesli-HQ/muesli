@@ -22,7 +22,7 @@ struct LocalStorageUsageView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(usage.map { formatted($0.totalBytes) } ?? "Calculating…")
                         .font(MuesliTheme.font(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("Muesli data and downloaded models").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
+                    Text("muesli data and downloaded models").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if isScanning { ProgressView().controlSize(.small) }
@@ -71,7 +71,7 @@ struct LocalStorageUsageView: View {
                 Divider()
                 HStack {
                     Text("Includes shared model caches")
-                        .help("Allocated file sizes in Muesli’s app data and known model folders. Model caches may also be used by other Muesli builds or apps. The database includes dictation history. APFS sharing and compression can affect physical disk usage. App binaries, temporary recordings and system-managed caches are excluded.")
+                        .help("Allocated file sizes in muesli’s app data and known model folders. Model caches may also be used by other muesli builds or apps. The database includes dictation history. APFS sharing and compression can affect physical disk usage. App binaries, temporary recordings and system-managed caches are excluded.")
                     Spacer()
                     if let free = usage.freeBytes { Text("\(formatted(free)) available") }
                 }.font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)

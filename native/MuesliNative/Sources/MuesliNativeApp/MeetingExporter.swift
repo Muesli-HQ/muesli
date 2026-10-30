@@ -357,7 +357,7 @@ struct MeetingExporter {
         }
 
         if hasBranding {
-            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"Muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with Muesli</a></p>")
+            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with muesli</a></p>")
         }
 
         return """

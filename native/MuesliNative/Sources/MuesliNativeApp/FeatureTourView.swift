@@ -370,7 +370,7 @@ struct FeatureTourInvitationView: View {
                     .accessibilityLabel("Skip walkthrough")
                 }
 
-                Text("See \(tour.steps.count) additions in the places where you’ll actually use them. You can replay this later from What’s New in Muesli.")
+                Text("See \(tour.steps.count) additions in the places where you’ll actually use them. You can replay this later from What’s New in muesli.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .lineSpacing(2)

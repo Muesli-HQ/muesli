@@ -140,7 +140,7 @@ enum FeatureTourCatalog {
             FeatureTourStep(
                 id: "notch",
                 eyebrow: "A NEW LOOK",
-                title: "Meet Muesli at the notch",
+                title: "Meet muesli at the notch",
                 message: "Choose Notch under Settings → Appearance → Recording indicator. Follow recording and processing at the top of your screen. Displays without a notch use a temporary Classic indicator.",
                 systemImage: "menubar.rectangle",
                 target: .recordingIndicatorStyle
@@ -149,7 +149,7 @@ enum FeatureTourCatalog {
                 id: "voice-settings",
                 eyebrow: "COMPUTER USE COMMAND",
                 title: "Change settings with your voice",
-                message: "Enable Computer Use Command in Shortcuts, then hold your shortcut and ask Muesli to change a setting. Use experimental local Gemma or your connected ChatGPT account for hosted processing.",
+                message: "Enable Computer Use Command in Shortcuts, then hold your shortcut and ask muesli to change a setting. Use experimental local Gemma or your connected ChatGPT account for hosted processing.",
                 systemImage: "slider.horizontal.3",
                 target: .computerUseShortcut
             ),

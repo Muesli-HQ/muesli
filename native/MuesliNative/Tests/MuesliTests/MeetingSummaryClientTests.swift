@@ -896,8 +896,8 @@ struct MeetingSummaryClientTests {
         #expect(regeneratedFailure.contains("### Earlier written-note text (preserved; may be outdated)\n\n- Old written note"))
 
         let editedPrefix = previousFailure.replacingOccurrences(
-            of: "Muesli could not generate structured meeting notes.",
-            with: "My saved edit. Muesli could not generate structured meeting notes."
+            of: "muesli could not generate structured meeting notes.",
+            with: "My saved edit. muesli could not generate structured meeting notes."
         )
         let regeneratedWithEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
             existingNotes: editedPrefix,

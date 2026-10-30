@@ -576,13 +576,13 @@ struct OnboardingView: View {
                 "Compiling CoreML files for the Neural Engine",
                 "Preparing the first dictation test",
                 "Future launches will skip most of this",
-                "We'll bring Muesli forward when ready",
+                "We'll bring muesli forward when ready",
             ]
         }
         return [
             "Preparing the first dictation test",
             "Future launches will skip most of this",
-            "We'll bring Muesli forward when ready",
+            "We'll bring muesli forward when ready",
         ]
     }
 
@@ -597,10 +597,10 @@ struct OnboardingView: View {
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 64, height: 64)
-                .accessibilityLabel("Muesli")
+                .accessibilityLabel("muesli")
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text("Welcome to Muesli")
+                Text("Welcome to muesli")
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
@@ -623,7 +623,7 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: MuesliTheme.spacing8) {
-                Text("What will you use Muesli for?")
+                Text("What will you use muesli for?")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
 
@@ -637,7 +637,7 @@ struct OnboardingView: View {
                     useCaseCard(
                         icon: "waveform",
                         title: "Voice Notes",
-                        subtitle: "Record in Muesli",
+                        subtitle: "Record in muesli",
                         selected: selectedUseCase.includesVoiceNotes
                     ) {
                         toggleCapability(.voiceNotes)
@@ -1037,7 +1037,7 @@ struct OnboardingView: View {
                     Button {
                         openApplicationsFolder()
                     } label: {
-                        Text("Need to add Muesli manually? Open Applications")
+                        Text("Need to add muesli manually? Open Applications")
                             .font(MuesliTheme.font(size: 11))
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
@@ -1800,7 +1800,7 @@ struct OnboardingView: View {
                             }
                             Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
                         case .unknown:
-                            Text("Muesli could not check Claude Code's sign-in status.")
+                            Text("muesli could not check Claude Code's sign-in status.")
                                 .foregroundStyle(MuesliTheme.textSecondary)
                             ClaudeCodeSignInButton { beginClaudeCodeSignIn() }
                             Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
@@ -1853,7 +1853,7 @@ struct OnboardingView: View {
                     }
                 }
             } else if summaryBackend == .openRouter {
-                Text("Connect OpenRouter in your browser. Muesli receives a dedicated API key after you approve access.")
+                Text("Connect OpenRouter in your browser. muesli receives a dedicated API key after you approve access.")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -2323,7 +2323,7 @@ struct OnboardingView: View {
 
     private func modelPreparationFailureMessage(for backend: BackendOption) -> String {
         backend.isDownloaded
-            ? "Model setup failed. Restart Muesli or retry from Models."
+            ? "Model setup failed. Restart muesli or retry from Models."
             : "Download failed. Check your connection and retry."
     }
 
@@ -2383,7 +2383,7 @@ struct OnboardingView: View {
                 .resizable()
                 .frame(width: 80, height: 80)
                 .accessibilityHidden(true)
-            Text("Bring your meetings into Muesli")
+            Text("Bring your meetings into muesli")
                 .font(MuesliTheme.title1())
                 .foregroundStyle(MuesliTheme.textPrimary)
             Text("Allow access to macOS Calendar to see upcoming meetings and get reminders.")

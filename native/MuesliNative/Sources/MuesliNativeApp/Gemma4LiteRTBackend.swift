@@ -68,7 +68,7 @@ enum Gemma4LiteRTModel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .e2b: "Gemma 4 E2B"
         case .e4b: "Gemma 4 E4B"
-        case .muesliCleanupV2: "Muesli Pro Cleanup — Gemma 4"
+        case .muesliCleanupV2: "muesli Pro Cleanup — Gemma 4"
         }
     }
 

@@ -80,7 +80,7 @@ enum MuesliTheme {
         case .headline: return headline()
         case .subheadline, .callout: return callout()
         case .footnote, .caption: return caption()
-        case .caption2: return font(size: 11, weight: .medium)
+        case .caption2: return metadata()
         default: return body()
         }
     }
@@ -112,6 +112,10 @@ enum MuesliTheme {
     static func callout() -> Font { font(size: 13) }
     static func caption() -> Font { font(size: 12) }
     static func captionMedium() -> Font { font(size: 12, weight: .medium) }
+    /// Settings and Models group headings, above their cards.
+    static func sectionHeading() -> Font { font(size: 12, weight: .semibold) }
+    /// Badges, keyboard hints and secondary metadata. Not for instructions, warnings or errors.
+    static func metadata() -> Font { font(size: 11, weight: .medium) }
 
     // MARK: - Spacing (4pt grid)
 

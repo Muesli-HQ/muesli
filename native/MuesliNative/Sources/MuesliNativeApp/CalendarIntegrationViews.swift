@@ -127,7 +127,7 @@ struct CalendarAccessControl: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(permission.requesting)
                 if !permission.canRequest {
-                    Text("Allow Muesli full Calendar access in Privacy & Security to show your meetings.")
+                    Text("Allow muesli full Calendar access in Privacy & Security to show your meetings.")
                         .font(MuesliTheme.font(.caption))
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }

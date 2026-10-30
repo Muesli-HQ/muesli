@@ -34,7 +34,7 @@ enum MeetingContactCreatorError: LocalizedError, Equatable {
         case .nameRequired:
             return "Add a first or last name before saving this contact."
         case .accessDenied:
-            return "Muesli does not have permission to add contacts. Enable Contacts access in System Settings."
+            return "muesli does not have permission to add contacts. Enable Contacts access in System Settings."
         case .missingIdentifier:
             return "Apple Contacts saved the person without returning an identifier. Try choosing them from Contacts instead."
         }

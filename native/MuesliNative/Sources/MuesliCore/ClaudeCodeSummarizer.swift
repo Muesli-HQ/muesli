@@ -49,7 +49,7 @@ public enum ClaudeCodeSummaryError: LocalizedError, CustomNSError {
         case .inputTooLarge:
             description = "The meeting prompt exceeds Claude Code's 10 MB stdin limit. Use a shorter transcript or another summary backend."
         case .instructionsTooLarge:
-            description = "The meeting instructions exceed Muesli's 100 KB safe process argument limit. Shorten the meeting template and try again."
+            description = "The meeting instructions exceed muesli's 100 KB safe process argument limit. Shorten the meeting template and try again."
         case .timedOut:
             description = "Claude Code took too long to generate meeting notes. Check your connection and try again. You can also select a faster model in Settings."
         case .failed(let message):
@@ -61,7 +61,7 @@ public enum ClaudeCodeSummaryError: LocalizedError, CustomNSError {
         case let .processFailed(exitCode, details):
             description = "Claude Code exited with code \(exitCode) before returning meeting notes. \(details) Open Claude Code in Terminal to check its sign-in, model availability, and connection, then try again."
         case .launchFailed(let message):
-            description = "Muesli could not start Claude Code. \(message) Check the executable selected in Settings."
+            description = "muesli could not start Claude Code. \(message) Check the executable selected in Settings."
         }
         return "\(description) [\(diagnosticCode)]"
     }
