@@ -16,7 +16,7 @@ struct DashboardPageHeader: View {
                 hasError: appState.iCloudBridgeState == .error,
                 onSync: { controller.performICloudSync() },
                 onSetUp: {
-                    appState.selectedSettingsPane = .sync
+                    appState.selectedSettingsPane = .general
                     controller.openSettingsTab()
                 }
             )

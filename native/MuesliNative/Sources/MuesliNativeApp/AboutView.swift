@@ -97,6 +97,7 @@ struct AboutView: View {
                             set: onSetAutomaticDiagnosticIssuePrompts
                         ))
                         .toggleStyle(.switch)
+                .tint(MuesliTheme.toggleAccent)
                         .labelsHidden()
                         .help("Suggest an anonymized GitHub issue after an app error")
                         .accessibilityLabel("Automatic issue reporting prompts")

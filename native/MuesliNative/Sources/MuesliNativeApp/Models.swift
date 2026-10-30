@@ -2152,13 +2152,16 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 }
 
 enum AppAppearanceMode: String, CaseIterable {
-    case light, system, dark
+    case light, system, dark, ultraDark = "ultra_dark"
+
+    static let quickChoices: [Self] = [.light, .system, .dark]
 
     var label: String {
         switch self {
         case .light: "Light"
         case .system: "Follow System"
         case .dark: "Dark"
+        case .ultraDark: "Ultra Dark"
         }
     }
 
@@ -2167,6 +2170,7 @@ enum AppAppearanceMode: String, CaseIterable {
         case .light: "sun.max"
         case .system: "desktopcomputer"
         case .dark: "moon"
+        case .ultraDark: "moon.fill"
         }
     }
 
@@ -2175,6 +2179,7 @@ enum AppAppearanceMode: String, CaseIterable {
         case .light: .aqua
         case .system: nil
         case .dark: .darkAqua
+        case .ultraDark: .darkAqua
         }
     }
 }
@@ -2287,12 +2292,14 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var followSystemAppearance: Bool = false
+    var ultraDarkAppearance: Bool = false
     // Retain dark_mode for older configurations; following the system is opt-in.
     var appearanceMode: AppAppearanceMode {
-        get { followSystemAppearance ? .system : (darkMode ? .dark : .light) }
+        get { followSystemAppearance ? .system : (ultraDarkAppearance ? .ultraDark : (darkMode ? .dark : .light)) }
         set {
             followSystemAppearance = newValue == .system
-            if newValue != .system { darkMode = newValue == .dark }
+            ultraDarkAppearance = newValue == .ultraDark
+            if newValue != .system { darkMode = newValue == .dark || newValue == .ultraDark }
         }
     }
     var enableDoubleTapDictation: Bool = true
@@ -2477,6 +2484,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case followSystemAppearance = "follow_system_appearance"
+        case ultraDarkAppearance = "ultra_dark_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case enableBufferedLiveDictation = "enable_buffered_live_dictation"
         case dictationCombinationActivation = "dictation_combination_activation"
@@ -2684,6 +2692,7 @@ struct AppConfig: Codable {
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         followSystemAppearance = (try? c.decode(Bool.self, forKey: .followSystemAppearance)) ?? defaults.followSystemAppearance
+        ultraDarkAppearance = (try? c.decode(Bool.self, forKey: .ultraDarkAppearance)) ?? defaults.ultraDarkAppearance
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation

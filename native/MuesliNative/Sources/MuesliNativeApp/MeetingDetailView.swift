@@ -1523,7 +1523,7 @@ struct MeetingDetailView: View {
                 Text(isPaused ? "Resume" : "Pause")
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(isPaused ? Color.white : MuesliTheme.textPrimary)
+            .foregroundStyle(isPaused ? MuesliTheme.onAccent : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
             .background(isPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
@@ -1555,7 +1555,7 @@ struct MeetingDetailView: View {
                     Text("Resume")
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(Color.white)
+                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 7)
                 .background(MuesliTheme.accent)
@@ -1577,7 +1577,7 @@ struct MeetingDetailView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 8)
                     .frame(maxHeight: .infinity)
                     .background(MuesliTheme.accent)

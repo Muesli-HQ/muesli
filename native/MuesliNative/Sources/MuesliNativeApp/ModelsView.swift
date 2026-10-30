@@ -754,7 +754,7 @@ struct ModelsView: View {
                         if model.isRecommended {
                             Text("Recommended")
                                 .font(MuesliTheme.metadata())
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accent)
@@ -1459,7 +1459,7 @@ struct ModelsView: View {
                         if option.recommended {
                             Text("Recommended")
                                 .font(MuesliTheme.metadata())
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accent)

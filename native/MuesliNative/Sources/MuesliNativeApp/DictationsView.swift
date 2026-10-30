@@ -224,7 +224,7 @@ struct DictationsView: View {
                 Text(isRecording ? "Stop Voice Note" : "Record Voice Note")
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(isRecording ? Color.white : MuesliTheme.onAccent)
             .padding(.horizontal, 12)
             .frame(height: 30)
             .background(isRecording ? MuesliTheme.recording : MuesliTheme.accent)

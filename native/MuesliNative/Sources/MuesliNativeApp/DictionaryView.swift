@@ -79,6 +79,7 @@ struct DictionaryView: View {
                     )
                 )
                 .toggleStyle(.switch)
+                .tint(MuesliTheme.toggleAccent)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("Briefly reads focused app text after dictation to detect corrections.")

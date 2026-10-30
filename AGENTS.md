@@ -183,6 +183,43 @@ provider adapters, tool contracts, memory budgets, and source validation.
   should reset the relevant draft.
   Busy-state recovery must not retarget a selected chat or a nonempty draft.
 
+## Typography and design system
+
+The established muesli visual language is the default for all new and revised UI.
+Read [the design system](design-system/README.md) and keep its visual reference in
+sync with token or pattern changes.
+
+- Use bundled Nunito Sans through `MuesliTheme` for SwiftUI text and `AppFonts`
+  for AppKit, including onboarding, settings, chat and auxiliary windows. Keep
+  SF Symbols in the system symbol font and code in a system monospaced font.
+  Reuse font registration and caches; do not load/register fonts per view render.
+- Use the shared type hierarchy: page title 26 bold; section titles 20/18
+  semibold; headline 15 semibold; reading 15; body/row labels 14; callout 13;
+  helper text 12; metadata 11. Settings group headings use 12 semibold.
+  Do not shrink instructions or warnings into metadata to make them fit.
+- Keep copy concise. Omit subtitles that repeat a label; keep necessary
+  consequences, prerequisites and privacy disclosures. Put optional setup detail
+  in disclosure rows. Use `SettingsRow`, `SettingsSectionHeading` and
+  `SettingsNote`; align control columns and stack them at narrow widths.
+- Favor restrained tactile depth: layered surfaces, subtle borders, rounded
+  controls and clear selection states. Avoid ornamental blur, gradients,
+  shadows or animation that add rendering cost or impair legibility. Preserve
+  native focus, hit testing, selection, IME and undo; honor Reduce Motion.
+- Use shared semantic colors in Light, Dark, System and Ultra Dark. Ultra Dark
+  has black backgrounds, white primary accents and stronger text/borders;
+  switches use `MuesliTheme.toggleAccent` to retain the saved color. Filled
+  accent buttons use `onAccent`. Preserve meaningful recording/error colors.
+  Ultra Dark is selectable only in Settings → Appearance.
+- User-facing branding is lowercase `muesli`. Never rename bundle identifiers,
+  executable names, Application Support directories, database paths or keychain
+  identities as part of copy cleanup.
+- Settings order is General, Dictations, Meetings, Appearance, Experimental.
+  iCloud Sync belongs in General; Computer Use, Quill and Cotypist belong in
+  Experimental. The meeting-chat sidebar destination is Chat.
+- Verify normal and narrow windows and all affected themes. Native text inserted
+  by presets, dictation or restoration must use the same adaptive typography as
+  typed text; plain text-storage replacement must not drop font/color attributes.
+
 ## Native UI and Recording Lifecycle
 
 Reuse `native/AIElementsSwift` for chat presentation and icons; keep provider,

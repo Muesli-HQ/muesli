@@ -706,16 +706,14 @@ struct SettingsView: View {
         switch selectedPane {
         case .general:
             generalSettingsPane
-        case .sync:
-            syncSettingsPane
         case .dictation:
             dictationSettingsPane
-        case .computerUse:
-            computerUseSettingsPane
         case .meetings:
             meetingsSettingsPane
         case .appearance:
             appearanceSettingsPane
+        case .experimental:
+            experimentalSettingsPane
         }
     }
 
@@ -733,6 +731,8 @@ struct SettingsView: View {
                     settingsControl("open_dashboard")
                 }
             }
+
+            syncSettingsPane
 
             permissionsSection
 
@@ -1953,12 +1953,6 @@ struct SettingsView: View {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
 
-            quilSettingsSection
-
-            if CotypistSetup.isAvailable {
-                cotypistSettingsSection
-            }
-
             settingsSection("Advanced") {
                 settingsRow(
                     "Paste shortcut",
@@ -1987,7 +1981,7 @@ struct SettingsView: View {
     /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
     /// selects it, or opens Keyboard settings with a guide until the user has added it.
     private var cotypistSettingsSection: some View {
-        settingsSection("Cotypist (experimental)") {
+        settingsSection("Cotypist") {
             settingsCompactRow("Typeahead suggestions", description: cotypistStatus) {
                 settingsControl("cotypist_enabled")
             }
@@ -2321,6 +2315,16 @@ struct SettingsView: View {
     }
 
 
+    private var experimentalSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            computerUseSettingsPane
+            quilSettingsSection
+            if CotypistSetup.isAvailable {
+                cotypistSettingsSection
+            }
+        }
+    }
+
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
@@ -2622,7 +2626,7 @@ struct SettingsView: View {
                     settingsControl("show_hotkey_menu")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Accent color") {
+                settingsRow("Accent color", description: appState.config.appearanceMode == .ultraDark ? "Used for toggles in Ultra Dark." : nil) {
                     glassTintPicker
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -2839,11 +2843,11 @@ struct SettingsView: View {
                 } label: {
                     HStack(spacing: 5) {
                         OpenAILogoShape()
-                            .fill(.white)
+                            .fill(MuesliTheme.onAccent)
                             .frame(width: 10, height: 10)
                         Text("Sign in with ChatGPT")
                             .font(MuesliTheme.captionMedium())
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MuesliTheme.onAccent)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
@@ -2932,10 +2936,10 @@ struct SettingsView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "network")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MuesliTheme.onAccent)
                         Text("Connect OpenRouter")
                             .font(MuesliTheme.captionMedium())
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MuesliTheme.onAccent)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)

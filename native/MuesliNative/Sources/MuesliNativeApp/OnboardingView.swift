@@ -365,7 +365,7 @@ struct OnboardingView: View {
         Button(action: action) {
             Text(title)
                 .font(MuesliTheme.font(size: 14, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing20)
                 .padding(.vertical, MuesliTheme.spacing8)
                 .background(enabled ? MuesliTheme.accent : MuesliTheme.accent.opacity(0.4))
@@ -692,11 +692,11 @@ struct OnboardingView: View {
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
                 Text(subtitle)
                     .font(MuesliTheme.font(size: 10))
-                    .foregroundStyle(selected ? .white.opacity(0.72) : MuesliTheme.textTertiary)
+                    .foregroundStyle(selected ? MuesliTheme.onAccent.opacity(0.8) : MuesliTheme.textTertiary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
-            .foregroundStyle(selected ? .white : MuesliTheme.textSecondary)
+            .foregroundStyle(selected ? MuesliTheme.onAccent : MuesliTheme.textSecondary)
             .frame(width: 132, height: 74)
             .background(selected ? MuesliTheme.accent : MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -708,7 +708,7 @@ struct OnboardingView: View {
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(MuesliTheme.onAccent)
                         .padding(7)
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -832,7 +832,7 @@ struct OnboardingView: View {
                         if option == BackendOption.onboardingDefault {
                             Text("Recommended")
                                 .font(MuesliTheme.font(size: 9, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
                                 .background(MuesliTheme.accent)
@@ -995,7 +995,7 @@ struct OnboardingView: View {
                         Text(permissionButtonTitle(for: step.name, isConfirmingGrant: isConfirmingGrant))
                             .font(MuesliTheme.font(size: 14, weight: .semibold))
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, MuesliTheme.spacing24)
                     .padding(.vertical, MuesliTheme.spacing12)
                     .background(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
@@ -1725,11 +1725,11 @@ struct OnboardingView: View {
                 if appState.isChatGPTAuthenticated || chatGPTSignInDone {
                     HStack(spacing: 6) {
                         OpenAILogoShape()
-                            .fill(.white)
+                            .fill(MuesliTheme.onAccent)
                             .frame(width: 14, height: 14)
                         Text("Signed in with ChatGPT")
                             .font(MuesliTheme.font(size: 13, weight: .medium))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(MuesliTheme.onAccent)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
@@ -1756,11 +1756,11 @@ struct OnboardingView: View {
                     } label: {
                         HStack(spacing: 6) {
                             OpenAILogoShape()
-                                .fill(.white)
+                                .fill(MuesliTheme.onAccent)
                                 .frame(width: 14, height: 14)
                             Text("Sign in with ChatGPT")
                                 .font(MuesliTheme.font(size: 13, weight: .medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
@@ -1865,7 +1865,7 @@ struct OnboardingView: View {
                         Text("OpenRouter connected")
                             .font(MuesliTheme.font(size: 13, weight: .medium))
                     }
-                    .foregroundStyle(.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .background(MuesliTheme.success)
@@ -1897,7 +1897,7 @@ struct OnboardingView: View {
                             Text("Connect OpenRouter")
                                 .font(MuesliTheme.font(size: 13, weight: .medium))
                         }
-                        .foregroundStyle(.white)
+                        .foregroundStyle(MuesliTheme.onAccent)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(MuesliTheme.accent)

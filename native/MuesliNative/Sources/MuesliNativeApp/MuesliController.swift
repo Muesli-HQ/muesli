@@ -1920,6 +1920,7 @@ public final class MuesliController: NSObject {
         // NSApp is an implicitly unwrapped optional and is nil under `swift test`, where no
         // NSApplication is ever created. Touching it there traps and takes the whole test
         // bundle down, so bind it rather than forcing it.
+        MuesliTheme.appearance.ultraDark = config.appearanceMode == .ultraDark
         if let app = NSApp {
             app.appearance = config.appearanceMode.appearanceName.flatMap { NSAppearance(named: $0) }
         }

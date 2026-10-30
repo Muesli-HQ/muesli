@@ -175,10 +175,10 @@ struct MeetingChatView: View {
         HStack(spacing: 12) {
             if !isEmbedded && coordinator.selectedSessionID != nil {
                 Button { controller.showMeetingChatIndex() } label: {
-                    Label { Text("Ask Meetings") } icon: { AIIcon(.arrowLeft) }
+                    Label { Text("Chat") } icon: { AIIcon(.arrowLeft) }
                 }
                 .buttonStyle(.plain).help("Back to all chats")
-                .accessibilityLabel("Back to Ask Meetings")
+                .accessibilityLabel("Back to Chat")
                 Divider().frame(height: 16)
             }
             Button { showHistory.toggle() } label: {
@@ -188,20 +188,20 @@ struct MeetingChatView: View {
                 .popover(isPresented: $showHistory) { history.frame(width: 280, height: 340) }
             if isEmbedded {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Ask Meetings").font(MuesliTheme.font(size: 13, weight: .semibold))
+                    Text("Chat").font(MuesliTheme.font(size: 13, weight: .semibold))
                     if let title = coordinator.sessions.first(where: { $0.id == coordinator.selectedSessionID })?.title {
                         Text(title).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             } else {
-                Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Ask Meetings").lineLimit(1).font(MuesliTheme.font(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Chat").lineLimit(1).font(MuesliTheme.font(size: 13, weight: .medium)).foregroundStyle(.secondary)
             }
             Spacer()
             if isEmbedded {
                 Button { controller.showMeetingChat() } label: {
                     AIIcon(.arrowUpRight).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain).help("Open Ask Meetings").accessibilityLabel("Open Ask Meetings")
+                    .buttonStyle(.plain).help("Open Chat").accessibilityLabel("Open Chat")
                 Button { expanded = false } label: {
                     AIIcon(.chevronDown).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
@@ -379,7 +379,7 @@ struct MeetingChatView: View {
                     } else {
                         Button { send() } label: {
                             AIIcon(.arrowUp, size: 16)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(MuesliTheme.onAccent)
                                 .frame(width: 32, height: 32)
                                 .background(MuesliTheme.accent, in: Circle())
                                 .contentShape(Circle())
@@ -871,17 +871,26 @@ enum MeetingChatComposerLayout {
 @MainActor
 enum MeetingChatComposerTextSync {
     static func apply(_ text: String, to editor: NSTextView, resetUndo: Bool) {
+        guard resetUndo || editor.string != text else { return }
+        // Direct text-storage replacements do not inherit NSTextView's typing attributes
+        // when the composer is empty. Supply them explicitly for presets and restored drafts.
+        var attributes = editor.typingAttributes
+        attributes[.font] = AppFonts.font(size: 14)
+        attributes[.foregroundColor] = NSColor.labelColor
+        editor.typingAttributes = attributes
         if resetUndo {
             editor.breakUndoCoalescing()
             editor.undoManager?.removeAllActions()
-            if editor.string != text { editor.string = text }
+            if editor.string != text {
+                editor.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: attributes))
+            }
             return
         }
         guard editor.string != text else { return }
         let range = NSRange(location: 0, length: (editor.string as NSString).length)
         editor.breakUndoCoalescing()
         guard editor.shouldChangeText(in: range, replacementString: text) else { return }
-        editor.textStorage?.replaceCharacters(in: range, with: text)
+        editor.textStorage?.replaceCharacters(in: range, with: NSAttributedString(string: text, attributes: attributes))
         editor.didChangeText()
         editor.breakUndoCoalescing()
     }

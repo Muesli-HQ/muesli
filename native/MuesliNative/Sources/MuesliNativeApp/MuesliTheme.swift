@@ -1,59 +1,82 @@
 import SwiftUI
 import MuesliCore
+import Observation
+
+@Observable
+final class MuesliThemeAppearance {
+    var ultraDark = false
+}
 
 enum MuesliTheme {
+    // Observable palette selection refreshes views without replacing their identity or focus.
+    static let appearance = MuesliThemeAppearance()
     // MARK: - Colors — Backgrounds (layered)
 
     static let backgroundDeepDarkHex = 0x0B0C0E
     static let backgroundDeepLightHex = 0xF5F5F7
-    static let backgroundDeep   = Color.adaptive(dark: backgroundDeepDarkHex, light: backgroundDeepLightHex)
+    private static let backgroundDeepStandard = Color.adaptive(dark: backgroundDeepDarkHex, light: backgroundDeepLightHex)
+    static var backgroundDeep: Color { appearance.ultraDark ? Color(hex: 0x000000) : backgroundDeepStandard }
 
     /// AppKit counterpart of `backgroundDeep`, for window chrome that cannot use SwiftUI colors.
-    static let backgroundDeepNSColor = NSColor.adaptive(
-        dark: backgroundDeepDarkHex,
-        light: backgroundDeepLightHex
-    )
-    static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
-    static let backgroundRaised = Color.adaptive(dark: 0x202226, light: 0xF0F0F2)
-    static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
+    private static let backgroundDeepStandardNSColor = NSColor.adaptive(dark: backgroundDeepDarkHex, light: backgroundDeepLightHex)
+    static var backgroundDeepNSColor: NSColor { appearance.ultraDark ? .black : backgroundDeepStandardNSColor }
+    private static let backgroundBaseStandard = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
+    static var backgroundBase: Color { appearance.ultraDark ? Color(hex: 0x000000) : backgroundBaseStandard }
+    private static let backgroundRaisedStandard = Color.adaptive(dark: 0x202226, light: 0xF0F0F2)
+    static var backgroundRaised: Color { appearance.ultraDark ? Color(hex: 0x0A0A0A) : backgroundRaisedStandard }
+    private static let backgroundHoverStandard = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
+    static var backgroundHover: Color { appearance.ultraDark ? Color(hex: 0x181818) : backgroundHoverStandard }
 
     // MARK: - Surfaces (interactive elements)
 
-    static let surfacePrimary   = Color.adaptive(dark: 0x262830, light: 0xE5E5EA)
-    static let surfaceSelected  = Color.adaptive(dark: 0x2E3340, light: 0xD6DFFE)
-    static let surfaceBorder    = Color.adaptiveAlpha(
+    private static let surfacePrimaryStandard = Color.adaptive(dark: 0x262830, light: 0xE5E5EA)
+    static var surfacePrimary: Color { appearance.ultraDark ? Color(hex: 0x121212) : surfacePrimaryStandard }
+    private static let surfaceSelectedStandard = Color.adaptive(dark: 0x2E3340, light: 0xD6DFFE)
+    static var surfaceSelected: Color { appearance.ultraDark ? Color(hex: 0x222222) : surfaceSelectedStandard }
+    private static let surfaceBorderStandard = Color.adaptiveAlpha(
         dark: .white, darkAlpha: 0.07,
         light: .black, lightAlpha: 0.08
     )
+    static var surfaceBorder: Color { appearance.ultraDark ? Color.white.opacity(0.28) : surfaceBorderStandard }
 
     // MARK: - Text hierarchy
 
-    static let textPrimary = Color.adaptiveAlpha(
+    private static let textPrimaryStandard = Color.adaptiveAlpha(
         dark: .white, darkAlpha: 0.92,
         light: .black, lightAlpha: 0.88
     )
-    static let textSecondary = Color.adaptiveAlpha(
+    static var textPrimary: Color { appearance.ultraDark ? Color.white.opacity(1) : textPrimaryStandard }
+    private static let textSecondaryStandard = Color.adaptiveAlpha(
         dark: .white, darkAlpha: 0.74,
         light: .black, lightAlpha: 0.66
     )
-    static let textTertiary = Color.adaptiveAlpha(
+    static var textSecondary: Color { appearance.ultraDark ? Color.white.opacity(0.80) : textSecondaryStandard }
+    private static let textTertiaryStandard = Color.adaptiveAlpha(
         dark: .white, darkAlpha: 0.56,
         light: .black, lightAlpha: 0.55
     )
+    static var textTertiary: Color { appearance.ultraDark ? Color.white.opacity(0.65) : textTertiaryStandard }
 
     // MARK: - Accent
 
     static let defaultAccentDarkHex = 0x6BA3F7
     static let defaultAccentLightHex = 0x2563EB
-    static let defaultAccent    = Color.adaptive(dark: defaultAccentDarkHex, light: defaultAccentLightHex)
+    private static let defaultAccentStandard = Color.adaptive(dark: defaultAccentDarkHex, light: defaultAccentLightHex)
+    static var defaultAccent: Color { appearance.ultraDark ? Color(hex: 0xFFFFFF) : defaultAccentStandard }
     static var accentOverrideHex: String?
     static var accent: Color {
+        appearance.ultraDark ? .white : toggleAccent
+    }
+    /// Switches retain the saved accent in every theme so their on/off state stays clear.
+    static var toggleAccent: Color {
         if let hex = accentOverrideHex, !hex.isEmpty,
            let val = UInt64(hex.replacingOccurrences(of: "#", with: ""), radix: 16) {
             return Color(hex: Int(val))
         }
-        return defaultAccent
+        return defaultAccentStandard
     }
+    private static let onAccentStandard = Color.adaptive(dark: 0xFFFFFF, light: 0xFFFFFF)
+    static var onAccent: Color { appearance.ultraDark ? Color(hex: 0x000000) : onAccentStandard }
     static var accentSubtle: Color { accent.opacity(0.15) }
 
     // MARK: - Semantic
@@ -155,8 +178,8 @@ extension Color {
     }
 
     static func adaptiveAlpha(dark: NSColor, darkAlpha: CGFloat, light: NSColor, lightAlpha: CGFloat) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? dark.withAlphaComponent(darkAlpha)
                 : light.withAlphaComponent(lightAlpha)
         })
@@ -165,7 +188,7 @@ extension Color {
 
 extension NSColor {
     static func adaptive(dark: Int, light: Int) -> NSColor {
-        NSColor(name: nil) { appearance in
+        return NSColor(name: nil) { appearance in
             let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
             return NSColor(
                 red: CGFloat((hex >> 16) & 0xFF) / 255.0,

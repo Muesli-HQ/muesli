@@ -52,6 +52,13 @@ History only after the insert succeeds. If persistence fails, it reports that
 History could not be saved and distinguishes whether the paste succeeded.
 Dictionary correction monitoring starts only after a successful paste.
 
+### Appearance preferences outside SQLite
+
+Ultra Dark is stored as local AppConfig JSON key `ultra_dark_appearance`, defaulting
+to false for older configurations. Selecting it also sets `dark_mode` so older
+builds fall back to Dark. Switching to Light, Dark or System clears the flag.
+No SQLite schema or sync fields change.
+
 ### Model license acknowledgements outside SQLite
 
 `MedASRLicense` owns `~/Library/Application Support/Muesli/ModelLicenses/medasr.json`,

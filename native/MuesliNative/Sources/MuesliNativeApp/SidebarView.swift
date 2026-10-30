@@ -98,6 +98,7 @@ struct SidebarView: View {
     }
 
     private var updateCTAForeground: Color {
+        if appState.config.appearanceMode == .ultraDark { return MuesliTheme.onAccent }
         let accentHex = appState.config.recordingColorHex
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "#", with: "")
@@ -148,7 +149,7 @@ struct SidebarView: View {
             collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
             collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
             collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
-            collapsedItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Ask Meetings")
+            collapsedItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
             collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
             collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
 
@@ -219,7 +220,7 @@ struct SidebarView: View {
                         sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
                         sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
                         meetingsSection
-                        sidebarItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Ask Meetings")
+                        sidebarItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
                         sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
                         sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
                     }
@@ -609,7 +610,8 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var darkModeToggle: some View {
-        MuesliSettingControl(controller: controller, id: "appearance", compactAppearance: true)
+        MuesliSettingControl(controller: controller, id: "appearance", compactAppearance: true,
+            allowedChoiceIDs: Set(AppAppearanceMode.quickChoices.map(\.rawValue)))
             .environment(\.muesliSettingDefinitions, [controller.appearanceDefinition()])
             .padding(.horizontal, sidebarRowOuterPadding)
             .padding(.leading, sidebarRowHorizontalPadding)
