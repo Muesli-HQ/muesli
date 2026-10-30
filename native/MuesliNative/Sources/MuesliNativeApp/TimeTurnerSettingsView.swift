@@ -4,7 +4,7 @@ import Combine
 import UniformTypeIdentifiers
 import MuesliCore
 
-/// Shared by the dashboard sheet and the dedicated Settings pane.
+/// Shared by the dashboard sheet and Experimental settings.
 struct TimeTurnerSettingsView: View {
     let controller: MuesliController
     let appState: AppState
@@ -18,7 +18,15 @@ struct TimeTurnerSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
-                Label { Text("A memory of your day") } icon: { Image(nsImage: TimeTurnerIcon.image()) }.font(.title2.bold())
+                HStack(spacing: 10) {
+                    Label { Text("Time Turner") } icon: { Image(nsImage: TimeTurnerIcon.image()) }
+                        .font(.title2.bold())
+                    Text("Experimental")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.quaternary, in: Capsule())
+                }
                 Text("Search and revisit your screen history. Stored on this Mac.").foregroundStyle(.secondary)
                 HStack {
                     Label(appState.config.timeTurnerEnabled ? memory.ambientStatus : "Screen history is off", systemImage: appState.config.timeTurnerEnabled ? "record.circle" : "pause.circle")

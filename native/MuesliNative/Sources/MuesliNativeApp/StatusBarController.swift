@@ -559,7 +559,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         openTimeTurnerSettings()
     }
     @objc private func openTimeTurnerSettings() {
-        controller.appState.selectedSettingsPane = .timeTurner
+        controller.appState.selectedSettingsPane = .experimental
         controller.openSettingsTab()
     }
     @objc private func excludeTimeTurnerApp(_ sender: NSMenuItem) {
