@@ -1550,7 +1550,7 @@ struct OnboardingView: View {
 
                     if let modelDownloadError {
                         Text(modelDownloadError)
-                            .font(MuesliTheme.font(size: 11))
+                            .font(MuesliTheme.captionMedium())
                             .foregroundStyle(.red)
                             .lineLimit(2)
 
@@ -1601,7 +1601,7 @@ struct OnboardingView: View {
 
                     if let dictationTestError {
                         Text(dictationTestError)
-                            .font(MuesliTheme.font(size: 11))
+                            .font(MuesliTheme.captionMedium())
                             .foregroundStyle(.red)
                             .lineLimit(2)
                     }
