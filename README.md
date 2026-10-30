@@ -43,6 +43,7 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
+- **Cotypist typeahead (experimental, development builds)** — Suggests your next words inline as you type in any app, through a Muesli input source. Tab accepts; ⌥→ accepts one word. Runs entirely on your Mac.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
 - **Meeting notes** — Use templates, re-summarize with another model, and export notes, transcripts, and answers as Markdown or PDF.
@@ -147,12 +148,13 @@ Choose and download models in the **Models** tab. English defaults to Parakeet U
 | Gemma 4 E2B / E4B | On-device dictation, cleanup, Quill and Computer Use; macOS 15+ | 3.6 GB / 5.2 GB |
 | Muesli Cleanup Lite | Qwen 3.5 0.8B with extended fine-tuning and app and screen context; MLX 8-bit | 820 MB |
 | Muesli Pro Cleanup | Fine-tuned LFM 2.5, Qwen 3.5 or Gemma 4 with app and screen context | 731 MB–2.6 GB |
+| Cotypist | Qwen 3.5 0.8B base (default), Qwen 3.5 2B base, or Gemma 4 E2B base; MLX 4-bit | 424 MB / 1.06 GB / 3.6 GB |
 
 Download sizes are storage estimates, not RAM requirements. Gemma's optional MTP assistant adds about 190 MB per model family; E2B and Gemma Pro Cleanup share an assistant. Gemma cannot be selected for transcription and cleanup simultaneously.
 
 Gemma uses MLX Swift LM for generation and a native Swift/MLX audio encoder. Multi-token prediction (MTP) is on by default when verified assistant weights are available. If those weights cannot be downloaded or loaded, the main model remains usable with ordinary decoding. Computer Use keeps its tool-call grammar and validation in either mode. The app no longer packages LiteRT.
 
-Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. Cleanup Lite and Qwen Pro Cleanup use the same native MLX-Swift-LM integration with 8-bit weights. LFM and S1-mini retain LLM.swift's llama.cpp runtime.
+Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. Cleanup Lite and Qwen Pro Cleanup use the same native MLX-Swift-LM integration with 8-bit weights, as do Cotypist's base models (4-bit, no new runtime). LFM and S1-mini retain LLM.swift's llama.cpp runtime.
 
 Live transcription is off by default. Apple Speech and Nemotron provide live and final transcripts; Parakeet Realtime EOU provides an English preview alongside a separate final meeting model. Enable it under **Settings → Meetings → Transcription**.
 
