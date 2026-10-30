@@ -18,7 +18,7 @@ enum AppFonts {
             var error: Unmanaged<CFError>?
             if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error), let error = error?.takeRetainedValue(),
                CFErrorGetCode(error) != CTFontManagerError.alreadyRegistered.rawValue {
-                NSLog("Muesli: font registration failed: %@", error as NSError)
+                NSLog("Muesli: font registration failed: %@", String(describing: error))
             }
         }
         cache.countLimit = 128

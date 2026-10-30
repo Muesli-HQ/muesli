@@ -93,33 +93,24 @@ struct SettingsRow<Control: View>: View {
     @Environment(\.settingsStacksControls) private var stacksControls
 
     var body: some View {
-        Group {
-            if stacksControls, let controlWidth {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                    labelColumn
-                    control
-                        .frame(maxWidth: controlWidth, alignment: .leading)
-                }
-            } else {
-                HStack(alignment: .top, spacing: SettingsLayout.columnSpacing) {
-                    labelColumn
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .layoutPriority(1)
-                    boundedControl
-                        .frame(minHeight: SettingsLayout.firstLineHeight)
-                }
-            }
+        let stacked = stacksControls && controlWidth != nil
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: MuesliTheme.spacing8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: SettingsLayout.columnSpacing))
+        // Keep the same children and modifiers across the breakpoint so native
+        // editors preserve their first responder, selection and undo history.
+        layout {
+            labelColumn
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+            control
+                .fixedSize(horizontal: controlWidth == nil, vertical: false)
+                .frame(minWidth: stacked ? nil : controlWidth,
+                       maxWidth: controlWidth,
+                       alignment: stacked ? .leading : .trailing)
+                .frame(minHeight: SettingsLayout.firstLineHeight)
         }
         .padding(.vertical, MuesliTheme.spacing4)
-    }
-
-    @ViewBuilder
-    private var boundedControl: some View {
-        if let controlWidth {
-            control.frame(width: controlWidth, alignment: .trailing)
-        } else {
-            control.fixedSize(horizontal: true, vertical: false)
-        }
     }
 
     private var labelColumn: some View {

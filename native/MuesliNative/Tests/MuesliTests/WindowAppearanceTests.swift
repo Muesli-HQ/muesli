@@ -159,6 +159,43 @@ struct WindowAppearanceTests {
         }
     }
 
+    @Test("settings breakpoint preserves native editor focus selection and undo")
+    func settingsBreakpointPreservesEditor() async throws {
+        _ = NSApplication.shared
+        let state = SettingsEditorLayoutState()
+        let host = NSHostingView(rootView: SettingsEditorLayoutHarness(state: state))
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 200)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let editor = try #require(state.editor)
+        editor.allowsUndo = true
+        editor.undoManager?.groupsByEvent = false
+        editor.undoManager?.beginUndoGrouping()
+        editor.insertText("Endpoint draft", replacementRange: NSRange(location: 0, length: 0))
+        editor.undoManager?.endUndoGrouping()
+        let selection = NSRange(location: 2, length: 5)
+        editor.setSelectedRange(selection)
+        #expect(window.makeFirstResponder(editor))
+        #expect(editor.undoManager?.canUndo == true)
+        for stacked in [true, false, true] {
+            state.stacked = stacked
+            host.frame.size.width = stacked ? 420 : 700
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(state.creationCount == 1)
+            #expect(state.editor === editor)
+            #expect(window.firstResponder === editor)
+            #expect(editor.selectedRange() == selection)
+            #expect(editor.string == "Endpoint draft")
+            #expect(editor.undoManager?.canUndo == true)
+        }
+        editor.undoManager?.undo()
+        #expect(editor.string.isEmpty)
+    }
+
     @Test("dashboard can shrink beside a call window")
     func dashboardUsesCompactMinimumWidth() {
         #expect(DashboardWindowLayout.minimumContentWidth == 520)
@@ -463,4 +500,40 @@ private struct DashboardDetailIdentityProbe: View {
             .onAppear { lifecycle.appearanceCount += 1 }
             .onDisappear { lifecycle.disappearanceCount += 1 }
     }
+}
+
+
+@MainActor
+@Observable
+private final class SettingsEditorLayoutState {
+    var stacked = false
+    @ObservationIgnored var editor: SettingsIdentityTextView?
+    @ObservationIgnored var creationCount = 0
+}
+
+private struct SettingsEditorLayoutHarness: View {
+    let state: SettingsEditorLayoutState
+    var body: some View {
+        SettingsRow(label: "Endpoint", description: "Provider URL") {
+            SettingsIdentityEditor(state: state).frame(height: 28)
+        }
+        .environment(\.settingsStacksControls, state.stacked)
+    }
+}
+
+private struct SettingsIdentityEditor: NSViewRepresentable {
+    let state: SettingsEditorLayoutState
+    func makeNSView(context: Context) -> SettingsIdentityTextView {
+        let editor = SettingsIdentityTextView()
+        state.editor = editor
+        state.creationCount += 1
+        return editor
+    }
+    func updateNSView(_ nsView: SettingsIdentityTextView, context: Context) {}
+}
+
+@MainActor
+private final class SettingsIdentityTextView: NSTextView {
+    private let testUndo = UndoManager()
+    override var undoManager: UndoManager? { testUndo }
 }

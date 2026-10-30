@@ -108,8 +108,8 @@ resources, not just locally installed fonts.
 and multilingual glyph fallback. It is registered in the native CI shard list.
 AIElementsSwift's standalone tests validate the reusable presentation package.
 
-For changes, inspect DevC at normal and narrow window widths, in light and dark
-appearance. Check settings, models, onboarding, sidebar, meeting notes, chat,
+For changes, inspect DevC at normal and narrow window widths, in Light, Dark and
+Ultra Dark appearances. Check settings, models, onboarding, sidebar, meeting notes, chat,
 and floating/notch labels for truncation or clipped descenders. Exercise pointer
 focus, multiline paste, selection, undo and navigation in native editors; font
 unit tests do not establish these interactions. Preserve the lane's existing data.

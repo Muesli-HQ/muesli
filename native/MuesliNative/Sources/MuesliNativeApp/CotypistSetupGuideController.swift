@@ -115,7 +115,7 @@ private struct CotypistSetupGuideView: View {
             step(2, "Click **+** at the bottom left, then **English**")
             // A macOS quirk: the first time English is chosen, its list of input sources can be empty.
             Text("List empty? Click another language, then English again.")
-                .font(MuesliTheme.font(size: 11, weight: .medium))
+                .font(MuesliTheme.captionMedium())
                 .foregroundStyle(Color.white.opacity(0.55))
                 .padding(.leading, 26)
                 .padding(.top, -6)
@@ -131,14 +131,14 @@ private struct CotypistSetupGuideView: View {
 
             if model.suggestsRelogin {
                 Text("Not in the list? macOS lists new input sources after you log out and back in. Then turn Cotypist on again.")
-                    .font(MuesliTheme.font(size: 11, weight: .medium))
+                    .font(MuesliTheme.captionMedium())
                     .foregroundStyle(MuesliTheme.accent)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Cotypist turns on as soon as it's added")
-                        .font(MuesliTheme.font(size: 11, weight: .medium))
+                        .font(MuesliTheme.captionMedium())
                         .foregroundStyle(Color.white.opacity(0.55))
                 }
             }

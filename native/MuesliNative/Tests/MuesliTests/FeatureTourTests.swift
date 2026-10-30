@@ -206,6 +206,13 @@ struct FeatureTourTests {
         #expect(FeatureTourTarget.dictationRecordingMode.navigationRoute == .tab(.shortcuts))
     }
 
+    @Test("settings targets follow their current settings sections")
+    func settingsNavigationRoutes() {
+        #expect(FeatureTourTarget.quillSettings.navigationRoute == .settings(.experimental))
+        #expect(FeatureTourTarget.dictationProviderSetting.navigationRoute == .settings(.dictation))
+        #expect(FeatureTourTarget.cloudCleanupSetting.navigationRoute == .settings(.dictation))
+    }
+
     @Test("model feature-tour targets resolve routes without UI state")
     func modelNavigationRoutes() {
         #expect(FeatureTourTarget.parakeetFamilyCard.navigationRoute == .models(.dictation))
