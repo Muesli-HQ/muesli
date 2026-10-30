@@ -27,7 +27,6 @@ struct ModelsView: View {
     let appState: AppState
     let controller: MuesliController
 
-    @State private var medASRTermsAccepted = MedASRLicense.shared.isAccepted
     @State private var nemotron35UpdateAvailable = false
     @State private var downloadingModels: Set<String> = []
     @State private var downloadProgress: [String: Double] = [:]
@@ -126,8 +125,8 @@ struct ModelsView: View {
             }
         }
         .background(MuesliTheme.backgroundBase)
+        .task { await controller.medASRTerms.refresh() }
         .onAppear {
-            medASRTermsAccepted = MedASRLicense.shared.isAccepted
             checkDownloadedModels()
             checkDownloadedPostProcModels()
             isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
@@ -136,7 +135,6 @@ struct ModelsView: View {
             loadAppleSpeechLanguageOptions()
         }
         .onChange(of: appState.selectedBackend.model) { _, _ in
-            medASRTermsAccepted = MedASRLicense.shared.isAccepted
             syncSelectionsFromActiveBackend()
         }
         .alert(
@@ -1527,10 +1525,9 @@ struct ModelsView: View {
                 Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
-                if isActive && !medASRTermsAccepted {
+                if isActive && !controller.medASRTerms.isAccepted {
                     Button("Review terms") {
                         controller.requestMedASRLicense {
-                            medASRTermsAccepted = true
                             if appState.selectedBackend == .medASR { controller.selectBackend(.medASR) }
                         }
                     }
@@ -1929,9 +1926,8 @@ struct ModelsView: View {
 
     private func startDownload(_ option: BackendOption) {
         guard option.isCompatible() else { return }
-        if option == .medASR, !MedASRLicense.shared.isAccepted {
+        if option == .medASR, !controller.medASRTerms.isAccepted {
             controller.requestMedASRLicense {
-                medASRTermsAccepted = true
                 startDownload(option)
             }
             return

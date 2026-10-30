@@ -435,7 +435,7 @@ extension MuesliController {
                     return "Unknown dictation model."
                 }
                 if let reason = option.incompatibilityReason() { return reason }
-                if option == .medASR, !MedASRLicense.shared.isAccepted {
+                if option == .medASR, !self.medASRTerms.isAccepted {
                     return "Review and accept MedASR's terms in Models first."
                 }
                 guard option.isDownloaded else { return "Download this dictation model from Models first." }
@@ -536,7 +536,7 @@ extension MuesliController {
             read: { $0.sttBackend + ":" + $0.sttModel }, unavailable: { value in
                 guard let option = backends.first(where: { backendID($0) == value }) else { return "Unknown dictation model." }
                 if let reason = option.incompatibilityReason() { return reason }
-                if option == .medASR, !MedASRLicense.shared.isAccepted {
+                if option == .medASR, !self.medASRTerms.isAccepted {
                     return "Review and accept MedASR's terms in Models first."
                 }
                 return option.isDownloaded ? nil : "Download this model first."

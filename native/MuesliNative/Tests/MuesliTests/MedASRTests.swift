@@ -281,28 +281,80 @@ extension MedASRTests {
 extension MedASRTests {
     @Test("Terms presentation returns before a response and Cancel never records acceptance or resumes work")
     @MainActor
-    func nonblockingTermsResponse() throws {
+    func nonblockingTermsResponse() async throws {
         let fixture = try MedASRTestLicense(accepted: false)
         defer { fixture.remove() }
-        var response: ((NSApplication.ModalResponse) -> Void)?
+        var response: (@MainActor (NSApplication.ModalResponse) async -> Void)?
         var resumed = 0
         let present: MedASRTermsPresentation.Presenter = { _, completion in response = completion }
-        MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
+        await MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
         #expect(!fixture.store.isAccepted)
         #expect(resumed == 0)
         let cancel = try #require(response)
-        cancel(.alertSecondButtonReturn)
+        await cancel(.alertSecondButtonReturn)
         #expect(!fixture.store.isAccepted)
         #expect(resumed == 0)
-        MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
+        await MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
         let abort = try #require(response)
-        abort(.abort)
+        await abort(.abort)
         #expect(!fixture.store.isAccepted)
         #expect(resumed == 0)
-        MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
+        await MedASRTermsPresentation.request(license: fixture.store, present: present) { resumed += 1 }
         let agree = try #require(response)
-        agree(.alertFirstButtonReturn)
+        await agree(.alertFirstButtonReturn)
         #expect(fixture.store.isAccepted)
         #expect(resumed == 1)
+    }
+}
+
+
+extension MedASRTests {
+    @Test("Acceptance refresh reads off the main thread, starts closed and observes external changes")
+    @MainActor
+    func acceptanceSnapshot() async throws {
+        let fixture = try MedASRTestLicense(accepted: false)
+        defer { fixture.remove() }
+        let state = MedASRTermsState()
+        #expect(!state.isAccepted)
+        await state.refresh {
+            #expect(!Thread.isMainThread)
+            return fixture.store.isAccepted
+        }
+        #expect(!state.isAccepted)
+        try await Task.detached { try fixture.store.accept() }.value
+        await state.refresh { fixture.store.isAccepted }
+        #expect(state.isAccepted)
+        try await Task.detached { try FileManager.default.removeItem(at: fixture.store.recordURL) }.value
+        await state.refresh { fixture.store.isAccepted }
+        #expect(!state.isAccepted)
+    }
+
+    @Test("A stalled acceptance read leaves the UI actor free and cannot overwrite newer acceptance")
+    @MainActor
+    func acceptanceRefreshOwnership() async {
+        let state = MedASRTermsState()
+        let release = DispatchSemaphore(value: 0)
+        let entered = AsyncStream<Void>.makeStream()
+        let stale = Task {
+            await state.refresh {
+                entered.continuation.yield(())
+                release.wait()
+                return false
+            }
+        }
+        for await _ in entered.stream { break }
+        // This executes on MainActor while the disk-read substitute is still blocked.
+        state.didAccept()
+        #expect(state.isAccepted)
+        release.signal()
+        await stale.value
+        #expect(state.isAccepted)
+
+        let cancelled = Task {
+            await state.refresh { false }
+        }
+        cancelled.cancel()
+        await cancelled.value
+        #expect(state.isAccepted)
     }
 }
