@@ -8,12 +8,27 @@ import os
 final class MeetingNotificationController {
     private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingNotification")
 
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private var dismissTimer: Timer?
     private var progressLayer: CALayer?
     private var dismissDeadline: Date?
     private var remainingDismissDuration: TimeInterval = 0
-    private var isDismissPaused = false
+    private(set) var isDismissPaused = false
+    enum DismissPauseReason: Hashable { case hover, picker, work }
+    private var dismissPauseReasons: Set<DismissPauseReason> = []
+    private var presentationID = UUID()
+    private var timerID = UUID()
+    private var fadeID = UUID()
+    private var isAutoDismissFading = false
+    private var currentDismissDuration: TimeInterval = dismissDuration
+    private let contactPicker: any MeetingContactPresenting
+    private var completionSession: MeetingCompletionContactSession?
+    private var completionParticipantLabel: NSTextField?
+    private var completionErrorLabel: NSTextField?
+    private var completionButton: NSButton?
+    private var completionCaret: NSButton?
+    private var completionAnchor: NSView?
+    private weak var previousKeyWindow: NSWindow?
     private var onStartRecording: (() -> Void)?
     private var onJoinAndRecord: (() -> Void)?
     private var onJoinOnly: (() -> Void)?
@@ -25,6 +40,10 @@ final class MeetingNotificationController {
     private(set) var shownAt: Date?
 
     private static let dismissDuration: TimeInterval = 15
+
+    init(contactPicker: (any MeetingContactPresenting)? = nil) {
+        self.contactPicker = contactPicker ?? MeetingContactPickerPresenter()
+    }
 
     /// Fixed geometry for the split button, so swapping which action is armed never
     /// reflows the card. `splitButtonLabelFits` guards the assumption in tests.
@@ -70,6 +89,7 @@ final class MeetingNotificationController {
         platform explicitPlatform: MeetingPlatform? = nil,
         dismissAfter: TimeInterval? = nil,
         defaultAction: MeetingJoinDefaultAction = .fallback,
+        completionSession: MeetingCompletionContactSession? = nil,
         onStartRecording: @escaping () -> Void,
         onJoinAndRecord: (() -> Void)? = nil,
         onJoinOnly: (() -> Void)? = nil,
@@ -98,7 +118,7 @@ final class MeetingNotificationController {
         )
         // Nothing to drop down (a prompt with no join link, or "Stop Transcribing")
         // keeps the plain single-action button.
-        let hasJoinButton = !splitButtonAlternatives.isEmpty
+        let hasJoinButton = completionSession != nil || !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
         let platformIcon = platform?.loadIcon()
         let iconSize: CGFloat = 26
@@ -119,7 +139,7 @@ final class MeetingNotificationController {
                 minimumWidth: minimumCardWidth
             )
         }
-        let cardHeight: CGFloat = 60
+        let cardHeight: CGFloat = completionSession == nil ? 60 : 94
         let closeButtonSize = NotificationDismissButton.size
         let cardX = closeButtonSize / 2 + 1
         let topGutter: CGFloat = closeButtonSize / 2 + 1
@@ -136,13 +156,17 @@ final class MeetingNotificationController {
             return false
         }
         self.onClose = onClose
+        self.completionSession = completionSession
+        let presentationID = self.presentationID
+        currentDismissDuration = duration
 
-        let panel = NSPanel(
+        let panel = MeetingNotificationPanel(
             contentRect: frame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        panel.isCompletionPanel = completionSession != nil
         panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -153,11 +177,39 @@ final class MeetingNotificationController {
         panel.becomesKeyOnlyIfNeeded = true
 
         let contentView = HoverAwareView(frame: NSRect(origin: .zero, size: NSSize(width: width, height: height)))
-        contentView.onMouseEntered = { [weak self] in self?.pauseDismissCountdown() }
-        contentView.onMouseExited = { [weak self] in self?.resumeDismissCountdown() }
+        contentView.onMouseEntered = { [weak self] in
+            guard let self, self.presentationID == presentationID else { return }
+            self.setDismissPause(.hover, paused: true)
+        }
+        contentView.onMouseExited = { [weak self] in
+            guard let self, self.presentationID == presentationID else { return }
+            self.setDismissPause(.hover, paused: false)
+        }
         contentView.wantsLayer = true
 
-        let cardView = NSView(frame: NSRect(x: cardX, y: 0, width: cardWidth, height: cardHeight))
+        let cardView: NSView
+        let cardFrame = NSRect(x: cardX, y: 0, width: cardWidth, height: cardHeight)
+        if completionSession != nil {
+            let completionCard = CompletionNotificationCardView(frame: cardFrame)
+            completionCard.onOpenNotes = { [weak self] in
+                guard let self, self.presentationID == presentationID else { return }
+                let action = self.onStartRecording
+                self.close()
+                action?()
+            }
+            completionCard.toolTip = "Open notes"
+            completionCard.setAccessibilityLabel(title)
+            completionCard.setAccessibilityRole(.group)
+            completionCard.setAccessibilityElement(true)
+            completionCard.setAccessibilityCustomActions([
+                NSAccessibilityCustomAction(name: "Open notes") { [weak completionCard] in
+                    completionCard?.accessibilityPerformPress() ?? false
+                },
+            ])
+            cardView = completionCard
+        } else {
+            cardView = NSView(frame: cardFrame)
+        }
         cardView.wantsLayer = true
         cardView.layer?.cornerRadius = 10
         cardView.layer?.masksToBounds = true
@@ -224,12 +276,13 @@ final class MeetingNotificationController {
 
             // Main button for the user's default action
             let joinButton = NSButton(
-                title: armedAction.buttonLabel,
+                title: completionSession?.buttonLabel ?? armedAction.buttonLabel,
                 target: self,
-                action: Self.selector(for: armedAction)
+                action: completionSession == nil ? Self.selector(for: armedAction) : #selector(handleAddContact(_:))
             )
             joinButton.font = Self.splitButtonFont
-            joinButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
+            let buttonY: CGFloat = completionSession == nil ? 15 : 4
+            joinButton.frame = NSRect(x: buttonX, y: buttonY, width: buttonWidth, height: 30)
             joinButton.wantsLayer = true
             joinButton.layer?.backgroundColor = greenColor.cgColor
             joinButton.layer?.cornerRadius = 6
@@ -239,9 +292,9 @@ final class MeetingNotificationController {
             cardView.addSubview(joinButton)
 
             // Chevron dropdown button
-            let chevronButton = NSButton(title: "▾", target: self, action: #selector(handleChevronClick(_:)))
+            let chevronButton = NSButton(title: "▾", target: self, action: completionSession == nil ? #selector(handleChevronClick(_:)) : #selector(handleAddContact(_:)))
             chevronButton.font = .systemFont(ofSize: 9, weight: .medium)
-            chevronButton.frame = NSRect(x: buttonX + buttonWidth, y: 15, width: chevronWidth, height: 30)
+            chevronButton.frame = NSRect(x: buttonX + buttonWidth, y: buttonY, width: chevronWidth, height: 30)
             chevronButton.wantsLayer = true
             chevronButton.layer?.backgroundColor = greenDarker.cgColor
             chevronButton.layer?.cornerRadius = 6
@@ -250,6 +303,35 @@ final class MeetingNotificationController {
             chevronButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
             chevronButton.toolTip = splitButtonAlternatives.map(\.buttonLabel).joined(separator: " · ")
             cardView.addSubview(chevronButton)
+            if let completionSession {
+                titleLabel.frame = NSRect(x: textX, y: 70, width: cardWidth - textX - 14, height: 18)
+                subtitleLabel.frame = NSRect(x: textX, y: 52, width: cardWidth - textX - 14, height: 16)
+                subtitleLabel.lineBreakMode = .byTruncatingTail
+                let people = NSTextField(labelWithString: "")
+                people.identifier = NSUserInterfaceItemIdentifier("completionParticipants")
+                people.font = subtitleFont
+                people.textColor = subtitleLabel.textColor
+                people.frame = NSRect(x: textX, y: 36, width: cardWidth - textX - 14, height: 16)
+                people.lineBreakMode = .byTruncatingTail
+                cardView.addSubview(people)
+                let error = NSTextField(labelWithString: "")
+                error.identifier = NSUserInterfaceItemIdentifier("completionError")
+                error.font = .systemFont(ofSize: 11)
+                error.textColor = .systemRed
+                error.frame = NSRect(x: textX, y: 11, width: buttonX - textX - 8, height: 16)
+                cardView.addSubview(error)
+                completionParticipantLabel = people
+                completionErrorLabel = error
+                completionButton = joinButton
+                completionCaret = chevronButton
+                completionAnchor = cardView
+                chevronButton.toolTip = "Add contact"
+                chevronButton.setAccessibilityLabel("Add contact")
+                completionSession.onChange = { [weak self] in
+                    guard let self, self.presentationID == presentationID else { return }
+                    self.updateCompletionCard()
+                }
+            }
         } else {
             // Single "Start Transcribing" button
             let buttonWidth: CGFloat = 126
@@ -269,6 +351,10 @@ final class MeetingNotificationController {
             cardView.addSubview(startButton)
         }
 
+        if completionSession != nil {
+            // Expose the controls and status text inside the card, rather than a leaf button.
+            cardView.setAccessibilityChildren(cardView.subviews)
+        }
         panel.contentView = contentView
         panel.alphaValue = 1
         panel.orderFrontRegardless()
@@ -282,6 +368,16 @@ final class MeetingNotificationController {
         )
 
         startDismissCountdown(duration: duration)
+        if let completionSession {
+            updateCompletionCard()
+            if !completionSession.hasLoaded {
+                Task { [weak self] in
+                    await completionSession.load()
+                    guard let self, self.presentationID == presentationID else { return }
+                    if completionSession.errorMessage != nil { self.restartDismissCountdown() }
+                }
+            }
+        }
         return true
     }
 
@@ -296,11 +392,25 @@ final class MeetingNotificationController {
     }
 
     func close() {
+        presentationID = UUID()
+        timerID = UUID()
+        fadeID = UUID()
+        isAutoDismissFading = false
+        completionSession?.invalidate()
+        completionSession = nil
+        contactPicker.close()
+        completionParticipantLabel = nil
+        completionErrorLabel = nil
+        completionButton = nil
+        completionCaret = nil
+        completionAnchor = nil
+        previousKeyWindow = nil
         dismissTimer?.invalidate()
         dismissTimer = nil
         dismissDeadline = nil
         remainingDismissDuration = 0
         isDismissPaused = false
+        dismissPauseReasons = []
         progressLayer?.removeAllAnimations()
         progressLayer?.speed = 1
         progressLayer?.timeOffset = 0
@@ -317,15 +427,104 @@ final class MeetingNotificationController {
         isVisible = false
         currentPromptID = nil
         shownAt = nil
-        onClose?()
+        let closeCallback = onClose
         onClose = nil
+        closeCallback?()
+    }
+
+    func setDismissPause(_ reason: DismissPauseReason, paused: Bool) {
+        if paused { dismissPauseReasons.insert(reason) } else { dismissPauseReasons.remove(reason) }
+        if dismissPauseReasons.isEmpty { resumeDismissCountdown() } else { pauseDismissCountdown() }
+    }
+
+    private func restartDismissCountdown() {
+        startDismissCountdown(duration: currentDismissDuration)
+    }
+
+    private func updateCompletionCard() {
+        guard let session = completionSession else { return }
+        completionParticipantLabel?.stringValue = session.participantSummary(maxWidth: completionParticipantLabel?.frame.width ?? 316)
+        completionParticipantLabel?.setAccessibilityValue(session.fullParticipantSummary)
+        completionErrorLabel?.stringValue = session.errorMessage ?? ""
+        completionButton?.title = session.buttonLabel
+        let enabled = session.canPresentPicker && !dismissPauseReasons.contains(.picker)
+        setCompletionControlsEnabled(enabled)
+        setDismissPause(.work, paused: session.isBusy)
+    }
+
+    private func setCompletionControlsEnabled(_ enabled: Bool) {
+        for button in [completionButton, completionCaret] {
+            button?.isEnabled = enabled
+            button?.layer?.opacity = enabled ? 1 : 0.45
+        }
+    }
+
+    @objc private func handleAddContact(_ sender: NSButton) {
+        guard let session = completionSession, session.canPresentPicker,
+              !dismissPauseReasons.contains(.picker), sender.window === panel,
+              let anchor = completionAnchor, let button = completionButton, let caret = completionCaret else { return }
+        let presentationID = self.presentationID
+        // A failed initial read retries the participant snapshot before opening ContactsUI.
+        if !session.hasLoaded {
+            Task { [weak self] in
+                await session.load()
+                guard let self, self.presentationID == presentationID else { return }
+                if session.hasLoaded { self.handleAddContact(sender) } else { self.restartDismissCountdown() }
+            }
+            return
+        }
+        setDismissPause(.picker, paused: true)
+        updateCompletionCard()
+        (panel as? MeetingNotificationPanel)?.allowsPickerKey = true
+        previousKeyWindow = NSApplication.shared.keyWindow === panel ? nil : NSApplication.shared.keyWindow
+        panel?.makeKey()
+        contactPicker.present(relativeTo: anchor, rect: button.frame.union(caret.frame), preferredEdge: .minY, onSelect: { [weak self] contact in
+            guard let self, self.presentationID == presentationID else { return }
+            // Acquire work before the picker-close callback can release its pause.
+            self.setDismissPause(.work, paused: true)
+            self.setCompletionControlsEnabled(false)
+            Task { [weak self] in
+                let result = await session.select(contact)
+                guard let self, self.presentationID == presentationID else { return }
+                self.updateCompletionCard()
+                if result == .added || result == .failed { self.restartDismissCountdown() }
+            }
+        }, onClose: { [weak self] in
+            guard let self, self.presentationID == presentationID else { return }
+            self.restorePickerFocus()
+            self.setDismissPause(.picker, paused: false)
+            // Don't release a selection's work pause before its Task starts.
+            if !self.dismissPauseReasons.contains(.work) { self.updateCompletionCard() }
+        })
+    }
+
+    private func restorePickerFocus() {
+        defer { previousKeyWindow = nil }
+        guard let panel else { return }
+        (panel as? MeetingNotificationPanel)?.allowsPickerKey = false
+        guard panel.isKeyWindow else { return }
+        if let previousKeyWindow, previousKeyWindow !== panel,
+           previousKeyWindow.isVisible, previousKeyWindow.canBecomeKey {
+            previousKeyWindow.makeKey()
+        } else {
+            let presentationID = self.presentationID
+            // Ordering releases key status through AppKit; resignKey() is only a notification hook.
+            panel.orderOut(nil)
+            guard self.panel === panel, self.presentationID == presentationID else { return }
+            panel.orderFrontRegardless()
+        }
     }
 
     private func startDismissCountdown(duration: TimeInterval) {
         remainingDismissDuration = duration
         isDismissPaused = false
+        progressLayer?.removeAllAnimations()
+        progressLayer?.speed = 1
+        progressLayer?.timeOffset = 0
+        progressLayer?.beginTime = 0
         startProgressAnimation(duration: duration)
         scheduleDismissTimer(after: duration)
+        if !dismissPauseReasons.isEmpty { pauseDismissCountdown() }
     }
 
     private func startProgressAnimation(duration: TimeInterval) {
@@ -342,19 +541,25 @@ final class MeetingNotificationController {
 
     private func scheduleDismissTimer(after duration: TimeInterval) {
         dismissTimer?.invalidate()
+        timerID = UUID()
+        let timerID = self.timerID
         dismissDeadline = Date().addingTimeInterval(duration)
         dismissTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.autoDismissNow()
+                guard let self, self.timerID == timerID else { return }
+                self.autoDismissNow()
             }
         }
     }
 
     private func autoDismissNow() {
         guard !isDismissPaused else { return }
+        isAutoDismissFading = true
         animateOut { [weak self] in
             guard let self else { return }
+            self.isAutoDismissFading = false
             let wasPaused = self.isDismissPaused
+            guard !wasPaused else { return }
             let autoDismiss = self.onAutoDismiss
             let shouldFireAutoDismiss = Self.firesAutoDismissCallbackAfterFade(wasDismissPaused: wasPaused)
             if shouldFireAutoDismiss,
@@ -371,6 +576,15 @@ final class MeetingNotificationController {
     private func pauseDismissCountdown() {
         guard isVisible, !isDismissPaused else { return }
         isDismissPaused = true
+        timerID = UUID()
+        if isAutoDismissFading {
+            fadeID = UUID()
+            isAutoDismissFading = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                panel?.animator().alphaValue = 1
+            }
+        }
         if let dismissDeadline {
             remainingDismissDuration = max(0.1, dismissDeadline.timeIntervalSinceNow)
         }
@@ -385,7 +599,7 @@ final class MeetingNotificationController {
     }
 
     private func resumeDismissCountdown() {
-        guard isVisible, isDismissPaused else { return }
+        guard isVisible, isDismissPaused, dismissPauseReasons.isEmpty else { return }
         isDismissPaused = false
         scheduleDismissTimer(after: remainingDismissDuration)
 
@@ -399,18 +613,21 @@ final class MeetingNotificationController {
 
     private func animateOut(completion: @escaping () -> Void) {
         guard let panel else { completion(); return }
+        fadeID = UUID()
+        let fadeID = self.fadeID
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.2
             panel.animator().alphaValue = 0
-        }, completionHandler: completion)
+        }, completionHandler: { [weak self, weak panel] in
+            guard let self, let panel, self.panel === panel, self.fadeID == fadeID else { return }
+            completion()
+        })
     }
 
     @objc private func handleStartRecording() {
         let action = onStartRecording
-        animateOut { [weak self] in
-            self?.close()
-            action?()
-        }
+        animateOut { [weak self] in self?.close() }
+        action?()
     }
 
     @objc private func handleJoinAndRecord() {
@@ -509,6 +726,35 @@ final class MeetingNotificationController {
         return screens.filter { screen in
             seen.insert(ObjectIdentifier(screen)).inserted
         }
+    }
+}
+
+private final class MeetingNotificationPanel: NSPanel {
+    var allowsPickerKey = false
+    var isCompletionPanel = false
+    override var canBecomeKey: Bool { isCompletionPanel ? allowsPickerKey : super.canBecomeKey }
+}
+
+private final class CompletionNotificationCardView: NSView {
+    var onOpenNotes: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        // Labels and blank space open notes; button segments retain their own actions.
+        var view: NSView? = hit
+        while let current = view, current !== self {
+            if current is NSButton { return hit }
+            view = current.superview
+        }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) { onOpenNotes?() }
+    override func accessibilityPerformPress() -> Bool {
+        onOpenNotes?()
+        return true
     }
 }
 
