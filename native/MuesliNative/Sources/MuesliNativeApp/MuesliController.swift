@@ -696,6 +696,7 @@ public final class MuesliController: NSObject {
     private var bridgeDiscoveryFollowUpPending = false
     private var bridgeCompanionDiscoveryTask: Task<Void, Never>?
     private var bridgeCompanionDiscoveryActivity: NSObjectProtocol?
+    let medASRTerms = MedASRTermsState()
     private var hasStarted = false
 
     init(
@@ -816,6 +817,7 @@ public final class MuesliController: NSObject {
 
     func start() {
         hasStarted = true
+        Task { await medASRTerms.refresh() }
         MuesliController.current = self
         // Cotypist (experimental): serve the embedded typeahead input method when the build has one.
         if CotypistSetup.isAvailable {
@@ -2464,6 +2466,7 @@ public final class MuesliController: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -3092,6 +3095,29 @@ public final class MuesliController: NSObject {
         updateConfig { $0.launchAtLogin = reconciled.launchAtLogin }
     }
 
+    /// Manual UI only; canonical voice choices reject unaccepted terms first.
+    func requestMedASRLicense(onAccepted: @escaping () -> Void) {
+        Task { [weak self] in
+            guard let self else { return }
+            await MedASRTermsPresentation.request(present: { [weak self] alert, completion in
+                guard let self else { return }
+                if let host = self.alertPresentationWindow(showHistoryIfNeeded: true),
+                   let sheet = host.attachedSheet {
+                    host.makeKeyAndOrderFront(nil)
+                    sheet.makeKeyAndOrderFront(nil)
+                    return
+                }
+                self.presentAlert(alert, fallbackLogContext: "MedASR terms",
+                    includeInformativeTextInFallbackLog: false) { response in
+                    Task { await completion(response) }
+                }
+            }, onAccepted: {
+                self.medASRTerms.didAccept()
+                onAccepted()
+            })
+        }
+    }
+
     func selectBackend(_ option: BackendOption) {
         selectBackend(option, makePrimaryDictationModel: false)
     }
@@ -3181,6 +3207,16 @@ public final class MuesliController: NSObject {
     ) {
         guard option.isCompatible(currentOSVersion: modelOSVersion),
               ensureNoMeetingRetranscription() else { return }
+        if option == .medASR, !medASRTerms.isAccepted {
+            let previous = appState.selectedBackend
+            let provider = config.dictationProvider
+            requestMedASRLicense { [weak self] in
+                guard let self, self.appState.selectedBackend == previous,
+                      self.config.dictationProvider == provider else { return }
+                self.selectBackend(option, makePrimaryDictationModel: makePrimaryDictationModel)
+            }
+            return
+        }
         let replacesGemmaCleanup = !selectedPostProcessorBackend.isCompatible(with: option)
         let hasLocalCleanupModel = PostProcessorOption.runtimeOption(id: config.activePostProcessorId) != nil
         updateConfig {

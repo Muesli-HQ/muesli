@@ -104,7 +104,7 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
                     relativePath: relativePath,
                     remoteURL: remoteURL,
                     expectedByteCount: entry.size,
-                    sha256: nil
+                    sha256: entry.lfs?.sha256
                 )
                 let fingerprint = "\(entry.path):\(entry.oid ?? ""): \(entry.size ?? -1)"
                 if let existing = filesByDestination[relativePath], existing.file.remoteURL != remoteURL {
@@ -210,6 +210,16 @@ public final class HuggingFaceModelManifestResolver: @unchecked Sendable {
         let path: String
         let size: Int64?
         let oid: String?
+        let lfs: LFS?
+
+        struct LFS: Decodable {
+            let oid: String
+            var sha256: String? {
+                let value = oid.hasPrefix("sha256:") ? String(oid.dropFirst(7)) : oid
+                guard value.count == 64, value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+                return value
+            }
+        }
     }
 
     private static var huggingFaceToken: String? {

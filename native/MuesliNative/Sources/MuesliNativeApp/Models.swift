@@ -125,6 +125,13 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let medASR = BackendOption(
+        backend: "medasr", model: MedASRModel.id,
+        label: "MedASR", sizeLabel: "~212 MB",
+        description: "English medical dictation from Google, running locally.",
+        recommended: false
+    )
+
     static let cohereTranscribe = BackendOption(
         backend: "cohere",
         model: "Muesli-HQ/cohere-transcribe-coreml-mixed-precision",
@@ -242,7 +249,7 @@ struct BackendOption: Equatable {
         let all = systemManaged
             + parakeetFamily
             + whisperFamily
-            + [.phonon25, .cohereTranscribe]
+            + [.phonon25, .medASR, .cohereTranscribe]
             + streaming
             + bodhanFamily
             + experimental
@@ -495,6 +502,8 @@ struct BackendOption: Equatable {
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":

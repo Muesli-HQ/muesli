@@ -125,6 +125,7 @@ struct ModelsView: View {
             }
         }
         .background(MuesliTheme.backgroundBase)
+        .task { await controller.medASRTerms.refresh() }
         .onAppear {
             checkDownloadedModels()
             checkDownloadedPostProcModels()
@@ -266,6 +267,10 @@ struct ModelsView: View {
 
             if BackendOption.phonon25.isCompatible() {
                 modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
+            }
+
+            if BackendOption.medASR.isCompatible() {
+                modelCard(option: .medASR, logo: "google-logo")
             }
 
             if BackendOption.cohereTranscribe.isCompatible() {
@@ -1329,6 +1334,7 @@ struct ModelsView: View {
         case "fluidaudio": return "nvidia-logo"
         case "parakeet-unified": return "nvidia-logo"
         case "whisper": return "openai-logo"
+        case "medasr": return "google-logo"
         case "cohere": return "cohere-logo"
         case "qwen": return "qwen-logo"
         case "nemotron35": return "nvidia-logo"
@@ -1512,6 +1518,19 @@ struct ModelsView: View {
                         .padding(.vertical, 3)
                         .background(MuesliTheme.surfacePrimary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+
+            if option == .medASR {
+                Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                if isActive && !controller.medASRTerms.isAccepted {
+                    Button("Review terms") {
+                        controller.requestMedASRLicense {
+                            if appState.selectedBackend == .medASR { controller.selectBackend(.medASR) }
+                        }
+                    }
                 }
             }
 
@@ -1907,6 +1926,12 @@ struct ModelsView: View {
 
     private func startDownload(_ option: BackendOption) {
         guard option.isCompatible() else { return }
+        if option == .medASR, !controller.medASRTerms.isAccepted {
+            controller.requestMedASRLicense {
+                startDownload(option)
+            }
+            return
+        }
         withAnimation { _ = downloadingModels.insert(option.model) }
         downloadProgress[option.model] = 0.05  // Show initial progress immediately
         downloadMessages.removeValue(forKey: option.model)
@@ -2174,6 +2199,9 @@ struct ModelsView: View {
             WhisperKitTranscriber.deleteModel(option.model)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
+        case "medasr":
+            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
+            try MedASRModel.plan().delete(fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
@@ -2265,6 +2293,8 @@ struct ModelsView: View {
             return ManagedASRModelPlans.parakeetUnified().isAvailableLocally(fileManager: fm)
         case "qwen":
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":

@@ -121,7 +121,7 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
+        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "medasr", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber: FluidAudioTranscriber
@@ -216,6 +216,7 @@ actor TranscriptionCoordinator {
     private var _appleSpeechTranscriber: Any?
     private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
+    private let medASRTranscriber = MedASRTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var isDiarizerLoadInProgress = false
@@ -733,6 +734,25 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        if backend.backend == "medasr" { try MedASRLicense.shared.requireAcceptance() }
+        if backend.backend == "medasr", meetingHelperTrigger == .modelLibrary {
+            try await libraryModelPreparation.run {
+                _ = try await ManagedASRModelDownloader.downloadIfNeeded(MedASRModel.plan(),
+                    progress: progress, progressSnapshot: progressSnapshot)
+            } onQueued: {
+                progressSnapshot?(.preparing(modelID: backend.model, message: "Waiting to prepare MedASR..."))
+            } prepare: {
+                let transcriber = MedASRTranscriber()
+                do {
+                    try await transcriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
+                    await transcriber.shutdown()
+                } catch {
+                    await transcriber.shutdown()
+                    throw error
+                }
+            }
+            return
+        }
         if backend.backend == "fluidaudio", meetingHelperTrigger == .modelLibrary {
             // A library download is not a selection: validate in a disposable runtime
             // so independent downloads cannot cancel or replace the active manager.
@@ -816,6 +836,8 @@ actor TranscriptionCoordinator {
                     NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
                 ])
             }
+        case "medasr":
+            try await medASRTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
         case "cohere":
             if #available(macOS 15, *) {
                 try await cohereTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
@@ -1369,6 +1391,7 @@ actor TranscriptionCoordinator {
         await parakeetUnifiedTranscriber.shutdown()
         await whisperTranscriber.shutdown()
         await senseVoiceTranscriber.shutdown()
+        await medASRTranscriber.shutdown()
         if #available(macOS 15, *) {
             if let nemotron35 = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
                 await nemotron35.shutdown()
@@ -1693,6 +1716,9 @@ actor TranscriptionCoordinator {
             return try await transcribeWithParakeetUnified(url: url)
         case "qwen":
             return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
+        case "medasr":
+            let result = try await medASRTranscriber.transcribe(wavURL: url)
+            return SpeechTranscriptionResult(text: result.text, segments: [])
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "bodhan":
@@ -1778,6 +1804,10 @@ actor TranscriptionCoordinator {
                 NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
             ])
         }
+    }
+
+    func unloadMedASRTranscriber() async {
+        await medASRTranscriber.shutdown()
     }
 
     // MARK: - SenseVoiceSmall (FunASR via FluidAudio/CoreML)

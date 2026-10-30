@@ -52,6 +52,16 @@ History only after the insert succeeds. If persistence fails, it reports that
 History could not be saved and distinguishes whether the paste succeeded.
 Dictionary correction monitoring starts only after a successful paste.
 
+### Model license acknowledgements outside SQLite
+
+`MedASRLicense` owns `~/Library/Application Support/Muesli/ModelLicenses/medasr.json`,
+a per-Mac-user record shared by the app and CLI, including dev lanes. It contains
+only a terms `version` and an ISO-8601 `acceptedAt` date. Missing, malformed or
+unrecognized versions require explicit acceptance again. Removing model weights
+preserves this acknowledgement. It is local-only and does not enter SQLite,
+CloudKit, telemetry, transcripts or exports. Complete terms ship as resources;
+see [MedASR setup](docs/medasr.md).
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
