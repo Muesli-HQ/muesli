@@ -41,12 +41,12 @@ struct LiveTranscriptBubble: View {
             VStack(alignment: .leading, spacing: 2) {
                 if let speaker {
                     Text(speaker + (timestamp.map { "  \($0)" } ?? ""))
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MuesliTheme.font(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                 }
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     Text(line)
-                        .font(.system(size: 13))
+                        .font(MuesliTheme.font(size: 13))
                         .italic(isPartial)
                         .foregroundStyle(isPartial ? MuesliTheme.textSecondary : MuesliTheme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -302,7 +302,7 @@ struct LiveTranscriptView: View {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 11, weight: .semibold))
                     Text(didCopy ? "Copied" : "Copy")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(didCopy ? MuesliTheme.success : MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)

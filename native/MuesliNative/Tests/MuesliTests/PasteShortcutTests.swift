@@ -266,7 +266,7 @@ struct PasteShortcutTests {
         _ = handler?(try keyEvent(.keyDown, key: 9, flags: .command))
         _ = handler?(try keyEvent(.keyUp, key: 9))
         #expect(!conflicting.isRecording)
-        #expect(conflicting.message?.contains("another Muesli feature") == true)
+        #expect(conflicting.message?.contains("another muesli feature") == true)
         #expect(released == 2)
     }
 

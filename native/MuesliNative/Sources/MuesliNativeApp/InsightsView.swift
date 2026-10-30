@@ -101,7 +101,7 @@ struct InsightsView: View {
                 Label(backLabel, systemImage: "chevron.left")
             }
             .buttonStyle(.plain)
-            .font(.system(size: 13, weight: .semibold))
+            .font(MuesliTheme.font(size: 13, weight: .semibold))
             .foregroundStyle(InsightsPalette.secondaryText)
             .keyboardShortcut(.cancelAction)
 
@@ -111,11 +111,11 @@ struct InsightsView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("INSIGHTS")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(MuesliTheme.font(size: 11, weight: .bold))
                     .tracking(1.8)
                     .foregroundStyle(MuesliTheme.accent)
                 Text("Private and on-device")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(MuesliTheme.font(size: 13, weight: .medium))
                     .foregroundStyle(InsightsPalette.secondaryText)
             }
         }
@@ -176,7 +176,7 @@ struct InsightsView: View {
         .buttonStyle(.borderedProminent)
         .tint(MuesliTheme.accent)
         .controlSize(.large)
-        .font(.system(size: 13, weight: .semibold))
+        .font(MuesliTheme.font(size: 13, weight: .semibold))
         .fixedSize()
         .disabled(snapshot == nil)
         .help("Share an anonymous activity image")
@@ -186,23 +186,23 @@ struct InsightsView: View {
     private func hero(_ data: InsightsSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 6) {
-                    Text("Your time with Muesli")
-                        .font(.system(size: 18, weight: .semibold))
+                    Text("Your time with muesli")
+                        .font(MuesliTheme.font(size: 18, weight: .semibold))
                         .tracking(-0.4)
                         .foregroundStyle(MuesliTheme.textPrimary)
                     Text(data.lifetime.dictationWords.formatted())
-                        .font(.system(size: 58, weight: .bold, design: .rounded))
+                        .font(MuesliTheme.font(size: 58, weight: .bold, design: .rounded))
                         .tracking(-2.4)
                         .monospacedDigit()
                         .foregroundStyle(MuesliTheme.textPrimary)
                     Text("Words dictated · all time")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(MuesliTheme.font(size: 15, weight: .medium))
                         .foregroundStyle(InsightsPalette.secondaryText)
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(data.lifetime.meetingWords.formatted())
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(MuesliTheme.font(size: 30, weight: .bold, design: .rounded))
                     .monospacedDigit()
                 Text("Words transcribed in meetings · all time")
                     .foregroundStyle(InsightsPalette.secondaryText)
@@ -260,7 +260,7 @@ struct InsightsView: View {
                 }
                 Text("LOUD")
             }
-            .font(.system(size: 9, weight: .bold))
+            .font(MuesliTheme.font(size: 9, weight: .bold))
             .tracking(1.2)
             .foregroundStyle(InsightsPalette.tertiaryText)
         }
@@ -288,7 +288,7 @@ struct InsightsView: View {
             }
             if unrecordedSessions > 0 {
                 Text("Model not recorded for \(unrecordedSessions.formatted()) earlier or synced sessions. New dictations on this Mac will appear here by model.")
-                    .font(.system(size: 11))
+                    .font(MuesliTheme.font(size: 11))
                     .foregroundStyle(InsightsPalette.tertiaryText)
             }
         }
@@ -297,7 +297,7 @@ struct InsightsView: View {
 
     private func usageRanking(_ title: String, rows: [InsightsUsage], showsAppIcons: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
+            Text(title).font(MuesliTheme.font(.headline))
             if rows.isEmpty {
                 Text("No dictations in this period")
                     .foregroundStyle(InsightsPalette.secondaryText)
@@ -308,7 +308,7 @@ struct InsightsView: View {
                         usageIdentity(row, showsAppIcon: showsAppIcons)
                         Spacer()
                         Text("\(row.sessions.formatted()) sessions · \(row.words.formatted()) words")
-                            .font(.caption).foregroundStyle(InsightsPalette.secondaryText)
+                            .font(MuesliTheme.font(.caption)).foregroundStyle(InsightsPalette.secondaryText)
                     }
                     ProgressView(value: Double(row.sessions), total: Double(max(rows.first?.sessions ?? 1, 1)))
                         .tint(MuesliTheme.accent)
@@ -322,7 +322,7 @@ struct InsightsView: View {
                             Spacer()
                             Text("\(row.sessions.formatted()) sessions · \(row.words.formatted()) words")
                                 .foregroundStyle(InsightsPalette.secondaryText)
-                        }.font(.caption).padding(.vertical, 4)
+                        }.font(MuesliTheme.font(.caption)).padding(.vertical, 4)
                     }
                 }
             }
@@ -342,7 +342,7 @@ struct InsightsView: View {
                 Text(row.name).lineLimit(1).help(row.name)
                 if !showsAppIcon, let route = modelRoute(row) {
                     Text(route)
-                        .font(.caption2)
+                        .font(MuesliTheme.font(.caption2))
                         .foregroundStyle(InsightsPalette.tertiaryText)
                         .lineLimit(1)
                         .help(row.endpoint ?? route)
@@ -380,7 +380,7 @@ struct InsightsView: View {
                 panelTitle("DICTATIONS AND MEETINGS", subtitle: "Activity for the selected time period")
                 HStack(alignment: .lastTextBaseline, spacing: 8) {
                     Text(format(data.selected.dictationWords))
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        .font(MuesliTheme.font(size: 40, weight: .bold, design: .rounded))
                         .tracking(-1.5)
                         .monospacedDigit()
                     Text("words dictated")
@@ -406,7 +406,7 @@ struct InsightsView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 Text("OVERVIEW")
-                    .font(.system(size: 10, weight: .bold)).tracking(1.5)
+                    .font(MuesliTheme.font(size: 10, weight: .bold)).tracking(1.5)
                     .foregroundStyle(InsightsPalette.tertiaryText)
                 readout("Dictation sessions", format(data.selected.dictationSessions))
                 readout("Completed meetings", format(data.selected.meetings))
@@ -434,7 +434,7 @@ struct InsightsView: View {
             }
             if data.currentStreakDays == 0 {
                 Text("Dictate today to start a new streak.")
-                    .font(.caption)
+                    .font(MuesliTheme.font(.caption))
                     .foregroundStyle(InsightsPalette.secondaryText)
             }
         }
@@ -472,11 +472,11 @@ struct InsightsView: View {
     private func cotypistDatum(_ value: String, label: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(value)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .font(MuesliTheme.font(size: 32, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(MuesliTheme.accent)
             Text(label)
-                .font(.caption)
+                .font(MuesliTheme.font(.caption))
                 .foregroundStyle(InsightsPalette.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -487,15 +487,15 @@ struct InsightsView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(count.formatted())
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(MuesliTheme.font(size: 32, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(MuesliTheme.accent)
                 Text(count == 1 ? "day" : "days")
-                    .font(.caption)
+                    .font(MuesliTheme.font(.caption))
                     .foregroundStyle(InsightsPalette.secondaryText)
             }
             Text(label)
-                .font(.caption)
+                .font(MuesliTheme.font(.caption))
                 .foregroundStyle(InsightsPalette.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -584,8 +584,8 @@ struct InsightsView: View {
 
     private func heroDatum(_ label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(value).font(.system(size: 18, weight: .semibold)).monospacedDigit()
-            Text(label.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1.3).foregroundStyle(InsightsPalette.tertiaryText)
+            Text(value).font(MuesliTheme.font(size: 18, weight: .semibold)).monospacedDigit()
+            Text(label.uppercased()).font(MuesliTheme.font(size: 9, weight: .bold)).tracking(1.3).foregroundStyle(InsightsPalette.tertiaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18)
@@ -593,8 +593,8 @@ struct InsightsView: View {
 
     private func panelTitle(_ title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11, weight: .bold)).tracking(1.8).foregroundStyle(MuesliTheme.textPrimary)
-            Text(subtitle).font(.system(size: 12, weight: .regular)).foregroundStyle(InsightsPalette.secondaryText)
+            Text(title).font(MuesliTheme.font(size: 11, weight: .bold)).tracking(1.8).foregroundStyle(MuesliTheme.textPrimary)
+            Text(subtitle).font(MuesliTheme.font(size: 12)).foregroundStyle(InsightsPalette.secondaryText)
         }
     }
 
@@ -603,7 +603,7 @@ struct InsightsView: View {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label).foregroundStyle(InsightsPalette.secondaryText)
             Text(format(value)).fontWeight(.semibold).monospacedDigit()
-        }.font(.system(size: 12))
+        }.font(MuesliTheme.font(size: 12))
     }
 
     private func readout(_ label: String, _ value: String) -> some View {
@@ -611,7 +611,7 @@ struct InsightsView: View {
             Text(label).foregroundStyle(InsightsPalette.tertiaryText)
             Spacer()
             Text(value).foregroundStyle(MuesliTheme.textPrimary).monospacedDigit()
-        }.font(.system(size: 12, weight: .medium))
+        }.font(MuesliTheme.font(size: 12, weight: .medium))
     }
 
     private func format(_ value: Int) -> String { value.formatted(.number.notation(.compactName)) }
@@ -640,14 +640,14 @@ private struct InsightsLoadingStatus: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Building your Insights")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(MuesliTheme.font(size: 14, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textPrimary)
                 ZStack(alignment: .leading) {
                     Text(InsightsLoadingCopy.messages[messageIndex])
                         .id(messageIndex)
                         .transition(.opacity)
                 }
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(InsightsPalette.secondaryText)
             }
             Spacer()
@@ -765,7 +765,7 @@ private struct ActivityHeatmap: View {
                         Color.clear.frame(width: 24, height: monthLabelHeight)
                         ForEach(Array(weekdayLabels.enumerated()), id: \.offset) { _, label in
                             Text(label)
-                                .font(.system(size: 9, weight: .medium))
+                                .font(MuesliTheme.font(size: 9, weight: .medium))
                                 .foregroundStyle(InsightsPalette.tertiaryText)
                                 .frame(width: 24, height: cell, alignment: .trailing)
                         }
@@ -784,7 +784,7 @@ private struct ActivityHeatmap: View {
                                                 calendar: calendar
                                             ) {
                                                 Text(marker.formatted(.dateTime.month(.abbreviated)))
-                                                    .font(.system(size: 9, weight: .medium))
+                                                    .font(MuesliTheme.font(size: 9, weight: .medium))
                                                     .foregroundStyle(InsightsPalette.tertiaryText)
                                                     .fixedSize()
                                             }
@@ -898,10 +898,10 @@ private struct ActivityHeatmapCell: View {
             .popover(isPresented: $isHovered, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(countText)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .foregroundStyle(MuesliTheme.textPrimary)
                     Text(dateText)
-                        .font(.system(size: 11))
+                        .font(MuesliTheme.font(size: 11))
                         .foregroundStyle(InsightsPalette.secondaryText)
                 }
                 .padding(.horizontal, 12)
@@ -923,19 +923,19 @@ private struct WordCloudPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label(title, systemImage: icon)
-                .font(.system(size: 10, weight: .bold))
+                .font(MuesliTheme.font(size: 10, weight: .bold))
                 .tracking(1.5)
                 .foregroundStyle(InsightsPalette.tertiaryText)
             if words.isEmpty {
                 Text("No words to show for this time period.")
-                    .font(.system(size: 13))
+                    .font(MuesliTheme.font(size: 13))
                     .foregroundStyle(InsightsPalette.tertiaryText)
                     .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             } else {
                 WordFlowLayout(spacing: 9) {
                     ForEach(displayedWords) { item in
                         Text(item.word)
-                            .font(.system(
+                            .font(MuesliTheme.font(
                                 size: InsightsWordCloudSizing.fontSize(for: item, displayedWords: displayedWords),
                                 weight: item.count == displayedWords.first?.count ? .bold : .medium,
                                 design: .rounded
@@ -1076,31 +1076,31 @@ private struct InsightsCuriositiesView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     if let value = model.value {
                         Text(value.formatted(.number.precision(.fractionLength(0...1))))
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .font(MuesliTheme.font(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(MuesliTheme.accent)
                     }
                     Text("English words before a language switch")
-                        .font(.headline)
+                        .font(MuesliTheme.font(.headline))
                 }
                 if let error = model.errorMessage {
                     Text(error)
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                     Button("Try Again") { retryGeneration += 1 }
                 } else if !model.isLoaded {
                     ProgressView("Loading curiosity…")
                         .controlSize(.small)
                 } else if model.value == nil {
                     Text("No eligible language switches recorded yet.")
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                 }
                 Text("Just for fun: the median English stretch in Bodhan Flex Mixed dictations during this period. Estimated on this Mac from the original transcript; Romanized switches may be missed.")
-                    .font(.caption)
+                    .font(MuesliTheme.font(.caption))
                     .foregroundStyle(InsightsPalette.secondaryText)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 12)
         }
-        .font(.caption)
+        .font(MuesliTheme.font(.caption))
         .foregroundStyle(InsightsPalette.secondaryText)
         .tint(MuesliTheme.accent)
         .insightsPanel()

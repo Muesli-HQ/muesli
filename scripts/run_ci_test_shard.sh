@@ -213,6 +213,7 @@ case "${shard}" in
       MeetingChatNotesActionTests
       MeetingChatReviewTests
       MeetingChatPresentationTests
+      MuesliTypographyTests
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests

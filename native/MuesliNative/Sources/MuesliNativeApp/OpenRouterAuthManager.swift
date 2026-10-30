@@ -405,7 +405,7 @@ final class OpenRouterAuthManager {
                             case .authorizationCode(let code):
                                 Self.sendHTTPResponse(
                                     status: 200,
-                                    title: "OpenRouter connected to Muesli",
+                                    title: "OpenRouter connected to muesli",
                                     on: connection
                                 )
                                 timeout.cancel()

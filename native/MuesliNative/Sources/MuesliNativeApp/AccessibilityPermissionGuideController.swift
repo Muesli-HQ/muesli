@@ -555,10 +555,10 @@ private struct CompactAccessibilityPermissionGuideView: View {
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(AccessibilityPermissionGuideCopy.attemptedDropTitle(appName: appName))
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(MuesliTheme.font(size: 14, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.94))
                         Text(AccessibilityPermissionGuideCopy.attemptedDropDetail)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(MuesliTheme.captionMedium())
                             .foregroundStyle(Color.white.opacity(0.62))
                     }
 
@@ -574,7 +574,7 @@ private struct CompactAccessibilityPermissionGuideView: View {
                             .offset(y: arrowOffset)
 
                         Text(model.dragDirection.instruction)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(MuesliTheme.font(size: 12, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.72))
                     }
 
@@ -645,7 +645,7 @@ struct PermissionGuideAppRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 7))
 
             Text(appName)
-                .font(.system(size: 14, weight: .semibold))
+                .font(MuesliTheme.font(size: 14, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.94))
 
             Spacer()

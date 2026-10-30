@@ -17,16 +17,19 @@ struct MuesliSettingControl: View {
             if let setting = definitions.first(where: { $0.id == id }) {
                 let state = filteredSnapshot(setting)
                 if id == "appearance" {
-                    HStack(spacing: 2) {
+                    let columns = compactAppearance
+                        ? Array(repeating: GridItem(.fixed(28), spacing: 2), count: state.choices.count)
+                        : Array(repeating: GridItem(.flexible(), spacing: 4), count: 2)
+                    LazyVGrid(columns: columns, spacing: 4) {
                         ForEach(state.choices, id: \.id) { choice in
                             Button { apply(choice.id) } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: AppAppearanceMode(rawValue: choice.id)?.symbol ?? "desktopcomputer")
                                     if !compactAppearance { Text(choice.id == "system" ? "System" : choice.label) }
                                 }
-                                .font(.system(size: compactAppearance ? 10 : 12, weight: .medium))
+                                .font(MuesliTheme.font(size: compactAppearance ? 10 : 12, weight: .medium))
                                 .padding(.horizontal, compactAppearance ? 0 : 10)
-                                .frame(minWidth: 28, minHeight: compactAppearance ? 22 : 28)
+                                .frame(minWidth: 28, maxWidth: compactAppearance ? nil : .infinity, minHeight: compactAppearance ? 22 : 28)
                                 .foregroundStyle(state.current == choice.id ? MuesliTheme.accent : MuesliTheme.textSecondary)
                                 .background(RoundedRectangle(cornerRadius: 4)
                                     .fill(state.current == choice.id ? MuesliTheme.surfaceSelected : Color.clear))
@@ -41,7 +44,7 @@ struct MuesliSettingControl: View {
                     }
                     .padding(2)
                     .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .fixedSize()
+                    .fixedSize(horizontal: compactAppearance, vertical: true)
                 } else if Set(state.choices.map(\.id)) == ["on", "off"] {
                     HStack {
                         if state.current == "off", state.unavailable["on"] != nil,
@@ -52,7 +55,7 @@ struct MuesliSettingControl: View {
                         Spacer()
                         Toggle("", isOn: Binding(get: { state.current == "on" }, set: { apply($0 ? "on" : "off") }))
                             .toggleStyle(.switch)
-                            .tint(MuesliTheme.accent)
+                            .tint(MuesliTheme.toggleAccent)
                             .labelsHidden()
                             .accessibilityLabel(state.label)
                             .disabled(state.unavailable[state.current == "on" ? "off" : "on"] != nil)

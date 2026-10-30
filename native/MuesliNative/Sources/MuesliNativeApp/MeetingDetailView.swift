@@ -166,10 +166,10 @@ struct MeetingDetailView: View {
 
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                            Text("Referenced passage · \(target.citation.kind.label)").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                             Text(target.citation.excerpt).textSelection(.enabled)
                             if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
-                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
+                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(MuesliTheme.font(.caption)).foregroundStyle(.orange)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(16).background(MuesliTheme.surfaceSelected)
                     }
@@ -245,7 +245,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
         } message: {
-            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting muesli.")
         }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {
@@ -633,7 +633,7 @@ struct MeetingDetailView: View {
                             .overlay(alignment: .bottomLeading) {
                                 if manualNotesSaveStatus == .saving {
                                     Text(manualNotesSaveStatus.label)
-                                        .font(.caption).foregroundStyle(MuesliTheme.textTertiary)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
                                 }
                             }
                             .overlay(alignment: .topTrailing) {
@@ -971,7 +971,7 @@ struct MeetingDetailView: View {
                 HStack {
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
-                        Text(job.message).font(.callout)
+                        Text(job.message).font(MuesliTheme.font(.callout))
                         Spacer()
                         if job.isRunning {
                             Button("Cancel") { controller.cancelMeetingRetranscription(id: meeting.id) }
@@ -983,12 +983,12 @@ struct MeetingDetailView: View {
                 if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
                     if job.phase == .transcribing || job.phase == .diarizing { ProgressView(value: job.fraction) }
                     if !job.preview.isEmpty {
-                        Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
+                        Text(job.preview).font(MuesliTheme.font(.callout)).lineLimit(3).foregroundStyle(.secondary)
                     }
                 }
                 if let warning = appState.meetingRetranscriptions[meeting.id]?.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("meeting.retranscription.diarizationWarning")
                 }
@@ -1016,7 +1016,7 @@ struct MeetingDetailView: View {
                 Text("Recording")
             }
         }
-        .font(.system(size: 12))
+        .font(MuesliTheme.font(size: 12))
         .foregroundStyle(MuesliTheme.textSecondary)
         .accessibilityLabel(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
     }
@@ -1147,7 +1147,7 @@ struct MeetingDetailView: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                     Text(copyButtonLabel)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
@@ -1171,7 +1171,7 @@ struct MeetingDetailView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             if canEditManualNotes(for: meeting) {
                 Text(manualNotesSaveStatus.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
 
@@ -1204,7 +1204,7 @@ struct MeetingDetailView: View {
                 .fill(color)
                 .frame(width: 7, height: 7)
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
         .padding(.horizontal, MuesliTheme.spacing8)
@@ -1327,7 +1327,7 @@ struct MeetingDetailView: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Export")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
@@ -1460,7 +1460,7 @@ struct MeetingDetailView: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 10))
                 Text(label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
@@ -1491,7 +1491,7 @@ struct MeetingDetailView: View {
                 .frame(width: 14, height: 14)
                 .accessibilityLabel("Preparing transcription")
             Text(appState.meetingStartStatus ?? "Meeting transcription will start shortly.")
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .lineLimit(1)
         }
@@ -1521,9 +1521,9 @@ struct MeetingDetailView: View {
                 Image(systemName: isPaused ? "play.fill" : "pause.fill")
                     .font(.system(size: 10, weight: .semibold))
                 Text(isPaused ? "Resume" : "Pause")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(isPaused ? Color.white : MuesliTheme.textPrimary)
+            .foregroundStyle(isPaused ? MuesliTheme.onAccent : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
             .background(isPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
@@ -1553,9 +1553,9 @@ struct MeetingDetailView: View {
                     Image(systemName: "record.circle")
                         .font(.system(size: 10, weight: .semibold))
                     Text("Resume")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(Color.white)
+                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 7)
                 .background(MuesliTheme.accent)
@@ -1577,7 +1577,7 @@ struct MeetingDetailView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 8)
                     .frame(maxHeight: .infinity)
                     .background(MuesliTheme.accent)
@@ -1606,7 +1606,7 @@ struct MeetingDetailView: View {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Stop")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, MuesliTheme.spacing12)
@@ -1648,7 +1648,7 @@ struct MeetingDetailView: View {
                     )
                 }
                 Text("Thread \u{00B7} \(threadContext.count) meetings")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
                 switch threadContext.successors.count {
                 case 0:
@@ -1664,7 +1664,7 @@ struct MeetingDetailView: View {
                 default:
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Follow-ups (\(threadContext.successors.count))")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(MuesliTheme.font(size: 11, weight: .medium))
                             .foregroundStyle(MuesliTheme.textTertiary)
                         ForEach(threadContext.successors) { successor in
                             threadLink(
@@ -1691,7 +1691,7 @@ struct MeetingDetailView: View {
                 Image(systemName: icon)
                     .font(.system(size: 9, weight: .semibold))
                 Text(text)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
             }
             .foregroundStyle(MuesliTheme.accent)
@@ -1713,7 +1713,7 @@ struct MeetingDetailView: View {
                 Image(systemName: hasFolder ? "folder.fill" : "folder.badge.plus")
                     .font(.system(size: 10))
                 Text(currentFolder?.name ?? "Add to folder")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -1804,7 +1804,7 @@ struct MeetingDetailView: View {
                 Button("Open Settings") {
                     controller.openHistoryWindow(tab: .settings)
                 }
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.accent)
                 .buttonStyle(.plain)
             }
@@ -2245,7 +2245,7 @@ struct MarqueeTitleTextField: View {
     @State private var marqueeRunID = UUID()
     @FocusState private var isTitleFocused: Bool
 
-    private var titleFont: Font { .system(size: titleSize, weight: .bold) }
+    private var titleFont: Font { MuesliTheme.font(size: titleSize, weight: .bold) }
 
     var body: some View {
         // The row's size comes from the clear base. The full-width marquee text lives in an
@@ -2515,7 +2515,7 @@ struct TranscriptChatBubble: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let metadata = metadata {
                     Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MuesliTheme.font(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .textSelection(.enabled)
                 }

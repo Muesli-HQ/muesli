@@ -23,8 +23,8 @@ struct GranolaImportView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let report {
-                        Label(report.imported > 0 ? "Your meetings have been imported." : "These meetings are already in Muesli.", systemImage: "checkmark.circle")
-                            .font(.headline)
+                        Label(report.imported > 0 ? "Your meetings have been imported." : "These meetings are already in muesli.", systemImage: "checkmark.circle")
+                            .font(MuesliTheme.font(.headline))
                     } else {
                         if showsExportGuide {
                             Button { showsLargeGuide = true } label: {
@@ -41,11 +41,11 @@ struct GranolaImportView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(record.title.isEmpty ? "Untitled document" : record.title).fontWeight(.medium)
                                     Text("Created \(record.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(record.workspace)")
-                                        .font(.caption).foregroundStyle(MuesliTheme.textSecondary)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 Divider()
                             }
-                            if records.count > 50 { Text("Previewing the first 50 meetings").font(.caption) }
+                            if records.count > 50 { Text("Previewing the first 50 meetings").font(MuesliTheme.font(.caption)) }
                         }
                     }
                     if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }

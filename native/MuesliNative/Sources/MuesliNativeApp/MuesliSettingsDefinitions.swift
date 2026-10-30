@@ -16,6 +16,9 @@ extension MuesliController {
             apply: { value in
                 guard let mode = AppAppearanceMode(rawValue: value) else { return }
                 self.updateConfig { $0.appearanceMode = mode }
+            }, voiceUnavailable: { value in
+                value == AppAppearanceMode.ultraDark.rawValue
+                    ? "Choose Ultra Dark in Settings → Appearance." : nil
             })
     }
 

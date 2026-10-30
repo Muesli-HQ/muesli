@@ -33,9 +33,9 @@ public struct AIActivityRow: View {
         HStack(alignment: .top, spacing: 8) {
             stateIndicator.frame(width: 16, height: 16).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 12, weight: .medium))
+                Text(title).font(theme.font(size: 12, weight: .medium))
                 if let detail, !detail.isEmpty {
-                    Text(detail).font(.system(size: 12)).foregroundStyle(theme.muted)
+                    Text(detail).font(theme.font(size: 12)).foregroundStyle(theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

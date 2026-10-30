@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>muesli design language system</title>
 <style>
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-Regular.ttf') format('truetype'); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-Medium.ttf') format('truetype'); font-weight:500; font-style:normal; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-SemiBold.ttf') format('truetype'); font-weight:600; font-style:normal; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-Bold.ttf') format('truetype'); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-ExtraBold.ttf') format('truetype'); font-weight:800; font-style:normal; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-Italic.ttf') format('truetype'); font-weight:400; font-style:italic; font-display:swap; }
+@font-face { font-family:'Nunito Sans'; src:url('../native/MuesliNative/Sources/MuesliNativeApp/Resources/Fonts/NunitoSans-BoldItalic.ttf') format('truetype'); font-weight:700; font-style:italic; font-display:swap; }
   :root {
     --bg-deep: #0B0C0E;
     --bg-base: #161719;
@@ -25,7 +32,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Nunito Sans', -apple-system, sans-serif;
     background: var(--bg-deep);
     color: var(--text-primary);
     line-height: 1.6;
@@ -319,7 +326,7 @@
   .btn-primary {
     display: inline-block;
     background: var(--accent);
-    color: white;
+    color: var(--on-accent);
     padding: 8px 20px;
     border-radius: 6px;
     font-size: 14px;
@@ -370,6 +377,19 @@
     --text-primary:rgba(0,0,0,0.88); --text-secondary:rgba(0,0,0,0.66); --text-tertiary:rgba(0,0,0,0.55);
     --accent:#2563EB; --accent-subtle:rgba(37,99,235,0.15); --border:rgba(0,0,0,0.08);
   }
+  :root { --toggle-accent:#6BA3F7; --on-accent:white; }
+  :root[data-theme="light"] { --toggle-accent:#2563EB; }
+  :root[data-theme="ultra"] {
+    --bg-deep:#000; --bg-base:#000; --bg-raised:#0A0A0A; --bg-hover:#181818;
+    --surface-primary:#121212; --surface-selected:#222; --text-primary:#FFF;
+    --text-secondary:rgba(255,255,255,.80); --text-tertiary:rgba(255,255,255,.65);
+    --accent:#FFF; --accent-subtle:rgba(255,255,255,.15); --border:rgba(255,255,255,.28); --on-accent:#000;
+  }
+  .settings-specimen { background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .settings-specimen-row { display:flex; align-items:center; gap:20px; justify-content:space-between; padding:12px 0; }
+  .switch-demo { width:34px; height:20px; border-radius:12px; background:var(--toggle-accent); padding:2px; flex-shrink:0; }
+  .switch-demo::after { content:""; display:block; margin-left:auto; width:16px; height:16px; border-radius:50%; background:white; }
+  h2[id] { scroll-margin-top:80px; }
   .reference-toolbar { position:sticky; top:0; z-index:2; display:flex; justify-content:space-between; gap:16px; padding:12px 24px; background:var(--bg-base); border-bottom:1px solid var(--border); font-size:13px; }
   a { color:var(--accent); }
   button { font:inherit; cursor:pointer; }
@@ -415,7 +435,7 @@
 <body>
 <nav class="reference-toolbar" aria-label="Reference preview">
   <a href="#ui-polish">UI patterns · PR #584</a>
-  <button id="theme-toggle" type="button" aria-pressed="false">Preview light mode</button>
+  <label>Preview <select id="theme-toggle"><option value="dark">Dark</option><option value="light">Light</option><option value="ultra">Ultra Dark</option></select></label>
 </nav>
 
 <!-- COVER -->
@@ -488,8 +508,8 @@
 
 <!-- 2. TYPOGRAPHY -->
 <section class="page-break">
-  <h2><span class="num">02</span> Typography</h2>
-  <p class="section-desc">The native interface uses system SF Pro through SwiftUI system fonts. Use monospaced digits for numeric statistics and a 15pt reading style for dictations, meeting notes, and transcripts. Browser examples use the local system font; no remote font dependency.</p>
+  <h2 id="typography"><span class="num">02</span> Typography</h2>
+  <p class="section-desc">Nunito Sans is the standard across onboarding, chat, settings and auxiliary windows. Use MuesliTheme for SwiftUI and AppFonts for AppKit. The seven bundled faces are loaded locally in this reference. SF Symbols retain system fonts; code retains a system monospaced face.</p>
 
   <h3>Type Scale</h3>
   <div class="type-sample"><div class="meta-row"><span class="size-label">title1 &middot; 26pt Bold</span></div><div style="font-size:26px;font-weight:700">Meeting Summary</div></div>
@@ -502,11 +522,20 @@
 
   <div class="type-sample"><div class="meta-row"><span class="size-label">reading &middot; 15pt Regular</span></div><div class="reading-sample">Clear notes should be comfortable to read. Use a 720pt maximum reading column and 5pt additional line spacing for meeting content; dictation previews use 3pt.</div></div>
 
+  <div class="type-sample"><div class="meta-row"><span class="size-label">sectionHeading · 12pt Semibold</span></div><div style="font-size:12px;font-weight:600;color:var(--text-secondary)">GENERAL</div></div>
+  <div class="type-sample"><div class="meta-row"><span class="size-label">metadata · 11pt Medium</span></div><div style="font-size:11px;font-weight:500;color:var(--text-tertiary)">Keyboard hint · secondary metadata</div></div>
+  <h3>Quiet, tactile settings</h3>
+  <p class="pattern-note">Use layered surfaces, restrained borders and rounded controls. Keep labels at 14pt and necessary helper copy at 12pt; omit repeated subtitles. Use 275pt control columns and stack below labels when content is narrower than 540pt. Avoid decorative rendering cost and preserve focus, IME and undo.</p>
+  <div class="settings-specimen">
+    <div style="font-size:12px;font-weight:600;color:var(--text-secondary)">GENERAL</div>
+    <div class="settings-specimen-row"><span style="font-size:14px">Open dashboard on launch</span><span class="switch-demo" role="img" aria-label="Enabled toggle with saved accent color"></span></div>
+  </div>
+  <p class="pattern-note">Ultra Dark: black backgrounds, white primary accents, stronger text and borders. Toggles retain the saved accent color; status colors retain their meaning. Only Settings → Appearance offers Ultra Dark. Settings order: General, Dictations, Meetings, Appearance, Experimental. Computer Use, Quill and Cotypist belong in Experimental.</p>
   <h3>Special Variants</h3>
   <table>
     <tr><th>Variant</th><th>Usage</th><th>Example</th></tr>
     <tr><td>Monospaced 13pt</td><td>Timestamps; transcript editing uses the reading style</td><td><code style="font-family:monospace">2026-03-16 09:41</code></td></tr>
-    <tr><td>Rounded 24pt Semibold</td><td>Hotkey display in onboarding</td><td>Left Cmd</td></tr>
+    <tr><td>Nunito Sans 24pt Semibold</td><td>Hotkey display in onboarding</td><td>Left Cmd</td></tr>
     <tr><td>Monospaced 12pt Semibold</td><td>Version display</td><td><code style="font-family:monospace">v0.4.0</code></td></tr>
   </table>
 </section>
@@ -999,12 +1028,12 @@
     <div class="accent-example"><i style="background:#10b981"></i>Green</div>
     <div class="accent-example"><i style="background:#8b5cf6"></i>Purple</div>
     <div class="accent-example"><i style="background:#ec4899"></i>Pink</div>
-    <div class="accent-example"><i class="selected" style="background:var(--accent)" aria-label="Selected">✓</i>Default</div>
+    <div class="accent-example"><i class="selected" style="background:var(--toggle-accent)" aria-label="Selected">✓</i>Default</div>
   </div>
   <p class="pattern-note">Default is adaptive blue: #6BA3F7 in dark mode, #2563EB in light mode. Its stored legacy value, 1e1e2e, is a sentinel, never a dark swatch. Custom colors use their literal hex. A white checkmark plus ring indicates selection; accessibility announces the name and selected state.</p>
 
   <h3>Supporting Actions</h3>
-  <div class="component-preview demo-row"><div><strong>Insights sharing</strong><span class="metadata">A visible action beside the time-range controls</span></div><span class="push-right" style="display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:white;padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600"><svg width="16" height="18" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M5 6H2V17H14V6H11M8 12V1M4 5L8 1L12 5" stroke-linecap="round" stroke-linejoin="round"/></svg>Share</span></div>
+  <div class="component-preview demo-row"><div><strong>Insights sharing</strong><span class="metadata">A visible action beside the time-range controls</span></div><span class="push-right" style="display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:var(--on-accent);padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600"><svg width="16" height="18" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M5 6H2V17H14V6H11M8 12V1M4 5L8 1L12 5" stroke-linecap="round" stroke-linejoin="round"/></svg>Share</span></div>
   <p class="pattern-note">Insights uses a large native bordered-prominent Share button, tinted with the chosen accent. Always show both the icon and the Share label. At narrow widths, move actions below the range picker instead of compressing the label. Disable sharing until a snapshot loads; activating it opens the existing anonymous-image preview.</p>
   <div class="component-preview">
     <div class="demo-row"><div><strong>Sync with iPhone or iPad</strong><span class="metadata">Turn on iCloud sync to get started.</span></div><span class="quiet-button push-right">Set up sync</span></div>
@@ -1052,16 +1081,13 @@
 <!-- FOOTER -->
 <section style="text-align:center;padding:60px 40px;color:var(--text-tertiary);font-size:12px">
   <div class="divider"></div>
-  <p>muesli design language system &middot; PR #584 &middot; October 8, 2026</p>
+  <p>muesli design language system &middot; Updated October 30, 2026</p>
   <p style="margin-top:4px">Source of truth: <code>MuesliTheme.swift</code> &middot; <code>FloatingIndicatorController.swift</code> &middot; <code>SidebarView.swift</code></p>
 </section>
 
 <script>
-  document.getElementById('theme-toggle').addEventListener('click', function () {
-    const light = document.documentElement.dataset.theme !== 'light';
-    document.documentElement.dataset.theme = light ? 'light' : 'dark';
-    this.setAttribute('aria-pressed', String(light));
-    this.textContent = light ? 'Preview dark mode' : 'Preview light mode';
+  document.getElementById('theme-toggle').addEventListener('change', function () {
+    document.documentElement.dataset.theme = this.value;
   });
 </script>
 </body>

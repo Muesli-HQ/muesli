@@ -229,7 +229,7 @@ struct DictationRowView: View {
                         }
 
                         Text(event.body)
-                            .font(.system(
+                            .font(MuesliTheme.font(
                                 size: 12,
                                 weight: .regular,
                                 design: ["model_output", "quil_model"].contains(event.kind) ? .monospaced : .default

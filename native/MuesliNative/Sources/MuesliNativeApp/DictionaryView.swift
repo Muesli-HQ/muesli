@@ -49,7 +49,7 @@ struct DictionaryView: View {
                 controller.requestDictionaryCorrectionAccessibilityEnable()
             }
         } message: {
-            Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
+            Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch muesli to turn suggestions on.")
         }
         .alert(
             "Dictionary",
@@ -79,6 +79,7 @@ struct DictionaryView: View {
                     )
                 )
                 .toggleStyle(.switch)
+                .tint(MuesliTheme.toggleAccent)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("Briefly reads focused app text after dictation to detect corrections.")
@@ -87,7 +88,7 @@ struct DictionaryView: View {
                     importDictionary()
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, MuesliTheme.spacing8)
@@ -104,7 +105,7 @@ struct DictionaryView: View {
                     exportDictionary()
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .padding(.horizontal, MuesliTheme.spacing12)
                         .padding(.vertical, MuesliTheme.spacing8)
@@ -127,7 +128,7 @@ struct DictionaryView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 11, weight: .bold))
                         Text("Add new")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(MuesliTheme.font(size: 13, weight: .medium))
                     }
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .padding(.horizontal, MuesliTheme.spacing12)
@@ -155,7 +156,7 @@ struct DictionaryView: View {
 
     private func importDictionary() {
         let panel = NSOpenPanel()
-        panel.title = "Import Muesli Dictionary"
+        panel.title = "Import muesli Dictionary"
         panel.message = "Choose a JSON dictionary file"
         panel.prompt = "Import"
         panel.allowedContentTypes = [.json]
@@ -193,7 +194,7 @@ struct DictionaryView: View {
 
     private func exportDictionary() {
         let panel = NSSavePanel()
-        panel.title = "Export Muesli Dictionary"
+        panel.title = "Export muesli Dictionary"
         panel.prompt = "Export"
         panel.nameFieldStringValue = "muesli-dictionary.json"
         panel.allowedContentTypes = [.json]
@@ -232,7 +233,7 @@ struct DictionaryView: View {
                     Text("Suggested Corrections")
                         .font(MuesliTheme.headline())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Corrections Muesli noticed by briefly reading focused app text after dictation.")
+                    Text("Corrections muesli noticed by briefly reading focused app text after dictation.")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                 }
@@ -620,7 +621,7 @@ private struct ThresholdEditor: View {
                         .frame(width: 48)
                         .onSubmit(commitDraftPercent)
                     Text("%")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }

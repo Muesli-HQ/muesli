@@ -147,7 +147,8 @@ struct NotchIndicatorGeometry: Equatable {
 
     func instructionFrame(in screen: CGRect, requiresReview: Bool = false, resultCount: Int = 0) -> CGRect {
         let width = min(440, screen.width)
-        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 30
+        // Two 10pt Nunito Sans lines plus the VStack gap need 34pt per result.
+        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 34
         return CGRect(x: expandedOriginX(width: width, in: screen),
                       y: cutout.minY - height, width: width, height: height)
     }
@@ -600,7 +601,7 @@ private struct NotchStatusView: View {
 
     var body: some View {
         Text(message)
-            .font(.system(size: 13, weight: .medium))
+            .font(MuesliTheme.font(size: 13, weight: .medium))
             .foregroundStyle(.white)
             .lineLimit(2)
             .help(message)
@@ -629,13 +630,13 @@ struct NotchLiveInstructionView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 if let appIcon { Image(nsImage: appIcon).resizable().frame(width: 18, height: 18) }
-                Text(appName.isEmpty ? "Instruction" : appName).font(.caption).foregroundStyle(.white.opacity(0.65))
+                Text(appName.isEmpty ? "Instruction" : appName).font(MuesliTheme.font(.caption)).foregroundStyle(.white.opacity(0.65))
                 Spacer()
                 Button(action: onCollapse) { Image(systemName: "chevron.up") }
                     .accessibilityLabel("Collapse instruction")
             }
             ScrollView {
-                Text(instruction).font(.system(size: 13, weight: .medium))
+                Text(instruction).font(MuesliTheme.font(size: 13, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
@@ -643,7 +644,7 @@ struct NotchLiveInstructionView: View {
                 if outcome != nil || requiresReview {
                     Image(systemName: "exclamationmark.bubble").foregroundStyle(accent)
                 } else { ProgressView().controlSize(.small).tint(accent) }
-                Text(status).font(.caption).lineLimit(2)
+                Text(status).font(MuesliTheme.font(.caption)).lineLimit(2)
                 Spacer()
                 Button(outcome != nil || requiresReview ? "Dismiss" : "Cancel", action: onCancel).buttonStyle(.bordered)
             }
@@ -658,15 +659,15 @@ struct NotchLiveInstructionView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .font(.system(size: 10))
+                    .font(MuesliTheme.font(size: 10))
                     .foregroundStyle(.white.opacity(0.75))
-                    .frame(height: 24, alignment: .top)
+                    .frame(minHeight: 28, alignment: .top)
                     .help("Full response available in Timeline")
                 }
             }
             if requiresReview {
-                Text("Your attention is needed. Review the details in Muesli.")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
+                Text("Your attention is needed. Review the details in muesli.")
+                    .font(MuesliTheme.caption()).foregroundStyle(.white.opacity(0.65))
                 Button("Review in app", action: onReview).buttonStyle(.borderedProminent)
             }
         }
@@ -678,6 +679,7 @@ struct NotchLiveInstructionView: View {
             UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
                 .strokeBorder(accent.opacity(0.5), lineWidth: 0.75).allowsHitTesting(false)
         }
+        .font(MuesliTheme.callout())
         .foregroundStyle(.white).tint(accent).preferredColorScheme(.dark)
     }
 }
@@ -740,18 +742,18 @@ private struct NotchIndicatorView: View {
                     HStack(spacing: 5) {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 16, height: 16)
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(title).font(.system(size: 10, weight: .semibold))
+                            Text(title).font(MuesliTheme.font(size: 10, weight: .semibold))
                                 .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
                             if cursorInsertionStopped {
-                                Text("Still recording").font(.system(size: 9))
+                                Text("Still recording").font(MuesliTheme.font(size: 9))
                             }
                         }.lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open Muesli home")
-                .help(cursorInsertionStopped ? detail : "Open Muesli home")
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open muesli home")
+                .help(cursorInsertionStopped ? detail : "Open muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")

@@ -174,7 +174,7 @@ private final class IdleShortcutPillView: NSView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .regular),
+            .font: AppFonts.font(size: 15, weight: .regular),
             .foregroundColor: NSColor.white.withAlphaComponent(0.88),
             .paragraphStyle: paragraph
         ]
@@ -833,7 +833,7 @@ final class FloatingIndicatorController: NSObject {
            let screen = NSScreen.main {
             let title: String
             switch state {
-            case .idle: title = "Muesli"
+            case .idle: title = "muesli"
             case .preparing: title = "Preparing"
             case .recording: title = insertionStopReason?.compactTitle ?? (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Rewriting" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
@@ -947,7 +947,7 @@ final class FloatingIndicatorController: NSObject {
                 if let insertionStopReason {
                     configureTextLabelForTranscript(false)
                     textLabel.stringValue = insertionStopReason.title
-                    textLabel.font = .systemFont(ofSize: 11, weight: .medium)
+                    textLabel.font = AppFonts.font(size: 11, weight: .medium)
                     textLabel.textColor = .systemYellow
                     textLabel.toolTip = insertionStoppedDetail
                     textLabel.setAccessibilityLabel(insertionStoppedDetail)
@@ -1108,7 +1108,7 @@ final class FloatingIndicatorController: NSObject {
             iconLabel.textColor = .white
 
             textLabel.stringValue = label
-            textLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            textLabel.font = AppFonts.font(size: 11, weight: .semibold)
             textLabel.textColor = .white.withAlphaComponent(0.92)
             textLabel.isHidden = label.isEmpty
             textLabel.animator().alphaValue = label.isEmpty ? 0 : 1
@@ -1195,7 +1195,7 @@ final class FloatingIndicatorController: NSObject {
         guard let screen = NSScreen.main?.visibleFrame else { return }
 
         preservesCollapsedLeftEdge = false
-        let warningFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let warningFont = AppFonts.font(size: 11, weight: .medium)
         let warningSize = warningPillSize(
             message: message,
             icon: icon,
@@ -1296,7 +1296,7 @@ final class FloatingIndicatorController: NSObject {
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]
+        let attrs: [NSAttributedString.Key: Any] = [.font: AppFonts.font(size: 11, weight: .medium)]
         let measuredTextW = ceil((message as NSString).size(withAttributes: attrs).width) + 2
         let availableTextW = max(40, loadingSize.width - (horizontalPadding * 2) - spinnerSize - gap)
         let textW = min(measuredTextW, availableTextW)
@@ -1333,17 +1333,18 @@ final class FloatingIndicatorController: NSObject {
             loadingSpinner?.startAnimation(nil)
 
             textLabel.stringValue = message
-            textLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            textLabel.font = AppFonts.font(size: 11, weight: .medium)
             textLabel.lineBreakMode = .byTruncatingTail
             textLabel.maximumNumberOfLines = 1
             textLabel.usesSingleLineMode = true
             textLabel.cell?.wraps = false
             textLabel.cell?.isScrollable = false
             textLabel.textColor = NSColor.colorWith(hex: 0xFFFFFF, alpha: 0.82)
+            let textHeight = ceil(textLabel.intrinsicContentSize.height)
             textLabel.frame = NSRect(
                 x: startX + spinnerSize + gap,
-                y: (loadingSize.height - 14) / 2,
-                width: textW, height: 14
+                y: (loadingSize.height - textHeight) / 2,
+                width: textW, height: textHeight
             )
             textLabel.isHidden = false
             textLabel.animator().alphaValue = 1
@@ -1352,7 +1353,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func loadingPillSize(message: String, screen: NSRect) -> NSSize {
-        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let font = AppFonts.font(size: 11, weight: .medium)
         let spinnerSize: CGFloat = 16
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16
@@ -1746,7 +1747,7 @@ final class FloatingIndicatorController: NSObject {
         config: AppConfig
     ) -> (pill: CGRect, title: String, font: NSFont, textWidth: CGFloat) {
         let title = config.dictationStartPrompt
-        let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let font = AppFonts.font(size: 13, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width) + 4
         let pad: CGFloat = 14
         let gap: CGFloat = 6
@@ -1838,11 +1839,12 @@ final class FloatingIndicatorController: NSObject {
             textLabel.alignment = .left
             textLabel.isHidden = !isHovered
             textLabel.alphaValue = isHovered ? 1 : 0
+            let textHeight = ceil(textLabel.intrinsicContentSize.height)
             textLabel.frame = NSRect(
                 x: pillFrame.minX + 14 + 15 + 6,
-                y: pillFrame.midY - 8,
+                y: pillFrame.midY - textHeight / 2,
                 width: textWidth,
-                height: 16
+                height: textHeight
             )
         }
     }
@@ -1967,7 +1969,7 @@ final class FloatingIndicatorController: NSObject {
                 let gap: CGFloat = 6
                 let horizontalPadding: CGFloat = 14
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 11, weight: .regular)
+                    .font: AppFonts.font(size: 11, weight: .regular)
                 ]
                 let measuredTextW = max(
                     ceil((transcribingTitle as NSString).size(withAttributes: attrs).width),
@@ -1980,7 +1982,7 @@ final class FloatingIndicatorController: NSObject {
                 wand.frame = NSRect(x: startX, y: (frameSize.height - iconSize.height) / 2,
                                     width: iconSize.width, height: iconSize.height)
                 // Reposition text label to sit right of the wand.
-                let textH: CGFloat = 14
+                let textH = max(16, ceil(textLabel?.intrinsicContentSize.height ?? 16))
                 textLabel?.frame = NSRect(x: startX + iconSize.width + gap,
                                           y: (frameSize.height - textH) / 2,
                                           width: textW, height: textH)
@@ -2004,14 +2006,14 @@ final class FloatingIndicatorController: NSObject {
     private static func configureTextLabel(_ textLabel: NSTextField, forTranscript isTranscript: Bool) {
         textLabel.alignment = .left
         if isTranscript {
-            textLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            textLabel.font = AppFonts.font(size: 12, weight: .medium)
             textLabel.lineBreakMode = .byWordWrapping
             textLabel.maximumNumberOfLines = 0
             textLabel.usesSingleLineMode = false
             textLabel.cell?.wraps = true
             textLabel.cell?.isScrollable = false
         } else {
-            textLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            textLabel.font = AppFonts.font(size: 11, weight: .regular)
             textLabel.lineBreakMode = .byTruncatingTail
             textLabel.maximumNumberOfLines = 1
             textLabel.usesSingleLineMode = true
@@ -2115,7 +2117,7 @@ final class FloatingIndicatorController: NSObject {
 
         let textLabel = NSTextField(labelWithString: "")
         textLabel.alignment = .left
-        textLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        textLabel.font = AppFonts.font(size: 11, weight: .regular)
         Self.configureTextLabel(textLabel, forTranscript: false)
         contentView.addSubview(textLabel)
 
@@ -2154,7 +2156,7 @@ final class FloatingIndicatorController: NSObject {
         guard !label.isEmpty else {
             return NSSize(width: 36, height: 36)
         }
-        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let font = AppFonts.font(size: 11, weight: .semibold)
         let textWidth = ceil((label as NSString).size(withAttributes: [.font: font]).width)
         return NSSize(width: min(max(84, textWidth + 48), 190), height: 34)
     }
@@ -2431,7 +2433,7 @@ final class FloatingIndicatorController: NSObject {
             }
         case .preparing: size = NSSize(width: 76, height: 22)
         case .recording:
-            let textWidth = ((insertionStopReason?.title ?? "") as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width
+            let textWidth = ((insertionStopReason?.title ?? "") as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .medium)]).width
             size = NSSize(width: cursorInsertionStopped ? ceil(textWidth) + 54 : 76, height: 22)
         case .transcribing:
             hideShortcutPillChrome()
@@ -2653,7 +2655,7 @@ final class FloatingIndicatorController: NSObject {
 
     static func idleHoverPillSize(hotkeyLabel: String, screenWidth: CGFloat, isToggle: Bool = false) -> NSSize {
         let title = "\(isToggle ? "Press" : "Hold") \(hotkeyLabel) to dictate"
-        let font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        let font = AppFonts.font(size: 11, weight: .regular)
         let textWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         let preferredWidth = 42 + textWidth + 22
         let maxWidth = max(CGFloat(180), screenWidth - 32)
@@ -2692,7 +2694,7 @@ final class FloatingIndicatorController: NSObject {
         let size = computerUseTranscriptPillSizeForTesting(transcript: normalized, screenWidth: screenWidth)
         return (
             allocated: max(16, size.height - 24),
-            required: transcriptTextFieldHeight(normalized, font: .systemFont(ofSize: 12, weight: .medium), width: max(40, size.width - 58))
+            required: transcriptTextFieldHeight(normalized, font: AppFonts.font(size: 12, weight: .medium), width: max(40, size.width - 58))
         )
     }
 
@@ -2708,7 +2710,7 @@ final class FloatingIndicatorController: NSObject {
             screenHeight: screenHeight
         )
         let textWidth = max(40, size.width - 80)
-        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let font = AppFonts.font(size: 12, weight: .medium)
         return (
             allocated: max(16, size.height - 24),
             required: transcriptTextFieldHeight(normalized, font: font, width: textWidth)
@@ -2716,7 +2718,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private static func transcribingPillSize(title: String, screenWidth: CGFloat) -> NSSize {
-        let font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        let font = AppFonts.font(size: 11, weight: .regular)
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 6
         let horizontalPadding: CGFloat = 14
@@ -2733,7 +2735,7 @@ final class FloatingIndicatorController: NSObject {
         showsProgress: Bool
     ) -> NSSize {
         let normalized = normalizedInstructionTranscript(transcript)
-        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let font = AppFonts.font(size: 12, weight: .medium)
         let iconWidth: CGFloat = 18
         let gap: CGFloat = 8
         let horizontalPadding: CGFloat = 16

@@ -18,7 +18,7 @@ final class MeetingCaptureLifecycle: @unchecked Sendable {
     enum StartError: LocalizedError {
         case timedOut
         var errorDescription: String? {
-            "The audio device did not finish starting. Muesli is releasing capture before another recording can start."
+            "The audio device did not finish starting. muesli is releasing capture before another recording can start."
         }
     }
 

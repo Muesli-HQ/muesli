@@ -11,10 +11,11 @@ BUILD_CONFIG="${1:-release}"
 APP_BINARY="MuesliNativeApp"
 CLI_BINARY="muesli-cli"
 APP_NAME="${MUESLI_APP_NAME:-Muesli}"
-APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$APP_NAME}"
+DEFAULT_APP_DISPLAY_NAME="${APP_NAME/#Muesli/muesli}"
+APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$DEFAULT_APP_DISPLAY_NAME}"
 APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
 APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Muesli}"
-APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
+APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
@@ -347,9 +348,8 @@ cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin
 cp "$ROOT/assets/insights-share-background.png" "$STAGED_APP_DIR/Contents/Resources/insights-share-background.png"
 cp "$ROOT/assets/muesli_app_icon.png" "$STAGED_APP_DIR/Contents/Resources/muesli_app_icon.png"
 cp "$ROOT/assets/quill-icon.svg" "$STAGED_APP_DIR/Contents/Resources/quill-icon.svg"
-if [[ -d "$ROOT/assets/fonts" ]]; then
-  ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
-fi
+# App typography ships in the MuesliNativeApp SwiftPM resource bundle. Do not
+# also ship the retired Inter assets; no native surface loads them anymore.
 if [[ -d "$ROOT/assets/audio" ]]; then
   ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
@@ -362,7 +362,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleDisplayName</key>
   <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleIdentifier</key>

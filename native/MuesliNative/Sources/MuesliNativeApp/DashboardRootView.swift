@@ -145,7 +145,7 @@ struct DashboardRootView: View {
             }
         }
         .alert(
-            appState.contributionMilestonePrompt?.title ?? "Muesli milestone",
+            appState.contributionMilestonePrompt?.title ?? "muesli milestone",
             isPresented: Binding(
                 get: { appState.contributionMilestonePrompt != nil },
                 set: { if !$0 { controller.dismissContributionMilestonePrompt() } }
@@ -162,12 +162,12 @@ struct DashboardRootView: View {
                 }
             }
             if appState.contributionMilestonePrompt?.showTweetAboutMuesli == true {
-                Button("Tweet about Muesli") {
+                Button("Tweet about muesli") {
                     controller.openContributionMilestoneAction(.tweetAboutMuesli)
                 }
             }
             if appState.contributionMilestonePrompt?.showPostOnLinkedIn == true {
-                Button("Post about Muesli on LinkedIn") {
+                Button("Post about muesli on LinkedIn") {
                     controller.openContributionMilestoneAction(.postOnLinkedIn)
                 }
             }
@@ -195,6 +195,7 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+        .font(MuesliTheme.body())
     }
 
     private var hasOpenMeeting: Bool {

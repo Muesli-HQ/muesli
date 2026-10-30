@@ -258,7 +258,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Settings…", action: #selector(MuesliController.openSettingsTab)))
-        menu.addItem(actionItem(title: "What's New in Muesli", action: #selector(MuesliController.showWhatsNew)))
+        menu.addItem(actionItem(title: "What's New in muesli", action: #selector(MuesliController.showWhatsNew)))
         menu.addItem(checkForUpdatesItem())
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Quit", action: #selector(MuesliController.quitApp)))
@@ -431,7 +431,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let record = actionItem(title: "Record Meeting", action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)))
             record.representedObject = payload
             actions.addItem(record)
-            let hide = actionItem(title: "Hide from Muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
+            let hide = actionItem(title: "Hide from muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
             hide.representedObject = payload
             hide.toolTip = "Hide this occurrence from Coming Up and reminders. The calendar event is not deleted."
             actions.addItem(hide)

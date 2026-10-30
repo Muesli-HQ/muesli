@@ -156,7 +156,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "push_to_talk")
                     .toggleStyle(.switch)
-                    .tint(MuesliTheme.accent)
+                    .tint(MuesliTheme.toggleAccent)
                     .labelsHidden()
             }
 
@@ -210,7 +210,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "cua_shortcut")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
             .id(FeatureTourTarget.computerUseShortcut.rawValue)
@@ -257,7 +257,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "meeting_shortcut")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
 
@@ -310,7 +310,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "quill")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
 
@@ -337,7 +337,7 @@ struct ShortcutsView: View {
 
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
+            .font(MuesliTheme.font(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, MuesliTheme.spacing4)
@@ -549,7 +549,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "double_tap_dictation")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
         }
