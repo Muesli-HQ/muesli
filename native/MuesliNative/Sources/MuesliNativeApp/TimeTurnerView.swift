@@ -140,6 +140,8 @@ struct MemoryExplorerView: View {
     @State private var dayMoments: [VisualMemoryItem] = []
     @State private var day: Date
     @State private var playhead: Date
+    @State private var selectedCaptureID: String?
+    @State private var showsSearch = false
     let inline: Bool
     let onNavigate: ((Date, Date) -> Void)?
     let focusedSize: CGSize?
@@ -154,6 +156,7 @@ struct MemoryExplorerView: View {
         self.onNavigate = onNavigate
         let time = initialMoment?.capturedAt ?? Date()
         _day = State(initialValue: time); _playhead = State(initialValue: time)
+        _selectedCaptureID = State(initialValue: initialMoment?.id)
     }
     @State private var confirmForget = false
     @State private var showsText = false
@@ -161,17 +164,21 @@ struct MemoryExplorerView: View {
         guard inline, let selected else { return }
         focusPresenter.present(owner: NSApp.keyWindow, moment: selected, memory: memory) { date, time in
             day = date
+            selectedCaptureID = nil
             playhead = time
         }
     }
     private func closeExplorer() { if let onClose { onClose() } else { dismiss() } }
     private var ordered: [VisualMemoryItem] { dayMoments }
-    private var index: Int { VisualMemoryDayTimeline.nearestIndex(in: ordered, to: playhead) ?? 0 }
+    private var index: Int {
+        if let selectedCaptureID, let exact = ordered.firstIndex(where: { $0.id == selectedCaptureID }) { return exact }
+        return VisualMemoryDayTimeline.nearestIndex(in: ordered, to: playhead) ?? 0
+    }
     private var dayInterval: DateInterval { Calendar.current.dateInterval(of: .day, for: day)! }
     private var scrubInterval: DateInterval { VisualMemoryDayTimeline.captureInterval(in: ordered) ?? DateInterval(start: dayInterval.start, duration: 1) }
     private var scrubScale: VisualMemoryScrubScale { VisualMemoryScrubScale(dates: ordered.map(\.capturedAt)) }
     private var appNames: [String] { Array(Set(ordered.map(\.bundleID))).sorted() }
-    private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; playhead = ordered[offset].capturedAt }
+    private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt }
     private func moveDay(_ amount: Int) { if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = next } }
     private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
         TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
@@ -252,6 +259,7 @@ struct MemoryExplorerView: View {
                             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                             lastHapticTime = Date()
                         }
+                        selectedCaptureID = nil
                         playhead = nextTime
                     }
                 }
@@ -290,6 +298,18 @@ struct MemoryExplorerView: View {
                 .padding(inline ? 0 : 6)
                 .modifier(TimeTurnerControlSurface(enabled: !inline))
                 Spacer()
+                Button { showsSearch.toggle() } label: { Image(systemName: "magnifyingglass") }
+                    .accessibilityLabel("Search screen history")
+                    .help("Search by text, app, and date")
+                    .popover(isPresented: $showsSearch) {
+                        TimeTurnerSearchView(memory: memory, initialDay: day) { item in
+                            day = item.capturedAt
+                            dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day)
+                            selectedCaptureID = item.id
+                            playhead = item.capturedAt
+                            showsSearch = false
+                        }
+                    }
                 Label("On this Mac", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
                 if inline {
                     Button { expandExplorer() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 26, height: 26) }
@@ -363,6 +383,133 @@ struct MemoryExplorerView: View {
         .confirmationDialog("Forget this recording chunk?", isPresented: $confirmForget) {
             Button("Delete chunk and its captured text", role: .destructive) { if let selected { memory.delete(selected) }; closeExplorer() }
         } message: { Text("All moments sharing this archive chunk will be deleted together.") }
+    }
+}
+
+/// Transient search filters share the CLI's read-only SQLite retrieval contract.
+private struct TimeTurnerSearchView: View {
+    let memory: VisualMemoryController
+    let initialDay: Date
+    let onSelect: (VisualMemoryItem) -> Void
+    @State private var query = ""
+    @State private var app = ""
+    @State private var restrictDate = false
+    @State private var date = Date()
+    @State private var results: [VisualMemoryItem] = []
+    @State private var cursor: VisualMemoryCursor?
+    @State private var loading = false
+    @State private var error: String?
+    @State private var page = 0
+    @State private var generation = UUID()
+
+    private var apps: [(id: String, name: String)] {
+        var names: [String: String] = [:]
+        for item in memory.browsableMoments where !item.bundleID.isEmpty {
+            names[item.bundleID] = item.appName ?? item.source.components(separatedBy: " · ").first ?? item.bundleID
+        }
+        return names.map { (id: $0.key, name: $0.value) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    private var request: String { "\(query)|\(app)|\(restrictDate)|\(date.timeIntervalSince1970)|\(memory.catalogRevision)" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Search screen history").font(.headline)
+            TextField("Search captured text or window titles", text: $query)
+                .textFieldStyle(.roundedBorder).accessibilityLabel("Search captured text")
+            HStack {
+                Picker("App", selection: $app) {
+                    Text("All apps").tag("")
+                    ForEach(apps, id: \.id) { entry in Text(entry.name).tag(entry.id) }
+                }.frame(maxWidth: 260)
+                Toggle("On date", isOn: $restrictDate).toggleStyle(.checkbox)
+                if restrictDate {
+                    DatePicker("Capture date", selection: $date, in: ...Date(), displayedComponents: .date)
+                        .labelsHidden().accessibilityLabel("Capture date")
+                }
+            }
+            Divider()
+            if let error {
+                Text(error).foregroundStyle(.secondary)
+                Button("Retry") { page += 1 }
+            }
+            if results.isEmpty && cursor == nil && !loading && error == nil {
+                ContentUnavailableView("No matching captures", systemImage: "magnifyingglass",
+                    description: Text("Try different words, another app, or a wider date range."))
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(results) { item in
+                            Button { onSelect(item) } label: {
+                                HStack(spacing: 12) {
+                                    MemoryImageView(item: item, memory: memory, maximumSize: 200)
+                                        .frame(width: 100, height: 64).clipped()
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.source).font(.callout.weight(.medium)).lineLimit(1)
+                                        Text(item.capturedAt.formatted(date: .abbreviated, time: .standard))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text(item.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "arrow.up.right")
+                                }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            .accessibilityLabel("Open \(item.source), \(item.capturedAt.formatted())")
+                        }
+                        if cursor != nil && !loading {
+                            Button("Load more") { page += 1 }.frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+            if loading { ProgressView().controlSize(.small).frame(maxWidth: .infinity) }
+            Text("Matches captured words and phrases · newest first")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(18).frame(width: 580, height: 460)
+        .onAppear { date = initialDay }
+        .task(id: request) {
+            generation = UUID()
+            results = []; cursor = nil
+            await search(append: false)
+        }
+        .task(id: page) {
+            guard page > 0 else { return }
+            await search(append: cursor != nil)
+        }
+    }
+
+    @MainActor private func search(append: Bool) async {
+        let token = generation
+        loading = true; error = nil
+        do {
+            if !append { try await Task.sleep(for: .milliseconds(250)) }
+            guard let root = memory.store?.root else {
+                throw NSError(domain: "TimeTurner", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Screen history is unavailable."])
+            }
+            let text = query, bundle = app.isEmpty ? nil : app
+            let interval = restrictDate ? Calendar.current.dateInterval(of: .day, for: date) : nil
+            let after = append ? cursor : nil
+            let rows = try await Task.detached(priority: .userInitiated) {
+                let store = try VisualMemoryStore(root: root, readOnly: true)
+                return try store.searchMoments(text: text, from: interval?.start ?? .distantPast,
+                    until: interval?.end ?? .distantFuture, app: bundle, limit: 51, after: after)
+            }.value
+            guard !Task.isCancelled, token == generation else { return }
+            let batch = Array(rows.prefix(50))
+            let available = Set(memory.browsableMoments.map(\.id))
+            let visible = batch.filter { available.contains($0.id) }
+            if append { results += visible } else { results = visible }
+            cursor = rows.count > 50 ? batch.last.map {
+                VisualMemoryCursor(capturedAtUnix: $0.capturedAt.timeIntervalSince1970, id: $0.id)
+            } : nil
+            loading = false
+        } catch {
+            guard !Task.isCancelled, token == generation else { return }
+            self.error = error.localizedDescription
+            loading = false
+        }
     }
 }
 
