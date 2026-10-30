@@ -21,6 +21,7 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      TimeTurnerPauseStateTests
       VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests

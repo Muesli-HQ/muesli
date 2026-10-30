@@ -6,6 +6,15 @@ import Observation
 import ImageIO
 import MuesliCore
 
+/// System suspension is independent of the user's explicit pause choice.
+struct TimeTurnerPauseState {
+    var userPaused = false
+    var sleeping = false
+    var screenLocked = false
+    var systemSuspended: Bool { sleeping || screenLocked }
+    var isPaused: Bool { userPaused || systemSuspended }
+}
+
 @MainActor @Observable
 final class VisualMemoryController {
     var items: [VisualMemoryItem] = []
@@ -29,7 +38,8 @@ final class VisualMemoryController {
         ambientConfig?.timeTurnerEnabled == true && !ambientPaused && !locked && !isInactive
             && recordingMeetingID == nil && !audioFallbackActive && ambientStatus.hasPrefix("On")
     }
-    var ambientPaused = false
+    private var ambientPauseState = TimeTurnerPauseState()
+    var ambientPaused: Bool { ambientPauseState.userPaused }
     var ambientStatus = "Off" {
         didSet {
             if !ambientStatus.hasPrefix("On") { onAmbientCaptureActivity?(false) }
@@ -57,7 +67,7 @@ final class VisualMemoryController {
     @ObservationIgnored private var token = UUID()
     @ObservationIgnored private var ambientTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    @ObservationIgnored private var locked = false
+    private var locked: Bool { ambientPauseState.systemSuspended }
     @ObservationIgnored private var ambientConfig: AppConfig?
     @ObservationIgnored private var ambientGeneration = UUID()
     @ObservationIgnored private var lastFingerprint: Data?
@@ -95,10 +105,16 @@ final class VisualMemoryController {
             }
         }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.suspendForPrivacy() }
+            Task { @MainActor in self?.setAmbientSystemSuspension(sleeping: true) }
         })
         observers.append(DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.suspendForPrivacy() }
+            Task { @MainActor in self?.setAmbientSystemSuspension(screenLocked: true) }
+        })
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.setAmbientSystemSuspension(sleeping: false) }
+        })
+        observers.append(DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.setAmbientSystemSuspension(screenLocked: false) }
         })
     }
 
@@ -384,7 +400,7 @@ final class VisualMemoryController {
     }
 
     func toggleAmbientPause() {
-        ambientPaused.toggle(); locked = false; ambientGeneration = UUID()
+        ambientPauseState.userPaused.toggle(); ambientGeneration = UUID()
         ambientTask?.cancel(); ambientTask = nil
         lastFingerprint = nil
         if let config = ambientConfig { configureAmbient(config, audioFallbackActive: audioFallbackActive) }
@@ -516,12 +532,20 @@ final class VisualMemoryController {
         } catch { message = "History compaction deferred: \(error.localizedDescription)" }
     }
 
-    func suspendForPrivacy() {
-        locked = true; ambientPaused = true
-        if let id = recordingMeetingID {
+    private func setAmbientSystemSuspension(sleeping: Bool? = nil, screenLocked: Bool? = nil) {
+        if let sleeping { ambientPauseState.sleeping = sleeping }
+        if let screenLocked { ambientPauseState.screenLocked = screenLocked }
+        // Invalidate work begun before sleep/lock, including a capture still awaiting OCR.
+        ambientGeneration = UUID()
+        ambientTask?.cancel(); ambientTask = nil
+        if locked, let id = recordingMeetingID {
             messageMeetingID = id; message = "Screen recording paused while the Mac was locked or asleep."
             pauseState.userPaused = true; reconcilePause()
         }
-        ambientStatus = "Paused — resume manually"
+        // Meeting video remains manually paused; only ambient capture resumes.
+        if let config = ambientConfig { configureAmbient(config, audioFallbackActive: audioFallbackActive) }
+        if ambientConfig?.timeTurnerEnabled == true, ambientPauseState.isPaused {
+            ambientStatus = "Paused"
+        }
     }
 }
