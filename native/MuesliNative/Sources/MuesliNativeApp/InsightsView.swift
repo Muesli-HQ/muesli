@@ -580,11 +580,13 @@ struct InsightsView: View {
         do {
             let result = try await loadSnapshot(requestedRange)
             try Task.checkCancellation()
+            guard loadGeneration == generation else { return }
             snapshot = result
             snapshotRange = requestedRange
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled, loadGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
     }

@@ -5373,6 +5373,10 @@ public final class MuesliController: NSObject {
         progress: @escaping (Double, String?) -> Void,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        // A download may finish before warm-up fails or is cancelled. Invalidate
+        // once this shared foreground/background onboarding path has settled;
+        // the existing scanner remains detached and coalesces overlapping work.
+        defer { refreshSettingsModelAvailability(force: true) }
         let wasDownloaded = backend.isDownloaded
         progress(
             wasDownloaded ? 0.75 : 0.0,
