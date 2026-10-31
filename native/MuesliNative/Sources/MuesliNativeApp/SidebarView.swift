@@ -46,6 +46,7 @@ struct SidebarView: View {
     var isCollapsed: Bool = false
     var onToggleCollapsed: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(SidebarOrder.preferenceKey) private var savedSidebarOrder = ""
     @State private var meetingsExpanded = true
     @State private var meetingsHeaderPressed = false
     @State private var renamingFolderID: Int64?
@@ -110,15 +111,16 @@ struct SidebarView: View {
                 .padding(.top, MuesliTheme.spacing16)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
-            collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
-            collapsedItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
-            collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-            collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-
-            Spacer()
-
+            ScrollView(.vertical) {
+                VStack(spacing: MuesliTheme.spacing8) {
+                    ForEach(SidebarOrder.tabs(from: savedSidebarOrder), id: \.rawValue) { tab in
+                        collapsedItem(tab: tab, icon: tab.sidebarIcon, label: tab.sidebarLabel)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .scrollIndicators(.hidden)
+            Spacer(minLength: 0)
             collapsedItem(tab: .models, icon: "cpu", label: "Models")
             collapsedItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
             collapsedItem(tab: .settings, icon: "gearshape", label: "Settings")
@@ -156,8 +158,10 @@ struct SidebarView: View {
                 .frame(width: 40, height: 36)
                 .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .modifier(SidebarDragSourceModifier(tab: tab, label: label))
         }
         .buttonStyle(SidebarRowButtonStyle(isSelected: appState.selectedTab == tab))
+        .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
         .help(label)
         .accessibilityLabel(label)
         .accessibilityAddTraits(appState.selectedTab == tab ? .isSelected : [])
@@ -182,12 +186,14 @@ struct SidebarView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
-                        sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
-                        meetingsSection
-                        sidebarItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
-                        sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-                        sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+                        ForEach(SidebarOrder.tabs(from: savedSidebarOrder), id: \.rawValue) { tab in
+                            if tab == .meetings {
+                                meetingsSection
+                            } else {
+                                sidebarItem(tab: tab, icon: tab.sidebarIcon, label: tab.sidebarLabel,
+                                            updateCTA: tab == .about ? pendingUpdateCTA : nil)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -365,8 +371,10 @@ struct SidebarView: View {
                     .padding(.vertical, MuesliTheme.spacing8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
+                    .modifier(SidebarDragSourceModifier(tab: .meetings, label: "Meetings"))
                 }
                 .buttonStyle(SidebarHeaderButtonStyle(isPressed: $meetingsHeaderPressed))
+                .modifier(SidebarReorderModifier(tab: .meetings, label: "Meetings", savedOrder: $savedSidebarOrder, acceptsDrop: false))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
 
                 Button {
@@ -470,6 +478,7 @@ struct SidebarView: View {
                 .padding(.horizontal, sidebarRowOuterPadding)
             }
         }
+        .modifier(SidebarDropModifier(tab: .meetings, savedOrder: $savedSidebarOrder))
     }
 
     @ViewBuilder
@@ -570,11 +579,13 @@ struct SidebarView: View {
             .padding(.vertical, MuesliTheme.spacing8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .modifier(SidebarDragSourceModifier(tab: tab, label: label))
         }
         .buttonStyle(SidebarRowButtonStyle(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .padding(.horizontal, sidebarRowOuterPadding)
         .featureTourTarget(tab == .timeline ? .timelineSidebar : nil)
+        .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
     }
 
     private var navigationAnimation: Animation? {

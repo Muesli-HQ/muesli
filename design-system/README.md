@@ -262,3 +262,19 @@ The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary tra
 Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
 
 Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+
+### Reorderable sidebar
+
+Only the top six navigation destinations can be reordered in expanded and icon-only
+layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
+to the upper or lower half of another row; an accent-colored insertion line marks
+the exact boundary before or after it. Meetings moves with its entire folder tree,
+and the line stays outside that group. Folder drags remain a separate interaction.
+Only a completed drop changes the locally saved order. Right-click Move up / Move
+down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults.
+Reordering does not select a destination or reset the composer draft.
+
+The custom sidebar drag type (`com.muesli.sidebar-tab`) must be declared in the
+packaged app’s `UTExportedTypeDeclarations`, not just constructed in Swift.
+Without that declaration macOS can start a drag but fail to recognize its drop targets.
+Verify registration and actual pointer drops in the installed app, not only order logic.

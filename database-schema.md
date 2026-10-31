@@ -398,3 +398,11 @@ sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreig
 
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
+
+### Sidebar order outside SQLite
+
+Navigation order is a local UserDefaults string (`dashboard.sidebar.order.v1`),
+containing comma-separated stable DashboardTab IDs. Missing or malformed preferences
+fall back to the default order; fixed utility tabs, duplicate and unknown IDs are ignored and missing
+known destinations are appended. This presentation preference does not change
+AppConfig, SQLite, CloudKit, exports or CLI output.

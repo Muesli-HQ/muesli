@@ -10,6 +10,49 @@ import TelemetryDeck
 @Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
 
+    @Test("Sidebar order restores defaults, removes unknown/duplicate IDs and appends new tabs")
+    func sidebarOrderRecovery() {
+        #expect(SidebarOrder.tabs(from: "") == SidebarOrder.defaults)
+        let restored = SidebarOrder.tabs(from: "settings,retired,meetingChat,meetingChat")
+        #expect(Array(restored.prefix(2)) == [.meetingChat, .timeline])
+        #expect(restored.count == SidebarOrder.defaults.count)
+        #expect(Set(restored.map(\.rawValue)).count == restored.count)
+        #expect(SidebarOrder.tabs(from: SidebarOrder.encode(restored)) == restored)
+    }
+
+    @Test("Sidebar moves work in both directions while excluding fixed utility tabs")
+    func sidebarOrderMoves() {
+        let first = SidebarOrder.moving(.dictionary, to: .timeline, in: "")
+        #expect(SidebarOrder.tabs(from: first).first == .dictionary)
+        let last = SidebarOrder.moving(.dictionary, to: .insights, in: first)
+        #expect(SidebarOrder.tabs(from: last).last == .dictionary)
+        #expect(SidebarOrder.tabs(from: last) == SidebarOrder.defaults)
+        #expect(SidebarOrder.moving(.meetings, to: .meetings, in: last) == last)
+    }
+
+    @Test("Sidebar insertion matches the displayed before or after boundary")
+    func sidebarInsertionBoundaries() {
+        let before = SidebarOrder.inserting(.dictionary, relativeTo: .dictations, after: false, in: "")
+        #expect(Array(SidebarOrder.tabs(from: before).prefix(3)) == [.timeline, .dictionary, .dictations])
+        let after = SidebarOrder.inserting(.timeline, relativeTo: .dictations, after: true, in: "")
+        #expect(Array(SidebarOrder.tabs(from: after).prefix(2)) == [.dictations, .timeline])
+        #expect(SidebarOrder.inserting(.settings, relativeTo: .timeline, after: false, in: "") == "")
+        #expect(SidebarOrder.inserting(.timeline, relativeTo: .about, after: true, in: "") == "")
+    }
+
+    @Test("Sidebar ordering persists in an isolated local preference domain")
+    func sidebarOrderPersistence() throws {
+        let suite = "muesli.sidebar.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let saved = SidebarOrder.moving(.meetingChat, to: .timeline, in: "")
+        defaults.set(saved, forKey: SidebarOrder.preferenceKey)
+        let reopened = try #require(UserDefaults(suiteName: suite))
+        #expect(SidebarOrder.tabs(from: reopened.string(forKey: SidebarOrder.preferenceKey) ?? "").first == .meetingChat)
+        defaults.removeObject(forKey: SidebarOrder.preferenceKey)
+        #expect(SidebarOrder.tabs(from: defaults.string(forKey: SidebarOrder.preferenceKey) ?? "") == SidebarOrder.defaults)
+    }
+
     @Test("Ultra Dark resolves black backgrounds and white accents")
     func ultraDarkPalette() throws {
         let original = MuesliTheme.appearance.ultraDark
