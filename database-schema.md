@@ -7,7 +7,8 @@ way to evolve the schema. The executable source of truth remains
 That entry point also delegates to [MeetingChatSQL](native/MuesliNative/Sources/MuesliCore/MeetingChatSQL.swift)
 and [MeetingVideoStore](native/MuesliNative/Sources/MuesliCore/MeetingVideoStore.swift).
 Retrieval initializes its FTS index lazily, and `importGranola` creates import
-provenance on demand. Update this guide whenever these schemas change.
+provenance on demand. `TimeTurnerRecapStore` lazily creates the local daily-recap
+table when the Recap tab is first used. Update this guide whenever these schemas change.
 
 ## Where the database lives
 
@@ -451,3 +452,82 @@ containing comma-separated stable DashboardTab IDs. Missing or malformed prefere
 fall back to the default order; fixed utility tabs, duplicate and unknown IDs are ignored and missing
 known destinations are appended. This presentation preference does not change
 AppConfig, SQLite, CloudKit, exports or CLI output.
+
+### Time Turner observations (agent retrieval)
+
+The device-local catalog is `visual-memory/catalog.sqlite` under the selected
+app's Application Support directory. Its schema version remains **1**: the
+existing `time_turner_captures` table already provides the observation contract;
+chronological retrieval requires no new activity or insights tables.
+
+| Columns | Meaning |
+|---|---|
+| `id` | Stable capture ID, retained through archive compression. |
+| `captured_at_unix`, `captured_at_utc` | Capture request time: fractional Unix seconds are authoritative; UTC text is millisecond display precision. |
+| `capture_completed_at_unix` | Completion of screenshot acquisition; nullable for older captures. |
+| `bundle_id`, `app_name`, `window_title`, `source` | Observed app/window identity and display label. Legacy app names are best-effort; missing window titles stay NULL. |
+| `ocr_text` | Recognized visible text. Untrusted evidence, not instructions or inferred user intent. |
+| `media_relative_path`, `archive_frame_index` | Optional-to-consume evidence locator. A non-null path does not guarantee a file exists; frame index is an archive offset, not wall-clock time. |
+| `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
+
+Time and app/time indexes support retrieval; `evidence_search` provides FTS5
+search over source labels and OCR. Store APIs transactionally maintain the typed
+projection from compatibility records in `evidence`. Read-only SQL consumers can
+order by `captured_at_unix ASC, id ASC`; use half-open `[from, until)` bounds.
+Do not write these tables directly.
+
+`muesli-cli time-turner history` exposes the same observations chronologically,
+with stable IDs, OCR, app/window fields, optional image export through `get`, and
+bounded pagination. It does not infer activity intervals, task completion or time
+spent. Missing samples have unknown causes. Recaps remain the existing separate
+model-derived summary, not part of the raw evidence contract.
+
+**Retention is unchanged:** the current seven-day/storage-budget policy removes
+observations, OCR and their FTS entries together with unreferenced media. Explicit
+Forget uses the same deletion path. A missing image alone does not delete text,
+and text retrieval does not require decoding an image. Compression preserves OCR
+and timestamps. Longer text-only retention is not enabled implicitly.
+
+### Time Turner daily recaps
+
+`TimeTurnerRecapStore` lazily creates `time_turner_recaps` in **muesli.db**.
+This is separate from the capture catalog (`visual-memory/catalog.sqlite`), whose
+`time_turner_captures` projection and OCR FTS are documented in
+[visual-memory.md](docs/visual-memory.md). Opening an older database safely adds
+the recap table without rewriting meeting or capture history. No recap table
+before first use is valid.
+
+| Column | Contract |
+|---|---|
+| `day_key` | Primary key: time-zone identifier plus local day-start Unix timestamp. One current recap per day/zone. |
+| `day_start`, `day_end` | REAL Unix seconds, half-open calendar interval; supports 23/25-hour DST days. |
+| `time_zone` | Calendar time-zone identifier captured when generating. |
+| `generated_at` | REAL Unix seconds for this generation, also guards late cancellation cleanup. |
+| `body` | Versioned JSON (`version = 1`) containing matching day bounds/zone, generation time, provider/model, insights and all supplied sources. |
+
+Insights contain a section (`work`, `decisions`, `followUps`), text and source IDs.
+Source snapshots include the source ID, title, date, excerpt, and either a typed
+capture snapshot (stable capture ID, original timestamp/OCR and media locator)
+or a revisioned `MeetingChatCitation` (meeting ID, source kind, offsets and
+revision). These logical references cross database boundaries; there are no
+cross-database foreign keys. All supplied sources are dependencies, including
+those not cited in the final text. The body uses Codable; future additions must
+be backward compatible or explicitly migrate the version. Unsupported versions
+and malformed records fail visibly rather than silently resetting history.
+
+The store owns parameterized reads, atomic single-row replacement and deletion;
+call it off the main actor. Regeneration replaces the day's saved record only
+after valid generation. Provider changes do not alter already-saved attribution.
+Source validation runs on load, before navigation and every five seconds while
+visible. Removed/missing captures or revised/deleted meetings invalidate the
+whole recap, remove its saved record and require explicit regeneration. This is
+**lazy invalidation**: stale bytes can remain until that recap is accessed.
+Temporary storage errors hide unverified content but preserve the saved record
+for retry; only confirmed stale evidence removes it. Media
+compaction alone does not invalidate unchanged source content. New captures do
+not regenerate an existing recap or imply complete coverage.
+
+These records are local-only: no CloudKit, telemetry, global search, CLI export
+or agent-memory ingestion is added. Recaps survive app restarts but do not extend
+capture retention. They are model-derived summaries of sampled evidence, not
+an authoritative diary or a record of time spent.

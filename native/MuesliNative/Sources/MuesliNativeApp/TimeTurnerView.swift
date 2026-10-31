@@ -64,11 +64,13 @@ struct TimeTurnerControls: View {
     let controller: MuesliController
     let appState: AppState
     @Binding var isExpanded: Bool
+    var standalone = false
     @State private var showsSettings = false
     @State private var showsSetup = false
     private var memory: VisualMemoryController { controller.visualMemory }
     var body: some View {
         HStack {
+            if !standalone {
             Button { isExpanded.toggle() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -79,23 +81,27 @@ struct TimeTurnerControls: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse Time Turner" : "Expand Time Turner")
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            }
             Text(memory.ambientStatus)
                 .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                 .help(memory.ambientStatus == "Skipping this app" ? "The current app is excluded from screen capture. Capture resumes when you switch to an allowed app." : memory.ambientStatus)
-            Spacer()
+            if !standalone { Spacer() }
             if appState.config.timeTurnerEnabled {
                 Button(memory.ambientPaused ? "Resume" : "Pause") { memory.toggleAmbientPause() }
             }
             if !appState.config.timeTurnerEnabled {
                 Button("Set up Time Turner") { showsSetup = true }
             }
-            Button("Settings…") { showsSettings = true }
+            Button { showsSettings = true } label: {
+                if standalone { Image(systemName: "gearshape") }
+                else { Text("Settings…") }
+            }.accessibilityLabel("Time Turner settings").help("Time Turner settings")
         }
         .task {
             memory.configureAmbient(appState.config, audioFallbackActive: appState.isMeetingRecording && !appState.config.useCoreAudioTap)
         }
-        .padding(12)
-        .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 10))
+        .padding(standalone ? 0 : 12)
+        .background(standalone ? Color.clear : MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $showsSettings) {
             VStack(spacing: 0) {
                 HStack {
@@ -135,6 +141,7 @@ private struct MemoryScrubSurface: NSViewRepresentable {
 }
 
 struct MemoryExplorerView: View {
+    let externalDay: Binding<Date>?
     let memory: VisualMemoryController
     @Environment(\.dismiss) private var dismiss
     @State private var dayMoments: [VisualMemoryItem] = []
@@ -148,13 +155,14 @@ struct MemoryExplorerView: View {
     let onClose: (() -> Void)?
     private var focusPresenter: TimeTurnerFocusPresenter { .shared }
     @State private var lastHapticTime = Date.distantPast
-    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, focusedSize: CGSize? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date) -> Void)? = nil) {
+    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, externalDay: Binding<Date>? = nil, focusedSize: CGSize? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date) -> Void)? = nil) {
         self.memory = memory
+        self.externalDay = externalDay
         self.inline = inline
         self.focusedSize = focusedSize
         self.onClose = onClose
         self.onNavigate = onNavigate
-        let time = initialMoment?.capturedAt ?? Date()
+        let time = initialMoment?.capturedAt ?? externalDay?.wrappedValue ?? Date()
         _day = State(initialValue: time); _playhead = State(initialValue: time)
         _selectedCaptureID = State(initialValue: initialMoment?.id)
     }
@@ -278,7 +286,8 @@ struct MemoryExplorerView: View {
             }.font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
         }
     }
-    var body: some View {
+    var body: some View { explorerContent }
+    private var explorerContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 if !inline {
@@ -290,6 +299,7 @@ struct MemoryExplorerView: View {
                         .font(MuesliTheme.font(.caption)).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
                 }
                 Spacer()
+                if externalDay == nil {
                 HStack(spacing: 8) {
                 Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day")
                 DatePicker("Day", selection: $day, in: ...Date(), displayedComponents: .date).labelsHidden().fixedSize()
@@ -297,6 +307,7 @@ struct MemoryExplorerView: View {
                 }
                 .padding(inline ? 0 : 6)
                 .modifier(TimeTurnerControlSurface(enabled: !inline))
+                }
                 Spacer()
                 Button { showsSearch.toggle() } label: { Image(systemName: "magnifyingglass") }
                     .accessibilityLabel("Search screen history")
@@ -371,7 +382,11 @@ struct MemoryExplorerView: View {
         }
         .onAppear { dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day) }
         .onChange(of: memory.catalogRevision) { _, _ in dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day) }
+        .onChange(of: externalDay?.wrappedValue) { _, value in
+            if let value { day = value }
+        }
         .onChange(of: day) { _, _ in
+            externalDay?.wrappedValue = day
             dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day)
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start

@@ -16,79 +16,97 @@ struct TimeTurnerSettingsView: View {
         appState.config.timeTurnerExcludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.sorted()
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Label { Text("Time Turner") } icon: { Image(nsImage: TimeTurnerIcon.image()) }
-                        .font(MuesliTheme.font(.title2).bold())
-                    Text("Experimental")
-                        .font(MuesliTheme.font(.caption).weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.quaternary, in: Capsule())
-                }
-                Text("Search and revisit your screen history. Stored on this Mac.").foregroundStyle(.secondary)
-                HStack {
-                    Label(appState.config.timeTurnerEnabled ? memory.ambientStatus : "Screen history is off", systemImage: appState.config.timeTurnerEnabled ? "record.circle" : "pause.circle")
-                    Spacer()
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            section("Time Turner", icon: TimeTurnerIcon.image()) {
+                SettingsRow(label: "Screen history", description: "Searchable snapshots stored on this Mac.", controlWidth: nil) {
                     if appState.config.timeTurnerEnabled {
-                        Button("Turn off") { controller.setSettingFromUI("time_turner_enabled", value: "off") }
+                        MuesliSettingControl(controller: controller, id: "time_turner_enabled")
                     } else {
-                        Button("Set up Time Turner") { setup = true }.buttonStyle(.borderedProminent)
+                        Button("Set up…") { setup = true }
                     }
                 }
-            }
-            GroupBox("Capture") {
-                VStack(spacing: 14) {
+                if appState.config.timeTurnerEnabled && (!screen || !accessibility) {
+                    SettingsRow(label: "Capture needs permission", controlWidth: nil) {
+                        Button("Review access…") { setup = true }
+                    }
+                }
+                subsection("Capture")
+                SettingsRow(label: "Pause on inactivity", description: "Pause after 1 minute without keyboard or mouse input. Resume when you return.", controlWidth: nil) {
                     MuesliSettingControl(controller: controller, id: "time_turner_pause_on_inactivity")
-                    Text("Pause after 1 minute without keyboard or mouse input. Resume when you return.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                    HStack { Text("Check screen every"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_interval") }
-                    HStack { Text("Storage budget"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_budget") }
-                    Text("Saves changed screens only. Pauses during lock, sleep and meeting screen recording.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(12)
-            }
-            GroupBox("Permissions") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(screen ? "Screen Recording allowed" : "Screen Recording needed", systemImage: screen ? "checkmark.circle.fill" : "circle")
-                    Label(accessibility ? "Accessibility allowed" : "Accessibility needed", systemImage: accessibility ? "checkmark.circle.fill" : "circle")
-                    Text("Screen Recording saves images; Accessibility identifies the focused window.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                    if !screen || !accessibility { Button("Review permissions") { setup = true } }
-                }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            GroupBox("Privacy & excluded apps") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Private windows and sensitive apps are skipped where detected. Pause before opening private content.").font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
-                    ForEach(exclusions, id: \.self) { bundle in
-                        HStack {
-                            TargetApplicationIconView(appName: bundle, bundleIdentifier: bundle).accessibilityLabel(bundle)
-                            Text(appName(bundle)).lineLimit(1)
-                            Spacer()
-                            Button("Remove") { saveExclusions(exclusions.filter { $0 != bundle }) }
-                        }
+                }
+                SettingsRow(label: "Check screen every") {
+                    MuesliSettingControl(controller: controller, id: "time_turner_interval")
+                }
+                SettingsNote("Saves changed screens only. Automatically resumes after lock or sleep; pauses during meeting screen recording.")
+                    .padding(.top, MuesliTheme.spacing8)
+                subsection("Excluded apps")
+                SettingsRow(label: "App exclusions", controlWidth: nil) {
+                    Button("Add app…") { chooseExcludedApp() }
+                }
+                ForEach(exclusions, id: \.self) { bundle in
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        TargetApplicationIconView(appName: bundle, bundleIdentifier: bundle).accessibilityLabel(bundle)
+                        Text(appName(bundle)).font(MuesliTheme.body()).lineLimit(1)
+                        Spacer()
+                        Button("Remove") { saveExclusions(exclusions.filter { $0 != bundle }) }
+                            .accessibilityLabel("Remove \(appName(bundle)) exclusion")
                     }
-                    Button("Exclude an app…") { chooseExcludedApp() }
-                    Text("Built-in sensitive-app exclusions remain active in addition to this list.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, MuesliTheme.spacing4)
+                }
+                SettingsNote("Sensitive apps and private windows are skipped where detected. Pause before opening private content.")
+                    .padding(.top, MuesliTheme.spacing8)
+                subsection("Storage & retention")
+                SettingsRow(label: "Storage budget") {
+                    MuesliSettingControl(controller: controller, id: "time_turner_budget")
+                }
+                SettingsRow(label: "Local media", controlWidth: nil) {
+                    Text(ByteCountFormatter.string(fromByteCount: memory.usedBytes, countStyle: .file))
+                        .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+                }
+                SettingsRow(label: "Available disk space", controlWidth: nil) {
+                    Text(ByteCountFormatter.string(fromByteCount: memory.freeBytes, countStyle: .file))
+                        .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+                }
+                SettingsNote(estimate).padding(.top, MuesliTheme.spacing8)
+                SettingsNote("Keeps up to 7 days within your budget. Reserves 2 GB of free disk space.")
+                    .padding(.top, MuesliTheme.spacing4)
+                if let message = memory.message {
+                    SettingsNote(message, tone: .warning).padding(.top, MuesliTheme.spacing8)
+                }
             }
-            GroupBox("Storage & retention") {
-                VStack(alignment: .leading, spacing: 10) {
-                    LabeledContent("Local media", value: ByteCountFormatter.string(fromByteCount: memory.usedBytes, countStyle: .file))
-                    LabeledContent("Available disk space", value: ByteCountFormatter.string(fromByteCount: memory.freeBytes, countStyle: .file))
-                    Text(estimate).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                    Text("Keeps up to 7 days within your budget. Reserves 2 GB of free disk space.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                    if memory.incompleteMomentCount > 0 {
-                        Text("\(memory.incompleteMomentCount) older incomplete captures are hidden from the viewer.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                    }
-                    if let message = memory.message { Text(message).font(MuesliTheme.font(.caption)).foregroundStyle(.orange) }
-                }.padding(12)
-            }
-
         }
         .environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
         .onAppear { refresh(); consumeSetupRequest() }
         .onChange(of: appState.requestsTimeTurnerSetup) { _, _ in consumeSetupRequest() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .sheet(isPresented: $setup, onDismiss: refresh) { TimeTurnerSetupView(controller: controller, appState: appState) }
+    }
+
+    private func subsection(_ title: String) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            Divider()
+            Text(title)
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(.top, MuesliTheme.spacing16)
+        .padding(.bottom, MuesliTheme.spacing8)
+    }
+
+    private func section(_ title: String, icon: NSImage? = nil, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            SettingsSectionHeading(title: title, icon: icon)
+            VStack(alignment: .leading, spacing: 0, content: content)
+                .padding(MuesliTheme.spacing16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(MuesliTheme.backgroundRaised)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+                .overlay {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+        }
     }
     private func consumeSetupRequest() {
         guard appState.requestsTimeTurnerSetup else { return }

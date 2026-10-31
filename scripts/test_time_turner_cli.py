@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zlib
 
 cli = str(Path(sys.argv[1]).resolve())
@@ -42,6 +43,9 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
     if len(sys.argv) > 2:
         shutil.copyfile(sys.argv[2], root / "archive.mp4")
         insert("archived", 997, "Archive", "archive", "archive.mp4", 12)
+    now = time.time()
+    insert("recent-a", now - 60, "Recent", "recent")
+    insert("recent-b", now - 30, "Recent", "recent")
     db.commit()
     db.close()
     before = hashlib.sha256(database.read_bytes()).digest()
@@ -68,6 +72,31 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
     run("search", "--from", "yesterday", code=4)
     run("search", "--limit", "1001", code=4)
     run("search", "--from", "1970-01-02T00:00:00Z", "--until", "1970-01-01T00:00:00Z", code=4)
+    history_args = ["--from", "1970-01-01T00:16:39Z", "--until", "1970-01-01T00:16:41Z"]
+    history = run("history", *history_args, "--limit", "2")
+    assert [r["id"] for r in history["data"]["observations"]] == ["missing-media", "wanted"]
+    assert not history["data"]["observations"][0]["mediaExists"]
+    assert history["data"]["observations"][0]["ocrText"] == "roadmap evidence"
+    continuation = history["meta"]["nextCursor"]
+    rest = run("history", "--cursor", continuation)
+    assert [r["id"] for r in rest["data"]["observations"]] == ["wanted-tie"]
+    assert not rest["meta"]["hasMore"]
+    assert rest["data"]["from"] == history["data"]["from"]
+    assert rest["data"]["until"] == history["data"]["until"]
+    assert len(run("history", *history_args, "--app", "chatgpt")["data"]["observations"]) == 2
+    recent = run("history", "--last", "6h", "--app", "Recent", "--limit", "1")
+    assert recent["data"]["observations"][0]["id"] == "recent-a"
+    recent_next = run("history", "--cursor", recent["meta"]["nextCursor"])
+    assert recent_next["data"]["observations"][0]["id"] == "recent-b"
+    assert recent_next["data"]["from"] == recent["data"]["from"]
+    assert recent_next["data"]["until"] == recent["data"]["until"]
+    assert recent_next["data"]["app"] == "Recent"
+    for args in [[], ["--last", "0h"], ["--last", "nanh"], ["--last", "1e99h"],
+                 ["--last", "6h", *history_args], ["--from", "1970-01-01T00:16:39Z"],
+                 ["--cursor", "bad"], ["--cursor", continuation, "--app", "Editor"],
+                 ["--cursor", continuation, "--last", "6h"],
+                 ["--cursor", continuation, "--until", "1970-01-02T00:00:00Z"]]:
+        run("history", *args, code=4)
     output = support / "capture.png"
     result = run("get", "wanted", "--output", str(output))["data"]
     assert result["screenshotPath"] == str(output)
@@ -85,4 +114,4 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
         assert run("get", "archived", "--output", str(archive_output))["data"]["archiveFrameIndex"] == 12
         assert archive_output.read_bytes().startswith(b"\x89PNG")
     assert hashlib.sha256(database.read_bytes()).digest() == before, "CLI mutated catalog"
-    print("PASS: Time Turner CLI search/filter/validation/read-only/get/PNG export" + ("/archive frame" if len(sys.argv)>2 else ""))
+    print("PASS: Time Turner CLI chronological history/cursors/search/filter/validation/read-only/get/PNG export" + ("/archive frame" if len(sys.argv)>2 else ""))

@@ -217,9 +217,11 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
 
     /// Literal word/phrase search with a half-open UTC time range and bounded results.
+    /// Newest first by default; chronological history uses ascending time. IDs break ties
+    /// in ascending order in both modes. A cursor must use the same order and filters.
     /// This does not expose SQL or FTS expression syntax to callers.
     public func searchMoments(text: String = "", from: Date = .distantPast,
-                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100, after: VisualMemoryCursor? = nil) throws -> [VisualMemoryItem] {
+                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100, after: VisualMemoryCursor? = nil, chronological: Bool = false) throws -> [VisualMemoryItem] {
         lock.lock(); defer { lock.unlock() }
         let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchClause = phrase.isEmpty ? "" : " AND id IN (SELECT id FROM evidence_search WHERE evidence_search MATCH ?)"
@@ -227,9 +229,11 @@ public final class VisualMemoryStore: @unchecked Sendable {
         let appClause = app == nil ? "" : (hasCaptureTable
             ? " AND id IN (SELECT id FROM time_turner_captures WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
             : legacyAppClause)
-        let cursorClause = after == nil ? "" : " AND (captured<? OR (captured=? AND id>?))"
+        let comparison = chronological ? ">" : "<"
+        let direction = chronological ? "ASC" : "DESC"
+        let cursorClause = after == nil ? "" : " AND (captured\(comparison)? OR (captured=? AND id>?))"
         var stmt: OpaquePointer?
-        let sql = "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + cursorClause + " ORDER BY captured DESC,id LIMIT ?"
+        let sql = "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + cursorClause + " ORDER BY captured \(direction),id LIMIT ?"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_double(stmt, 1, from.timeIntervalSince1970)

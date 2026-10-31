@@ -4,6 +4,7 @@ import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case timeline
+    case timeTurner
     case dictations
     case insights
     case meetings
@@ -311,7 +312,11 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
+    var timeTurnerDay = Date()
+    var timeTurnerShowsRecap = false
+    var timeTurnerSelectedCapture: VisualMemoryItem?
     var selectedTab: DashboardTab = .timeline
+    var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
     var insightsBackLabel: String {

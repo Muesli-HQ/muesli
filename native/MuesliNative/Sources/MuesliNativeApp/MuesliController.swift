@@ -1296,6 +1296,8 @@ public final class MuesliController: NSObject {
         return report
     }
 
+    var timeTurnerRecapDatabaseURL: URL { dictationStore.resolvedDatabaseURL }
+
     func meeting(id: Int64) -> MeetingRecord? {
         if let row = appState.meetingRows.first(where: { $0.id == id }) {
             return row
@@ -6002,11 +6004,16 @@ public final class MuesliController: NSObject {
         }
         return nil
     }
-    func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {
+    func showMeetingChatSource(_ target: MeetingChatDocumentTarget, fromTimeTurner: Bool = false) {
         guard meeting(id: target.citation.meetingID) != nil else { meetingChatCoordinator.errorMessage = "This source meeting is no longer available."; return }
         showMeetingDocument(id: target.citation.meetingID); appState.meetingChatDocumentTarget = target
+        appState.meetingSourceReturnsToTimeTurner = fromTimeTurner
     }
-    func returnToMeetingChat() { appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil }
+    func returnToMeetingChat() {
+        appState.selectedTab = appState.meetingSourceReturnsToTimeTurner ? .timeTurner : .meetingChat
+        appState.meetingSourceReturnsToTimeTurner = false
+        appState.meetingChatDocumentTarget = nil
+    }
 
     private func showActiveMeetingDocumentIfNeeded() {
         guard let activeMeetingID,

@@ -8,7 +8,6 @@ struct TimelineView: View {
 
     @State private var contentFilter = "All activity"
     @State private var search = ""
-    @AppStorage("timeline.timeTurnerExpanded") private var timeTurnerExpanded = false
     private struct DayGroup: Identifiable {
         let id: Date
         let header: String
@@ -70,18 +69,6 @@ struct TimelineView: View {
             )
 
             DictationFormattingSetupCard(appState: appState, controller: controller)
-
-            TimeTurnerControls(controller: controller, appState: appState, isExpanded: $timeTurnerExpanded)
-                .padding(.horizontal, MuesliTheme.pageInset)
-                .padding(.vertical, 8)
-
-            MemoryExplorerView(initialMoment: controller.visualMemory.browsableMoments.first, memory: controller.visualMemory, inline: true)
-                .frame(height: timeTurnerExpanded ? nil : 0)
-                .clipped()
-                .allowsHitTesting(timeTurnerExpanded)
-                .accessibilityHidden(!timeTurnerExpanded)
-                .padding(.horizontal, MuesliTheme.pageInset)
-                .padding(.bottom, timeTurnerExpanded ? 12 : 0)
 
             HStack {
                 TextField("Search meetings and dictations…", text: $search).textFieldStyle(.roundedBorder)

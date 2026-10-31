@@ -91,6 +91,26 @@ struct VisualMemoryStoreTests {
         #expect(try store.searchMoments(after: cursor).map(\.id) == ["b", "c"])
     }
 
+    @Test func chronologicalHistoryPreservesTiesBoundsAndTextWithoutMedia() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let start = Date(timeIntervalSince1970: 1000)
+        func item(_ id: String, _ offset: Double, app: String = "Editor") -> VisualMemoryItem {
+            VisualMemoryItem(id: id, kind: .moment, capturedAt: start.addingTimeInterval(offset),
+                source: app, bundleID: app, text: "Observed text", path: "missing-" + id + ".heic", appName: app)
+        }
+        try store.save([item("before", -1), item("a", 0), item("b", 0), item("c", 1), item("other", 1, app: "Browser"), item("end", 2)])
+        let first = try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor", limit: 1, chronological: true)
+        #expect(first.map(\.id) == ["a"])
+        let cursor = VisualMemoryCursor(capturedAtUnix: start.timeIntervalSince1970, id: "a")
+        try store.delete(ids: ["a"])
+        let rest = try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor", after: cursor, chronological: true)
+        #expect(rest.map(\.id) == ["b", "c"])
+        #expect(rest.allSatisfy { $0.text == "Observed text" })
+        #expect(try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor").map(\.id) == ["c", "b"])
+    }
+
     @Test func roundTripAndSharedChunkDeletion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

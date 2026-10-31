@@ -22,6 +22,7 @@ case "${shard}" in
     filters=(
       ConfigStoreTests
       TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
       VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests

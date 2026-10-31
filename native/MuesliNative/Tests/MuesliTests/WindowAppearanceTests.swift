@@ -20,6 +20,17 @@ struct WindowAppearanceTests {
         #expect(SidebarOrder.tabs(from: SidebarOrder.encode(restored)) == restored)
     }
 
+    @Test("Time Turner joins saved sidebar orders without losing existing positions")
+    func timeTurnerSidebarRestoration() {
+        let legacy = "meetingChat,timeline,dictations,meetings,insights,dictionary"
+        let restored = SidebarOrder.tabs(from: legacy)
+        #expect(restored.last == .timeTurner)
+        #expect(SidebarOrder.encode(Array(restored.dropLast())) == legacy)
+        let moved = SidebarOrder.inserting(.timeTurner, relativeTo: .timeline, after: true, in: legacy)
+        #expect(Array(SidebarOrder.tabs(from: moved).prefix(3)) == [.meetingChat, .timeline, .timeTurner])
+        #expect(DashboardTab.timeTurner.sidebarLabel == "Time Turner")
+    }
+
     @Test("Sidebar moves work in both directions while excluding fixed utility tabs")
     func sidebarOrderMoves() {
         let first = SidebarOrder.moving(.dictionary, to: .timeline, in: "")
@@ -33,9 +44,9 @@ struct WindowAppearanceTests {
     @Test("Sidebar insertion matches the displayed before or after boundary")
     func sidebarInsertionBoundaries() {
         let before = SidebarOrder.inserting(.dictionary, relativeTo: .dictations, after: false, in: "")
-        #expect(Array(SidebarOrder.tabs(from: before).prefix(3)) == [.timeline, .dictionary, .dictations])
+        #expect(Array(SidebarOrder.tabs(from: before).prefix(4)) == [.timeline, .timeTurner, .dictionary, .dictations])
         let after = SidebarOrder.inserting(.timeline, relativeTo: .dictations, after: true, in: "")
-        #expect(Array(SidebarOrder.tabs(from: after).prefix(2)) == [.dictations, .timeline])
+        #expect(Array(SidebarOrder.tabs(from: after).prefix(3)) == [.timeTurner, .dictations, .timeline])
         #expect(SidebarOrder.inserting(.settings, relativeTo: .timeline, after: false, in: "") == "")
         #expect(SidebarOrder.inserting(.timeline, relativeTo: .about, after: true, in: "") == "")
     }

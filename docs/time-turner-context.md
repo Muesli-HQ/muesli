@@ -2,8 +2,11 @@
 
 Time Turner has one local evidence foundation: the visual scrubber for humans,
 SQLite and CLI retrieval for agents, and optional model-generated context above
-that evidence. This document maps integration; it does not enable inference,
-create a separate diary product, or transmit any captures.
+that evidence. The on-demand daily recap now implements bounded text generation in the
+dedicated Time Turner Recap tab; see the daily recap section in [visual-memory.md](visual-memory.md).
+It follows the selected Meetings provider and transmits sampled text only when
+the user chooses Generate recap. Proactive scheduling and durable memory remain
+future work.
 
 ## Audited evidence contract
 
@@ -93,3 +96,14 @@ Before enabling generation, add fixture tests for source attribution, hostile OC
 input/output limits, cancellation, retry/checkpoint behavior, deletion propagation,
 and no hosted fallback. Model quality should be evaluated on explicitly selected
 fixtures; database and CLI correctness alone cannot establish inference quality.
+
+## Chronological agent workflow
+
+Use `time-turner history --last 6h` for oldest-first observations with OCR and
+app/window metadata. Continue with `--cursor` until `meta.hasMore` is false;
+the token preserves the resolved range and app filter. Search remains newest
+first for targeted lookup. Both use the existing observation schema; no separate
+activity-interval or inferred-work tables are needed. Daily Recap remains the
+model-derived summary. Text retention continues to follow capture retention;
+longer-lived OCR would require an explicit user setting and deletion semantics.
+See [the schema contract](../database-schema.md#time-turner-observations-agent-retrieval).
