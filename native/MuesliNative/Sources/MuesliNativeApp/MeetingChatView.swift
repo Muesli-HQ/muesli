@@ -181,9 +181,15 @@ struct MeetingChatView: View {
         HStack(spacing: 12) {
             if !isEmbedded && coordinator.selectedSessionID != nil {
                 Button { controller.showMeetingChatIndex() } label: {
-                    Label { Text("Chat") } icon: { AIIcon(.arrowLeft) }
+                    HStack(spacing: 6) {
+                        AIIcon(.arrowLeft)
+                        Text("Chat")
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).help("Back to all chats")
+                .buttonStyle(.muesli(.quiet)).help("Back to all chats")
                 .accessibilityLabel("Back to Chat")
                 Divider().frame(height: 16)
             }
