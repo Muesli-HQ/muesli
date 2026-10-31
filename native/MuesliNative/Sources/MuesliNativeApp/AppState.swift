@@ -196,6 +196,7 @@ final class AppState {
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
+    var settingsModelAvailability = SettingsModelAvailability()
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
     var interactionPermissionSnapshot: InteractionPermissionSnapshot?

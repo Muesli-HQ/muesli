@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import os
 import SwiftUI
 import MuesliCore
 import Testing
@@ -7,6 +9,48 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("unchanged config publication does not invalidate observed settings")
+    func unchangedConfigPublication() async throws {
+        try await withShortcutSettings { controller, _ in
+            controller.publishConfig()
+            let changed = OSAllocatedUnfairLock(initialState: false)
+            withObservationTracking {
+                _ = controller.appState.config
+            } onChange: {
+                changed.withLock { $0 = true }
+            }
+            controller.publishConfig()
+            controller.publishConfig()
+            #expect(!changed.withLock { $0 })
+            var different = controller.config
+            different.userName += " changed"
+            controller.appState.config = different
+            #expect(changed.withLock { $0 })
+        }
+    }
+
+    @Test("presentation catalog reuses definitions and refreshes availability without disk probes")
+    func presentationCatalogCaching() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            controller.appState.settingsModelAvailability = .init()
+            let first = catalog.definitions(for: controller)
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 1)
+            let cleanup = try #require(first.first { $0.id == "cleanup_on_device_model" })
+            let snapshot = cleanup.snapshot(config: controller.config, source: .manualUI)
+            #expect(snapshot.choices.allSatisfy { snapshot.unavailable[$0.id] != nil })
+            controller.appState.settingsModelAvailability.claudeCodeAvailable = true
+            let refreshed = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            let summary = try #require(refreshed.first { $0.id == "summary_source" })
+            #expect(summary.snapshot(config: controller.config).choices.contains { $0.id == "claude_code" })
+            controller.appState.config.userName += " changed"
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()

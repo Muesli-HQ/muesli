@@ -153,9 +153,9 @@ struct SettingsView: View {
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
     @State private var selectedPane: SettingsPane
-    @State private var downloadedBackendOptions: [BackendOption] = []
-    @State private var downloadedPostProcOptions: [PostProcessorOption] = []
-    @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
+    private var downloadedBackendOptions: [BackendOption] { BackendOption.compatibleOptions().filter { appState.settingsModelAvailability.contains($0) } }
+    private var downloadedPostProcOptions: [PostProcessorOption] { PostProcessorOption.all.filter { appState.settingsModelAvailability.postProcessorIDs.contains($0.id) } }
+    private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] { MeetingLiveCaptionBackend.allCases.filter { appState.settingsModelAvailability.liveCaptionIDs.contains($0.rawValue) } }
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
     @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
     @State private var permissionMonitoringClientID = UUID()
@@ -285,7 +285,7 @@ struct SettingsView: View {
         var models = downloadedPostProcOptions
             .filter(\.supportsQuil)
             .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        for model in Gemma4LiteRTModel.generalPurpose where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
             models.append(.gemma4(model))
         }
         return models
@@ -311,7 +311,7 @@ struct SettingsView: View {
             .filter { $0.isCompatible(with: appState.selectedBackend) }
             .map(OnDeviceCleanupModel.gguf)
         if TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
-            for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+            for model in Gemma4LiteRTModel.allCases where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
                 models.append(.gemma4(model))
             }
         }
@@ -341,7 +341,7 @@ struct SettingsView: View {
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
-        Gemma4LiteRTModel.allCases.contains { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }
+        !appState.settingsModelAvailability.gemmaIDs.isEmpty
             && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
     }
 
@@ -400,14 +400,15 @@ struct SettingsView: View {
         return options
     }
 
+    @State private var presentationCatalog = SettingsPresentationCatalog()
+
     private var activeFeatureTourTarget: FeatureTourTarget? {
         appState.activeFeatureTourTarget
     }
 
     var body: some View {
-        // Build once for this surface; Observation refreshes dynamic choices.
-        let _ = appState.config
-        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        // Geometry, hover and permission updates reuse the same catalog.
+        settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
     }
 
     private var settingsContent: some View {
@@ -448,7 +449,6 @@ struct SettingsView: View {
                    controller.hostedDictationModelVisibility.shows(.openRouter) {
                     loadOpenRouterTranscriptionModelsIfNeeded()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
             .onDisappear {
                 SoundController.stopMaraudersMapClip()
@@ -474,10 +474,18 @@ struct SettingsView: View {
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
-            .onChange(of: activeFeatureTourTarget) { _, target in
-                scrollToFeatureTourTarget(target, using: scrollProxy)
+            .task(id: SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)) {
+                let request = SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)
+                // Give the destination pane one layout pass. Cancellation prevents an old
+                // step from scrolling a newer pane after rapid Next/Back navigation.
+                await Task.yield()
+                guard !Task.isCancelled, let target = request.scrollTarget else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    scrollProxy.scrollTo(target.rawValue, anchor: .center)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
@@ -583,38 +591,13 @@ struct SettingsView: View {
 
     }
 
-    private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
-        guard let target,
-              target == .liveCaptionsSetting
-                || target == .cloudCleanupSetting
-                || target == .dictationProviderSetting
-                || target == .recordingIndicatorStyle
-                || target == .meetingSummaryProvider
-                || target == .quillSettings else { return }
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(target.rawValue, anchor: .center)
-            }
-        }
-    }
-
     private func updateSettingsControlStacking(contentWidth: CGFloat) {
         let stacks = contentWidth < SettingsLayout.stackedContentWidth
         if stacksSettingsControls != stacks { stacksSettingsControls = stacks }
     }
 
     private func refreshDownloadedModelOptions() {
-        controller.refreshMeetingTranscriptionSelectionForAvailability()
-        // Only write changed values. Unconditional writes from onAppear re-render Settings
-        // and can feed a SwiftUI update loop (#632).
-        let backends = BackendOption.downloaded
-        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
-        let postProcessors = PostProcessorOption.downloaded
-        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
-        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
-        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
-            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
-        }
+        controller.refreshSettingsModelAvailability()
     }
 
     private func refreshAudioInputDevices() {
@@ -1607,7 +1590,7 @@ struct SettingsView: View {
                     settingsControl("summary_source")
                         .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
                         .featureTourTarget(.meetingSummaryProvider)
-                    if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
+                    if !appState.settingsModelAvailability.claudeCodeAvailable,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
                             .font(MuesliTheme.caption())
@@ -2319,7 +2302,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             computerUseSettingsPane
             quilSettingsSection
-            if CotypistSetup.isAvailable {
+            if appState.settingsModelAvailability.cotypistAvailable {
                 cotypistSettingsSection
             }
         }
@@ -2348,14 +2331,14 @@ struct SettingsView: View {
                     "Planner model",
                     description: isLocalPlanner
                         ? "Planning runs on this Mac. No ChatGPT sign-in is needed."
-                        : (ComputerUseLocalPlanner.models.contains(where: \.available)
+                        : (!appState.settingsModelAvailability.localPlannerIDs.isEmpty
                             ? nil
                             : "Download Gemma in Models to enable the On-device backend."),
                     controlWidth: meetingControlWidth
                 ) {
                     MuesliSettingControl(controller: controller, id: "cua_model",
                         allowedChoiceIDs: isLocalPlanner
-                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            ? appState.settingsModelAvailability.localPlannerIDs
                             : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
                 }
                 if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {

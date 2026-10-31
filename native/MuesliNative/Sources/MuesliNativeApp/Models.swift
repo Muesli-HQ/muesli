@@ -1487,8 +1487,8 @@ struct MeetingSummaryBackendOption: Equatable {
 
     static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
 
-    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
-        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
+        guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
               selected != .claudeCode else { return all }
         return all.filter { $0 != .claudeCode }
     }
@@ -2239,7 +2239,7 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
-struct AppConfig: Codable {
+struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
@@ -2946,14 +2946,14 @@ struct AppConfig: Codable {
     }
 }
 
-struct WindowFrame: Codable {
+struct WindowFrame: Codable, Equatable {
     let x: Double
     let y: Double
     let width: Double
     let height: Double
 }
 
-struct CGPointCodable: Codable {
+struct CGPointCodable: Codable, Equatable {
     let x: Double
     let y: Double
 

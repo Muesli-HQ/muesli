@@ -251,6 +251,15 @@ app lane, and distinguish pending/skipped review checks from approvals.
 
 ## Finite Settings (UI and Voice)
 
+Settings rendering must use `AppState.settingsModelAvailability` and the surface-owned
+`SettingsPresentationCatalog`; do not probe model files or executable paths from view
+bodies or presentation availability closures. Refresh disk-backed facts off the main
+actor at launch, app activation, model-file mutation completion, and executable-path
+changes. Keep live validation in the shared mutation executor. Publish controller config
+through `publishConfig()` so equal values do not invalidate the observation graph.
+Tour scrolling must be cancellable and scoped to the active target and destination pane;
+do not enqueue animated scrolling from repeated appearance callbacks.
+
 Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
 Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,
 readback, availability checks, and the existing controller setter. Render them
