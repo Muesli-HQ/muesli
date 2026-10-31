@@ -6801,6 +6801,17 @@ public final class MuesliController: NSObject {
             appState.upcomingCalendarEvents.map { ($0.resolvedCalendarOccurrence.identityKey, $0.startDate) },
             uniquingKeysWith: { first, _ in first })
         updateConfig { $0.planFolder(folderID, for: key, startTime: event.startDate, currentStartTimes: currentStarts) }
+        // A recording of this occurrence already has its meeting row; move it so the label stays true.
+        let active = activeMeetingID.flatMap { try? dictationStore.meeting(id: $0) }
+        if let id = Self.activeMeetingToRefile(active, occurrenceKey: key) {
+            try? dictationStore.moveMeeting(id: id, toFolder: folderID)
+            syncAppState()
+        }
+    }
+
+    nonisolated static func activeMeetingToRefile(_ active: MeetingRecord?, occurrenceKey: String) -> Int64? {
+        guard let active, active.calendarOccurrence?.identityKey == occurrenceKey else { return nil }
+        return active.id
     }
 
     /// A folder inherited from a predecessor wins; otherwise the one planned for the calendar event.

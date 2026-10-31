@@ -2166,6 +2166,12 @@ struct PlannedCalendarFolder: Codable, Equatable {
     var startTime: Date
 }
 
+/// One unreadable planned-folder record drops only itself, not every other choice.
+private struct LossyPlannedCalendarFolder: Decodable {
+    let value: PlannedCalendarFolder?
+    init(from decoder: Decoder) throws { value = try? PlannedCalendarFolder(from: decoder) }
+}
+
 enum AppAppearanceMode: String, CaseIterable {
     case light, system, dark
 
@@ -2893,7 +2899,8 @@ struct AppConfig: Codable {
         autoExportMarkdownContent = MeetingExportContent(rawValue: decodedAutoExportMarkdownContent)?.rawValue ?? defaults.autoExportMarkdownContent
         let decodedAutoExportFileFormat = (try? c.decode(String.self, forKey: .autoExportFileFormat)) ?? defaults.autoExportFileFormat
         autoExportFileFormat = MeetingAutoExportFileFormat(rawValue: decodedAutoExportFileFormat)?.rawValue ?? defaults.autoExportFileFormat
-        plannedCalendarFolders = (try? c.decode([String: PlannedCalendarFolder].self, forKey: .plannedCalendarFolders)) ?? defaults.plannedCalendarFolders
+        plannedCalendarFolders = (try? c.decode([String: LossyPlannedCalendarFolder].self, forKey: .plannedCalendarFolders))?
+            .compactMapValues(\.value) ?? defaults.plannedCalendarFolders
         contributionPromptNextWordCount = try? c.decode(Int.self, forKey: .contributionPromptNextWordCount)
         contributionPromptNextMeetingCount = try? c.decode(Int.self, forKey: .contributionPromptNextMeetingCount)
         contributionGitHubStarClicked = (try? c.decode(Bool.self, forKey: .contributionGitHubStarClicked)) ?? defaults.contributionGitHubStarClicked

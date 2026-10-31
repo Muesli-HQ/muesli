@@ -134,4 +134,31 @@ struct PlannedCalendarFolderTests {
         #expect(store.load().plannedFolderID(for: "occ-a", existingFolderIDs: [7]) == 7)
         try? FileManager.default.removeItem(at: dir)
     }
+
+    @Test("one unreadable planned folder keeps the other choices")
+    func corruptRecordDropsOnlyItself() throws {
+        let payload: [String: Any] = ["planned_calendar_folders": [
+            "good": ["folderID": 7, "startTime": 1000.0],
+            "bad": ["folderID": "seven"],
+        ]]
+        let config = try JSONDecoder().decode(AppConfig.self, from: JSONSerialization.data(withJSONObject: payload))
+        #expect(config.plannedCalendarFolders.keys.sorted() == ["good"])
+        #expect(config.plannedCalendarFolders["good"]?.folderID == 7)
+    }
+
+    @Test("picking a folder for the occurrence being recorded refiles that recording")
+    func activeRecordingOfTheOccurrenceIsRefiled() {
+        let occurrence = CalendarOccurrenceReference(provider: .eventKit, calendarID: "cal", eventID: "ev", originalStartTime: now)
+        let other = CalendarOccurrenceReference(provider: .eventKit, calendarID: "cal", eventID: "other", originalStartTime: now)
+        let recording = meeting(id: 5, occurrence: occurrence)
+        #expect(MuesliController.activeMeetingToRefile(recording, occurrenceKey: occurrence.identityKey) == 5)
+        #expect(MuesliController.activeMeetingToRefile(recording, occurrenceKey: other.identityKey) == nil)
+        #expect(MuesliController.activeMeetingToRefile(meeting(id: 6, occurrence: nil), occurrenceKey: occurrence.identityKey) == nil)
+        #expect(MuesliController.activeMeetingToRefile(nil, occurrenceKey: occurrence.identityKey) == nil)
+    }
+
+    private func meeting(id: Int64, occurrence: CalendarOccurrenceReference?) -> MeetingRecord {
+        MeetingRecord(id: id, title: "Standup", startTime: "2027-01-15T10:00:00Z", durationSeconds: 0,
+                      rawTranscript: "", formattedNotes: "", wordCount: 0, folderID: nil, calendarOccurrence: occurrence)
+    }
 }
