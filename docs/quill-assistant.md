@@ -147,3 +147,9 @@ or a selected OpenRouter transcription model: question transcription is optional
 Transcript-based Quill and ordinary dictation still require that configuration.
 Long recordings that exceed Gemma’s direct-audio limit still require successful
 full-recording transcription before an answer can be generated.
+
+Conversational replies are capped at 16,000 characters. Replacement and insertion
+outputs reuse the existing 40,000-character editing policy. Hosted requests that
+offer editing tools reuse the 12,000-token editing budget; answer-only requests
+retain 4,096 tokens. Tool arguments have a separate 1 MiB parsing bound so Unicode
+and JSON escapes do not inadvertently reduce the supported text length.

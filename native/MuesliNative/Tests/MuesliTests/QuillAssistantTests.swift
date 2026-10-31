@@ -106,6 +106,38 @@ struct QuillAssistantTests {
         #expect(QuillAssistantTargetPolicy.isEditable(role: "AXWebArea", valueWritable: false,
             selectionWritable: false, explicitlyEditable: true))
     }
+    @Test func editAndReplyOutputLimitsRemainSeparate() throws {
+        func arguments(_ text: String, editing: Bool) throws -> String {
+            var object = ["text": text]
+            if editing { object["target_id"] = "current" }
+            return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        }
+        for count in [16_001, 20_000, QuilTransformationOutput.maximumOutputCharacters] {
+            // Escaped quotes exceed the old wire-byte cap at the supported text limit.
+            let text = String(repeating: "\"", count: count)
+            let args = try arguments(text, editing: true)
+            #expect(try request(selection: "Old").decode(name: "replace_selection", arguments: args) == .replace(text))
+            #expect(try request().decode(name: "insert_text", arguments: args) == .insert(text))
+        }
+        let unicode = String(repeating: "🌍", count: QuilTransformationOutput.maximumOutputCharacters)
+        #expect(try request(selection: "Old").decode(name: "replace_selection",
+            arguments: arguments(unicode, editing: true)) == .replace(unicode))
+        let tooLong = try arguments(String(repeating: "a", count: QuilTransformationOutput.maximumOutputCharacters + 1), editing: true)
+        #expect(throws: QuilTransformationError.self) {
+            try request(selection: "Old").decode(name: "replace_selection", arguments: tooLong)
+        }
+        let reply = String(repeating: "a", count: QuillAssistantRequest.maximumReplyCharacters)
+        #expect(try request(target: nil).decode(name: "reply", arguments: arguments(reply, editing: false)) == .reply(reply))
+        #expect(throws: QuillAssistantError.self) {
+            try request(target: nil).decode(name: "reply", arguments: arguments(reply + "a", editing: false))
+        }
+        #expect(throws: QuillAssistantError.self) {
+            try request().decode(name: "insert_text", arguments: String(repeating: " ", count: QuillAssistantRequest.maximumArgumentBytes + 1))
+        }
+        #expect(request(selection: "Old").hostedMaximumOutputTokens == QuilModelPolicy.remoteMaximumOutputTokens)
+        #expect(request(target: nil).hostedMaximumOutputTokens == 4_096)
+    }
+
     @Test func focusDoesNotForceEditing() throws {
         let selected = request(selection: "A paragraph")
         #expect(try selected.decode(name: "reply", arguments: #"{"text":"An explanation."}"#) == .reply("An explanation."))

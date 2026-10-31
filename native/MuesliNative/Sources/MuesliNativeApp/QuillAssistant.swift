@@ -104,17 +104,29 @@ struct QuillAssistantRequest: Sendable {
         ]
         return String(decoding: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self)
     }
+    static let maximumReplyCharacters = 16_000
+    // Bound parsing separately from decoded text, allowing Unicode and JSON escapes.
+    static let maximumArgumentBytes = 1_048_576
+
+    var hostedMaximumOutputTokens: Int {
+        targetID == nil ? 4_096 : QuilModelPolicy.remoteMaximumOutputTokens
+    }
+
     func decode(name: String, arguments: String) throws -> QuillAssistantAction {
-        guard arguments.utf8.count <= 65536,
+        guard arguments.utf8.count <= Self.maximumArgumentBytes,
               let object = try JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: Any],
-              let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text.count <= 16000 else { throw QuillAssistantError.invalidResponse }
+              let text = object["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { throw QuillAssistantError.invalidResponse }
         if name == "reply" {
-            guard Set(object.keys) == ["text"] else { throw QuillAssistantError.invalidResponse }
+            guard Set(object.keys) == ["text"], text.count <= Self.maximumReplyCharacters
+            else { throw QuillAssistantError.invalidResponse }
             return .reply(text)
         }
         guard Set(object.keys) == ["text", "target_id"], let targetID,
               object["target_id"] as? String == targetID else { throw QuillAssistantError.unavailableTarget }
+        guard text.count <= QuilTransformationOutput.maximumOutputCharacters else {
+            throw QuilTransformationError.responseTooLong(QuilTransformationOutput.maximumOutputCharacters)
+        }
         switch name {
         case "replace_selection" where !selectedText.isEmpty: return .replace(text)
         case "insert_text" where selectedText.isEmpty: return .insert(text)

@@ -14,7 +14,7 @@ enum QuillAssistantClient {
         let client = MeetingTextGenerationClient()
         let prompt = try request.prompt()
         let base = MeetingTextGenerationRequest(system: QuillAssistantRequest.system, user: prompt,
-            config: providerConfig, maxOutputTokens: 4096)
+            config: providerConfig, maxOutputTokens: request.hostedMaximumOutputTokens)
         if client.supportsNativeTools(config: providerConfig) {
             let response = try await client.generateNative(.init(base: base,
                 inputItems: JSONSerialization.data(withJSONObject: [["role": "user", "content": prompt]]),
