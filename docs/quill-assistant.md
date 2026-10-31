@@ -141,3 +141,9 @@ and answers must disclose the partial reading. Quill uses the shared dictionary
 and deterministic cleanup with transcript-content debug logging suppressed.
 Timeline rows load bounded endpoint previews; expansion loads full history off
 the UI actor.
+
+Direct-audio Gemma can begin recording without configured cloud-ASR credentials
+or a selected OpenRouter transcription model: question transcription is optional.
+Transcript-based Quill and ordinary dictation still require that configuration.
+Long recordings that exceed Gemma’s direct-audio limit still require successful
+full-recording transcription before an answer can be generated.

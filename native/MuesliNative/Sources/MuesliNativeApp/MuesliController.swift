@@ -11366,7 +11366,8 @@ public final class MuesliController: NSObject {
             provider: selectedDictationProvider,
             openAIAPIKey: resolvedOpenAIAPIKey(),
             openRouterAPIKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
-            openRouterModel: config.openRouterDictationModel
+            openRouterModel: config.openRouterDictationModel,
+            requiresTranscript: !(forQuill && quillUsesDirectAudio)
         ) {
             return blockHostedDictationStart(
                 status: message,
@@ -11376,8 +11377,8 @@ public final class MuesliController: NSObject {
                 forQuill: forQuill
             )
         }
-        // Cloud credentials are checked above; local ASR readiness is irrelevant.
-        // Direct-audio local question previews remain best-effort.
+        // Transcript-based requests require cloud credentials. Direct-audio Quill
+        // only requires its answer model; local and cloud previews are best-effort.
         if selectedDictationProvider.isHosted || (forQuill && quillUsesDirectAudio) {
             return ensureNativeModelsReady(forQuill: forQuill)
         }
