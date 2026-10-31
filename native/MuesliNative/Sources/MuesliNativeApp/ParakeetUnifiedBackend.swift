@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreML
 import FluidAudio
 import Foundation
 import MuesliCore
@@ -7,6 +8,9 @@ import MuesliCore
 /// (FastConformer-RNNT) using FluidAudio's offline batch `UnifiedAsrManager`.
 /// English-focused, lower-WER successor to Parakeet TDT v3.
 actor ParakeetUnifiedTranscriber {
+    private let cpuOnly: Bool
+    init(cpuOnly: Bool = false) { self.cpuOnly = cpuOnly }
+
     private var asrManager: UnifiedAsrManager?
     private var loadedPlan: ManagedASRModelPlan?
     private var loadGeneration: UInt64 = 0
@@ -40,6 +44,7 @@ actor ParakeetUnifiedTranscriber {
 
         fputs("[parakeet-unified] loading models local_only=\(localOnly)...\n", stderr)
         let plan = ManagedASRModelPlans.parakeetUnified()
+        let cpuOnly = self.cpuOnly
         let manager = try await ManagedASRModelDownloader.loadValidated(
             plan,
             allowDownload: !localOnly,
@@ -52,7 +57,9 @@ actor ParakeetUnifiedTranscriber {
             )
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
-            let manager = UnifiedAsrManager()
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .cpuOnly
+            let manager = UnifiedAsrManager(configuration: cpuOnly ? configuration : nil)
             try await manager.loadModels(from: modelDirectory)
             return manager
         }

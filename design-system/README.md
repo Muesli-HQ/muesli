@@ -130,3 +130,14 @@ The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary tra
 Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
 
 Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+
+## Quill conversation answers
+
+The Dashboard & Notch specimen includes Quill's content-sized answer state using
+the existing feather asset. The panel width and origin match the visible notch
+bar, with 16pt padding, a 10pt question/answer gap, and a 26pt footer separated by
+12pt. Height is bounded to 96–420pt; longer answers scroll. Question text uses
+12pt helper typography and answers use 14pt body with the shared Markdown renderer.
+Copy confirms success; Follow up starts hands-free capture; the shortcut retains
+hold/release semantics. Dismiss clears active context and New conversation starts
+fresh. Background recognition does not display partial text while recording.

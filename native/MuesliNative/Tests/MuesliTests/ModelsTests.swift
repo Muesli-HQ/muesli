@@ -2468,6 +2468,78 @@ struct AppConfigTests {
 
 @Suite("HotkeyMonitor")
 struct HotkeyMonitorTests {
+    @Test("Follow-ups started by the button submit on the next hotkey press", arguments: [false, true])
+    @MainActor
+    func conversationalToggle(combination: Bool) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.doubleTapEnabled = false
+        monitor.combinationActivation = .pushToTalk
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("submit") }
+        monitor.onPrepare = { events.append("unexpected prepare") }
+        monitor.onStart = { events.append("unexpected hold") }
+        monitor.onStop = { events.append("unexpected release") }
+        monitor.onCancel = { events.append("unexpected cancel") }
+        func press(_ down: Bool) {
+            if combination {
+                monitor.handleCombinationForTests(type: down ? .keyDown : .keyUp,
+                    keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 55, flags: down ? .command : [])
+            }
+        }
+        monitor.startToggleMode()
+        #expect(monitor.isToggleRecording)
+        monitor.startToggleMode() // Repeated UI clicks cannot start another take.
+        scheduler.advance(by: 1)
+        #expect(events == ["start"])
+        press(true)
+        press(false)
+        scheduler.advance(by: 1)
+        #expect(!monitor.isToggleRecording)
+        #expect(events == ["start", "submit"])
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("Quill hotkey holds submit on release across repeated conversation turns", arguments: [false, true])
+    @MainActor
+    func conversationalHoldAndRelease(combination: Bool) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.targetKeyCode = 63 // Fn
+        monitor.doubleTapEnabled = true
+        monitor.combinationActivation = .pushToTalk
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("submit") }
+        monitor.onToggleStart = { events.append("unexpected toggle") }
+        monitor.onCancel = { events.append("unexpected cancel") }
+        for _ in 0..<2 {
+            if combination {
+                monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+            }
+            scheduler.advance(by: 0.30)
+            #expect(!monitor.isToggleRecording)
+            if combination {
+                monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 63, flags: [])
+            }
+            #expect(!monitor.hasPendingOrActiveSession)
+            scheduler.advance(by: 1)
+        }
+        #expect(events == ["prepare", "start", "submit", "prepare", "start", "submit"])
+    }
+
     final class ManualHotkeyScheduler {
         private struct ScheduledItem {
             let deadline: TimeInterval
