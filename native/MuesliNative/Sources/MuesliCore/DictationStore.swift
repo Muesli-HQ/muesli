@@ -352,6 +352,7 @@ public final class DictationStore {
         try MeetingVideoStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
+        try migrateQuillHistory(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         try renameLegacyGranolaImportFolder(db: db)
@@ -454,6 +455,122 @@ public final class DictationStore {
             DELETE FROM bodhan_wbcs_measurements WHERE dictation_id = OLD.id;
         END;
         """, db: db)
+    }
+
+    // MARK: - Quill conversations
+
+    // Quill history is local-only. Deleted session identities remain as tombstones
+    // so an in-flight preview or response cannot resurrect a deleted conversation.
+    private func migrateQuillHistory(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE TABLE IF NOT EXISTS quill_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL UNIQUE,
+            timestamp TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'quill',
+            deleted_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS quill_conversation_turns (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id TEXT NOT NULL UNIQUE,
+            conversation_id INTEGER NOT NULL REFERENCES quill_conversations(id) ON DELETE CASCADE,
+            body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quill_turns_conversation ON quill_conversation_turns(conversation_id, seq);
+        """, db: db)
+    }
+
+    public func appendQuillTurn(sessionID: UUID, turn: QuillHistoryTurn) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("INSERT OR IGNORE INTO quill_conversations(session_id, timestamp) VALUES (?, ?)", db: db, bind: {
+                self.bindCotypistText(sessionID.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(turn.timestamp, at: 2, statement: $0)
+            })
+            let body = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+            try withStatement("""
+            INSERT OR IGNORE INTO quill_conversation_turns(turn_id, conversation_id, body)
+            SELECT ?, id, ? FROM quill_conversations WHERE session_id = ? AND deleted_at IS NULL
+            """, db: db, bind: {
+                self.bindCotypistText(turn.id.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(body, at: 2, statement: $0)
+                self.bindCotypistText(sessionID.uuidString, at: 3, statement: $0)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func updateQuillQuestion(turnID: UUID, question: String) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var body: String?
+            try withStatement("""
+            SELECT t.body FROM quill_conversation_turns t JOIN quill_conversations c ON c.id = t.conversation_id
+            WHERE t.turn_id = ? AND c.deleted_at IS NULL
+            """, db: db, bind: { self.bindCotypistText(turnID.uuidString, at: 1, statement: $0) }, row: {
+                body = String(cString: sqlite3_column_text($0, 0))
+            })
+            if let body {
+                var turn = try JSONDecoder().decode(QuillHistoryTurn.self, from: Data(body.utf8))
+                turn.question = question
+                let updated = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+                try withStatement("UPDATE quill_conversation_turns SET body = ? WHERE turn_id = ?", db: db, bind: {
+                    self.bindCotypistText(updated, at: 1, statement: $0)
+                    self.bindCotypistText(turnID.uuidString, at: 2, statement: $0)
+                })
+            }
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func deleteQuillConversation(id: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("UPDATE quill_conversations SET deleted_at = ? WHERE id = ?", db: db, bind: {
+                sqlite3_bind_double($0, 1, Date().timeIntervalSince1970)
+                sqlite3_bind_int64($0, 2, id)
+            })
+            try withStatement("DELETE FROM quill_conversation_turns WHERE conversation_id = ?", db: db, bind: {
+                sqlite3_bind_int64($0, 1, id)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func quillConversation(id: Int64) throws -> QuillConversationRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try quillConversation(id: id, db: db)
+    }
+
+    private func quillConversation(id: Int64, db: OpaquePointer?, previewOnly: Bool = false) throws -> QuillConversationRecord? {
+        var identity: (UUID, String)?
+        try withStatement("SELECT session_id, timestamp FROM quill_conversations WHERE id = ? AND deleted_at IS NULL", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: {
+                if let uuid = UUID(uuidString: String(cString: sqlite3_column_text($0, 0))) {
+                    identity = (uuid, String(cString: sqlite3_column_text($0, 1)))
+                }
+            })
+        guard let identity else { return nil }
+        var turnCount = 0
+        try withStatement("SELECT COUNT(*) FROM quill_conversation_turns WHERE conversation_id = ?", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { turnCount = Int(sqlite3_column_int64($0, 0)) })
+        // Decode only two bounded bodies during the shared synchronous Timeline refresh.
+        // Full conversation materialization happens off the UI actor on expansion.
+        let endpointFilter = previewOnly ? " AND (seq = (SELECT MIN(seq) FROM quill_conversation_turns WHERE conversation_id = ?1) OR seq = (SELECT MAX(seq) FROM quill_conversation_turns WHERE conversation_id = ?1))" : ""
+        var bodies: [String] = []
+        try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ?1\(endpointFilter) ORDER BY seq", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { bodies.append(String(cString: sqlite3_column_text($0, 0))) })
+        let turns = bodies.compactMap { try? JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
+        // Damaged endpoints must not hide potentially readable middle turns.
+        guard !turns.isEmpty || (previewOnly && turnCount > 2) else { return nil }
+        return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns, turnCount: turnCount)
     }
 
     // MARK: - Cotypist
@@ -1086,6 +1203,9 @@ public final class DictationStore {
             origin: origin,
             targetApplication: targetApplication
         )
+        var quillFilter = historyFilterConditions(alias: "q", dateColumn: "timestamp",
+            fromDate: fromDate, toDate: toDate, origin: origin)
+        if targetApplication != nil { quillFilter.conditions.append("0 = 1") }
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -1099,11 +1219,13 @@ public final class DictationStore {
             SELECT 2, c.id, c.timestamp
             FROM cotypist_sessions c
             WHERE \(cotypistFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 3, q.id, q.timestamp FROM quill_conversations q
+            WHERE \(quillFilter.conditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
         ORDER BY julianday(sort_time) DESC, sort_time DESC, kind ASC, record_id DESC
-        LIMIT ? OFFSET ?
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1111,28 +1233,28 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
-        sqlite3_bind_int(statement, Int32(boundValues.count + 1), Int32(limit))
-        sqlite3_bind_int(statement, Int32(boundValues.count + 2), Int32(max(0, offset)))
-
-        var keys: [(kind: Int32, id: Int64)] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            keys.append((sqlite3_column_int(statement, 0), sqlite3_column_int64(statement, 1)))
-        }
-
+        // Pagination counts readable entries, not SQL keys that may be omitted.
         var entries: [TimelineEntry] = []
-        entries.reserveCapacity(keys.count)
-        for key in keys {
-            if key.kind == 0, let record = try dictation(id: key.id, db: db) {
-                entries.append(.dictation(record))
-            } else if key.kind == 1, let record = try meeting(id: key.id, db: db) {
-                entries.append(.meeting(record))
-            } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
-                entries.append(.cotypist(record))
+        var remainingOffset = max(0, offset)
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let kind = sqlite3_column_int(statement, 0)
+            let id = sqlite3_column_int64(statement, 1)
+            let entry: TimelineEntry?
+            switch kind {
+            case 0: entry = try dictation(id: id, db: db).map(TimelineEntry.dictation)
+            case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
+            case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
+            case 3: entry = try quillConversation(id: id, db: db, previewOnly: true).map(TimelineEntry.quill)
+            default: entry = nil
             }
+            guard let entry else { continue }
+            if remainingOffset > 0 { remainingOffset -= 1; continue }
+            entries.append(entry)
+            if entries.count == limit { break }
         }
         return entries
     }

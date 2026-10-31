@@ -282,9 +282,7 @@ struct SettingsView: View {
     }
 
     private var quilLocalModels: [OnDeviceCleanupModel] {
-        var models = downloadedPostProcOptions
-            .filter(\.supportsQuil)
-            .map(OnDeviceCleanupModel.gguf)
+        var models: [OnDeviceCleanupModel] = []
         for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
             models.append(.gemma4(model))
         }

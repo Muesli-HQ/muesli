@@ -292,6 +292,15 @@ final class HotkeyMonitor {
         }
     }
 
+    /// UI and keyboard starts share ownership so the next shortcut submits either.
+    func startToggleMode() {
+        guard !hasPendingOrActiveSession else { return }
+        toggleActive = true
+        lastTapWasShort = false
+        lastTapUpTime = nil
+        onToggleStart?()
+    }
+
     /// Call externally to stop toggle mode (e.g., from floating indicator click)
     func stopToggleMode() {
         if toggleActive {
@@ -483,7 +492,11 @@ final class HotkeyMonitor {
         prepared = false
         active = false
         cancelTimers()
-        scheduleTimers()
+        if toggleActive {
+            fireCombinationToggle()
+        } else {
+            scheduleTimers()
+        }
     }
 
     private func finishCombinationPushToTalk(cancelled: Bool) {

@@ -97,8 +97,11 @@ enum HostedDictationActivationPolicy {
         provider: DictationProvider,
         openAIAPIKey: String,
         openRouterAPIKey: String,
-        openRouterModel: String
+        openRouterModel: String,
+        requiresTranscript: Bool = true
     ) -> String? {
+        // Direct-audio Quill can answer without its optional question transcript.
+        guard requiresTranscript else { return nil }
         switch provider {
         case .local:
             return nil

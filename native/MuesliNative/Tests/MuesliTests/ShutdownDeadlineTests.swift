@@ -100,13 +100,27 @@ struct ShutdownDeadlineTests {
         #expect(elapsed >= 0.2 && elapsed < 2)
     }
 
-    @Test("work that finishes just after the deadline does not resume twice")
-    func resumesOnce() async {
+    @Test("work completing after the deadline never reports success")
+    func lateWorkCannotWinDelayedTimer() async {
         let finished = await ShutdownDeadline.run(seconds: 0.1) {
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try? await Task.sleep(for: .milliseconds(150))
         }
         #expect(!finished)
-        try? await Task.sleep(nanoseconds: 200_000_000)
+    }
+
+    @Test("work released after timeout does not resume twice")
+    func resumesOnce() async {
+        let work = StuckWork()
+        let completed = StuckWork()
+        let finished = await ShutdownDeadline.run(seconds: 0.01) {
+            await work.park()
+            completed.release()
+        }
+        #expect(!finished)
+        // Establish ordering explicitly instead of assuming relative sleeps
+        // resume in deadline order on an overloaded CI executor.
+        work.release()
+        await completed.park()
     }
 }
 

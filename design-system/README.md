@@ -116,3 +116,14 @@ Center the expanded instruction and question panels beneath the visible bar (its
 Show the latest three tool summaries under the working status, using 10pt text and at most two lines per summary. Generate display copy from the operation and outcome (for example, “Read page text” or “Open app — failed”), never from raw response bodies. Full responses, observations, errors, and tool arguments remain in Timeline. Older trace events without a summary remain readable there and do not fall back to raw text in the notch. Use 13pt instruction text in a scrollable area. The normal panel starts at 100pt high and adds 30pt per result, capped at 190pt; review and question surfaces retain their dedicated layouts. Clear summaries when a new command starts or the session ends.
 
 Active dictation, processing, and computer-use sessions own the indicator until they finish. Background loading callbacks and cursor feedback must not hide or replace their presentation or cancellation controls. Loading may use the shared floating surface while idle; starting an activity retires that loading presentation so its later completion cannot reset the session.
+
+## Quill conversation answers
+
+The Dashboard & Notch specimen includes Quill's content-sized answer state using
+the existing feather asset. The panel width and origin match the visible notch
+bar, with 16pt padding, a 10pt question/answer gap, and a 26pt footer separated by
+12pt. Height is bounded to 96–420pt; longer answers scroll. Question text uses
+12pt helper typography and answers use 14pt body with the shared Markdown renderer.
+Copy confirms success; Follow up starts hands-free capture; the shortcut retains
+hold/release semantics. Dismiss clears active context and New conversation starts
+fresh. Background recognition does not display partial text while recording.
