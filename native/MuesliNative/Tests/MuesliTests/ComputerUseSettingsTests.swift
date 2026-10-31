@@ -437,8 +437,20 @@ struct ComputerUseSettingsTests {
         var index = 0
         while index + marker.count <= characters.count {
             guard Array(characters[index..<index + marker.count]) == marker else { index += 1; continue }
+            // Find the closure that belongs to this call, wherever it sits: skip whitespace
+            // and newlines, then a balanced argument list (which may span lines), then
+            // more whitespace, and require the trailing closure's opening brace.
             var cursor = index + marker.count
-            while cursor < characters.count, characters[cursor] != "{", characters[cursor] != "\n" { cursor += 1 }
+            func skipWhitespace() { while cursor < characters.count, characters[cursor].isWhitespace { cursor += 1 } }
+            skipWhitespace()
+            if cursor < characters.count, characters[cursor] == "(" {
+                var parens = 0
+                repeat {
+                    if characters[cursor] == "(" { parens += 1 } else if characters[cursor] == ")" { parens -= 1 }
+                    cursor += 1
+                } while parens > 0 && cursor < characters.count
+                skipWhitespace()
+            }
             guard cursor < characters.count, characters[cursor] == "{" else { index = cursor; continue }
             var depth = 0
             var end = cursor
