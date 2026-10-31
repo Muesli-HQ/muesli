@@ -614,13 +614,20 @@ extension MuesliController {
                 value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
             }) { value in
             guard let source = QuilModelSourceOption.all.first(where: { $0.id == value }) else { return }
-            self.updateConfig {
+            self.updateConfig { config in
                 if let backend = source.hostedBackend {
-                    $0.quilBackend = backend.backend
-                    $0.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
-                } else if let model = localQuill.first(where: { $0.quilModelID == self.config.quilModel && $0.quilBackend.backend == self.config.quilBackend }) ?? localQuill.first {
-                    $0.quilBackend = model.quilBackend.backend
-                    $0.quilModel = model.quilModelID
+                    config.quilBackend = backend.backend
+                    config.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
+                } else {
+                    // Read the current selection from the inout `config`, not the controller's
+                    // stored property: updateConfig holds exclusive access to it while this
+                    // closure runs, so touching it here traps with an exclusivity violation.
+                    let currentModel = config.quilModel
+                    let currentBackend = config.quilBackend
+                    if let model = localQuill.first(where: { $0.quilModelID == currentModel && $0.quilBackend.backend == currentBackend }) ?? localQuill.first {
+                        config.quilBackend = model.quilBackend.backend
+                        config.quilModel = model.quilModelID
+                    }
                 }
             }
             if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }
