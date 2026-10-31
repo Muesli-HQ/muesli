@@ -201,8 +201,8 @@ final class NotchIndicatorController {
     private var instruction: String?
     private var instructionStatus = ""
     private var toolResults: [NotchToolResult] = []
-    private var appName = ""
-    private var appIcon: NSImage?
+    private(set) var appName = ""
+    private(set) var appIcon: NSImage?
     private var transcriptHovered = false
     private var transcriptDismissed = false
     private var transcriptExit: DispatchWorkItem?
@@ -259,16 +259,20 @@ final class NotchIndicatorController {
         instructionPanel?.isVisible == true ? instructionPanel?.frame : nil
     }
 
-    private func closeMeetingTranscript() {
+    private func closeMeetingTranscript(renderImmediately: Bool = true) {
         transcriptExit?.cancel()
         transcriptHovered = false
         meetingTranscript.hide()
-        renderInstruction()
+        if renderImmediately { renderInstruction() }
     }
 
     private var expanded = true
     private var screenBounds = CGRect.zero
     private var requiresReview = false
+    private(set) var quillAnswer: String?
+    private(set) var quillQuestion: String?
+    private var onQuillDismiss: (() -> Void)?
+    private var onQuillFollowUp: (() -> Void)?
     private(set) var outcome: NotchOutcome?
     private(set) var status: NotchStatus?
     private(set) var statusDismissAt: Date?
@@ -305,9 +309,13 @@ final class NotchIndicatorController {
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
               toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
-              cursorInsertionStopped: Bool = false) -> Bool {
+              cursorInsertionStopped: Bool = false, renderImmediately: Bool = true) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         let continuesStatus = status != nil && self.status == status && isVisible
+        quillAnswer = nil
+        quillQuestion = nil
+        onQuillDismiss = nil
+        onQuillFollowUp = nil
         requiresReview = false
         self.status = status
         statusDismissAt = nil
@@ -345,7 +353,7 @@ final class NotchIndicatorController {
         self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
         self.paused = paused
         if !meeting || !recording {
-            closeMeetingTranscript()
+            closeMeetingTranscript(renderImmediately: false)
             meetingTranscript.reset()
             transcriptDismissed = false
         }
@@ -365,8 +373,10 @@ final class NotchIndicatorController {
             self.panel = panel
         }
         if status != nil && !continuesStatus { expanded = true }
-        render()
-        panel?.orderFrontRegardless()
+        if renderImmediately {
+            render()
+            panel?.orderFrontRegardless()
+        }
         logPresentation("show")
         scheduleDismissal()
         return true
@@ -390,6 +400,10 @@ final class NotchIndicatorController {
         closeMeetingTranscript()
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
+        quillAnswer = nil
+        quillQuestion = nil
+        onQuillDismiss = nil
+        onQuillFollowUp = nil
         status = nil
         cursorInsertionStopped = false
         statusDismissAt = nil
@@ -413,7 +427,7 @@ final class NotchIndicatorController {
     /// pending review; show that existing result below the external menu bar.
     @discardableResult
     func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
-        guard outcome != nil || status != nil else { return false }
+        guard outcome != nil || status != nil || quillAnswer != nil else { return false }
         guard let screen else { return true }
         let resolved = resolveGeometry(screen)
         if status != nil && resolved == nil { return false }
@@ -482,6 +496,35 @@ final class NotchIndicatorController {
         return true
     }
 
+    @discardableResult
+    func showQuillAnswer(_ answer: String, question: String? = nil, on screen: NSScreen, onDismiss: @escaping () -> Void,
+                         onFollowUp: @escaping () -> Void) -> Bool {
+        guard show(on: screen, title: "Quill", detail: "Response", recording: false, paused: false,
+            meeting: false, handsFree: false, active: true, icon: QuillIcon.image(), accent: .white,
+            instruction: answer, renderImmediately: false) else { return false }
+        quillAnswer = answer
+        quillQuestion = question
+        onQuillDismiss = onDismiss
+        onQuillFollowUp = onFollowUp
+        expanded = true
+        render()
+        panel?.orderFrontRegardless()
+        return true
+    }
+
+    func updateQuillQuestion(_ question: String) {
+        guard quillAnswer != nil else { return }
+        quillQuestion = question
+        render()
+    }
+
+    private func dismissQuillAnswer() {
+        guard quillAnswer != nil else { return }
+        let callback = onQuillDismiss
+        hide()
+        callback?()
+    }
+
     func toggleInstructionExpansion() {
         expanded.toggle()
         render()
@@ -499,7 +542,7 @@ final class NotchIndicatorController {
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
-            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil || quillAnswer != nil, isQuillAnswer: quillAnswer != nil,
             onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
             onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) },
@@ -551,6 +594,27 @@ final class NotchIndicatorController {
         }
         meetingTranscript.hide()
         (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if let quillAnswer {
+            let width = min(geometry.frame().width, screenBounds.width)
+            let naturalHeight = QuillAssistantLayout.contentHeight(answer: quillAnswer, question: quillQuestion, width: width)
+            let height = QuillAssistantLayout.height(contentHeight: naturalHeight,
+                maximumHeight: min(420, screenBounds.height))
+            let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - height), width: width, height: height)
+            let view = QuillAssistantView(answer: quillAnswer, question: quillQuestion,
+                contentHeight: max(1, height - QuillAssistantLayout.chromeHeight),
+                onFollowUp: { [weak self] in
+                    guard let self, self.quillAnswer != nil else { return }
+                    self.onQuillFollowUp?()
+                },
+                onDismiss: { [weak self] in self?.dismissQuillAnswer() })
+            if let hosting = instructionPanel?.contentView as? NSHostingView<QuillAssistantView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
         if status != nil {
             let width = min(CGFloat(380), screenBounds.width)
             let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
@@ -592,7 +656,8 @@ final class NotchIndicatorController {
     }
 
     private func cancelOrDismiss() {
-        if outcome != nil || status != nil { hide() } else { onCancel?() }
+        if quillAnswer != nil { dismissQuillAnswer() }
+        else if outcome != nil || status != nil { hide() } else { onCancel?() }
     }
 }
 
@@ -707,6 +772,7 @@ private struct NotchIndicatorView: View {
     let requiresReview: Bool
     let outcome: NotchOutcome?
     var isStatus = false
+    var isQuillAnswer = false
     let onToggleInstruction: () -> Void
     let power: () -> Float
     var onHover: (Bool) -> Void = { _ in }
@@ -778,6 +844,8 @@ private struct NotchIndicatorView: View {
                         Image(systemName: "pause.fill")
                     } else if let outcome {
                         Image(systemName: outcome == .success ? "circle.fill" : "exclamationmark.triangle.fill")
+                    } else if isQuillAnswer {
+                        Image(systemName: "text.bubble")
                     } else if active {
                         ProgressView().controlSize(.mini).tint(Color(nsColor: accent))
                     } else {

@@ -854,9 +854,6 @@ struct ModelsView: View {
             ForEach(Gemma4LiteRTModel.generalPurpose.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                 gemmaCleanupModelCard(model, forQuill: true)
             }
-            ForEach(PostProcessorOption.all.filter(\.supportsQuil)) { option in
-                postProcModelCard(option, forQuill: true)
-            }
         }
         .padding(.top, MuesliTheme.spacing8)
     }

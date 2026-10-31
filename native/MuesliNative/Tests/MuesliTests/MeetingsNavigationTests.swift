@@ -2045,13 +2045,20 @@ struct MeetingsNavigationTests {
         #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(controller.selectedPostProcessorBackend == .local)
         #expect(controller.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilModel == PostProcessorOption.defaultQuilOption.id)
+        let availableQuillModel = Gemma4LiteRTModel.allCases.first {
+            !$0.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: $0)
+        }
+        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(controller.config.quilModel == (availableQuillModel ?? .e2b).repoID)
+        if availableQuillModel == nil {
+            #expect(!controller.config.enableQuilMode)
+        }
 
         let persisted = configStore.load()
         #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(persisted.quilModel == controller.config.quilModel)
         #expect(persisted.resolvedDictationProvider == .local)
         #expect(persisted.openRouterDictationModel == "provider/transcribe")
     }

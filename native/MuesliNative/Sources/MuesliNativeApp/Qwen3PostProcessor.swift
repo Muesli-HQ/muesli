@@ -17,7 +17,7 @@ enum Qwen3PostProcessorLogging {
     }
 
     static func logVerbose(_ message: @autoclosure () -> String) {
-        guard isVerboseEnabled else { return }
+        guard isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
         fputs("[muesli-native] \(message())\n", stderr)
     }
 }

@@ -278,3 +278,14 @@ The custom sidebar drag type (`com.muesli.sidebar-tab`) must be declared in the
 packaged app’s `UTExportedTypeDeclarations`, not just constructed in Swift.
 Without that declaration macOS can start a drag but fail to recognize its drop targets.
 Verify registration and actual pointer drops in the installed app, not only order logic.
+
+## Quill conversation answers
+
+The Dashboard & Notch specimen includes Quill's content-sized answer state using
+the existing feather asset. The panel width and origin match the visible notch
+bar, with 16pt padding, a 10pt question/answer gap, and a 26pt footer separated by
+12pt. Height is bounded to 96–420pt; longer answers scroll. Question text uses
+12pt helper typography and answers use 14pt body with the shared Markdown renderer.
+Copy confirms success; Follow up starts hands-free capture; the shortcut retains
+hold/release semantics. Dismiss clears active context and New conversation starts
+fresh. Background recognition does not display partial text while recording.

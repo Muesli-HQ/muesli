@@ -2381,8 +2381,8 @@ struct AppConfig: Codable, Equatable {
     var disabledCalendarIDs: [String] = []
     var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
-    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
-    var quilModel: String = PostProcessorOption.defaultQuilOption.id
+    var quilBackend: String = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+    var quilModel: String = Gemma4LiteRTModel.e2b.repoID
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
     var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
@@ -2815,7 +2815,7 @@ struct AppConfig: Codable, Equatable {
         calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         quilBackend = TranscriptCleanupBackendOption
-            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .resolved((try? c.decode(String.self, forKey: .quilBackend)) ?? defaults.quilBackend)
             .backend
         let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
         quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend

@@ -467,6 +467,54 @@ struct ComputerUseSettingsTests {
             return ("continue_desktop_task", "{}")
         }
     }
+    @Test("settings updateConfig closures never read self.config while it is exclusively borrowed")
+    func settingsUpdateConfigClosuresAvoidExclusivityConflicts() throws {
+        // updateConfig passes `config` inout to its closure, so reading
+        // `self.config` inside it traps at runtime with an exclusivity
+        // violation (e.g. selecting local models as the Quill source).
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MuesliNativeApp/MuesliSettingsDefinitions.swift"), encoding: .utf8)
+        let characters = Array(source)
+        let marker = Array("updateConfig")
+        var offenders: [String] = []
+        var index = 0
+        while index + marker.count <= characters.count {
+            guard Array(characters[index..<index + marker.count]) == marker else { index += 1; continue }
+            // Find the closure that belongs to this call, wherever it sits: skip whitespace
+            // and newlines, then a balanced argument list (which may span lines), then
+            // more whitespace, and require the trailing closure's opening brace.
+            var cursor = index + marker.count
+            func skipWhitespace() { while cursor < characters.count, characters[cursor].isWhitespace { cursor += 1 } }
+            skipWhitespace()
+            if cursor < characters.count, characters[cursor] == "(" {
+                let argumentsStart = cursor
+                var parens = 0
+                repeat {
+                    if characters[cursor] == "(" { parens += 1 } else if characters[cursor] == ")" { parens -= 1 }
+                    cursor += 1
+                } while parens > 0 && cursor < characters.count
+                // A closure passed inside the argument list runs under the same exclusive
+                // access. Plain arguments are evaluated before the access begins, so only
+                // flag an argument list that contains a closure.
+                let arguments = String(characters[argumentsStart..<cursor])
+                if arguments.contains("{"), arguments.contains("self.config") { offenders.append(arguments) }
+                skipWhitespace()
+            }
+            guard cursor < characters.count, characters[cursor] == "{" else { index = cursor; continue }
+            var depth = 0
+            var end = cursor
+            repeat {
+                if characters[end] == "{" { depth += 1 } else if characters[end] == "}" { depth -= 1 }
+                end += 1
+            } while depth > 0 && end < characters.count
+            let body = String(characters[cursor..<end])
+            if body.contains("self.config") { offenders.append(body) }
+            index = end
+        }
+        #expect(offenders.isEmpty, "updateConfig closures must read the inout config, not self.config: \(offenders)")
+    }
+
     @Test("real controller catalog has unique choices and applies UI settings with persistence")
     func controllerCatalog() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
