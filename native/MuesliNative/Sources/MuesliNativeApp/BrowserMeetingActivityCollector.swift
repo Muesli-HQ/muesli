@@ -143,30 +143,36 @@ final class BrowserMeetingActivityCollector {
             // The result's case only: an unrelated tab's URL can carry tokens or private search text.
             fputs("[meeting-monitor] browser_probe_slow app=\(app.bundleID) ax_ms=\(axMilliseconds) tab_ms=\(tabMilliseconds) result=\(activeTabResult.logLabel)\n", stderr)
         }
-        guard case .url(let url) = activeTabResult else {
-            if case .timedOut = activeTabResult {
-                // An ordinary focused page rules out a call only when background tabs are not
-                // searched; otherwise the timeout skipped the scan that could have found it.
-                return observedFocusedNonMeetingDocumentURL && !scansAllTabs ? .noMeeting : .inconclusive
+        switch activeTabResult {
+        case .timedOut:
+            // An ordinary focused page rules out a call only when background tabs are not
+            // searched; otherwise the timeout skipped the scan that could have found it.
+            return observedFocusedNonMeetingDocumentURL && !scansAllTabs ? .noMeeting : .inconclusive
+        case .noURL:
+            // A front tab with no URL (a Start Page, say) says nothing about the other tabs.
+            return await backgroundTabProbe(for: app, scansAllTabs: scansAllTabs)
+        case .url(let url):
+            guard let normalized = MeetingURLNormalizer.normalize(url) else {
+                // The browser holds the mic or camera but the front tab is something else: the
+                // call is in a background tab or another window.
+                return await backgroundTabProbe(for: app, scansAllTabs: scansAllTabs)
             }
+            return .meeting(normalized, isFocused: app.isActive)
+        }
+    }
+
+    private func backgroundTabProbe(for app: RunningAppSnapshot, scansAllTabs: Bool) async -> BrowserMeetingURLProbeResult {
+        guard scansAllTabs else { return .noMeeting }
+        switch await meetingURLInAnyTab(for: app) {
+        case .found(let background):
+            return .meeting(background, isFocused: false)
+        case .noCall:
             return .noMeeting
+        case .timedOut:
+            // The front tab is already known not to be a call, so that says nothing about
+            // the background tabs the scan did not finish reading.
+            return .inconclusive
         }
-        guard let normalized = MeetingURLNormalizer.normalize(url) else {
-            // The browser holds the mic or camera but the front tab is something else: the call
-            // is in a background tab or another window.
-            guard scansAllTabs else { return .noMeeting }
-            switch await meetingURLInAnyTab(for: app) {
-            case .found(let background):
-                return .meeting(background, isFocused: false)
-            case .noCall:
-                return .noMeeting
-            case .timedOut:
-                // The front tab is already known to be ordinary, so that says nothing about
-                // the background tabs the scan did not finish reading.
-                return .inconclusive
-            }
-        }
-        return .meeting(normalized, isFocused: app.isActive)
     }
 
     private func meetingURLInAnyTab(for app: RunningAppSnapshot) async -> BackgroundTabScanResult {

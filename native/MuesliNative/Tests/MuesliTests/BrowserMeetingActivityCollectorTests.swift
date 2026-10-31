@@ -123,6 +123,24 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(meetings.first?.isFocused == false)
     }
 
+    @Test("a front tab with no URL still lets a browser using the mic find a background call")
+    func frontTabWithoutURLStillScansBackgroundTabs() async {
+        let collector = BrowserMeetingActivityCollector(
+            activeTabProbeResultProvider: { _ in .noURL },
+            allTabURLsProvider: { _ in ["https://meet.google.com/qfm-jwnh-ret"] }
+        )
+
+        let attributed = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"]
+        )
+
+        #expect(attributed.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(attributed.first?.isFocused == false)
+    }
+
     @Test("only room URLs count when scanning background tabs")
     func backgroundScanRequiresARoomURL() {
         let rooms = [
