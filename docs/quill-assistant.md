@@ -25,7 +25,10 @@ completion and manual-paste fallback messages retain that distinction.
 Target capture occurs before Quill's indicator changes. Read-only selections can
 supply context but cannot become editing targets. Missing Accessibility access
 or an unavailable field leaves answer generation available without editing tools.
-Secure text fields are excluded. Screen context retains the existing preference,
+Secure text fields are excluded. Full-value freshness reads require a known
+character count of at most 5,000; larger or unknown-size fields rely on selection
+text/range checks. Oversized selections remain bounded reference text for replies
+but are never offered as truncated edit targets. Screen context retains the existing preference,
 permission and focused-document checks. Context that no longer matches is omitted.
 
 ## Providers and audio
@@ -47,7 +50,9 @@ then shows the finalized question. Partial text is never inserted into the targe
 Parakeet, WhisperKit and Bodhan reuse their buffered dictation sessions. Other
 non-Gemma local ASRs use bounded, coalescing PCM windows with their existing file
 recognizer. The ordinary buffered-dictation insertion toggle does not disable
-this background question recognition.
+this background question recognition. File-oriented backends prepare once per
+turn. Reused local transcripts and file fallbacks apply the captured dictionary
+through shared dictation finalization.
 
 Cloud ASR uses the same hosted sessions and configuration factory as ordinary
 dictation: OpenAI receives recorder PCM through its realtime session; OpenRouter
@@ -108,7 +113,8 @@ Timeline, independent of the model-context limit. Expand a Quill row to read all
 questions, answers and follow-ups, copy an answer, or delete the conversation.
 Late transcripts update the corresponding saved question. Dismiss and New
 conversation preserve saved history. Prior unsaved conversations cannot be recovered.
-Existing edit history remains unchanged. Conversation history does not enter
+Damaged serialized turns are skipped individually; conversations with no readable
+turns are omitted from Timeline. Existing edit history remains unchanged. Conversation history does not enter
 CloudKit, exports or telemetry.
 
 ## Validation

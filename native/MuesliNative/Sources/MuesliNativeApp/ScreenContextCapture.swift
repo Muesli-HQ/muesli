@@ -356,14 +356,23 @@ final class QuilSelectionSnapshot {
             &selectedTextWritable) == .success && selectedTextWritable.boolValue
         self.isEditable = QuillAssistantTargetPolicy.isEditable(role: role as? String ?? "",
             valueWritable: valueWritable, selectionWritable: canWriteSelection, explicitlyEditable: editable as? Bool == true)
-        var value: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
-        self.capturedValue = value as? String
+        self.capturedValue = Self.boundedValue(of: element)
         self.application = application
         self.element = element
         self.selectedRange = selectedRange
         self.usesClipboardFallback = usesClipboardFallback
         self.contextDocumentIdentifier = contextDocumentIdentifier
+    }
+
+    /// Avoid copying large or unknown-size documents over synchronous Accessibility IPC.
+    private static func boundedValue(of element: AXUIElement) -> String? {
+        var count: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &count) == .success,
+              let length = count as? Int, (0...5000).contains(length) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
+              let text = value as? String, text.utf16.count <= 5000 else { return nil }
+        return text
     }
 
     static func capture() throws -> QuilSelectionSnapshot {
@@ -406,9 +415,7 @@ final class QuilSelectionSnapshot {
             return current.location == selectedRange.location && current.length == selectedRange.length
         }
         if let capturedValue {
-            var currentValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &currentValue) == .success,
-                  currentValue as? String == capturedValue else { return false }
+            guard Self.boundedValue(of: focused) == capturedValue else { return false }
         }
         guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
         guard let selectedRange else { return true }

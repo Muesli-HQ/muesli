@@ -599,3 +599,33 @@ extension QuilDirectAudioTests {
         #expect(hosted.snapshot.cancellations > 0)
     }
 }
+
+extension QuilDirectAudioTests {
+    @MainActor @Test("Question preview remains alive while paste owns the turn")
+    func previewSurvivesPendingPaste() async throws {
+        let preview = QuilInstructionPreview()
+        let id = UUID()
+        let audio = QuilRecordedAudio(url: URL(fileURLWithPath: "/tmp/synthetic-quill-preview-unused.wav"))
+        var displayed: String?
+        preview.start(audio: audio, requestID: id, transcribe: { _ in
+            try await Task.sleep(for: .milliseconds(20))
+            return "Completed question"
+        }, display: { displayed = $0 })
+        preview.stopUnlessOwned(requestID: id, activeRequestID: id, answerRequestID: nil)
+        #expect(preview.isPending)
+        try await waitFor { displayed != nil }
+        #expect(displayed == "Completed question")
+        preview.stopUnlessOwned(requestID: id, activeRequestID: nil, answerRequestID: nil)
+        #expect(!preview.isPending)
+    }
+
+    @Test("Quill file windows prepare their backend only once")
+    func fileWindowsPrepareOnce() async throws {
+        let preparation = QuillRecognitionPreparation()
+        let probe = QuillQuestionTestProbe()
+        for _ in 0..<3 {
+            try await preparation.ensure { _ = await probe.fallback() }
+        }
+        #expect(await probe.fallbacks == 1)
+    }
+}

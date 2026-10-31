@@ -1,9 +1,42 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Quill assistant")
 struct QuillAssistantTests {
+    @Test func oversizedSelectionStillAllowsAnswerButNeverPartialEdit() throws {
+        for backend in [TranscriptCleanupBackendOption.gemma4LiteRT, .hosted(.openAI)] {
+            let bounded = request(selection: String(repeating: "a", count: 25_000)).bounded(for: backend)
+            #expect(bounded.targetID == nil)
+            #expect(bounded.tools.count == 1)
+            try QuilModelPolicy.validate(selectedText: bounded.selectedText, backend: backend, model: "test")
+            #expect(try bounded.decode(name: "reply", arguments: #"{"text":"Answer"}"#) == .reply("Answer"))
+            #expect(throws: QuillAssistantError.self) {
+                try bounded.decode(name: "replace_selection", arguments: #"{"text":"Edit","target_id":"current"}"#)
+            }
+        }
+    }
+
+    @Test func disconnectUsesNativeModelOrDisablesQuill() {
+        for available in [Gemma4LiteRTModel.e2b, nil] {
+            var config = AppConfig()
+            config.enableQuilMode = true
+            QuillAssistantModelPolicy.applyDisconnectedProviderFallback(to: &config, availableModel: available)
+            #expect(config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+            #expect(config.quilModel == Gemma4LiteRTModel.e2b.rawValue)
+            #expect(config.enableQuilMode == (available != nil))
+        }
+    }
+
+    @Test func questionFinalizationSharesDictationDictionary() async {
+        let coordinator = TranscriptionCoordinator()
+        var config = AppConfig()
+        config.customWords = [.init(word: "muesly", replacement: "muesli", matchingThreshold: 1)]
+        let result = await coordinator.finalizeQuillQuestion("Ask muesly", backend: .parakeetUnified, config: config)
+        #expect(result == "Ask muesli")
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_QUILL_SYNTHETIC_AUDIO"] != nil))
     func repeatedLocalQuestionTranscription() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["MUESLI_QUILL_SYNTHETIC_AUDIO"])

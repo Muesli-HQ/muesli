@@ -555,7 +555,8 @@ public final class DictationStore {
         var bodies: [String] = []
         try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ? ORDER BY seq", db: db,
             bind: { sqlite3_bind_int64($0, 1, id) }, row: { bodies.append(String(cString: sqlite3_column_text($0, 0))) })
-        let turns = try bodies.map { try JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
+        let turns = bodies.compactMap { try? JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
+        guard !turns.isEmpty else { return nil }
         return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns)
     }
 

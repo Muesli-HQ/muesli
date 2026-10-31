@@ -66,6 +66,25 @@ struct DictationStoreTests {
         #expect(try store.timelineEntries().count == 1)
     }
 
+    @Test("Damaged Quill turns do not hide readable Timeline history")
+    func damagedQuillTurnIsIsolated() throws {
+        let store = try makeStore()
+        let session = UUID()
+        for i in 0..<2 {
+            try store.appendQuillTurn(sessionID: session, turn: .init(id: UUID(), question: "Question", answer: "Answer \(i)",
+                timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "test"))
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE quill_conversation_turns SET body = 'invalid' WHERE seq = 1", nil, nil, nil) == SQLITE_OK)
+        guard case .quill(let record) = try #require(store.timelineEntries().first) else { Issue.record("Missing valid turn"); return }
+        #expect(record.turns.count == 1)
+        #expect(record.turns[0].answer == "Answer 1")
+        #expect(sqlite3_exec(db, "UPDATE quill_conversation_turns SET body = 'invalid'", nil, nil, nil) == SQLITE_OK)
+        #expect(try store.timelineEntries().isEmpty)
+    }
+
     @Test("Quill joins Timeline filtering and pagination without attributing questions to an app")
     func quillTimelineFilters() throws {
         let store = try makeStore()

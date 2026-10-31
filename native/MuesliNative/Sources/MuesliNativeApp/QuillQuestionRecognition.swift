@@ -8,15 +8,18 @@ final class QuillQuestionRecognition: @unchecked Sendable {
     private let cancelled = OSAllocatedUnfairLock(initialState: false)
     let session: BufferedTranscriptionSession?
     private let hostedSession: (any HostedDictationSession)?
+    private let finalizeBuffered: @Sendable (String) async -> String
     private let transcribeFile: @Sendable (URL) async throws -> String
 
-    init(session: BufferedTranscriptionSession?, transcribeFile: @escaping @Sendable (URL) async throws -> String) {
+    init(session: BufferedTranscriptionSession?, finalizeBuffered: @escaping @Sendable (String) async -> String = { $0 }, transcribeFile: @escaping @Sendable (URL) async throws -> String) {
+        self.finalizeBuffered = finalizeBuffered
         self.hostedSession = nil
         self.session = session
         self.transcribeFile = transcribeFile
     }
 
     init(hostedSession: any HostedDictationSession) {
+        self.finalizeBuffered = { $0 }
         self.hostedSession = hostedSession
         session = nil
         // Hosted finalization uses the existing dictation session below.
@@ -55,10 +58,25 @@ final class QuillQuestionRecognition: @unchecked Sendable {
             let file = try AVAudioFile(forReading: recordedURL)
             if result.canReuse, file.processingFormat.sampleRate == 16_000,
                file.processingFormat.channelCount == 1, file.length == Int64(result.receivedSamples) {
-                return result.text
+                let text = await finalizeBuffered(result.text)
+                try checkCancellation()
+                return text
             }
         }
         try checkCancellation()
         return try await transcribeFile(recordedURL)
+    }
+}
+
+/// Coalesced windows and file recovery share one preparation attempt per turn.
+actor QuillRecognitionPreparation {
+    private var task: Task<Void, Error>?
+    func ensure(_ prepare: @escaping @Sendable () async throws -> Void) async throws {
+        try Task.checkCancellation()
+        let work: Task<Void, Error>
+        if let task { work = task }
+        else { work = Task { try await prepare() }; task = work }
+        try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        try Task.checkCancellation()
     }
 }

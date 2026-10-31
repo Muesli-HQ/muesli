@@ -202,6 +202,7 @@ actor TranscriptionCoordinator {
     nonisolated func makeQuillQuestionRecognition(backend: BackendOption, config: AppConfig,
         directAudio: Bool, onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
         onFailure: @escaping @Sendable (Error) -> Void) throws -> QuillQuestionRecognition {
+        let preparation = QuillRecognitionPreparation()
         let session: BufferedTranscriptionSession?
         if backend.supportsBufferedLiveTranscription {
             session = try makeBufferedTranscriptionSession(backend: backend,
@@ -214,40 +215,59 @@ actor TranscriptionCoordinator {
             session = BufferedTranscriptionSession(decodeWithoutTimings: { samples in
                 let url = try WavWriter.writeTemporaryWAV(samples: samples)
                 defer { try? FileManager.default.removeItem(at: url) }
-                return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config)
+                return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config, preparation: preparation, applyDictionary: false)
             }, onUpdate: onUpdate, onFailure: onFailure)
         } else {
             // Do not run another Gemma decode alongside direct-audio reasoning.
             session = nil
         }
-        return QuillQuestionRecognition(session: session, transcribeFile: { url in
+        return QuillQuestionRecognition(session: session, finalizeBuffered: { text in
+            await self.finalizeQuillQuestion(text, backend: backend, config: config)
+        }, transcribeFile: { url in
             if directAudio && backend.backend == "gemma4-litert" {
-                return try await self.transcribeQuilDisplayAudio(at: url, previewOnly: true)
+                let text = try await self.transcribeQuilDisplayAudio(at: url, previewOnly: true)
+                return await self.finalizeQuillQuestion(text, backend: backend, config: config)
             }
-            return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config)
+            return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config, preparation: preparation)
         })
     }
 
-    private func transcribeQuillQuestionAudio(at url: URL, backend: BackendOption, config: AppConfig) async throws -> String {
+    private func transcribeQuillQuestionAudio(at url: URL, backend: BackendOption, config: AppConfig, preparation: QuillRecognitionPreparation, applyDictionary: Bool = true) async throws -> String {
         try Task.checkCancellation()
         // Never download an alternate recognizer for an optional display preview.
         guard backend.isDownloaded else { throw QuilTransformationError.modelUnavailable }
         do {
-            try await preloadRequired(backend: backend, enablePostProcessor: false, includeMeetingHelpers: false,
-                appleSpeechLanguage: config.resolvedAppleSpeechLanguage)
+            try await preparation.ensure {
+                try await self.preloadRequired(backend: backend, enablePostProcessor: false, includeMeetingHelpers: false,
+                    appleSpeechLanguage: config.resolvedAppleSpeechLanguage)
+            }
             try Task.checkCancellation()
             return try await transcribeDictation(at: url, backend: backend,
                 cohereLanguage: config.resolvedCohereLanguage,
                 bodhanLanguage: config.resolvedBodhanLanguage, bodhanOutputMode: config.resolvedBodhanOutputMode,
                 whisperLanguage: config.resolvedWhisperLanguage, qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
                 parakeetLanguage: config.resolvedParakeetLanguage, appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
-                enablePostProcessor: false).text
+                enablePostProcessor: false, customWords: applyDictionary ? quillCustomWords(config) : []).text
         } catch {
             try Task.checkCancellation()
             guard backend == .parakeetUnified else { throw error }
             // Recover the observed ANE failure using the same selected model on CPU.
-            return try await transcribeQuilDisplayAudio(at: url, previewOnly: true)
+            let text = try await transcribeQuilDisplayAudio(at: url, previewOnly: true)
+            return await finalizeQuillQuestion(text, backend: backend, config: config)
         }
+    }
+
+    private func quillCustomWords(_ config: AppConfig) -> [[String: Any]] {
+        config.customWords.map { word in
+            var entry: [String: Any] = ["word": word.word, "matchingThreshold": word.matchingThreshold]
+            entry["replacement"] = word.replacement
+            return entry
+        }
+    }
+
+    func finalizeQuillQuestion(_ text: String, backend: BackendOption, config: AppConfig) async -> String {
+        await finalizeDictationTranscript(.init(text: text, segments: []), backend: backend,
+            enablePostProcessor: false, customWords: quillCustomWords(config)).text
     }
 
     private func transcribeBufferedBodhan(samples: [Float], modelID: String,
@@ -501,6 +521,7 @@ actor TranscriptionCoordinator {
     func respondToQuill(_ request: QuillAssistantRequest, audioURL: URL?, model: String,
                         config: AppConfig) async throws -> QuillAssistantAction {
         let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let request = request.bounded(for: backend)
         try QuilModelPolicy.validate(selectedText: request.selectedText, backend: backend, model: model)
         let prompt = try request.prompt()
         if backend == .gemma4LiteRT {

@@ -4004,9 +4004,13 @@ public final class MuesliController: NSObject {
             selectPostProcessorBackend(.local)
         }
         if TranscriptCleanupBackendOption.resolved(config.quilBackend) == .hosted(.openRouter) {
-            updateConfig {
-                $0.quilBackend = TranscriptCleanupBackendOption.local.backend
-                $0.quilModel = PostProcessorOption.defaultQuilOption.id
+            let fallback = Gemma4LiteRTModel.allCases.first {
+                !$0.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: $0)
+            }
+            updateConfig { QuillAssistantModelPolicy.applyDisconnectedProviderFallback(to: &$0, availableModel: fallback) }
+            if fallback == nil {
+                statusBarController?.setStatus("Quill disabled — download a local Quill model or choose another provider")
+                indicator.showWarning("Quill disabled — choose or download a model", duration: 4, preferNotch: true)
             }
         }
         if selectedDictationProvider == .openRouter {
@@ -10184,11 +10188,7 @@ public final class MuesliController: NSObject {
         quilTaskID = taskID
         let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
         let configuredModel = config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = configuredModel.isEmpty
-            ? (backend == .local
-                ? PostProcessorOption.defaultQuilOption.id
-                : TranscriptCleanupClient.defaultModel(for: backend))
-            : configuredModel
+        let model = configuredModel.isEmpty ? TranscriptCleanupClient.defaultModel(for: backend) : configuredModel
         quillPendingHistoryBackend = backend.backend
         quillPendingHistoryModel = model
         quillPendingHistoryTimestamp = ISO8601DateFormatter().string(from: startedAt)
@@ -10204,7 +10204,7 @@ public final class MuesliController: NSObject {
             // including a preview that takes time to observe cancellation.
             defer {
                 withExtendedLifetime(audio) {}
-                if self.quillAnswerRequestID != taskID { self.quilInstructionPreview.stop(requestID: taskID) }
+                self.quilInstructionPreview.stopUnlessOwned(requestID: taskID, activeRequestID: self.quilTaskID, answerRequestID: self.quillAnswerRequestID)
             }
             var longAudioFallback = false
             do {

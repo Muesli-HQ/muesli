@@ -73,6 +73,11 @@ final class QuilInstructionPreview {
         }
     }
 
+    /// Paste completion still owns the turn after the generation task returns.
+    func stopUnlessOwned(requestID: UUID, activeRequestID: UUID?, answerRequestID: UUID?) {
+        if activeRequestID != requestID && answerRequestID != requestID { stop(requestID: requestID) }
+    }
+
     /// Returns only a transcript already available; never waits for ASR.
     /// An old edit's defer must not cancel a newer edit's preview.
     @discardableResult

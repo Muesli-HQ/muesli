@@ -430,3 +430,7 @@ sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreig
 
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
+
+Quill Timeline reads isolate malformed `quill_conversation_turns.body` JSON:
+readable turns remain visible and conversations with no readable turns are
+omitted. This read-time handling does not mutate or repair stored bodies.

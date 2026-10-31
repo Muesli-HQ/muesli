@@ -69,6 +69,14 @@ struct QuillAssistantRequest: Sendable {
     Be concise by default. Follow-ups may refer to earlier answers. Never invent missing context.
     """
 
+    /// Large selections remain bounded reference context, never truncated edit targets.
+    func bounded(for backend: TranscriptCleanupBackendOption) -> Self {
+        let limit = backend.isOnDevice ? QuilModelPolicy.localMaximumInputCharacters : QuilModelPolicy.remoteMaximumInputCharacters
+        guard selectedText.count > limit else { return self }
+        return Self(instruction: instruction, selectedText: String(selectedText.prefix(limit)),
+            targetID: nil, context: context, history: history)
+    }
+
     var tools: [[String: Any]] {
         var result = [Self.tool("reply", "Show an answer or clarification in the notch.", target: false)]
         if targetID != nil {
@@ -125,5 +133,15 @@ enum QuillAssistantTargetPolicy {
                            explicitlyEditable: Bool) -> Bool {
         explicitlyEditable || (["AXTextField", "AXTextArea", "AXComboBox"].contains(role)
             && (valueWritable || selectionWritable))
+    }
+}
+
+/// Disconnection selects a usable native model or disables Quill until setup completes.
+enum QuillAssistantModelPolicy {
+    static func applyDisconnectedProviderFallback(to config: inout AppConfig, availableModel: Gemma4LiteRTModel?) {
+        let model = availableModel.flatMap { $0.isCleanupOnly ? nil : $0 }
+        config.quilBackend = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+        config.quilModel = (model ?? .e2b).rawValue
+        if model == nil { config.enableQuilMode = false }
     }
 }
