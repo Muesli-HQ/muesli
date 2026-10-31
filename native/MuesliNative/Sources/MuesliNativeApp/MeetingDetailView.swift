@@ -182,12 +182,6 @@ struct MeetingDetailView: View {
                         .clipped()
                 }
                 .background(MuesliTheme.backgroundBase)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if meeting.status != .recording && meeting.status != .processing {
-                        MeetingChatView(appState: appState, controller: controller,
-                                        coordinator: controller.meetingChatCoordinator, embeddedMeetingID: meeting.id)
-                    }
-                }
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
                     if controller.canUseSummaryProvider(.openRouter) {

@@ -785,10 +785,10 @@
   </table>
 
   <h3 id="floating-glass">Floating Liquid Glass prototype</h3>
-  <p class="pattern-note">Native macOS 26 regular glass is limited to the sidebar collapse/expand button and the collapsed meeting-chat launcher. Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and older macOS retain solid raised controls. Reduce Motion disables interactive glass reactions. Reading surfaces, rows and the expanded editor stay solid. Native rendering is authoritative; the outline specimen below shows placement and shape only, not simulated refraction.</p>
+  <p class="pattern-note">Native macOS 26 regular glass is limited to the sidebar collapse/expand button. Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and older macOS retain solid raised controls. Reduce Motion disables interactive glass reactions. Reading surfaces, rows and the expanded editor stay solid. The persistent chat input on Timeline, Dictations, Meetings and Chat stays solid and editable: a slim full-width line at rest, expanding its controls on focus or draft text, with 24pt outer margins. Sidebar Chat houses previous threads above the same input. Native rendering is authoritative; the outline specimen below shows placement and shape only, not simulated refraction.</p>
   <div class="component-preview demo-row">
     <span aria-label="Sidebar toggle placement" style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--border);border-radius:50%">◧</span>
-    <span style="display:inline-flex;align-items:center;justify-content:space-between;gap:32px;padding:16px 20px;border:1px solid var(--border);border-radius:999px;flex:1;max-width:704px">Ask about this meeting… <span aria-hidden="true">⌃</span></span>
+    <span style="display:inline-flex;align-items:center;justify-content:space-between;gap:32px;padding:8px 14px;border:1px solid var(--border);border-radius:999px;flex:1">What’s on your mind? <span aria-hidden="true">↑</span></span>
   </div>
 
   <h3 id="control-feedback">Shared control feedback</h3>
@@ -811,7 +811,7 @@
     <tr><td><code>.tinted</code></td><td>accent 15% + <code>accentText</code></td><td>Rim: accent 14%</td><td>21%</td><td>27%, flat</td><td>Grant, Models Download/Set Active, folder pill</td></tr>
     <tr><td><code>.destructive</code> / <code>.destructiveTinted</code></td><td>clear or red 10% + <code>destructiveText</code></td><td>Flat</td><td>red 13%</td><td>red 16%</td><td>Clear history, Delete</td></tr>
     <tr><td><code>.success</code> / <code>.recording</code></td><td>semantic fill + own foreground</td><td>Lifted: lip + rim toward higher contrast</td><td>8% toward higher contrast</td><td>16%, flat</td><td>Donate, Stop, Stop Voice Note</td></tr>
-    <tr><td><code>.raised</code></td><td><code>backgroundRaised</code>, border</td><td>Edge: neutral lip (not Ultra Dark)</td><td>+ text 6%</td><td>+ text 11%, flat</td><td>Collapsed chat composer</td></tr>
+    <tr><td><code>.raised</code></td><td><code>backgroundRaised</code>, border</td><td>Edge: neutral lip (not Ultra Dark)</td><td>+ text 6%</td><td>+ text 11%, flat</td><td>Field-like launchers; solid glass fallback</td></tr>
     <tr><td><code>.quiet</code></td><td>no chrome; label keeps its color</td><td>Flat (as is any <code>compresses: false</code> button)</td><td>+ text 6% fill</td><td>+ text 11% fill</td><td>Icon buttons, text actions (Change…, Sign Out), chat footer, popover rows, full-width list rows</td></tr>
   </table>
   <p class="pattern-note">Row actions that appear on hover also appear while one of them has keyboard focus. Gesture rows that host drag and drop, context menus or nested buttons stay gestures; they gain button and selected traits and Space/Return activation when full keyboard navigation is on. They show hover and selection fills but no mouse-down fill, because that needs a zero-distance gesture that competes with dragging. Asynchronous actions show progress or a confirmation at click time and refuse repeats; Insights refresh keeps the previous results visible. Repeating motion (sync spinner, onboarding preparation bar, long-title marquee) is static under Reduce Motion.</p>

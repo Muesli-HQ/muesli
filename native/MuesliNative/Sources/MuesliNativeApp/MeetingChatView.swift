@@ -6,10 +6,9 @@ struct MeetingChatView: View {
     let appState: AppState
     let controller: MuesliController
     @Bindable var coordinator: MeetingChatCoordinator
-    var embeddedMeetingID: Int64? = nil
+    var docked = false
     @State private var expanded = false
     @State private var showHistory = false
-    private var isEmbedded: Bool { embeddedMeetingID != nil }
     @State private var showScope = false
     @State private var showModelPicker = false
     @State private var citation: MeetingChatCitation?
@@ -28,6 +27,7 @@ struct MeetingChatView: View {
     @State private var dismissedMention: MeetingChatMentionQuery?
     @State private var composerFocused = false
     @State private var composerFocusRequest = UUID()
+    @State private var hasRequestedComposerFocus = false
     private var mention: MeetingChatMentionQuery? {
         guard !coordinator.isBusy, !coordinator.isUpdatingChat,
               let query = MeetingChatMentionQuery.find(in: coordinator.composerDraft, selection: composerSelection),
@@ -72,23 +72,23 @@ struct MeetingChatView: View {
 
     private var chatContent: some View {
         VStack(spacing: 0) {
-            if !isEmbedded || expanded {
+            if !docked || expanded || (!composerIsCompact && coordinator.selectedSessionID != nil) {
                 header
-                    .background(isEmbedded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
+                    .background(docked ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
                     .zIndex(1)
             }
-            if isEmbedded && expanded { Divider().overlay(MuesliTheme.surfaceBorder).allowsHitTesting(false) }
-            if !isEmbedded && coordinator.turns.isEmpty && !coordinator.isLoadingConversation {
+            if docked && expanded { Divider().overlay(MuesliTheme.surfaceBorder).allowsHitTesting(false) }
+            if !docked && coordinator.selectedSessionID == nil {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        welcome
-                        composer
+                        Text("Chat").font(MuesliTheme.title1())
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24)
                         recentChats
                     }.frame(maxWidth: 752).frame(maxWidth: .infinity)
                         .padding(.top, 40)
                 }
             } else {
-                if !isEmbedded || (expanded && (!coordinator.turns.isEmpty || coordinator.isLoadingConversation)) {
+                if !docked || (expanded && (!coordinator.turns.isEmpty || coordinator.isLoadingConversation)) {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 28) {
                             if coordinator.isLoadingConversation {
@@ -108,32 +108,26 @@ struct MeetingChatView: View {
                         }.scrollTargetLayout().padding(24)
                             .frame(maxWidth: 752, alignment: .leading).frame(maxWidth: .infinity)
                     }.scrollPosition(id: scrollAnchor)
-                        .frame(height: isEmbedded ? 260 : nil)
+                        .frame(height: docked ? 260 : nil)
                         .contentShape(Rectangle())
                         .clipped()
                 }
-                ZStack {
-                    composer
-                        .frame(height: isEmbedded && !expanded ? 0 : nil)
-                        .opacity(isEmbedded && !expanded ? 0 : 1)
-                        .clipped()
-                        .allowsHitTesting(!isEmbedded || expanded)
-                        .accessibilityHidden(isEmbedded && !expanded)
-                    if isEmbedded && !expanded { restingComposer }
-                }
             }
+            // Shared structural position keeps the editor mounted when the Chat index
+            // becomes a conversation after the first send.
+            composer
         }
-        .background(isEmbedded && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
-        .clipShape(RoundedRectangle(cornerRadius: isEmbedded && expanded ? 20 : 0))
+        .background(docked && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
+        .clipShape(RoundedRectangle(cornerRadius: docked && expanded ? 20 : 0))
         .overlay {
-            if isEmbedded && expanded {
+            if docked && expanded {
                 RoundedRectangle(cornerRadius: 20)
                     .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
                     .allowsHitTesting(false)
             }
         }
-        .padding(.horizontal, isEmbedded && expanded ? 16 : 0)
-        .padding(.vertical, isEmbedded && expanded ? 12 : 0)
+        .padding(.horizontal, docked && expanded ? 16 : 0)
+        .padding(.vertical, docked && expanded ? 12 : 0)
         .background(MuesliTheme.backgroundBase)
         .sheet(isPresented: $showScope) { MeetingChatScopePicker(scope: coordinator.scope, folders: appState.folders, meetings: coordinator.sourceChoices) { scope in Task { await coordinator.setScope(scope) } } }
         .popover(item: $citation) { source in
@@ -167,19 +161,11 @@ struct MeetingChatView: View {
         .onChange(of: coordinator.sourceMutationVersion) { _, _ in
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
         }
-        .task(id: embeddedMeetingID) {
-            // The shared coordinator refreshes history on mutations and source
-            // changes; browsing notes must not synchronously reload it again.
-            if let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
-            await coordinator.refreshChoices()
-        }
-        .onChange(of: coordinator.isBusy || coordinator.isUpdatingChat) { _, busy in
-            if !busy, let id = embeddedMeetingID { coordinator.prepareMeetingDraft(id: id) }
-        }
+        .task { await coordinator.refreshChoices() }
     }
     private var header: some View {
         HStack(spacing: 12) {
-            if !isEmbedded && coordinator.selectedSessionID != nil {
+            if !docked && coordinator.selectedSessionID != nil {
                 Button { controller.showMeetingChatIndex() } label: {
                     HStack(spacing: 6) {
                         AIIcon(.arrowLeft)
@@ -198,7 +184,7 @@ struct MeetingChatView: View {
             }
                 .buttonStyle(.muesli(.quiet)).help("Recent chats").accessibilityLabel("Recent chats")
                 .popover(isPresented: $showHistory) { history.frame(width: 280, height: 340) }
-            if isEmbedded {
+            if docked {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Chat").font(MuesliTheme.font(size: 13, weight: .semibold))
                     if let title = coordinator.sessions.first(where: { $0.id == coordinator.selectedSessionID })?.title {
@@ -209,18 +195,27 @@ struct MeetingChatView: View {
                 Text(coordinator.sessions.first { $0.id == coordinator.selectedSessionID }?.title ?? "Chat").lineLimit(1).font(MuesliTheme.font(size: 13, weight: .medium)).foregroundStyle(MuesliTheme.textSecondary)
             }
             Spacer()
-            if isEmbedded {
+            if docked {
                 Button { controller.showMeetingChat() } label: {
                     AIIcon(.arrowUpRight).frame(width: 32, height: 32).contentShape(Rectangle())
                 }
                     .buttonStyle(.muesli(.quiet)).help("Open Chat").accessibilityLabel("Open Chat")
-                Button { expanded = false } label: {
-                    AIIcon(.chevronDown).frame(width: 32, height: 32).contentShape(Rectangle())
+                if expanded {
+                    Button { expanded = false } label: {
+                        AIIcon(.chevronDown).frame(width: 32, height: 32).contentShape(Rectangle())
+                    }
+                        .buttonStyle(.muesli(.quiet)).help("Hide conversation").accessibilityLabel("Hide conversation")
+                } else if docked && coordinator.selectedSessionID != nil {
+                    Button { expanded = true } label: {
+                        AIIcon(.chevronUp).frame(width: 32, height: 32).contentShape(Rectangle())
+                    }
+                        .buttonStyle(.muesli(.quiet)).help("Show conversation").accessibilityLabel("Show conversation")
                 }
-                    .buttonStyle(.muesli(.quiet)).help("Collapse chat").accessibilityLabel("Collapse chat")
             }
             Button {
-                coordinator.startDraft(scope: embeddedMeetingID.map { .init(selection: .meetings([$0])) } ?? .init()); focusComposer()
+                coordinator.startDraft()
+                expanded = false
+                focusComposer()
             } label: {
                 Label { Text("New chat") } icon: { AIIcon(.squarePen) }
                     .padding(.horizontal, 8).frame(height: 32).contentShape(Rectangle())
@@ -263,21 +258,12 @@ struct MeetingChatView: View {
         }.frame(maxWidth: .infinity).background(MuesliTheme.backgroundDeep.opacity(0.55))
     }
 
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("What’s on your mind?")
-                .font(MuesliTheme.font(size: 24, weight: .medium)).tracking(-0.5)
-            Text("Ask your meetings.").font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
-        }.padding(.horizontal, 24)
-    }
-
     private var recentChats: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { suggestions }
-                VStack(alignment: .leading, spacing: 8) { suggestions }
-            }
-            if !coordinator.sessions.isEmpty {
+            if coordinator.sessions.isEmpty {
+                Text("Your conversations will appear here.")
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            } else {
                 Text("Recent chats").font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary).padding(.top, 16)
                 ForEach(coordinator.sessions) { session in
                     let pending = coordinator.pendingChatMutations[session.id]
@@ -299,39 +285,6 @@ struct MeetingChatView: View {
         }.padding(.horizontal, 24).padding(.bottom, 24)
     }
 
-    private var suggestions: some View {
-        ForEach(MeetingChatQuickAction.allCases) { action in
-            Button { Task { await prepare(action, name: appState.config.userName) } } label: {
-                Text(action.label).font(MuesliTheme.font(.caption)).padding(.horizontal, 12).padding(.vertical, 8)
-            }.buttonStyle(.muesli(.secondary, shape: .capsule)).disabled(coordinator.isBusy || coordinator.isUpdatingChat)
-        }
-    }
-
-    /// The whole drawn capsule, padding included, is the expand target.
-    private var restingComposer: some View {
-        Button {
-            expanded = true
-            focusComposer()
-        } label: {
-            HStack(spacing: 12) {
-                Text(coordinator.composerDraft.isEmpty
-                     ? (coordinator.turns.isEmpty
-                        ? (coordinator.scope.selection == .meetings(embeddedMeetingID.map { [$0] } ?? [])
-                           ? "Ask about this meeting…" : "Ask your meetings…")
-                        : "Continue conversation…")
-                     : coordinator.composerDraft)
-                    .lineLimit(1).foregroundStyle(MuesliTheme.textSecondary)
-                Spacer(minLength: 8)
-                AIIcon(.chevronUp).foregroundStyle(MuesliTheme.textSecondary)
-            }
-            .padding(.horizontal, 20).padding(.vertical, 16)
-            .frame(maxWidth: .infinity)
-        }.buttonStyle(MuesliFloatingGlassButtonStyle()).help("Chat context: " + scopeLabel)
-            .accessibilityIdentifier("meeting-chat-expand")
-            .frame(maxWidth: 704).padding(.horizontal, 24).padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
-    }
-
     static func pendingLabel(_ mutation: MeetingChatPendingMutation) -> String {
         switch mutation {
         case .renaming: "Renaming…"
@@ -340,6 +293,12 @@ struct MeetingChatView: View {
     }
 
     private var footerControlsDisabled: Bool { coordinator.isBusy || coordinator.isUpdatingChat }
+
+    private var composerIsCompact: Bool {
+        !composerFocused && coordinator.composerDraft.isEmpty
+            && !coordinator.isBusy && !expanded && !showScope && !showModelPicker
+            && coordinator.errorMessage == nil
+    }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -351,16 +310,16 @@ struct MeetingChatView: View {
                 AIShimmer(coordinator.phase.isEmpty ? "Saving question" : coordinator.phase)
                     .padding(.horizontal, 4).padding(.bottom, 3)
             }
-            AIPromptInput(isFocused: composerFocused, header: {
+            AIPromptInput(isFocused: composerFocused, isCompact: composerIsCompact, header: {
                 if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
             }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
-                        Text(coordinator.turns.isEmpty ? "Ask a question, or @ to attach a meeting…" : "Ask a follow-up, or @ to add context…")
+                        Text("What’s on your mind?")
                             .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
                     }
                     MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                              focusRequest: isEmbedded && !expanded ? nil : composerFocusRequest, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0; if $0 && isEmbedded { expanded = true } }, onKey: handleComposerKey)
+                                              focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
 
@@ -399,7 +358,7 @@ struct MeetingChatView: View {
                         .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
                             MeetingChatModelPicker(appState: appState, controller: controller)
                         }
-                    if !coordinator.turns.isEmpty {
+                    Group {
                         Menu {
                             ForEach(MeetingChatQuickAction.allCases) { action in
                                 Button(action.label) { Task { await prepare(action, name: appState.config.userName) } }
@@ -427,10 +386,12 @@ struct MeetingChatView: View {
                 // The @ glyph stays optically aligned with the editor text; its target extends into the inset.
                 .padding(.leading, -6)
             })
-            Text("↵ Send · ⇧↵ New line")
-                .font(MuesliTheme.font(size: 10)).foregroundStyle(MuesliTheme.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }.frame(maxWidth: 704).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
+            if !composerIsCompact {
+                Text("↵ Send · ⇧↵ New line")
+                    .font(MuesliTheme.font(size: 10)).foregroundStyle(MuesliTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }.frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
     }
     private func attachmentChips(_ ids: [Int64]) -> some View {
@@ -506,6 +467,7 @@ struct MeetingChatView: View {
     }
 
     private func focusComposer() {
+        hasRequestedComposerFocus = true
         composerFocused = true
         composerFocusRequest = UUID()
     }
@@ -571,7 +533,7 @@ struct MeetingChatView: View {
             else if let turnID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == turnID }) { scrollAnchor.wrappedValue = turnID }
         }
         preparedIsDraft = false
-        if isEmbedded { expanded = true }
+        if docked { expanded = true }
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -721,8 +683,10 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         let editor = Editor()
+        editor.identifier = NSUserInterfaceItemIdentifier("meeting-chat-editor")
         editor.string = text
         editor.delegate = context.coordinator
+        context.coordinator.editor = editor
         editor.onKey = onKey
         editor.onFocus = onFocus
         editor.isRichText = false
@@ -765,9 +729,8 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         let length = (text as NSString).length
         let safe = NSRange(location: min(selection.location, length), length: min(selection.length, max(0, length - selection.location)))
         if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
-        if focusRequest == nil, editor.window?.firstResponder === editor {
-            editor.window?.makeFirstResponder(nil)
-        }
+        // A nil request means no automatic focus, not a request to resign focus.
+        // Pointer focus must survive the idle-to-editing layout change.
         if let focusRequest, context.coordinator.lastFocusRequest != focusRequest {
             context.coordinator.lastFocusRequest = focusRequest
             editor.requestComposerFocus()
@@ -778,11 +741,28 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         var isUpdating = false
         var lastFocusRequest: UUID?
         var undoIdentity: UUID
+        weak var editor: NSTextView?
         init(_ parent: MeetingChatComposerEditor) {
             self.parent = parent
             lastFocusRequest = nil
             undoIdentity = parent.undoIdentity
+            super.init()
+            for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
+                NotificationCenter.default.addObserver(self, selector: #selector(undoManagerDidChange(_:)), name: name, object: nil)
+            }
         }
+        deinit { NotificationCenter.default.removeObserver(self) }
+
+        @objc private func undoManagerDidChange(_ notification: Notification) {
+            guard !isUpdating, let editor,
+                  let manager = notification.object as? UndoManager,
+                  manager === editor.undoManager else { return }
+            // Native undo can update storage without the ordinary typing delegate callback.
+            // Scope the notification to this editor's manager and avoid duplicate publications.
+            if parent.text != editor.string { parent.text = editor.string }
+            parent.selection = editor.selectedRange()
+        }
+
         func textDidChange(_ notification: Notification) {
             guard !isUpdating, let editor = notification.object as? NSTextView else { return }
             parent.text = editor.string

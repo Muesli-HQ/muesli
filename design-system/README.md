@@ -93,8 +93,8 @@ the style owns fill, border, foreground and a full-shape hit area, so visible
 padding is clickable. Hover and keyboard focus raise one flat color step and
 press a second. Quiet controls show hover and press as neutral fills, never
 outlines; only keyboard focus draws a ring. `.raised` is the field-like
-launcher surface (`backgroundRaised` with a border), used by the collapsed chat
-composer. Disabled controls render once, flat, as `surfacePrimary` with
+launcher surface (`backgroundRaised` with a border), also used as the solid
+fallback for glass controls. Disabled controls render once, flat, as `surfacePrimary` with
 `textTertiary`; do not add opacity on top.
 
 Resting depth is restrained and physical, built from solid 1pt shape edges
@@ -168,7 +168,8 @@ carry font and foreground color explicitly; keep undo/redo behavior.
 ### Limited Liquid Glass prototype
 
 On macOS 26+, `MuesliFloatingGlassButtonStyle` applies native regular glass to
-the sidebar collapse/expand button and the collapsed meeting-chat launcher.
+the sidebar collapse/expand button. The former collapsed meeting-chat launcher
+has been replaced by a persistent editable composer with a solid input surface.
 These isolated navigation affordances keep their existing dimensions, label
 bounds, actions and keyboard-focus ring. There is no glass on reading surfaces,
 list rows or the expanded native chat editor. Do not layer the solid button
@@ -176,8 +177,7 @@ bevel or a custom blur behind native glass.
 
 Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and
 macOS versions before 26 use the solid raised style. Reduce Motion disables
-interactive glass reactions while retaining an immediate pressed fill. The two
-surfaces are far apart and do not morph together; nearby future glass controls
+interactive glass reactions while retaining an immediate pressed fill. The sidebar control does not morph into other surfaces; nearby future glass controls
 must share a `GlassEffectContainer`. Keep this prototype limited until native
 visual, accessibility and performance validation supports broader adoption.
 
@@ -233,6 +233,21 @@ Show the latest three tool summaries under the working status, using 10pt text a
 Active dictation, processing, and computer-use sessions own the indicator until they finish. Background loading callbacks and cursor feedback must not hide or replace their presentation or cancellation controls. Loading may use the shared floating surface while idle; starting an activity retires that loading presentation so its later completion cannot reset the session.
 
 Custom button focus uses a non-hit-testing 2pt readable-accent outline; sidebar navigation uses subtle selected/hover fills without outlines; appearance choices retain their neutral selection outline. Sidebar rings are reserved for keyboard focus. Composer focus has its own host-supplied color through AIElementsTheme. Native text-editing and recording behavior remain unchanged.
+
+### Persistent chat composer
+
+Timeline, Dictations and Meetings share a real bottom-aligned input with the
+empty placeholder “What’s on your mind?”. Keep its native editor mounted across
+those destinations; navigation must preserve draft text, selection, undo and
+explicit meeting scope. Context remains visible and meeting-only. Sidebar Chat
+shows history above the same slim input; New chat opens a fresh draft in place.
+Answers can expand above the persistent input without replacing it.
+
+The composer, including on the Chat index, spans the available content width with 24pt side margins.
+At rest it is a single slim input: 4pt vertical inset around the native editor.
+Focus, a nonempty draft, a running response or an open context/model picker
+reveals its controls and normal padding. Empty, unfocused input contracts again.
+The same editor stays mounted in both densities; never replace it with a button.
 
 ## Official brand assets
 

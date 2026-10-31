@@ -8,7 +8,7 @@ This is an initial SwiftUI adaptation, not full behavioral or API parity.
 | Upstream area | SwiftUI implementation | Remaining work |
 | --- | --- | --- |
 | Message | AIMessage: role-aware layout | Reusable action bar and branching; AIResponse now handles native Markdown |
-| Prompt input | AIPromptInput: header/editor/footer surface | Bundled editor, submission state machine, uploads and drag/drop |
+| Prompt input | AIPromptInput: header/editor/footer surface, compact density preserving editor identity | Bundled editor, submission state machine, uploads and drag/drop |
 | Attachments | AIAttachment: removable document/context chip | Image/audio/video previews, grid and list variants, metadata |
 | Sources / inline citations | AISourcePassage + AIDisclosure | Citation parsing, inline badges/popovers and grouped source container |
 | Tool / task activity | AIActivityRow + AIDisclosure | AITool now provides stateful input/output/error cards; typed rich results remain |
