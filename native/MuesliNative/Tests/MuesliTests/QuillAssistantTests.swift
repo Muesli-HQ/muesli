@@ -5,6 +5,23 @@ import MuesliCore
 
 @Suite("Quill assistant")
 struct QuillAssistantTests {
+    @Test func opaqueClipboardSelectionRequiresRangeForEditing() {
+        #expect(!QuillAssistantTargetPolicy.isEditable(role: "AXTextArea", valueWritable: true,
+            selectionWritable: true, explicitlyEditable: true, usesClipboardFallback: true, hasSelectionRange: false))
+        #expect(QuillAssistantTargetPolicy.isEditable(role: "AXTextArea", valueWritable: true,
+            selectionWritable: true, explicitlyEditable: true, usesClipboardFallback: true, hasSelectionRange: true))
+    }
+
+    @Test func freshQuillSettingsUseNativeGemmaAndKeepExplicitLegacySelections() throws {
+        let defaults = AppConfig()
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(defaults.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(decoded.quilBackend == defaults.quilBackend)
+        #expect(decoded.quilModel == Gemma4LiteRTModel.e2b.repoID)
+        let legacy = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"quil_backend":"local"}"#.utf8))
+        #expect(legacy.quilBackend == TranscriptCleanupBackendOption.local.backend)
+    }
+
     @Test func oversizedSelectionStillAllowsAnswerButNeverPartialEdit() throws {
         for backend in [TranscriptCleanupBackendOption.gemma4LiteRT, .hosted(.openAI)] {
             let bounded = request(selection: String(repeating: "a", count: 25_000)).bounded(for: backend)

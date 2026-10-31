@@ -130,8 +130,9 @@ struct QuillAssistantRequest: Sendable {
 /// A readable selection or caret range alone is not evidence that a field is writable.
 enum QuillAssistantTargetPolicy {
     static func isEditable(role: String, valueWritable: Bool, selectionWritable: Bool,
-                           explicitlyEditable: Bool) -> Bool {
-        explicitlyEditable || (["AXTextField", "AXTextArea", "AXComboBox"].contains(role)
+                           explicitlyEditable: Bool, usesClipboardFallback: Bool = false, hasSelectionRange: Bool = true) -> Bool {
+        guard !usesClipboardFallback || hasSelectionRange else { return false }
+        return explicitlyEditable || (["AXTextField", "AXTextArea", "AXComboBox"].contains(role)
             && (valueWritable || selectionWritable))
     }
 }

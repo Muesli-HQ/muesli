@@ -206,7 +206,8 @@ struct QuilTransformationTests {
         var config = AppConfig()
         #expect(config.quilHotkey == .quilDefault)
         #expect(!config.enableQuilMode)
-        #expect(config.quilModel == PostProcessorOption.defaultQuilOption.id)
+        #expect(config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(config.quilModel == Gemma4LiteRTModel.e2b.repoID)
         config.enableQuilMode = true
         config.quilBackend = LLMBackendOption.openAI.backend
         config.quilModel = "gpt-5.4-mini"

@@ -355,7 +355,8 @@ final class QuilSelectionSnapshot {
         let canWriteSelection = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString,
             &selectedTextWritable) == .success && selectedTextWritable.boolValue
         self.isEditable = QuillAssistantTargetPolicy.isEditable(role: role as? String ?? "",
-            valueWritable: valueWritable, selectionWritable: canWriteSelection, explicitlyEditable: editable as? Bool == true)
+            valueWritable: valueWritable, selectionWritable: canWriteSelection, explicitlyEditable: editable as? Bool == true,
+            usesClipboardFallback: usesClipboardFallback, hasSelectionRange: selectedRange != nil)
         self.capturedValue = Self.boundedValue(of: element)
         self.application = application
         self.element = element
@@ -427,6 +428,7 @@ final class QuilSelectionSnapshot {
     func isStillCurrentForReplacement() -> Bool {
         guard isStillCurrent() else { return false }
         if usesClipboardFallback {
+            guard selectedRange != nil else { return false }
             return PasteController.copySelectedText() == text
         }
         return true

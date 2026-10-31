@@ -25,6 +25,8 @@ completion and manual-paste fallback messages retain that distinction.
 Target capture occurs before Quill's indicator changes. Read-only selections can
 supply context but cannot become editing targets. Missing Accessibility access
 or an unavailable field leaves answer generation available without editing tools.
+Clipboard-fallback selections without a captured range are reference context only;
+they cannot authorize replacement of potentially identical text elsewhere.
 Secure text fields are excluded. Full-value freshness reads require a known
 character count of at most 5,000; larger or unknown-size fields rely on selection
 text/range checks. Oversized selections remain bounded reference text for replies
@@ -77,9 +79,10 @@ after the answer appears (within its existing deadline), updating that question
 and saved turn only while the answer owns the request. Cancellation, dismissal
 and new recording invalidate late updates. Longer Gemma recordings require a
 complete ASR transcript before generation; the Parakeet fallback for a Gemma ASR
-selection retains its existing English-only limitation. Legacy GGUF Quill selections
-are directed to model setup before recording; local Quill pickers offer native
-Gemma models. Existing GGUF cleanup and writing-only runtime code is unchanged.
+selection retains its existing English-only limitation. New and missing Quill
+settings default to native Gemma E2B. Explicit legacy GGUF Quill selections are
+preserved for manual setup and directed to model setup before recording; local
+Quill pickers offer native Gemma models. Existing GGUF cleanup and writing-only runtime code is unchanged.
 
 The CUA writing service keeps its existing paste-ready contract; the Quill assistant
 prompt does not alter CUA's scoped editing behavior. Meeting-native transport adds
