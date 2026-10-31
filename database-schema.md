@@ -74,7 +74,8 @@ see [MedASR setup](docs/medasr.md).
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
   a five-second busy timeout.
 - `dictations` and `meetings` are the timeline history roots, joined by
-  `cotypist_sessions` (experimental typeahead, dev builds). Chat threads are
+  `cotypist_sessions` (experimental typeahead, dev builds) and local-only
+  `quill_conversations`. Chat threads are
   separate durable records in `meeting_chat_sessions`; Timeline remains a query,
   not a separate table.
 - History deletion is soft at first through `deleted_at`. Old tombstones are
@@ -109,6 +110,7 @@ erDiagram
     meetings ||--o{ meeting_imports : "has import provenance"
     dictations ||--o| bodhan_wbcs_measurements : "has speech measurement"
     cotypist_sessions ||--o{ cotypist_suggestions : "groups suggestions in one app"
+    quill_conversations ||--o{ quill_conversation_turns : "orders local exchanges"
 
     meeting_chat_sessions ||--o{ meeting_chat_turns : "orders exchanges"
     meeting_chat_sessions ||--o{ meeting_chat_session_meetings : "anchors or selects"
@@ -244,6 +246,36 @@ covered turns invalidate rolling memory; generated titles are also scrubbed
 when their evidence becomes invalid. Physical FK cascades alone are insufficient
 because citations and memory also live inside JSON bodies. Never bypass these
 paths with direct SQL writes to a user's database.
+
+### Quill conversations
+
+Quill assistant history is local-only and separate from meeting chat and synced
+text records. One expandable Timeline entry represents a conversation, including
+ordinary question/answer turns and follow-ups that never edit another app.
+
+- `quill_conversations`: integer primary key `id`, unique UUID `session_id`,
+  ISO-8601 first-turn `timestamp`, `source = 'quill'`, and nullable `deleted_at`.
+- `quill_conversation_turns`: integer `seq` for exchange order, unique UUID
+  `turn_id` (request identity), cascading `conversation_id` FK, and typed JSON
+  `body` (`QuillHistoryTurn`: id, optional question, answer, timestamp, backend,
+  model). Missing question text stays null until a matching late preview arrives.
+- `appendQuillTurn` atomically creates the session and inserts an idempotent turn.
+  `updateQuillQuestion` updates only a matching live turn. Neither operation can
+  restore a deleted conversation. Projected turn identity matches the JSON id.
+- `deleteQuillConversation` removes all turn bodies and keeps only the session
+  identity/timestamp tombstone to reject delayed callbacks. There is no sync or
+  tombstone-retention purge requirement for these small local identities.
+- Timeline date/origin filters and pagination include these entries. Questions
+  have no destination app, so app-filtered views exclude them. Existing text-edit
+  dictation records remain unchanged. Conversation deletion does not delete those
+  separate editing records.
+- Full exchanges survive restart; the six-turn model-context limit is unrelated
+  to durable history. Dismiss/New conversation rotates the in-memory session UUID
+  without deleting history. Writes and their Timeline refresh run off the main
+  actor, in order; shutdown drains queued writes. UI reports persistence errors.
+- No Quill history or provider metadata is added to CloudKit, Insights, general
+  search, exports, or CLI output. No recordings, selections, app context, or raw
+  provider tool payloads are stored in these tables.
 
 ### Local media and import provenance
 

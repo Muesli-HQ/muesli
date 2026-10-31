@@ -282,10 +282,32 @@ public struct CotypistSessionRecord: Identifiable, Sendable, Equatable {
     }
 }
 
+public struct QuillHistoryTurn: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var question: String?
+    public let answer: String
+    public let timestamp: String
+    public let backend: String
+    public let model: String
+
+    public init(id: UUID, question: String?, answer: String, timestamp: String, backend: String, model: String) {
+        self.id = id; self.question = question; self.answer = answer
+        self.timestamp = timestamp; self.backend = backend; self.model = model
+    }
+}
+
+public struct QuillConversationRecord: Identifiable, Sendable {
+    public let id: Int64
+    public let sessionID: UUID
+    public let timestamp: String
+    public let turns: [QuillHistoryTurn]
+}
+
 public enum TimelineEntry: Identifiable, Sendable {
     case dictation(DictationRecord)
     case meeting(MeetingRecord)
     case cotypist(CotypistSessionRecord)
+    case quill(QuillConversationRecord)
 
     public var id: String {
         switch self {
@@ -295,6 +317,8 @@ public enum TimelineEntry: Identifiable, Sendable {
             return "meeting:\(record.id)"
         case .cotypist(let record):
             return "cotypist:\(record.id)"
+        case .quill(let record):
+            return "quill:\(record.id)"
         }
     }
 
@@ -305,6 +329,8 @@ public enum TimelineEntry: Identifiable, Sendable {
         case .meeting(let record):
             return record.startTime
         case .cotypist(let record):
+            return record.timestamp
+        case .quill(let record):
             return record.timestamp
         }
     }

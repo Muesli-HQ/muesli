@@ -33,6 +33,7 @@ final class QuilInstructionPreview {
     private var task: Task<Void, Never>?
     private var deadline: Task<Void, Never>?
     private var text: String?
+    var availableText: String? { text }
     var isPending: Bool { task != nil }
 
     func start(audio: QuilRecordedAudio, requestID: UUID, timeout: Duration = .seconds(10),
@@ -61,7 +62,7 @@ final class QuilInstructionPreview {
                 self.deadline?.cancel()
                 self.deadline = nil
                 self.task = nil
-                Gemma4LiteRTLogging.profile("quill request=\(requestID) preview_unavailable seconds=\(Date().timeIntervalSince(startedAt))")
+                Gemma4LiteRTLogging.profile("quill request=\(requestID) preview_unavailable seconds=\(Date().timeIntervalSince(startedAt)) error_domain=\((error as NSError).domain) error_type=\(String(reflecting: type(of: error))) error_code=\((error as NSError).code)")
             }
         }
         deadline = Task { [weak self] in

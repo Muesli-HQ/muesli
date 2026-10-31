@@ -332,6 +332,8 @@ final class QuilSelectionSnapshot {
     private let element: AXUIElement
     private let selectedRange: CFRange?
     private let usesClipboardFallback: Bool
+    let isEditable: Bool
+    private let capturedValue: String?
     let contextDocumentIdentifier: String?
 
     private init(
@@ -343,6 +345,20 @@ final class QuilSelectionSnapshot {
         contextDocumentIdentifier: String?
     ) {
         self.text = text
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        var writable = DarwinBoolean(false)
+        let valueWritable = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &writable) == .success && writable.boolValue
+        var editable: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, "AXEditable" as CFString, &editable)
+        var selectedTextWritable = DarwinBoolean(false)
+        let canWriteSelection = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString,
+            &selectedTextWritable) == .success && selectedTextWritable.boolValue
+        self.isEditable = QuillAssistantTargetPolicy.isEditable(role: role as? String ?? "",
+            valueWritable: valueWritable, selectionWritable: canWriteSelection, explicitlyEditable: editable as? Bool == true)
+        var value: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value)
+        self.capturedValue = value as? String
         self.application = application
         self.element = element
         self.selectedRange = selectedRange
@@ -357,6 +373,9 @@ final class QuilSelectionSnapshot {
               let element = DictationContextCapture.focusedUIElement(for: application) else {
             throw QuilTransformationError.noTextTarget
         }
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        guard subrole as? String != kAXSecureTextFieldSubrole else { throw QuilTransformationError.noTextTarget }
         var text = DictationContextCapture.selectedTextValue(in: element)
         var usesClipboardFallback = false
         if text.isEmpty, DictationContextCapture.isBrowserApplication(application) {
@@ -380,9 +399,16 @@ final class QuilSelectionSnapshot {
         guard isTargetStillFocused(),
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
         if usesClipboardFallback {
-            // Google Docs does not expose its selection through AX. Re-copy once,
-            // immediately before replacement, rather than at every lifecycle guard.
-            return true
+            // Clipboard contents cannot be re-read after staging a replacement.
+            // Still enforce any cursor/selection range the browser does expose.
+            guard let selectedRange else { return true }
+            guard let current = DictationContextCapture.selectedTextRange(focused) else { return false }
+            return current.location == selectedRange.location && current.length == selectedRange.length
+        }
+        if let capturedValue {
+            var currentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &currentValue) == .success,
+                  currentValue as? String == capturedValue else { return false }
         }
         guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
         guard let selectedRange else { return true }

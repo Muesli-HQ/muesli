@@ -6,6 +6,7 @@ struct MeetingNativeToolRequest {
     let inputItems: Data
     let tools: Data
     let allowTools: Bool
+    var requiresMeetingAnswerFormat: Bool = true
 }
 
 struct MeetingNativeToolCall: Sendable {
@@ -66,6 +67,7 @@ enum MeetingNativeToolTransport {
                     "markdown": ["type": "string"]
                 ], "required": ["status", "markdown"], "additionalProperties": false]]]
         ]
+        if !request.requiresMeetingAnswerFormat { body.removeValue(forKey: "text") }
         if let effort {
             var reasoning = ["effort": effort]
             if request.base.onReasoningSummary != nil, effort != "none" { reasoning["summary"] = "auto" }

@@ -1,7 +1,8 @@
 import Foundation
 import ApplicationServices
 
-/// Quill and CUA use the same writing configuration, prompt and output validation.
+/// Writing-only generation used by CUA, with Quill's selected writing configuration.
+/// Conversational Quill uses its own assistant prompt and validated tools.
 /// The caller owns its target adapter: Quill's captured selection/paste lifecycle,
 /// or CUA's explicitly observed, writable Accessibility text field.
 enum WritingService {

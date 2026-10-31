@@ -18,6 +18,84 @@ struct DictationStoreTests {
         return store
     }
 
+    @Test("Quill conversations persist full follow-ups across reopen and stay local-only")
+    func quillConversationRoundTrip() throws {
+        let store = try makeStore()
+        let session = UUID()
+        let turns = (0..<9).map { index in
+            QuillHistoryTurn(id: UUID(), question: index == 0 ? nil : "Question \(index)",
+                answer: "Answer \(index)", timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "synthetic")
+        }
+        for turn in turns { try store.appendQuillTurn(sessionID: session, turn: turn) }
+        try store.appendQuillTurn(sessionID: session, turn: turns[0]) // duplicate callback
+        try store.updateQuillQuestion(turnID: turns[0].id, question: "Late transcript")
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let entries = try reopened.timelineEntries()
+        #expect(entries.count == 1)
+        guard case .quill(let record) = try #require(entries.first) else { Issue.record("Missing conversation"); return }
+        #expect(record.sessionID == session)
+        #expect(record.turns.count == 9) // independent of six-turn model context
+        #expect(record.turns.map(\.id) == turns.map(\.id))
+        #expect(record.turns[0].question == "Late transcript")
+        #expect(record.turns.last?.answer == "Answer 8")
+        #expect(try reopened.textRecordsForSyncMigration(kind: .dictation).isEmpty)
+        #expect(try reopened.textRecordsForSyncMigration(kind: .meeting).isEmpty)
+    }
+
+    @Test("Deleting Quill history removes text and blocks late callbacks")
+    func quillDeletionDoesNotResurrect() throws {
+        let store = try makeStore()
+        let session = UUID()
+        let turn = QuillHistoryTurn(id: UUID(), question: nil, answer: "Synthetic answer", timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "test")
+        try store.appendQuillTurn(sessionID: session, turn: turn)
+        guard case .quill(let record) = try #require(store.timelineEntries().first) else { Issue.record("Missing conversation"); return }
+        try store.deleteQuillConversation(id: record.id)
+        try store.updateQuillQuestion(turnID: turn.id, question: "Late question")
+        try store.appendQuillTurn(sessionID: session, turn: turn)
+        #expect(try store.timelineEntries().isEmpty)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM quill_conversation_turns", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+        try store.appendQuillTurn(sessionID: UUID(), turn: turn)
+        #expect(try store.timelineEntries().count == 1)
+    }
+
+    @Test("Quill joins Timeline filtering and pagination without attributing questions to an app")
+    func quillTimelineFilters() throws {
+        let store = try makeStore()
+        for day in ["29", "30", "31"] {
+            try store.appendQuillTurn(sessionID: UUID(), turn: .init(id: UUID(), question: "Question", answer: "Answer",
+                timestamp: "2026-10-\(day)T10:00:00Z", backend: "test", model: "test"))
+        }
+        #expect(try store.timelineEntries(limit: 1, offset: 1).first?.timestamp == "2026-10-30T10:00:00Z")
+        #expect(try store.timelineEntries(fromDate: "2026-10-30", toDate: "2026-10-31T23:59:59Z").count == 2)
+        #expect(try store.timelineEntries(origin: .fromIPhone).isEmpty)
+        #expect(try store.timelineEntries(origin: .thisMac).count == 3)
+    }
+
+    @Test("Existing databases acquire Quill tables idempotently without losing history")
+    func quillSchemaUpgrade() throws {
+        let store = try makeStore()
+        let date = Date()
+        let id = try store.insertDictation(text: "Existing history", durationSeconds: 1, startedAt: date, endedAt: date)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DROP TABLE quill_conversation_turns; DROP TABLE quill_conversations;", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        try store.migrateIfNeeded()
+        try store.migrateIfNeeded()
+        #expect(try store.dictation(id: id)?.rawText == "Existing history")
+        try store.appendQuillTurn(sessionID: UUID(), turn: .init(id: UUID(), question: "Question", answer: "Answer",
+            timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "test"))
+        #expect(try store.timelineEntries().count == 2)
+    }
+
     @Test("startup interrupts only running CUA traces and preserves their events")
     func reconcileRunningComputerUseTraces() throws {
         let store = try makeStore()
