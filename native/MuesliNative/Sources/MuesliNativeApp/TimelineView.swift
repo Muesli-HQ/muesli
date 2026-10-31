@@ -26,6 +26,9 @@ struct TimelineView: View {
             switch entry {
             case .meeting(let record): include = contentFilter == "All activity" || contentFilter == "Meetings"; text = record.title + " " + record.rawTranscript
             case .dictation(let record): include = contentFilter == "All activity" || contentFilter == "Dictations"; text = record.rawText
+            case .quill(let record):
+                include = contentFilter == "All activity" || contentFilter == "Quill"
+                text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
             case .cotypist(let record):
                 include = contentFilter == "All activity" || contentFilter == "Cotypist"
                 text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
@@ -71,9 +74,9 @@ struct TimelineView: View {
             DictationFormattingSetupCard(appState: appState, controller: controller)
 
             HStack {
-                TextField("Search meetings and dictations…", text: $search).textFieldStyle(.roundedBorder)
+                TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
-                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist"], id: \.self) { Text($0) }
+                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
                 }.frame(width: 180)
             }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
 
