@@ -153,3 +153,7 @@ outputs reuse the existing 40,000-character editing policy. Hosted requests that
 offer editing tools reuse the 12,000-token editing budget; answer-only requests
 retain 4,096 tokens. Tool arguments have a separate 1 MiB parsing bound so Unicode
 and JSON escapes do not inadvertently reduce the supported text length.
+
+The native Responses transport receives Quill’s argument-byte limit on both
+HTTP responses and ChatGPT streamed completion events. Meeting requests retain
+the default 16,384-byte per-tool cap and the shared total-response bound.

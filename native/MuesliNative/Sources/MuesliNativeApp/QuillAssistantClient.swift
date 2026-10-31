@@ -19,7 +19,7 @@ enum QuillAssistantClient {
             let response = try await client.generateNative(.init(base: base,
                 inputItems: JSONSerialization.data(withJSONObject: [["role": "user", "content": prompt]]),
                 tools: JSONSerialization.data(withJSONObject: request.tools), allowTools: true,
-                requiresMeetingAnswerFormat: false))
+                requiresMeetingAnswerFormat: false, maximumArgumentBytes: QuillAssistantRequest.maximumArgumentBytes))
             try Task.checkCancellation()
             if response.calls.isEmpty {
                 return try request.decode(name: "reply", arguments: encodeText(response.text))

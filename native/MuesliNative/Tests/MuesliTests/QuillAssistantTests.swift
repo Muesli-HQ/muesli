@@ -173,6 +173,64 @@ struct QuillAssistantTests {
         let ollama = Data(#"{"done":true,"done_reason":"stop","message":{"content":"Answer"}}"#.utf8)
         #expect(try QuillAssistantClient.decode(ollama, request: request(), anthropic: false, ollama: true) == .reply("Answer"))
     }
+    @Test("Large Quill edits pass native HTTP and streamed response parsing", arguments: ["a", "🌍", "\""])
+    func largeEditsThroughNativeTransport(character: String) async throws {
+        for count in [18_000, QuilTransformationOutput.maximumOutputCharacters] {
+            let text = String(repeating: character, count: count)
+            let args = String(decoding: try JSONSerialization.data(withJSONObject:
+                ["text": text, "target_id": "current"]), as: UTF8.self)
+            let item: [String: Any] = ["type": "function_call", "call_id": "call1",
+                "name": "replace_selection", "arguments": args]
+            let payload: [String: Any] = ["status": "completed", "output": [item]]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            for provider in [MeetingSummaryBackendOption.openAI, .openRouter] {
+                var config = AppConfig()
+                config.meetingSummaryBackend = provider.backend
+                config[keyPath: provider.modelKeyPath] = provider == .openRouter ? "openai/gpt-5.4" : "gpt-5.4"
+                let client = MeetingTextGenerationClient(credentialResolver: { _ in "synthetic" }, load: { wire in
+                    (data, HTTPURLResponse(url: wire.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                })
+                var wire = MeetingNativeToolRequest(base: .init(system: "test", user: "test", config: config),
+                    inputItems: Data("[]".utf8), tools: Data("[]".utf8), allowTools: true)
+                #expect(wire.maximumArgumentBytes == 16_384)
+                await #expect(throws: MeetingNativeToolTransportError.self) { try await client.generateNative(wire) }
+                wire.maximumArgumentBytes = QuillAssistantRequest.maximumArgumentBytes
+                let response = try await client.generateNative(wire)
+                let call = try #require(response.calls.first)
+                #expect(try request(selection: "Old").decode(name: call.name, arguments: call.arguments) == .replace(text))
+            }
+            var stream = MeetingNativeResponseAccumulator(maximumArgumentBytes: QuillAssistantRequest.maximumArgumentBytes)
+            _ = try stream.apply(["type": "response.output_item.done", "output_index": 0, "item": item])
+            let response = try #require(try stream.apply(["type": "response.completed", "response": ["status": "completed"]]))
+            let call = try #require(response.calls.first)
+            #expect(try request(selection: "Old").decode(name: call.name, arguments: call.arguments) == .replace(text))
+        }
+    }
+
+    @Test func nativeArgumentBoundsRemainEnforced() throws {
+        for limit in [MeetingNativeToolTransport.defaultMaximumArgumentBytes, QuillAssistantRequest.maximumArgumentBytes] {
+            for extra in [0, 1] {
+                let item: [String: Any] = ["type": "function_call", "call_id": "call1", "name": "tool",
+                    "arguments": "{}" + String(repeating: " ", count: limit - 2 + extra)]
+                let payload: [String: Any] = ["status": "completed", "output": [item]]
+                let data = try JSONSerialization.data(withJSONObject: payload)
+                var stream = MeetingNativeResponseAccumulator(maximumArgumentBytes: limit)
+                _ = try stream.apply(["type": "response.output_item.done", "item": item])
+                if extra == 0 {
+                    #expect(try MeetingNativeToolTransport.parseResponse(data, maximumArgumentBytes: limit).calls.count == 1)
+                    #expect(try stream.apply(["type": "response.completed", "response": ["status": "completed"]])?.calls.count == 1)
+                } else {
+                    #expect(throws: MeetingNativeToolTransportError.self) {
+                        try MeetingNativeToolTransport.parseResponse(data, maximumArgumentBytes: limit)
+                    }
+                    #expect(throws: MeetingNativeToolTransportError.self) {
+                        try stream.apply(["type": "response.completed", "response": ["status": "completed"]])
+                    }
+                }
+            }
+        }
+    }
+
     @Test func quillDoesNotChangeMeetingAnswerFormat() throws {
         let base = MeetingTextGenerationRequest(system: "system", user: "user", config: AppConfig())
         var wire = MeetingNativeToolRequest(base: base, inputItems: Data("[]".utf8),
