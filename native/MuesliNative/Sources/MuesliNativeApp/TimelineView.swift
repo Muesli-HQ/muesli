@@ -444,6 +444,13 @@ private struct TimelineCotypistRow: View {
 
 
 /// One durable conversation; expansion reveals every exchange, not the bounded model context.
+/// Reload expanded history after new turns or late question transcription.
+struct QuillTimelineLoadKey: Equatable {
+    let expanded: Bool
+    let turnCount: Int
+    let preview: [QuillHistoryTurn]
+}
+
 private struct TimelineQuillRow: View {
     let record: QuillConversationRecord
     let loadConversation: () async -> QuillConversationRecord?
@@ -516,7 +523,7 @@ private struct TimelineQuillRow: View {
                 .buttonStyle(.plain).help("Delete Quill conversation").accessibilityLabel("Delete Quill conversation")
         }
         .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
-        .task(id: expanded) {
+        .task(id: QuillTimelineLoadKey(expanded: expanded, turnCount: record.turnCount, preview: record.turns)) {
             guard expanded else { fullConversation = nil; return }
             loadFailed = false
             let loaded = await loadConversation()

@@ -5,6 +5,16 @@ import MuesliCore
 
 @Suite("Quill assistant")
 struct QuillAssistantTests {
+    @Test func expandedHistoryReloadsForFollowUpsAndLateQuestions() {
+        var turn = QuillHistoryTurn(id: UUID(), question: nil, answer: "Answer", timestamp: "test", backend: "test", model: "test")
+        let initial = QuillTimelineLoadKey(expanded: true, turnCount: 1, preview: [turn])
+        turn.question = "Late question"
+        #expect(initial != QuillTimelineLoadKey(expanded: true, turnCount: 1, preview: [turn]))
+        #expect(initial != QuillTimelineLoadKey(expanded: true, turnCount: 2, preview: [turn]))
+        #expect(QuillTimelineLoadKey(expanded: false, turnCount: 3, preview: []) !=
+            QuillTimelineLoadKey(expanded: true, turnCount: 3, preview: []))
+    }
+
     @Test func quillCleanupSuppressesDebugContentLogging() async {
         await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
             #expect(!TranscriptCleanupDebugLogger.isEnabled)
