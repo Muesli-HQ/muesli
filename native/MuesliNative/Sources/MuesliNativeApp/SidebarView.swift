@@ -17,11 +17,8 @@ struct SidebarToggleButton: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 36, height: 36)
-                .background(MuesliTheme.backgroundRaised.opacity(0.72))
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MuesliFloatingGlassButtonStyle(shape: .circle))
         .help(accessibilityTitle)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityIdentifier(Self.accessibilityIdentifier)
@@ -31,6 +28,10 @@ struct SidebarToggleButton: View {
 struct SidebarView: View {
     private let sidebarIconColumnWidth: CGFloat = 20
     private let meetingsTrailingColumnWidth: CGFloat = 24
+    /// Meetings header actions are full-height 36pt targets; the new-folder target also owns
+    /// the 4pt trailing inset, so the icons keep the former 24pt column centers.
+    private let meetingsHeaderActionWidth: CGFloat = 36
+    private let meetingsHeaderTrailingInset: CGFloat = 4
     /// Matches the search field's inner padding so the row icon column sits
     /// exactly under the magnifier instead of 6pt to its right.
     private let sidebarRowHorizontalPadding: CGFloat = 10
@@ -44,8 +45,10 @@ struct SidebarView: View {
     let controller: MuesliController
     var isCollapsed: Bool = false
     var onToggleCollapsed: () -> Void = {}
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(SidebarOrder.preferenceKey) private var savedSidebarOrder = ""
     @State private var meetingsExpanded = true
+    @State private var meetingsHeaderPressed = false
     @State private var renamingFolderID: Int64?
     @State private var renamingFolderName = ""
     @State private var folderToDelete: MeetingFolder?
@@ -69,7 +72,6 @@ struct SidebarView: View {
     private struct UpdateCTA {
         let label: String
         let icon: String
-        let foreground: Color
         let accessibilityLabel: String
         let tooltip: String
     }
@@ -80,7 +82,6 @@ struct SidebarView: View {
             return UpdateCTA(
                 label: "Update",
                 icon: "arrow.down",
-                foreground: updateCTAForeground,
                 accessibilityLabel: "Update available",
                 tooltip: "Open About for update instructions"
             )
@@ -88,48 +89,12 @@ struct SidebarView: View {
             return UpdateCTA(
                 label: "Ready",
                 icon: "arrow.clockwise",
-                foreground: updateCTAForeground,
                 accessibilityLabel: "Update ready to install",
                 tooltip: "Open About for update instructions"
             )
         case .idle, .checking, .busy, .installing, .upToDate, .disabled, .failed:
             return nil
         }
-    }
-
-    private var updateCTAForeground: Color {
-        if appState.config.appearanceMode == .ultraDark { return MuesliTheme.onAccent }
-        let accentHex = appState.config.recordingColorHex
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "#", with: "")
-            .lowercased()
-
-        let defaultAccentHex = colorScheme == .dark
-            ? MuesliTheme.defaultAccentDarkHex
-            : MuesliTheme.defaultAccentLightHex
-
-        let value: UInt64
-        if accentHex == "1e1e2e" {
-            value = UInt64(defaultAccentHex)
-        } else {
-            guard accentHex.count == 6,
-                  let parsedValue = UInt64(accentHex, radix: 16) else {
-                value = UInt64(defaultAccentHex)
-                return foregroundColor(forAccentHex: value)
-            }
-            value = parsedValue
-        }
-
-        return foregroundColor(forAccentHex: value)
-    }
-
-    private func foregroundColor(forAccentHex value: UInt64) -> Color {
-        let red = Double((value >> 16) & 0xFF) / 255.0
-        let green = Double((value >> 8) & 0xFF) / 255.0
-        let blue = Double(value & 0xFF) / 255.0
-        // 0.45 on raw sRGB approximates the WCAG 0.18 threshold on linearized luminance.
-        let luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-        return luminance > 0.45 ? Color.black.opacity(0.88) : Color.white
     }
 
     var body: some View {
@@ -146,15 +111,16 @@ struct SidebarView: View {
                 .padding(.top, MuesliTheme.spacing16)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            collapsedItem(tab: .timeline, icon: "clock", label: "Timeline")
-            collapsedItem(tab: .dictations, icon: "waveform", label: "Dictations")
-            collapsedItem(tab: .meetings, icon: "person.2", label: "Meetings")
-            collapsedItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
-            collapsedItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-            collapsedItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
-
-            Spacer()
-
+            ScrollView(.vertical) {
+                VStack(spacing: MuesliTheme.spacing8) {
+                    ForEach(SidebarOrder.tabs(from: savedSidebarOrder), id: \.rawValue) { tab in
+                        collapsedItem(tab: tab, icon: tab.sidebarIcon, label: tab.sidebarLabel)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .scrollIndicators(.hidden)
+            Spacer(minLength: 0)
             collapsedItem(tab: .models, icon: "cpu", label: "Models")
             collapsedItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
             collapsedItem(tab: .settings, icon: "gearshape", label: "Settings")
@@ -171,7 +137,7 @@ struct SidebarView: View {
 
     private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(navigationAnimation) {
                 if tab == .timeline {
                     controller.showTimelineHome()
                 } else if tab == .meetings {
@@ -188,14 +154,17 @@ struct SidebarView: View {
         } label: {
             Image(systemName: icon)
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                 .frame(width: 40, height: 36)
-                .background(appState.selectedTab == tab ? MuesliTheme.surfacePrimary : Color.clear)
+                .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .modifier(SidebarDragSourceModifier(tab: tab, label: label))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarRowButtonStyle(isSelected: appState.selectedTab == tab))
+        .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
         .help(label)
         .accessibilityLabel(label)
+        .accessibilityAddTraits(appState.selectedTab == tab ? .isSelected : [])
         // Match the expanded rows so a tour targeting the sidebar keeps its
         // spotlight when the rail is collapsed mid-tour.
         .featureTourTarget(
@@ -217,12 +186,14 @@ struct SidebarView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        sidebarItem(tab: .timeline, icon: "clock", label: "Timeline")
-                        sidebarItem(tab: .dictations, icon: "waveform", label: "Dictations")
-                        meetingsSection
-                        sidebarItem(tab: .meetingChat, icon: "bubble.left.and.bubble.right", label: "Chat")
-                        sidebarItem(tab: .insights, icon: "chart.bar.xaxis", label: "Insights")
-                        sidebarItem(tab: .dictionary, icon: "character.book.closed", label: "Dictionary")
+                        ForEach(SidebarOrder.tabs(from: savedSidebarOrder), id: \.rawValue) { tab in
+                            if tab == .meetings {
+                                meetingsSection
+                            } else {
+                                sidebarItem(tab: tab, icon: tab.sidebarIcon, label: tab.sidebarLabel,
+                                            updateCTA: tab == .about ? pendingUpdateCTA : nil)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -235,7 +206,7 @@ struct SidebarView: View {
                     guard let folderID else { return }
                     Task { @MainActor in
                         await Task.yield()
-                        withAnimation(.easeInOut(duration: 0.15)) {
+                        withAnimation(navigationAnimation) {
                             proxy.scrollTo(folderID, anchor: .center)
                         }
                     }
@@ -346,8 +317,12 @@ struct SidebarView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 24, height: 24)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet, shape: .circle))
+                .padding(.trailing, -6)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, sidebarRowHorizontalPadding)
@@ -372,9 +347,12 @@ struct SidebarView: View {
     private var meetingsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             let isSelected = appState.selectedTab == .meetings
-            HStack(spacing: MuesliTheme.spacing12) {
+            // The primary button owns the row's leading padding and full height; the two
+            // trailing actions are separate full-height targets. One row fill reflects
+            // hover and the primary button's press.
+            HStack(spacing: 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(navigationAnimation) {
                         meetingsExpanded = true
                     }
                     controller.showMeetingsHome()
@@ -382,47 +360,55 @@ struct SidebarView: View {
                     HStack(spacing: MuesliTheme.spacing12) {
                         Image(systemName: "person.wave.2")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                            .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                             .frame(width: sidebarIconColumnWidth)
                         Text("Meetings")
                             .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
                             .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                         Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, sidebarRowHorizontalPadding)
+                    .padding(.vertical, MuesliTheme.spacing8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
+                    .modifier(SidebarDragSourceModifier(tab: .meetings, label: "Meetings"))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SidebarHeaderButtonStyle(isPressed: $meetingsHeaderPressed))
+                .modifier(SidebarReorderModifier(tab: .meetings, label: "Meetings", savedOrder: $savedSidebarOrder, acceptsDrop: false))
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(navigationAnimation) {
                         meetingsExpanded.toggle()
                     }
                 } label: {
                     Image(systemName: meetingsExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(isSelected ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
-                        .frame(width: meetingsTrailingColumnWidth, height: 18)
+                        .frame(width: meetingsHeaderActionWidth)
+                        .frame(maxHeight: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SidebarRowButtonStyle())
+                .help(meetingsExpanded ? "Collapse meeting folders" : "Expand meeting folders")
+                .accessibilityLabel(meetingsExpanded ? "Collapse meeting folders" : "Expand meeting folders")
 
                 Button(action: createNewFolder) {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(isSelected ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
-                        .frame(width: meetingsTrailingColumnWidth, height: 18)
+                        .frame(width: meetingsHeaderActionWidth)
+                        // The trailing inset belongs to this target rather than a dead margin;
+                        // it keeps the icon centers over the folder-count column below.
+                        .padding(.trailing, meetingsHeaderTrailingInset)
+                        .frame(maxHeight: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SidebarRowButtonStyle())
                 .help("New Meeting Folder")
+                .accessibilityLabel("New meeting folder")
             }
-            .padding(.horizontal, sidebarRowHorizontalPadding)
-            .padding(.vertical, MuesliTheme.spacing8)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .modifier(SidebarRowFeedback(isSelected: isSelected, isPressed: meetingsHeaderPressed))
             .padding(.horizontal, sidebarRowOuterPadding)
             .featureTourTarget(.meetingsSidebar)
 
@@ -431,14 +417,8 @@ struct SidebarView: View {
                 // Section children are indented as a group: previously they had zero
                 // indent and nesting only read via the smaller icon size.
                 VStack(alignment: .leading, spacing: 2) {
-                    meetingFilterRow(
-                        icon: "tray.2",
-                        label: "All Meetings",
-                        count: appState.totalMeetingCount,
-                        isSelected: appState.selectedTab == .meetings && appState.selectedFolderID == nil
-                    ) {
-                        controller.showMeetingsHome()
-                    }
+                    // No drag or context menu here, so this row can be a real button with press feedback.
+                    allMeetingsRow(isSelected: appState.selectedTab == .meetings && appState.selectedFolderID == nil)
 
                     ForEach(folderTree.visibleFolders) { folder in
                         let depth = folderTree.depth(of: folder)
@@ -498,6 +478,7 @@ struct SidebarView: View {
                 .padding(.horizontal, sidebarRowOuterPadding)
             }
         }
+        .modifier(SidebarDropModifier(tab: .meetings, savedOrder: $savedSidebarOrder))
     }
 
     @ViewBuilder
@@ -556,7 +537,7 @@ struct SidebarView: View {
     private func sidebarItem(tab: DashboardTab, icon: String, label: String, updateCTA: UpdateCTA? = nil) -> some View {
         let isSelected = appState.selectedTab == tab
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(navigationAnimation) {
                 if tab == .timeline {
                     controller.showTimelineHome()
                 } else if tab == .meetingChat {
@@ -569,7 +550,7 @@ struct SidebarView: View {
             HStack(spacing: MuesliTheme.spacing12) {
                 Image(systemName: icon)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                    .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
                 Text(label)
                     .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
@@ -583,7 +564,7 @@ struct SidebarView: View {
                             .font(MuesliTheme.font(size: 11, weight: .bold))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(updateCTA.foreground)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(MuesliTheme.accent)
@@ -597,15 +578,18 @@ struct SidebarView: View {
             .padding(.horizontal, sidebarRowHorizontalPadding)
             .padding(.vertical, MuesliTheme.spacing8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
-            )
             .contentShape(Rectangle())
+            .modifier(SidebarDragSourceModifier(tab: tab, label: label))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarRowButtonStyle(isSelected: isSelected))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .padding(.horizontal, sidebarRowOuterPadding)
         .featureTourTarget(tab == .timeline ? .timelineSidebar : nil)
+        .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
+    }
+
+    private var navigationAnimation: Animation? {
+        MuesliMotion.animation(MuesliMotion.navigation, reduceMotion: reduceMotion)
     }
 
     @ViewBuilder
@@ -618,20 +602,11 @@ struct SidebarView: View {
             .padding(.bottom, MuesliTheme.spacing4)
     }
 
-    @ViewBuilder
-    private func meetingFilterRow(
-        icon: String,
-        label: String,
-        count: Int,
-        isSelected: Bool,
-        disclosureIcon: String? = nil,
-        disclosureAction: (() -> Void)? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
+    private func meetingFilterRowContent(icon: String, label: String, count: Int, isSelected: Bool) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                 .frame(width: sidebarIconColumnWidth)
             Text(label)
                 .font(MuesliTheme.callout())
@@ -646,26 +621,58 @@ struct SidebarView: View {
         }
         .padding(.horizontal, sidebarRowHorizontalPadding)
         .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .fill(isSelected ? MuesliTheme.surfaceSelected.opacity(0.6) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .overlay(alignment: .leading) {
-            if let disclosureIcon, let disclosureAction {
-                Button(action: disclosureAction) {
-                    Image(systemName: disclosureIcon)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 16, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .offset(x: -20)
-            }
+    }
+
+    private func allMeetingsRow(isSelected: Bool) -> some View {
+        Button {
+            controller.showMeetingsHome()
+        } label: {
+            meetingFilterRowContent(icon: "tray.2", label: "All Meetings", count: appState.totalMeetingCount, isSelected: isSelected)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(SidebarRowButtonStyle(isSelected: isSelected))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// Folder rows stay gestures so drag/drop and context menus keep working. They show
+    /// hover and selection fills; a mouse-down fill would need a zero-distance gesture that
+    /// competes with the drag source, so it is intentionally omitted.
+    @ViewBuilder
+    private func meetingFilterRow(
+        icon: String,
+        label: String,
+        count: Int,
+        isSelected: Bool,
+        disclosureIcon: String? = nil,
+        disclosureAction: (() -> Void)? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        meetingFilterRowContent(icon: icon, label: label, count: count, isSelected: isSelected)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(SidebarRowFeedback(isSelected: isSelected))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
+            // The row stays a gesture so folder drag/drop and context menus keep working; it is
+            // one keyboard/VoiceOver element. The disclosure overlay below remains its own Button.
+            .accessibilityElement(children: .combine)
+            .muesliRowActivation(isSelected: isSelected, action: action)
+            .overlay(alignment: .leading) {
+                if let disclosureIcon, let disclosureAction {
+                    // Fills the indent left of the row; it never overlaps the row's own target.
+                    Button(action: disclosureAction) {
+                        Image(systemName: disclosureIcon)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(width: 22, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(SidebarRowButtonStyle())
+                    .offset(x: -22)
+                    .help(disclosureIcon == "chevron.right" ? "Show subfolders" : "Hide subfolders")
+                    .accessibilityLabel(disclosureIcon == "chevron.right" ? "Show subfolders of \(label)" : "Hide subfolders of \(label)")
+                }
+            }
     }
 
     @ViewBuilder
@@ -673,7 +680,7 @@ struct SidebarView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: "folder")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .frame(width: sidebarIconColumnWidth)
             TextField("Folder name", text: $renamingFolderName)
                 .font(MuesliTheme.callout())
@@ -711,7 +718,7 @@ struct SidebarView: View {
     }
 
     private func toggleFolderCollapse(_ folderID: Int64) {
-        withAnimation(.easeInOut(duration: 0.12)) {
+        withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.12), reduceMotion: reduceMotion)) {
             if collapsedFolderIDs.contains(folderID) {
                 collapsedFolderIDs.remove(folderID)
             } else {
@@ -722,7 +729,7 @@ struct SidebarView: View {
 
     private func createNewFolder() {
         if let id = controller.createFolder(name: "New Folder") {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(navigationAnimation) {
                 meetingsExpanded = true
             }
             renamingFolderID = id
@@ -733,7 +740,7 @@ struct SidebarView: View {
 
     private func createNewSubfolder(parentID: Int64) {
         if let id = controller.createSubfolder(name: "New Folder", parentID: parentID) {
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(navigationAnimation) {
                 meetingsExpanded = true
                 collapsedFolderIDs.remove(parentID)
             }
@@ -839,7 +846,7 @@ private struct FolderDropDelegate: DropDelegate {
             insertionIndex = adjustedTargetIndex
         }
 
-        withAnimation(.easeInOut(duration: 0.15)) {
+        MuesliMotion.perform {
             folders.insert(contentsOf: movedFolders, at: insertionIndex)
             dragOrderedFolders = folders
         }
@@ -889,5 +896,80 @@ private struct FolderDropDelegate: DropDelegate {
         }
         visit(rootID)
         return result
+    }
+}
+
+
+/// Navigation uses fills for selection and pointer feedback. Only keyboard focus gets a ring.
+private struct SidebarRowButtonStyle: ButtonStyle {
+    var isSelected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(SidebarRowFeedback(isSelected: isSelected, isPressed: configuration.isPressed))
+    }
+}
+
+/// For a row's primary button when the row also hosts sibling actions: the row draws one
+/// shared fill (`SidebarRowFeedback`), so this style only reports the press and focus.
+private struct SidebarHeaderButtonStyle: ButtonStyle {
+    @Binding var isPressed: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        SidebarHeaderButtonBody(configuration: configuration, isPressed: $isPressed)
+    }
+}
+
+private struct SidebarHeaderButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Binding var isPressed: Bool
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .overlay {
+                if isFocused {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.accentText, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onChange(of: configuration.isPressed) { _, pressed in isPressed = pressed }
+    }
+}
+
+/// Flat by design: navigation rows acknowledge a press with an immediate fill, not a scale.
+private struct SidebarRowFeedback: ViewModifier {
+    var isSelected: Bool
+    var isPressed = false
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .fill(isSelected ? MuesliTheme.surfaceSelected :
+                          (isEnabled && (isHovered || isPressed) ? MuesliTheme.backgroundHover : .clear))
+                    .overlay {
+                        if isEnabled && isPressed {
+                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                .fill(MuesliTheme.textPrimary.opacity(0.04))
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    .animation(MuesliMotion.animation(MuesliMotion.feedback, reduceMotion: reduceMotion), value: isHovered)
+            }
+            .overlay {
+                if isFocused && isEnabled {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.accentText, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
     }
 }

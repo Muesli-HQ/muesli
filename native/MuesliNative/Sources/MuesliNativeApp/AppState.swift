@@ -15,6 +15,10 @@ enum DashboardTab: String, CaseIterable {
     case about
 }
 
+enum ModelFileOperation: Equatable, Sendable {
+    case deleting, updating
+}
+
 enum InsightsSection: String, CaseIterable, Sendable {
     case streak
     case words
@@ -192,6 +196,10 @@ final class AppState {
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
+    let modelLibrary = ModelLibraryState()
+    var settingsModelAvailability = SettingsModelAvailability()
+    // Successful scans also reconcile newly mounted Models views when facts are unchanged.
+    var settingsModelAvailabilityRevision = 0
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
     var interactionPermissionSnapshot: InteractionPermissionSnapshot?
@@ -204,6 +212,11 @@ final class AppState {
     var liveMeetingTranscript: String = ""
     var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
     var modelFileMutationCount = 0
+    /// Model IDs with a delete or update in flight. Their cards stay inert until it settles;
+    /// this outlives the Models view so returning to it cannot start a conflicting action.
+    var pendingModelFileOperations: [String: ModelFileOperation] = [:]
+    /// The last visible failure per model ID, cleared when a new operation starts.
+    var modelFileOperationErrors: [String: String] = [:]
     var activeAudioImportCount = 0
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
@@ -231,6 +244,8 @@ final class AppState {
                 && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
         }
     }
+    var dictionaryFileOperation: DictionaryFileOperation?
+    var dictionaryFileMessage: String?
     var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle

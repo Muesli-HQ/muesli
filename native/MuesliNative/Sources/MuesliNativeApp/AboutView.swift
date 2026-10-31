@@ -63,14 +63,11 @@ struct AboutView: View {
                                 Text("Donate")
                                     .font(MuesliTheme.font(size: 13, weight: .semibold))
                             }
-                            .foregroundStyle(.white)
                             .padding(.horizontal, MuesliTheme.spacing20)
                             .padding(.vertical, MuesliTheme.spacing8)
                             .frame(width: actionButtonWidth)
-                            .background(MuesliTheme.success)
-                            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.success))
                     }
 
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -114,7 +111,7 @@ struct AboutView: View {
                             }
                             .buttonStyle(.plain)
                             .font(MuesliTheme.callout())
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                         }
                     }
                 }
@@ -356,17 +353,10 @@ struct AboutView: View {
                 Text(title)
                     .font(MuesliTheme.font(size: 13, weight: .medium))
             }
-            .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing16)
             .padding(.vertical, MuesliTheme.spacing8)
             .frame(width: actionButtonWidth)
-            .background(MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.secondary))
     }
 }

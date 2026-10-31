@@ -75,8 +75,8 @@ struct SettingsNote: View {
     private var color: Color {
         switch tone {
         case .helper: MuesliTheme.textSecondary
-        case .warning: MuesliTheme.transcribing
-        case .error: MuesliTheme.recording
+        case .warning: MuesliTheme.warningText
+        case .error: MuesliTheme.destructiveText
         }
     }
 }

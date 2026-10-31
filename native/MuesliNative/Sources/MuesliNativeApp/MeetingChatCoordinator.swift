@@ -22,6 +22,17 @@ actor MeetingChatWorker {
         try store.setTurnState(id: id, state: state, error: error, attemptID: attemptID)
     }
     func deleteChat(id: UUID) throws { try store.deleteSession(id: id) }
+    /// History for the sidebar/index plus the requested conversation, read off the main actor.
+    func history(selecting sessionID: UUID?) throws -> MeetingChatHistorySnapshot {
+        let sessions = try store.sessions()
+        let hasChatHistory = try store.hasChatHistory()
+        let turns = try sessionID.flatMap { id in sessions.contains { $0.id == id } ? id : nil }
+            .map { try store.turns(sessionID: $0) } ?? []
+        return .init(sessions: sessions, hasChatHistory: hasChatHistory, turns: turns)
+    }
+    func hasCompletedAnswer(sessionID: UUID) throws -> Bool {
+        try store.turns(sessionID: sessionID).contains { $0.state == .completed && $0.originalAnswer != nil }
+    }
     func saveDraft(turnID: UUID, text: String) throws { try store.saveDraft(turnID: turnID, text: text) }
     func warmIndex() throws { try retrieval.prepareIndex() }
     func choices() throws -> [MeetingChatSourceChoice] { try store.sourceChoices() }
@@ -207,6 +218,17 @@ actor MeetingChatWorker {
     }
 }
 
+struct MeetingChatHistorySnapshot: Sendable {
+    let sessions: [MeetingChatSession]
+    let hasChatHistory: Bool
+    let turns: [MeetingChatTurn]
+}
+
+/// A rename or delete awaiting the worker. The row stays visible but inert until it settles.
+enum MeetingChatPendingMutation: Equatable {
+    case renaming, deleting
+}
+
 @MainActor @Observable
 final class MeetingChatCoordinator {
     let store: MeetingChatStore
@@ -216,10 +238,20 @@ final class MeetingChatCoordinator {
     @ObservationIgnored private var titleTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var titleAttempts: [UUID: UUID] = [:]
     @ObservationIgnored private var initialization: Task<Void, Never>?
+    /// Each history read gets a generation; only the newest may publish, so a slow
+    /// read for an earlier selection can never revert later navigation.
+    @ObservationIgnored private var historyGeneration = 0
+    @ObservationIgnored private var historyLoad: Task<Void, Never>?
+    @ObservationIgnored private var activitySessionID: UUID?
     private var selectionVersion = UUID()
     private(set) var sessions: [MeetingChatSession] = []
     private(set) var hasChatHistory = false
     private(set) var turns: [MeetingChatTurn] = []
+    /// The conversation whose turns `turns` holds; differs from the selection while it loads.
+    private(set) var turnsSessionID: UUID?
+    private var historyReadFailed = false
+    private(set) var pendingChatMutations: [UUID: MeetingChatPendingMutation] = [:]
+    var isLoadingConversation: Bool { selectedSessionID != nil && turnsSessionID != selectedSessionID }
     private(set) var selectedSessionID: UUID?
     private(set) var activeRequestID: UUID?
     private(set) var activeTurnID: UUID?
@@ -256,7 +288,7 @@ final class MeetingChatCoordinator {
     func showIndex() {
         selectionVersion = UUID()
         selectedSessionID = nil
-        turns = []
+        turns = []; turnsSessionID = nil
         errorMessage = nil
     }
 
@@ -265,7 +297,7 @@ final class MeetingChatCoordinator {
         guard !isBusy, !isUpdatingChat else { return }
         selectionVersion = UUID()
         selectedSessionID = nil
-        turns = []
+        turns = []; turnsSessionID = nil
         draftScope = scope
         composerDraft = ""
         untitledComposerUndoIdentity = UUID()
@@ -286,7 +318,7 @@ final class MeetingChatCoordinator {
         sourceMutationVersion = (try? store.sourceMutationVersion()) ?? 0
         let worker = worker
         initialization = Task {
-            do { try await worker.interruptPendingTurns(); reload() }
+            do { try await worker.interruptPendingTurns(); await refreshHistory() }
             catch { errorMessage = "Could not recover meeting chat history." }
         }
         Task {
@@ -295,15 +327,65 @@ final class MeetingChatCoordinator {
             catch { errorMessage = "Could not prepare meeting search. Retry by asking a question." }
         }
     }
+    /// Synchronous read for construction and source invalidation, where deleted evidence must
+    /// disappear before the caller returns. Navigation and chat mutations use `refreshHistory`.
     func reload() {
+        // This read is newer than any worker read still in flight.
+        historyGeneration &+= 1
+        let requested = selectedSessionID
         do {
-            sessions = try store.sessions()
-            hasChatHistory = try store.hasChatHistory()
-            let sessionIDs = Set(sessions.map(\.id))
-            composerDrafts = composerDrafts.filter { $0.key == nil || sessionIDs.contains($0.key!) }
-            if let id = selectedSessionID, sessions.contains(where: { $0.id == id }) { turns = try store.turns(sessionID: id) }
-            else { selectedSessionID = nil; turns = [] }
-        } catch { errorMessage = "Could not load meeting chat history." }
+            let sessions = try store.sessions()
+            let hasChatHistory = try store.hasChatHistory()
+            let turns = try requested.flatMap { id in sessions.contains { $0.id == id } ? id : nil }
+                .map { try store.turns(sessionID: $0) } ?? []
+            publishHistory(.init(sessions: sessions, hasChatHistory: hasChatHistory, turns: turns), requested: requested)
+        } catch { failHistoryLoad(requested: requested) }
+    }
+    /// Reads history on the worker and returns once the newest scheduled read has published.
+    func refreshHistory() async {
+        scheduleHistoryReload()
+        await settleHistory()
+    }
+    private func settleHistory() async {
+        var observed = -1
+        while observed != historyGeneration {
+            observed = historyGeneration
+            await historyLoad?.value
+        }
+    }
+    private func scheduleHistoryReload() {
+        historyGeneration &+= 1
+        let generation = historyGeneration
+        let requested = selectedSessionID
+        let worker = worker
+        historyLoad = Task { [weak self] in
+            let snapshot: MeetingChatHistorySnapshot?
+            do { snapshot = try await worker.history(selecting: requested) } catch { snapshot = nil }
+            guard let self, self.historyGeneration == generation else { return }
+            if let snapshot { self.publishHistory(snapshot, requested: requested) }
+            else { self.failHistoryLoad(requested: requested) }
+        }
+    }
+    private func publishHistory(_ snapshot: MeetingChatHistorySnapshot, requested: UUID?) {
+        sessions = snapshot.sessions
+        hasChatHistory = snapshot.hasChatHistory
+        let sessionIDs = Set(sessions.map(\.id))
+        composerDrafts = composerDrafts.filter { $0.key == nil || sessionIDs.contains($0.key!) }
+        // Navigation that moved on without a read keeps its own (already reset) turns.
+        guard selectedSessionID == requested else { return }
+        historyReadFailed = false
+        if errorMessage == Self.historyReadError || errorMessage == Self.previousAnswersReadError { errorMessage = nil }
+        if let id = requested, sessionIDs.contains(id) { turns = snapshot.turns; turnsSessionID = id }
+        else { selectedSessionID = nil; turns = []; turnsSessionID = nil }
+    }
+    private func failHistoryLoad(requested: UUID?) {
+        // Index/new-draft navigation may intentionally skip another read. An error
+        // from the conversation we left must not appear in that new composer.
+        guard selectedSessionID == requested else { return }
+        historyReadFailed = true
+        errorMessage = Self.historyReadError
+        // End the loading state; the conversation stays selected so the user can retry.
+        if turnsSessionID != requested { turns = []; turnsSessionID = requested }
     }
     @discardableResult
     func createChat(scope: MeetingChatScope) async -> UUID? {
@@ -316,12 +398,26 @@ final class MeetingChatCoordinator {
             await initialization?.value
             guard selectionVersion == version, !Task.isCancelled else { return nil }
             let session = try await worker.createChat(scope: scope, expectedSourceVersion: expectedSourceVersion)
-            if selectionVersion == version { selectedSessionID = session.id; errorMessage = nil }
-            reload()
+            if selectionVersion == version { showCreatedSession(session.id); errorMessage = nil }
+            await refreshHistory()
             return session.id
         } catch { errorMessage = error.localizedDescription; return nil }
     }
-    func selectChat(id: UUID) { selectionVersion = UUID(); selectedSessionID = id; errorMessage = nil; reload() }
+    /// A session registered moments ago has no turns, so it is shown without a load.
+    private func showCreatedSession(_ id: UUID) {
+        selectedSessionID = id; turns = []; turnsSessionID = id
+    }
+    /// Selection is immediate; the conversation's turns load on the worker. Drafts and scope
+    /// are keyed by selection and remain available while it loads.
+    func selectChat(id: UUID) {
+        guard pendingChatMutations[id] != .deleting else { return }
+        selectionVersion = UUID(); errorMessage = nil
+        if selectedSessionID != id {
+            selectedSessionID = id
+            turns = []; turnsSessionID = nil
+        }
+        scheduleHistoryReload()
+    }
     @discardableResult
     func setScope(_ newScope: MeetingChatScope) async -> UUID? {
         if selectedSessionID == nil {
@@ -332,7 +428,7 @@ final class MeetingChatCoordinator {
         guard let id = selectedSessionID, !isUpdatingChat else { return nil }
         isUpdatingChat = true
         defer { isUpdatingChat = false }
-        do { try await worker.updateSession(id: id, scope: newScope); reload(); return id }
+        do { try await worker.updateSession(id: id, scope: newScope); await refreshHistory(); return id }
         catch { errorMessage = error.localizedDescription; return nil }
     }
     /// Composer attachments are an explicit scope, never a hint that can widen retrieval.
@@ -383,10 +479,10 @@ final class MeetingChatCoordinator {
                     composerDrafts[session.id] = composerDrafts[nil]
                     composerDrafts[nil] = nil
                     transferUntitledComposerUndoIdentity(to: session.id)
-                    selectedSessionID = session.id
+                    showCreatedSession(session.id)
                 }
             }
-            reload()
+            await refreshHistory()
             guard selectionVersion == version, !Task.isCancelled else { return false }
             errorMessage = nil
             return true
@@ -408,18 +504,31 @@ final class MeetingChatCoordinator {
         composerDraft = prompt.text
         return true
     }
+    /// One rename or delete per chat at a time; repeats while the worker is busy are ignored.
     func renameChat(id: UUID, title: String) async {
+        guard pendingChatMutations[id] == nil else { return }
+        pendingChatMutations[id] = .renaming
+        defer { pendingChatMutations[id] = nil }
         cancelTitle(sessionID: id)
-        do { try await worker.updateSession(id: id, title: title); reload() } catch { errorMessage = error.localizedDescription }
+        do { try await worker.updateSession(id: id, title: title); await refreshHistory() } catch { errorMessage = error.localizedDescription }
     }
+    private static let historyReadError = "Could not load meeting chat history."
+    private static let previousAnswersReadError = "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."
+    private static let emptyScopeMessage = "Attach a meeting or choose All saved meetings before sending. Your question is still in the composer."
     func send(question: String, config: AppConfig, isDraft: Bool = false, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
         guard question.count <= 2_000 else { errorMessage = MeetingChatError.questionTooLong.localizedDescription; return }
-        if case .meetings(let ids) = scope.selection, ids.isEmpty,
+        let requestScope = scope
+        var explicitlyEmpty = false
+        if case .meetings(let ids) = requestScope.selection, ids.isEmpty { explicitlyEmpty = true }
+        // Turns decide whether an empty selection is a valid follow-up. When they have not
+        // loaded yet, the worker answers below after the request is reserved.
+        let historyLoaded = turnsSessionID == selectedSessionID && (selectedSessionID == nil || !historyReadFailed)
+        if explicitlyEmpty, historyLoaded,
            !turns.contains(where: { $0.state == .completed && $0.originalAnswer != nil }) {
-            errorMessage = "Attach a meeting or choose All saved meetings before sending. Your question is still in the composer."
+            errorMessage = Self.emptyScopeMessage
             return
         }
         let requestID = UUID()
@@ -427,10 +536,20 @@ final class MeetingChatCoordinator {
         reasoningSummaries = []; activityTurnID = nil
         let draftKey = selectedSessionID; let submittedDraft = composerDraft
         activeSessionID = draftKey
-        let requestScope = scope
         defer {
             if activeRequestID == requestID, tasks[requestID] == nil {
                 activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
+            }
+        }
+        if explicitlyEmpty, !historyLoaded, let draftKey {
+            do {
+                let answered = try await worker.hasCompletedAnswer(sessionID: draftKey)
+                guard activeRequestID == requestID, !Task.isCancelled else { return }
+                guard answered else { errorMessage = Self.emptyScopeMessage; return }
+            } catch {
+                guard activeRequestID == requestID, !Task.isCancelled else { return }
+                errorMessage = Self.previousAnswersReadError
+                return
             }
         }
         await initialization?.value
@@ -454,23 +573,30 @@ final class MeetingChatCoordinator {
             let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
-                reload(); return
+                await refreshHistory(); return
             }
             activeTurnID = turn.id
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
-                reload(); return
+                await refreshHistory(); return
             }
             // An accepted send is an undo boundary even if the user started a new draft while saving.
             composerUndoIdentities[id] = UUID()
             if composerDrafts[submittedDraftKey] == submittedDraft, submittedDraft.trimmingCharacters(in: .whitespacesAndNewlines) == question { composerDrafts[submittedDraftKey] = nil }
-            errorMessage = nil; reload(); launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens)
+            // Launch takes request ownership before the history read yields.
+            errorMessage = nil; launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens)
+            // Publish the already-persisted turn without waiting behind retrieval.
+            // launch first owns cancellation if observation triggers Stop here.
+            if selectedSessionID == id, turnsSessionID == id, !turns.contains(where: { $0.id == turn.id }) {
+                turns.append(turn)
+            }
+            await refreshHistory()
         } catch {
             guard activeRequestID == requestID else { return }
             if let turnID = activeTurnID { try? await worker.setTurnState(id: turnID, state: .failed, error: error.localizedDescription, attemptID: requestID) }
             guard activeRequestID == requestID else { return }
             activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
-            errorMessage = error.localizedDescription; reload()
+            errorMessage = error.localizedDescription; await refreshHistory()
         }
     }
     /// Registration may finish after refresh invalidated its selection ownership.
@@ -501,9 +627,10 @@ final class MeetingChatCoordinator {
             }
             guard activeRequestID == reservation, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: turn.attemptID)
-                reload(); return
+                await refreshHistory(); return
             }
-            reload(); launch(turn, config: requestConfig, isDraft: turn.isDraft, contextWindowTokens: contextWindowTokens)
+            launch(turn, config: requestConfig, isDraft: turn.isDraft, contextWindowTokens: contextWindowTokens)
+            await refreshHistory()
         } catch {
             if activeRequestID == reservation { activeRequestID = nil; phase = ""; errorMessage = error.localizedDescription }
         }
@@ -511,13 +638,13 @@ final class MeetingChatCoordinator {
     private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool, contextWindowTokens: Int? = nil) {
         cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
-        activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id
+        activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id; activitySessionID = turn.sessionID
         let worker = worker; let generator = generator
         tasks[requestID] = Task {
             defer {
                 tasks.removeValue(forKey: requestID)
                 if activeRequestID == requestID { activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""; reasoningIsStreaming = false }
-                reload()
+                scheduleHistoryReload()
             }
             do {
                 let (evidence, history) = try await worker.evidence(for: turn)
@@ -618,7 +745,7 @@ final class MeetingChatCoordinator {
                       let title = MeetingChatClient.validatedConversationTitle(raw) else { return }
                 try Task.checkCancellation()
                 guard let self, self.titleAttempts[turn.sessionID] == token else { return }
-                if try await worker.saveTitle(turn: turn, title: title) { self.reload() }
+                if try await worker.saveTitle(turn: turn, title: title) { await self.refreshHistory() }
             } catch {
                 // A title is optional metadata. Keep the provisional title and completed answer.
             }
@@ -653,7 +780,7 @@ final class MeetingChatCoordinator {
         if let turnID = activeTurnID {
             let cleanupID = UUID(); let worker = worker
             tasks[cleanupID] = Task {
-                defer { tasks.removeValue(forKey: cleanupID); reload() }
+                defer { tasks.removeValue(forKey: cleanupID); scheduleHistoryReload() }
                 try? await worker.setTurnState(id: turnID, state: .stopped, attemptID: id)
             }
             if let index = turns.firstIndex(where: { $0.id == turnID && $0.state.isPending }) { turns[index].state = .stopped }
@@ -661,19 +788,27 @@ final class MeetingChatCoordinator {
         activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
     }
     func deleteChat(id: UUID) async {
+        guard pendingChatMutations[id] == nil else { return }
+        pendingChatMutations[id] = .deleting
+        defer { pendingChatMutations[id] = nil }
         cancelTitle(sessionID: id)
-        if let activityTurnID, (try? store.turns(sessionID: id).contains(where: { $0.id == activityTurnID })) == true {
-            reasoningSummaries = []; self.activityTurnID = nil
+        // Transient tool/reasoning output belongs to the run that produced it.
+        if activityTurnID != nil, activitySessionID == id {
+            reasoningSummaries = []; activityTurnID = nil
         }
         if activeSessionID == id { stop() }
-        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; composerUndoIdentities[id] = nil; reload() } catch { errorMessage = error.localizedDescription }
+        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; composerUndoIdentities[id] = nil; await refreshHistory() } catch { errorMessage = error.localizedDescription }
     }
     func saveDraft(turnID: UUID, text: String) async {
-        do { try await worker.saveDraft(turnID: turnID, text: text); reload() } catch { errorMessage = error.localizedDescription }
+        do { try await worker.saveDraft(turnID: turnID, text: text); await refreshHistory() } catch { errorMessage = error.localizedDescription }
     }
     func refreshChoices() async { do { sourceChoices = try await worker.choices() } catch { errorMessage = error.localizedDescription } }
     func source(_ id: Int64) async -> MeetingChatSourceSnapshot? { try? await worker.source(id) }
-    func waitForIdle() async { await initialization?.value; while let task = tasks.values.first { await task.value } }
+    func waitForIdle() async {
+        await initialization?.value
+        while let task = tasks.values.first { await task.value }
+        await settleHistory()
+    }
     func refreshForSourceChanges() {
         guard let version = try? store.sourceMutationVersion(), version != sourceMutationVersion else { return }
         sourceMutationVersion = version

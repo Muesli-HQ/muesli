@@ -561,8 +561,8 @@ public final class MuesliController: NSObject {
     private var cleanupAvailabilityIDs: Set<String> = []
     private var cleanupDownloadNoticeIDs: Set<String> = []
 
-    func refreshCleanupAvailability() {
-        let available = PostProcessorOption.downloadedIDs
+    func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
+        let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
         guard available != cleanupAvailabilityIDs else { return }
         cleanupAvailabilityIDs = available
         nativeRecordingGate.invalidate()
@@ -651,6 +651,11 @@ public final class MuesliController: NSObject {
     #if DEBUG
     var dictationOutputTestHooks: DictationOutputTestHooks?
     #endif
+    var settingsAvailabilityScan: @Sendable (String) -> SettingsModelAvailability = { SettingsModelAvailability.scan(claudeCodePath: $0) }
+    private var settingsAvailabilityTask: Task<Void, Never>?
+    private var settingsAvailabilityGeneration = UUID()
+    private var settingsAvailabilityPath: String?
+    private var settingsAvailabilityNeedsRefresh = false
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -1011,6 +1016,7 @@ public final class MuesliController: NSObject {
             }
         }
         installICloudPersistentSyncObservers()
+        refreshSettingsModelAvailability()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
@@ -1571,6 +1577,62 @@ public final class MuesliController: NSObject {
         appState.iCloudBridgeRemoteDevicePlatform = MuesliBridgeDeviceIdentity.remoteDevicePlatform
     }
 
+    /// Observation publishes assignments even when their values have not changed.
+    func publishConfig() {
+        guard appState.config != config else { return }
+        let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
+        appState.config = config
+        if pathChanged { refreshSettingsModelAvailability() }
+    }
+
+    func refreshSettingsModelAvailability(force: Bool = false) {
+        guard !isShuttingDown else { return }
+        guard appState.modelFileMutationCount == 0 else {
+            settingsAvailabilityNeedsRefresh = true
+            return
+        }
+        let path = config.claudeCodeExecutablePath
+        if settingsAvailabilityTask != nil {
+            settingsAvailabilityNeedsRefresh = settingsAvailabilityNeedsRefresh || force || settingsAvailabilityPath != path
+            return
+        }
+        guard force || settingsAvailabilityPath != path else { return }
+        settingsAvailabilityPath = path
+        let generation = UUID()
+        settingsAvailabilityGeneration = generation
+        let scan = settingsAvailabilityScan
+        settingsAvailabilityTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                scan(path)
+            }.value
+            guard !Task.isCancelled, let self, !self.isShuttingDown,
+                  self.settingsAvailabilityGeneration == generation else { return }
+            self.settingsAvailabilityTask = nil
+            guard self.appState.modelFileMutationCount == 0 else {
+                self.settingsAvailabilityNeedsRefresh = true
+                return
+            }
+            // A mutation or path change during the scan invalidates its result.
+            if self.settingsAvailabilityNeedsRefresh || self.config.claudeCodeExecutablePath != path {
+                self.settingsAvailabilityNeedsRefresh = false
+                self.refreshSettingsModelAvailability(force: true)
+                return
+            }
+            if self.appState.settingsModelAvailability != snapshot {
+                self.appState.settingsModelAvailability = snapshot
+            }
+            self.refreshCleanupAvailability(downloadedIDs: snapshot.postProcessorIDs)
+            self.appState.modelLibrary.reconcile(snapshot)
+            self.appState.settingsModelAvailabilityRevision += 1
+            if self.appState.selectedTab == .settings, self.appState.modelFileMutationCount == 0,
+               !self.isMeetingRecording(), !self.isStartingMeetingRecording {
+                self.normalizeMeetingTranscriptionSelectionForAvailability(
+                    downloadedOptions: BackendOption.compatibleOptions().filter { snapshot.contains($0) }
+                )
+            }
+        }
+    }
+
     func syncAppState() {
         storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
@@ -1631,7 +1693,7 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
-        appState.config = config
+        publishConfig()
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
         appState.isMeetingStarting = isStartingMeetingRecording
@@ -1794,7 +1856,7 @@ public final class MuesliController: NSObject {
             appState.selectedMeetingTranscriptionBackend = backend
         }
         if configChanged {
-            appState.config = config
+            publishConfig()
         }
     }
 
@@ -1962,7 +2024,7 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
-        appState.config = config
+        publishConfig()
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
         appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
@@ -2042,7 +2104,7 @@ public final class MuesliController: NSObject {
             configStore.save(config)
         }
 
-        appState.config = config
+        publishConfig()
         appState.contributionMilestonePrompt = ContributionMilestonePolicy.prompt(
             kind: .dictationWords,
             total: totalWords,
@@ -2090,7 +2152,7 @@ public final class MuesliController: NSObject {
             config.contributionPromptNextMeetingCount = nextMilestone
         }
         configStore.save(config)
-        appState.config = config
+        publishConfig()
         TelemetryDeck.signal("contribution_prompt_dismissed", parameters: [
             "kind": prompt.kind.rawValue,
             "count": "\(prompt.count)",
@@ -2480,6 +2542,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
                     intent: .incoming,
                     delay: 0.5,
@@ -3462,7 +3525,7 @@ public final class MuesliController: NSObject {
             configStore.save(config)
             selectedMeetingTranscriptionBackend = option
             appState.selectedMeetingTranscriptionBackend = option
-            appState.config = config
+            publishConfig()
             activeMeetingSession?.updateBackend(option)
             applyConfigRuntimeSideEffects(
                 wasICloudSyncEnabled: wasICloudSyncEnabled,
@@ -5313,6 +5376,10 @@ public final class MuesliController: NSObject {
         progress: @escaping (Double, String?) -> Void,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        // A download may finish before warm-up fails or is cancelled. Invalidate
+        // once this shared foreground/background onboarding path has settled;
+        // the existing scanner remains detached and coalesces overlapping work.
+        defer { refreshSettingsModelAvailability(force: true) }
         let wasDownloaded = backend.isDownloaded
         progress(
             wasDownloaded ? 0.75 : 0.0,
@@ -9202,6 +9269,24 @@ public final class MuesliController: NSObject {
     func endModelFileMutation(_ token: UUID) {
         modelFileMutationTokens.remove(token)
         appState.modelFileMutationCount = modelFileMutationTokens.count
+        refreshSettingsModelAvailability(force: true)
+    }
+
+    /// A lease plus per-model exclusion. Leases for different models may still overlap, as
+    /// the shared lease intends; a second delete/update of the same model is refused until
+    /// the first ends, and its card can show the pending operation immediately.
+    func beginModelFileOperation(_ operation: ModelFileOperation, modelID: String) -> UUID? {
+        guard appState.pendingModelFileOperations[modelID] == nil,
+              let token = beginModelFileMutation() else { return nil }
+        appState.pendingModelFileOperations[modelID] = operation
+        appState.modelFileOperationErrors[modelID] = nil
+        return token
+    }
+
+    func endModelFileOperation(_ token: UUID, modelID: String, failure: String? = nil) {
+        appState.pendingModelFileOperations[modelID] = nil
+        if let failure { appState.modelFileOperationErrors[modelID] = failure }
+        endModelFileMutation(token)
     }
 
     private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
@@ -9236,7 +9321,7 @@ public final class MuesliController: NSObject {
         guard cleanupOrphanedMeetingWaveformCacheFiles() else { return }
         guard cleanupLegacyJSONMeetingWaveformCacheFiles() else { return }
         config.waveformCacheOrphanCleanupMigrationApplied = true
-        appState.config = config
+        publishConfig()
         configStore.save(config)
     }
 

@@ -3,11 +3,55 @@ import Foundation
 import MuesliCore
 import SwiftUI
 import Testing
+import TelemetryDeck
 @testable import MuesliNativeApp
 
 @MainActor
 @Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
+
+    @Test("Sidebar order restores defaults, removes unknown/duplicate IDs and appends new tabs")
+    func sidebarOrderRecovery() {
+        #expect(SidebarOrder.tabs(from: "") == SidebarOrder.defaults)
+        let restored = SidebarOrder.tabs(from: "settings,retired,meetingChat,meetingChat")
+        #expect(Array(restored.prefix(2)) == [.meetingChat, .timeline])
+        #expect(restored.count == SidebarOrder.defaults.count)
+        #expect(Set(restored.map(\.rawValue)).count == restored.count)
+        #expect(SidebarOrder.tabs(from: SidebarOrder.encode(restored)) == restored)
+    }
+
+    @Test("Sidebar moves work in both directions while excluding fixed utility tabs")
+    func sidebarOrderMoves() {
+        let first = SidebarOrder.moving(.dictionary, to: .timeline, in: "")
+        #expect(SidebarOrder.tabs(from: first).first == .dictionary)
+        let last = SidebarOrder.moving(.dictionary, to: .insights, in: first)
+        #expect(SidebarOrder.tabs(from: last).last == .dictionary)
+        #expect(SidebarOrder.tabs(from: last) == SidebarOrder.defaults)
+        #expect(SidebarOrder.moving(.meetings, to: .meetings, in: last) == last)
+    }
+
+    @Test("Sidebar insertion matches the displayed before or after boundary")
+    func sidebarInsertionBoundaries() {
+        let before = SidebarOrder.inserting(.dictionary, relativeTo: .dictations, after: false, in: "")
+        #expect(Array(SidebarOrder.tabs(from: before).prefix(3)) == [.timeline, .dictionary, .dictations])
+        let after = SidebarOrder.inserting(.timeline, relativeTo: .dictations, after: true, in: "")
+        #expect(Array(SidebarOrder.tabs(from: after).prefix(2)) == [.dictations, .timeline])
+        #expect(SidebarOrder.inserting(.settings, relativeTo: .timeline, after: false, in: "") == "")
+        #expect(SidebarOrder.inserting(.timeline, relativeTo: .about, after: true, in: "") == "")
+    }
+
+    @Test("Sidebar ordering persists in an isolated local preference domain")
+    func sidebarOrderPersistence() throws {
+        let suite = "muesli.sidebar.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let saved = SidebarOrder.moving(.meetingChat, to: .timeline, in: "")
+        defaults.set(saved, forKey: SidebarOrder.preferenceKey)
+        let reopened = try #require(UserDefaults(suiteName: suite))
+        #expect(SidebarOrder.tabs(from: reopened.string(forKey: SidebarOrder.preferenceKey) ?? "").first == .meetingChat)
+        defaults.removeObject(forKey: SidebarOrder.preferenceKey)
+        #expect(SidebarOrder.tabs(from: defaults.string(forKey: SidebarOrder.preferenceKey) ?? "") == SidebarOrder.defaults)
+    }
 
     @Test("Ultra Dark resolves black backgrounds and white accents")
     func ultraDarkPalette() throws {
@@ -235,6 +279,91 @@ struct WindowAppearanceTests {
         #expect(DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: true))
         #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 600, hasOpenMeeting: true))
         #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: false))
+    }
+
+    @Test("persistent chat keeps its native editor and draft across browsing destinations")
+    func persistentChatPreservesEditorAcrossTabs() async throws {
+        let telemetry = TelemetryDeck.Config(appID: "00000000-0000-0000-0000-000000000000")
+        telemetry.analyticsDisabled = true
+        TelemetryDeck.initialize(config: telemetry)
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = DictationStore(databaseURL: support.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: .temporaryDirectory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: support)
+        )
+        let coordinator = controller.meetingChatCoordinator
+        let undoIdentity = coordinator.composerUndoIdentity
+        let scope = coordinator.scope
+        let host = NSHostingView(rootView: DashboardRootView(appState: controller.appState, controller: controller))
+        host.frame = NSRect(x: 0, y: 0, width: 1100, height: 790)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+
+        func editors(in view: NSView) -> [NSTextView] {
+            let own = (view as? NSTextView).map { $0.identifier?.rawValue == "meeting-chat-editor" ? [$0] : [] } ?? []
+            return own + view.subviews.flatMap { editors(in: $0) }
+        }
+        for _ in 0..<50 {
+            host.layoutSubtreeIfNeeded()
+            if !editors(in: host).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let original = try #require(editors(in: host).first)
+        #expect(original.string.isEmpty)
+        window.makeFirstResponder(original)
+        original.insertText("A draft that follows navigation", replacementRange: NSRange(location: 0, length: 0))
+        original.breakUndoCoalescing()
+        original.insertText("!", replacementRange: NSRange(location: original.string.utf16.count, length: 0))
+        original.breakUndoCoalescing()
+        original.setSelectedRange(NSRange(location: 5, length: 3))
+        for tab in [DashboardTab.dictations, .meetings, .timeline] {
+            controller.appState.selectedTab = tab
+            for _ in 0..<5 {
+                await Task.yield()
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let current = editors(in: host)
+            #expect(current.count == 1)
+            #expect(current.first === original)
+            #expect(original.string == "A draft that follows navigation!")
+            #expect(original.selectedRange() == NSRange(location: 5, length: 3))
+            #expect(coordinator.composerUndoIdentity == undoIdentity)
+            #expect(coordinator.scope == scope)
+        }
+        let undo = try #require(original.undoManager)
+        #expect(undo.canUndo)
+        undo.undo()
+        // Undo completion must update both native text and the sendable draft.
+        for _ in 0..<10 {
+            if coordinator.composerDraft.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(original.string.isEmpty)
+        #expect(coordinator.composerDraft.isEmpty)
+        undo.redo()
+        #expect(original.string == "A draft that follows navigation!")
+        #expect(coordinator.composerDraft == "A draft that follows navigation!")
+        coordinator.composerDraft = ""
+        window.makeFirstResponder(nil)
+        for _ in 0..<5 {
+            await Task.yield()
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(editors(in: host).first === original)
+        #expect(original.string.isEmpty)
+        controller.appState.selectedTab = .meetingChat
+        for _ in 0..<5 {
+            await Task.yield()
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(editors(in: host).count == 1)
+        #expect(editors(in: host).first?.string == "")
     }
 
     @Test("dashboard renders one working custom sidebar toggle")

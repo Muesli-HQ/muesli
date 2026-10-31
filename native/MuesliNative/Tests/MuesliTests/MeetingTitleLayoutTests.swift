@@ -33,8 +33,16 @@ struct MeetingTitleLayoutTests {
         let row = MarqueeTitleTextField(
             text: .constant("A long meeting title"), titleSize: titleSize, onSubmit: {}, onTextChange: {}
         )
-        let size = NSHostingController(rootView: row)
-            .sizeThatFits(in: CGSize(width: 500, height: proposedHeight))
-        #expect(abs(size.height - 38) < 0.5)
+        let host = NSHostingController(rootView: row)
+        let naturalHeight = host.sizeThatFits(in: CGSize(width: 500, height: 0)).height
+        let size = host.sizeThatFits(in: CGSize(width: 500, height: proposedHeight))
+        // Font metrics differ between the compact and standard titles (and SDKs).
+        // The invariant is one readable line, independent of surplus parent height.
+        let textHeight = NSHostingController(rootView: Text("A long meeting title")
+            .font(MuesliTheme.font(size: titleSize, weight: .bold)).fixedSize())
+            .sizeThatFits(in: CGSize(width: 500, height: proposedHeight)).height
+        #expect(abs(size.height - naturalHeight) < 0.5)
+        #expect(size.height >= textHeight)
+        #expect(size.height <= textHeight + 16)
     }
 }

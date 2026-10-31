@@ -375,6 +375,17 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.muesli.sidebar-tab</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeDescription</key>
+      <string>muesli sidebar navigation item</string>
+    </dict>
+  </array>
   <key>CFBundleIconFile</key>
   <string>muesli.icns</string>
   <key>MuesliSupportDirectoryName</key>

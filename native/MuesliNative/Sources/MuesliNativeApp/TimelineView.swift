@@ -119,7 +119,7 @@ struct TimelineView: View {
             .foregroundStyle(
                 appState.timelineDateFilter == .all
                     ? MuesliTheme.textTertiary
-                    : MuesliTheme.accent
+                    : MuesliTheme.accentText
             )
             .padding(.horizontal, appState.timelineDateFilter == .all ? 0 : 8)
             .padding(.vertical, 3)
@@ -244,6 +244,7 @@ struct TimelineView: View {
 private struct TimelineMeetingRow: View {
     let record: MeetingRecord
     let onSelect: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
 
     var body: some View {
@@ -268,7 +269,7 @@ private struct TimelineMeetingRow: View {
 
                     Text(record.status.displayLabel)
                         .font(MuesliTheme.font(size: 10, weight: .semibold))
-                        .foregroundStyle(record.status.displayColor)
+                        .foregroundStyle(record.status.displayTextColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(record.status.displayColor.opacity(0.12))
@@ -304,11 +305,11 @@ private struct TimelineMeetingRow: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
+            withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { isHovered = hovering }
         }
         .onTapGesture(perform: onSelect)
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
+        .muesliRowActivation(action: onSelect)
         .accessibilityHint("Open meeting")
     }
 
@@ -344,10 +345,17 @@ private struct TimelineMeetingRow: View {
 /// A run of Cotypist typeahead in one app, styled like a dictation row: each accepted suggestion
 /// in the sentence it completed, with the app's icon on the right.
 private struct TimelineCotypistRow: View {
+    private enum RowAction: Hashable {
+        case copy, delete
+    }
+
     let record: CotypistSessionRecord
     let onCopy: () -> Void
     let onDelete: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    /// Actions appear on hover or keyboard focus, so a focused action is never invisible.
+    @FocusState private var focusedAction: RowAction?
 
     var body: some View {
         HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
@@ -379,23 +387,29 @@ private struct TimelineCotypistRow: View {
                 TargetApplicationIconView(appName: record.targetAppName, bundleIdentifier: record.targetAppBundleID)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 Button(action: onCopy) {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
+                .focused($focusedAction, equals: .copy)
                 .help("Copy the sentences with the accepted text")
+                .accessibilityLabel("Copy Cotypist sentences")
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
-                        .foregroundStyle(.red.opacity(0.6))
+                        .foregroundStyle(MuesliTheme.destructiveText)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
+                .focused($focusedAction, equals: .delete)
                 .help("Remove from timeline")
+                .accessibilityLabel("Remove from timeline")
             }
-            .opacity(isHovered ? 1 : 0)
+            .opacity(isHovered || focusedAction != nil ? 1 : 0)
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing16)
@@ -407,7 +421,7 @@ private struct TimelineCotypistRow: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
+            withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { isHovered = hovering }
         }
         .accessibilityElement(children: .combine)
     }
@@ -424,7 +438,7 @@ private struct TimelineCotypistRow: View {
             Text("COTYPIST")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
         }
-        .foregroundStyle(MuesliTheme.accent)
+        .foregroundStyle(MuesliTheme.accentText)
         .padding(.horizontal, 5)
         .padding(.vertical, 2)
         .background(MuesliTheme.accentSubtle)

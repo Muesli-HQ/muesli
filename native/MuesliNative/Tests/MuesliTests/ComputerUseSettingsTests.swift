@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import os
 import SwiftUI
 import MuesliCore
 import Testing
@@ -7,6 +9,280 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("unchanged config publication does not invalidate observed settings")
+    func unchangedConfigPublication() async throws {
+        try await withShortcutSettings { controller, _ in
+            controller.publishConfig()
+            let changed = OSAllocatedUnfairLock(initialState: false)
+            withObservationTracking {
+                _ = controller.appState.config
+            } onChange: {
+                changed.withLock { $0 = true }
+            }
+            controller.publishConfig()
+            controller.publishConfig()
+            #expect(!changed.withLock { $0 })
+            var different = controller.config
+            different.userName += " changed"
+            controller.appState.config = different
+            #expect(changed.withLock { $0 })
+        }
+    }
+
+    @Test("presentation catalog reuses definitions and refreshes availability without disk probes")
+    func presentationCatalogCaching() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            controller.appState.settingsModelAvailability = .init()
+            let first = catalog.definitions(for: controller)
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 1)
+            let cleanup = try #require(first.first { $0.id == "cleanup_on_device_model" })
+            let snapshot = cleanup.snapshot(config: controller.config, source: .manualUI)
+            #expect(snapshot.choices.allSatisfy { snapshot.unavailable[$0.id] != nil })
+            controller.appState.settingsModelAvailability.claudeCodeAvailable = true
+            let refreshed = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            let summary = try #require(refreshed.first { $0.id == "summary_source" })
+            #expect(summary.snapshot(config: controller.config).choices.contains { $0.id == "claude_code" })
+            controller.appState.config.userName += " changed"
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+        }
+    }
+
+    @Test("availability refresh coalesces completion events without blocking the main actor")
+    func availabilityRefreshCoalescing() async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = OSAllocatedUnfairLock(initialState: (calls: 0, onMain: false))
+            let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }
+            controller.settingsAvailabilityScan = { _ in
+                let call = state.withLock { value in
+                    value.calls += 1
+                    value.onMain = value.onMain || Thread.isMainThread
+                    return value.calls
+                }
+                if call == 1 { _ = release.wait(timeout: .now() + 5) }
+                return SettingsModelAvailability(backendIDs: ["scan-\(call)"])
+            }
+            controller.refreshSettingsModelAvailability(force: true)
+            for _ in 0..<500 where state.withLock({ $0.calls }) == 0 {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(state.withLock { $0.calls } == 1)
+            // A slow filesystem scan cannot block UI work, and many completion
+            // notifications request only one follow-up scan, not one per render.
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability(force: true) }
+            #expect(state.withLock { $0.calls } == 1)
+            #expect(controller.appState.settingsModelAvailability.backendIDs != ["scan-1"])
+            release.signal()
+            for _ in 0..<500 where controller.appState.settingsModelAvailability.backendIDs != ["scan-2"] {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailability.backendIDs == ["scan-2"])
+            #expect(!state.withLock { $0.onMain })
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability() }
+            try await Task.sleep(for: .milliseconds(20))
+            #expect(state.withLock { $0.calls } == 2)
+        }
+    }
+
+    @Test("deletion completion reconciles remounted model views even when cached availability is unchanged")
+    func deletionPublishesAvailabilityRevision() async throws {
+        try await withShortcutSettings { controller, _ in
+            // The cached Settings snapshot can already be empty while a Models view
+            // mounted during deletion has read the files as still installed.
+            controller.appState.settingsModelAvailability = .init()
+            let scannedOnMain = OSAllocatedUnfairLock(initialState: false)
+            controller.settingsAvailabilityScan = { _ in
+                scannedOnMain.withLock { $0 = Thread.isMainThread }
+                return SettingsModelAvailability()
+            }
+            for modelID in ["synthetic-cleanup", MeetingLiveCaptionModelStore.modelID] {
+                let mutation = try #require(controller.beginModelFileOperation(.deleting, modelID: modelID))
+                let revision = controller.appState.settingsModelAvailabilityRevision
+                let notified = OSAllocatedUnfairLock(initialState: false)
+                // A newly mounted view observes the controller, not the old view's state.
+                withObservationTracking {
+                    _ = controller.appState.settingsModelAvailabilityRevision
+                } onChange: {
+                    notified.withLock { $0 = true }
+                }
+                controller.endModelFileOperation(mutation, modelID: modelID)
+                for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                    try await Task.sleep(for: .milliseconds(2))
+                }
+                #expect(notified.withLock { $0 })
+                #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+                #expect(controller.appState.settingsModelAvailability.postProcessorIDs.isEmpty)
+                #expect(controller.appState.settingsModelAvailability.liveCaptionIDs.isEmpty)
+                #expect(controller.appState.pendingModelFileOperations[modelID] == nil)
+            }
+            #expect(!scannedOnMain.withLock { $0 })
+        }
+    }
+
+    @Test("model snapshots reconcile every family without invalidating equal state")
+    func modelLibrarySnapshots() throws {
+        let state = ModelLibraryState()
+        let backend = BackendOption.whisper
+        let cleanupGemma = Gemma4LiteRTModel.allCases.first { $0.isCleanupOnly }
+        let gemma = try #require(cleanupGemma)
+        let snapshot = SettingsModelAvailability(
+            backendIDs: [backend.backend + ":" + backend.model],
+            postProcessorIDs: ["synthetic-cleanup"],
+            liveCaptionIDs: [MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue],
+            gemmaIDs: [gemma.rawValue])
+        state.reconcile(snapshot)
+        #expect(state.downloadedModels.contains(backend.model))
+        #expect(state.downloadedModels.contains(gemma.rawValue))
+        #expect(state.downloadedPostProcModels == ["synthetic-cleanup"])
+        #expect(state.isLiveCaptionModelDownloaded)
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = state.downloadedModels
+            _ = state.downloadedPostProcModels
+            _ = state.isLiveCaptionModelDownloaded
+        } onChange: { changed.withLock { $0 = true } }
+        state.reconcile(snapshot)
+        #expect(!changed.withLock { $0 })
+        state.reconcile(.init())
+        #expect(changed.withLock { $0 })
+        #expect(state.downloadedModels.isEmpty)
+        #expect(state.downloadedPostProcModels.isEmpty)
+        #expect(!state.isLiveCaptionModelDownloaded)
+    }
+
+    @Test("pause survives navigation and blocks restart until transfer and caller settle", arguments: [false, true])
+    func modelPauseOwnership(postProcessor: Bool) async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = controller.appState.modelLibrary
+            let kind: ModelLibraryState.DownloadKind = postProcessor ? .postProcessor : .backend
+            let id = "synthetic-model"
+            var callerRelease: CheckedContinuation<Void, Never>?
+            var transferRelease: CheckedContinuation<Void, Never>?
+            let caller = Task { await withCheckedContinuation { callerRelease = $0 } }
+            if postProcessor {
+                state.downloadingPostProcModels.insert(id)
+                state.downloadTasksPostProc[id] = caller
+                state.downloadProgressPostProc[id] = 0.5
+            } else {
+                state.downloadingModels.insert(id)
+                state.downloadTasks[id] = caller
+                state.downloadProgress[id] = 0.5
+            }
+            for _ in 0..<500 where callerRelease == nil { await Task.yield() }
+            let releaseCaller = try #require(callerRelease)
+            var finished = false
+            let pause = try #require(state.pauseDownload(id, kind: kind) {
+                await withCheckedContinuation { transferRelease = $0 }
+            } completion: { finished = true })
+            for _ in 0..<500 where transferRelease == nil { await Task.yield() }
+            let releaseTransfer = try #require(transferRelease)
+            // Every new Models view reads the same shared progress and pause gate.
+            let remounted = controller.appState.modelLibrary
+            #expect(remounted === state)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            #expect((postProcessor ? remounted.downloadProgressPostProc[id] : remounted.downloadProgress[id]) == 0.5)
+            #expect(remounted.pauseDownload(id, kind: kind, cancelTransfer: {}, completion: {}) == nil)
+            releaseTransfer.resume()
+            await Task.yield()
+            #expect(!finished)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            releaseCaller.resume()
+            await pause.value
+            #expect(finished)
+            #expect(remounted.canStartDownload(id, kind: kind))
+            #expect(remounted.downloadTasks[id] == nil)
+            #expect(remounted.downloadTasksPostProc[id] == nil)
+        }
+    }
+
+    @Test("failed model deletion preserves installed snapshot and publishes error")
+    func failedModelDeletionSnapshot() async throws {
+        try await withShortcutSettings { controller, _ in
+            let backend = BackendOption.whisper
+            let snapshot = SettingsModelAvailability(backendIDs: [backend.backend + ":" + backend.model])
+            controller.settingsAvailabilityScan = { _ in snapshot }
+            controller.appState.modelLibrary.reconcile(snapshot)
+            let token = try #require(controller.beginModelFileOperation(.deleting, modelID: backend.model))
+            let revision = controller.appState.settingsModelAvailabilityRevision
+            controller.endModelFileOperation(token, modelID: backend.model, failure: "Synthetic failure")
+            for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+            #expect(controller.appState.modelLibrary.downloadedModels.contains(backend.model))
+            #expect(controller.appState.modelFileOperationErrors[backend.model] == "Synthetic failure")
+        }
+    }
+
+    @Test("running-app reads reuse the snapshot and unchanged refreshes do not invalidate views")
+    func runningAppCache() {
+        var scans = 0
+        var apps = [CotypistQuietApps.App(bundleID: "synthetic.app", name: "Synthetic")]
+        let cache = CotypistRunningAppsCache(observeWorkspace: false) {
+            scans += 1
+            return apps
+        }
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking { _ = cache.apps } onChange: { changed.withLock { $0 = true } }
+        for _ in 0..<20 { #expect(cache.apps == apps) }
+        #expect(scans == 1)
+        cache.refresh()
+        #expect(!changed.withLock { $0 })
+        apps = []
+        cache.refresh()
+        #expect(cache.apps.isEmpty)
+        #expect(changed.withLock { $0 })
+    }
+
+    @Test("manual model selection revalidates files instead of trusting presentation availability")
+    func stalePresentationDoesNotAuthorizeMissingModel() async throws {
+        try await withShortcutSettings { controller, store in
+            let missing = try #require(PostProcessorOption.all.first { !$0.isDownloaded })
+            controller.appState.settingsModelAvailability.postProcessorIDs.insert(missing.id)
+            let original = controller.config
+            do {
+                try await controller.applySetting("cleanup_on_device_model", value: missing.id)
+                Issue.record("A missing model must not be activated from a stale presentation snapshot")
+            } catch {
+                #expect(controller.config == original)
+                #expect(store.load() == original)
+            }
+        }
+    }
+
+    @Test("presentation catalog follows asynchronous model and language choices")
+    func asynchronousPresentationChoices() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            _ = catalog.definitions(for: controller)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Summary test")]
+            let summaries = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            #expect(summaries.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "summary-test" } == true)
+            controller.appState.openRouterTranscriptionModels = [.init(id: "asr-test", label: "ASR test")]
+            let dictation = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+            #expect(dictation.first { $0.id == "openrouter_dictation_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "asr-test" } == true)
+            controller.appState.settingsAppleSpeechLanguages = [.init(id: "fr-FR", label: "French")]
+            let languages = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 4)
+            #expect(languages.first { $0.id == "apple_speech_language" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "fr-FR" } == true)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Renamed")]
+            let renamed = catalog.definitions(for: controller)
+            #expect(renamed.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.first { $0.id == "summary-test" }?.label == "Renamed")
+            for _ in 0..<20 { _ = catalog.definitions(for: controller) }
+            #expect(catalog.rebuildCount == 5)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()

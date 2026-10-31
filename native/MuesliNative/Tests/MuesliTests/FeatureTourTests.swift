@@ -7,6 +7,15 @@ import SwiftUI
 struct FeatureTourTests {
     private let tour = FeatureTourCatalog.latest
 
+    @Test("settings tour scrolling only targets its mounted destination pane")
+    func settingsScrollOwnership() {
+        #expect(SettingsTourScrollRequest(target: .meetingSummaryProvider, pane: .meetings).scrollTarget == .meetingSummaryProvider)
+        #expect(SettingsTourScrollRequest(target: .meetingSummaryProvider, pane: .general).scrollTarget == nil)
+        #expect(SettingsTourScrollRequest(target: .quillSettings, pane: .experimental).scrollTarget == .quillSettings)
+        #expect(SettingsTourScrollRequest(target: .insightsEntry, pane: .general).scrollTarget == nil)
+        #expect(SettingsTourScrollRequest(target: nil, pane: .meetings).scrollTarget == nil)
+    }
+
     @Test("marketing versions compare numeric components and ignore prerelease suffixes")
     func versionComparison() throws {
         #expect(try #require(MarketingVersion("0.8.3")) < #require(MarketingVersion("0.8.5")))

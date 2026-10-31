@@ -6,6 +6,7 @@ public struct AIElementsTheme {
     public var surface: Color
     public var border: Color
     public var accent: Color
+    public var focus: Color
     public var muted: Color
     public var heading: Font
     public var subheading: Font
@@ -19,6 +20,7 @@ public struct AIElementsTheme {
         surface: Color = .primary.opacity(0.045),
         border: Color = .primary.opacity(0.10),
         accent: Color = .accentColor,
+        focus: Color? = nil,
         muted: Color = .secondary,
         textFont: @escaping (CGFloat, Font.Weight) -> Font = { .system(size: $0, weight: $1) },
         heading: Font = .title3.weight(.semibold),
@@ -27,6 +29,7 @@ public struct AIElementsTheme {
         self.surface = surface
         self.border = border
         self.accent = accent
+        self.focus = focus ?? accent
         self.muted = muted
         self.textFont = textFont
         self.heading = heading

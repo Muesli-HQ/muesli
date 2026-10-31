@@ -30,7 +30,7 @@ enum NotchOutcome: Equatable {
         switch self {
         case .success: return .systemGreen
         case .needsInput: return .systemYellow
-        case .failure: return .systemRed
+        case .failure: return NSColor.muesliHex(MuesliTheme.recordingFillHex)
         }
     }
     var title: String {

@@ -443,3 +443,11 @@ task; collapsing or removing the row cancels publication of a late result.
 
 Timeline pagination counts materialized readable entries rather than omitted
 SQL keys, preserving access to older rows when damaged conversations are skipped.
+
+### Sidebar order outside SQLite
+
+Navigation order is a local UserDefaults string (`dashboard.sidebar.order.v1`),
+containing comma-separated stable DashboardTab IDs. Missing or malformed preferences
+fall back to the default order; fixed utility tabs, duplicate and unknown IDs are ignored and missing
+known destinations are appended. This presentation preference does not change
+AppConfig, SQLite, CloudKit, exports or CLI output.
