@@ -1621,6 +1621,7 @@ public final class MuesliController: NSObject {
             if self.appState.settingsModelAvailability != snapshot {
                 self.appState.settingsModelAvailability = snapshot
             }
+            self.appState.settingsModelAvailabilityRevision += 1
             if self.appState.selectedTab == .settings, self.appState.modelFileMutationCount == 0,
                !self.isMeetingRecording(), !self.isStartingMeetingRecording {
                 self.normalizeMeetingTranscriptionSelectionForAvailability(

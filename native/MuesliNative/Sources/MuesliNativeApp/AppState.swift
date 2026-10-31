@@ -197,6 +197,8 @@ final class AppState {
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var settingsModelAvailability = SettingsModelAvailability()
+    // Successful scans also reconcile newly mounted Models views when facts are unchanged.
+    var settingsModelAvailabilityRevision = 0
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
     var interactionPermissionSnapshot: InteractionPermissionSnapshot?

@@ -88,6 +88,41 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("deletion completion reconciles remounted model views even when cached availability is unchanged")
+    func deletionPublishesAvailabilityRevision() async throws {
+        try await withShortcutSettings { controller, _ in
+            // The cached Settings snapshot can already be empty while a Models view
+            // mounted during deletion has read the files as still installed.
+            controller.appState.settingsModelAvailability = .init()
+            let scannedOnMain = OSAllocatedUnfairLock(initialState: false)
+            controller.settingsAvailabilityScan = { _ in
+                scannedOnMain.withLock { $0 = Thread.isMainThread }
+                return SettingsModelAvailability()
+            }
+            for modelID in ["synthetic-cleanup", MeetingLiveCaptionModelStore.modelID] {
+                let mutation = try #require(controller.beginModelFileOperation(.deleting, modelID: modelID))
+                let revision = controller.appState.settingsModelAvailabilityRevision
+                let notified = OSAllocatedUnfairLock(initialState: false)
+                // A newly mounted view observes the controller, not the old view's state.
+                withObservationTracking {
+                    _ = controller.appState.settingsModelAvailabilityRevision
+                } onChange: {
+                    notified.withLock { $0 = true }
+                }
+                controller.endModelFileOperation(mutation, modelID: modelID)
+                for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                    try await Task.sleep(for: .milliseconds(2))
+                }
+                #expect(notified.withLock { $0 })
+                #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+                #expect(controller.appState.settingsModelAvailability.postProcessorIDs.isEmpty)
+                #expect(controller.appState.settingsModelAvailability.liveCaptionIDs.isEmpty)
+                #expect(controller.appState.pendingModelFileOperations[modelID] == nil)
+            }
+            #expect(!scannedOnMain.withLock { $0 })
+        }
+    }
+
     @Test("manual model selection revalidates files instead of trusting presentation availability")
     func stalePresentationDoesNotAuthorizeMissingModel() async throws {
         try await withShortcutSettings { controller, store in

@@ -134,6 +134,13 @@ struct ModelsView: View {
             checkNemotron35Update()
             loadAppleSpeechLanguageOptions()
         }
+        .onChange(of: appState.settingsModelAvailabilityRevision) { _, _ in
+            // Deletion can finish in a previous view instance after navigation.
+            // Reconcile this instance from the controller’s detached scan, without disk I/O.
+            downloadedPostProcModels = appState.settingsModelAvailability.postProcessorIDs
+            isLiveCaptionModelDownloaded = appState.settingsModelAvailability.liveCaptionIDs
+                .contains(MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue)
+        }
         .onChange(of: appState.selectedBackend.model) { _, _ in
             syncSelectionsFromActiveBackend()
         }
