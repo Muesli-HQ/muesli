@@ -187,6 +187,7 @@ case "${shard}" in
       DictationAudioGraphExceptionTests
       DiagnosticIncidentTests
       DictationAudioRouteControllerTests
+      MeetingNotificationControllerTests
       MeetingContactIdentityTests
       MeetingContactResolverTests
       MeetingDetectorTests
