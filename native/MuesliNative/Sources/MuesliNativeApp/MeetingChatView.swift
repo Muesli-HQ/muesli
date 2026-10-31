@@ -326,7 +326,7 @@ struct MeetingChatView: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 16)
             .frame(maxWidth: .infinity)
-        }.buttonStyle(.muesli(.raised, shape: .capsule)).help("Chat context: " + scopeLabel)
+        }.buttonStyle(MuesliFloatingGlassButtonStyle()).help("Chat context: " + scopeLabel)
             .accessibilityIdentifier("meeting-chat-expand")
             .frame(maxWidth: 704).padding(.horizontal, 24).padding(.vertical, 12)
             .frame(maxWidth: .infinity)

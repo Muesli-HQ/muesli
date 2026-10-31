@@ -17,11 +17,8 @@ struct SidebarToggleButton: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 36, height: 36)
-                .background(MuesliTheme.backgroundRaised.opacity(0.72))
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
         }
-        .buttonStyle(.muesli(.quiet, shape: .circle))
+        .buttonStyle(MuesliFloatingGlassButtonStyle(shape: .circle))
         .help(accessibilityTitle)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityIdentifier(Self.accessibilityIdentifier)

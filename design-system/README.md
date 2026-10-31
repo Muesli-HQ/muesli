@@ -165,6 +165,22 @@ Use adaptive foreground attributes for native text inputs, including preset
 insertion and restored drafts. A replacement into empty NSTextStorage must
 carry font and foreground color explicitly; keep undo/redo behavior.
 
+### Limited Liquid Glass prototype
+
+On macOS 26+, `MuesliFloatingGlassButtonStyle` applies native regular glass to
+the sidebar collapse/expand button and the collapsed meeting-chat launcher.
+These isolated navigation affordances keep their existing dimensions, label
+bounds, actions and keyboard-focus ring. There is no glass on reading surfaces,
+list rows or the expanded native chat editor. Do not layer the solid button
+bevel or a custom blur behind native glass.
+
+Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and
+macOS versions before 26 use the solid raised style. Reduce Motion disables
+interactive glass reactions while retaining an immediate pressed fill. The two
+surfaces are far apart and do not morph together; nearby future glass controls
+must share a `GlassEffectContainer`. Keep this prototype limited until native
+visual, accessibility and performance validation supports broader adoption.
+
 ### Brand and identity
 
 Write the visible brand as **muesli**. Display-name changes do not change bundle

@@ -126,6 +126,50 @@ extension ButtonStyle where Self == MuesliButtonStyle {
     }
 }
 
+/// Native glass is reserved for a small number of floating navigation affordances.
+/// The label owns geometry, exactly as it does in the solid control styles.
+struct MuesliFloatingGlassButtonStyle: ButtonStyle {
+    var shape: MuesliControlShape = .capsule
+
+    func makeBody(configuration: Configuration) -> some View {
+        MuesliFloatingGlassChrome(configuration: configuration, shape: shape)
+    }
+}
+
+private struct MuesliFloatingGlassChrome: View {
+    let configuration: ButtonStyleConfiguration
+    let shape: MuesliControlShape
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        if #available(macOS 26.0, *),
+           !reduceTransparency, contrast != .increased,
+           !MuesliTheme.appearance.ultraDark, isEnabled {
+            configuration.label
+                // Keep state feedback even when Reduce Motion disables glass interactivity.
+                .background {
+                    shape.fill(MuesliTheme.textPrimary.opacity(configuration.isPressed ? 0.11 : 0))
+                        .allowsHitTesting(false)
+                }
+                .glassEffect(.regular.interactive(!reduceMotion), in: shape)
+                .overlay {
+                    if isFocused {
+                        shape.strokeBorder(MuesliTheme.accentText, lineWidth: 2)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .contentShape(shape)
+        } else {
+            MuesliButtonStyle(kind: .raised, shape: shape)
+                .makeBody(configuration: configuration)
+        }
+    }
+}
+
 /// Visual-only press compression for custom controls. Apply after fills and borders and before
 /// `contentShape`, so the hit region keeps its full unscaled frame. Reduce Motion removes it;
 /// color feedback remains.
