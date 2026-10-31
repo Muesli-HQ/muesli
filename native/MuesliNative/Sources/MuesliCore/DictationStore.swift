@@ -1226,7 +1226,6 @@ public final class DictationStore {
         SELECT kind, record_id
         FROM timeline
         ORDER BY julianday(sort_time) DESC, sort_time DESC, kind ASC, record_id DESC
-        LIMIT ? OFFSET ?
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1238,26 +1237,24 @@ public final class DictationStore {
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
-        sqlite3_bind_int(statement, Int32(boundValues.count + 1), Int32(limit))
-        sqlite3_bind_int(statement, Int32(boundValues.count + 2), Int32(max(0, offset)))
-
-        var keys: [(kind: Int32, id: Int64)] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            keys.append((sqlite3_column_int(statement, 0), sqlite3_column_int64(statement, 1)))
-        }
-
+        // Pagination counts readable entries, not SQL keys that may be omitted.
         var entries: [TimelineEntry] = []
-        entries.reserveCapacity(keys.count)
-        for key in keys {
-            if key.kind == 0, let record = try dictation(id: key.id, db: db) {
-                entries.append(.dictation(record))
-            } else if key.kind == 1, let record = try meeting(id: key.id, db: db) {
-                entries.append(.meeting(record))
-            } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
-                entries.append(.cotypist(record))
-            } else if key.kind == 3, let record = try quillConversation(id: key.id, db: db, previewOnly: true) {
-                entries.append(.quill(record))
+        var remainingOffset = max(0, offset)
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let kind = sqlite3_column_int(statement, 0)
+            let id = sqlite3_column_int64(statement, 1)
+            let entry: TimelineEntry?
+            switch kind {
+            case 0: entry = try dictation(id: id, db: db).map(TimelineEntry.dictation)
+            case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
+            case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
+            case 3: entry = try quillConversation(id: id, db: db, previewOnly: true).map(TimelineEntry.quill)
+            default: entry = nil
             }
+            guard let entry else { continue }
+            if remainingOffset > 0 { remainingOffset -= 1; continue }
+            entries.append(entry)
+            if entries.count == limit { break }
         }
         return entries
     }

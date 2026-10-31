@@ -440,3 +440,6 @@ does not mutate or repair stored bodies.
 Quill Timeline rows materialize only the first and last turn plus the stored turn
 count. Expanding a row reads complete history through the store on a background
 task; collapsing or removing the row cancels publication of a late result.
+
+Timeline pagination counts materialized readable entries rather than omitted
+SQL keys, preserving access to older rows when damaged conversations are skipped.

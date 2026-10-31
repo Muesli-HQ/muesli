@@ -62,6 +62,23 @@ struct DictationStoreTests {
         #expect(try store.quillConversation(id: preview.id)?.turns.first?.answer == "Answer 1")
     }
 
+    @Test("Timeline pagination skips unreadable conversations without hiding older rows")
+    func quillPaginationCountsReadableEntries() throws {
+        let store = try makeStore()
+        for day in ["28", "29", "30", "31"] {
+            try store.appendQuillTurn(sessionID: UUID(), turn: .init(id: UUID(), question: "Question",
+                answer: "Answer \(day)", timestamp: "2026-10-\(day)T10:00:00Z", backend: "test", model: "test"))
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE quill_conversation_turns SET body = 'invalid' WHERE seq IN (2, 4)", nil, nil, nil) == SQLITE_OK)
+        #expect(try store.timelineEntries(limit: 1).first?.timestamp == "2026-10-30T10:00:00Z")
+        #expect(try store.timelineEntries(limit: 1, offset: 1).first?.timestamp == "2026-10-28T10:00:00Z")
+        #expect(try store.timelineEntries(limit: 1, offset: 2).isEmpty)
+        #expect(try store.timelineEntries(limit: 2).count == 2)
+    }
+
     @Test("Deleting Quill history removes text and blocks late callbacks")
     func quillDeletionDoesNotResurrect() throws {
         let store = try makeStore()
