@@ -259,6 +259,60 @@ struct MeetingRecordingTranscriberTests {
         #expect(aligned.first?.start == 10.6)
     }
 
+    @Test("token alignment keeps opening signs with their word")
+    func tokenAlignmentKeepsOpeningSigns() throws {
+        let negative = [
+            SpeechSegment(start: 0.0, end: 0.2, text: "-"),
+            SpeechSegment(start: 0.2, end: 0.4, text: "5"),
+        ]
+        let alignedNegative = try #require(MeetingRecordingTranscriber.alignedTokens(negative, to: "-5", offset: 0))
+        #expect(alignedNegative.map(\.text) == [" -", "5"])
+
+        let price = [
+            SpeechSegment(start: 0.0, end: 0.3, text: "pay"),
+            SpeechSegment(start: 0.3, end: 0.4, text: "$"),
+            SpeechSegment(start: 0.4, end: 0.7, text: "100"),
+        ]
+        let alignedPrice = try #require(MeetingRecordingTranscriber.alignedTokens(price, to: "pay $100", offset: 0))
+        #expect(alignedPrice.map(\.text) == [" pay", " $", "100"])
+
+        // The turn change falls between the sign and its digits.
+        let formatted = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: alignedPrice,
+            diarizationSegments: [
+                TimedSpeakerSegment(speakerId: "s1", embedding: [], startTimeSeconds: 0, endTimeSeconds: 0.35, qualityScore: 1),
+                TimedSpeakerSegment(speakerId: "s2", embedding: [], startTimeSeconds: 0.35, endTimeSeconds: 1, qualityScore: 1),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0),
+            conservativeSpeakerAttribution: true,
+            systemSegmentsAreTokenTimed: true
+        )
+        #expect(formatted.contains("$100"))
+        #expect(!formatted.contains("pay $"))
+    }
+
+    @Test("tokens missing the text's punctuation keep the window fallback")
+    func tokenAlignmentRejectsMissingPunctuation() {
+        let tokens = [
+            SpeechSegment(start: 0.0, end: 0.3, text: "Hello"),
+            SpeechSegment(start: 0.3, end: 0.6, text: "world"),
+        ]
+        #expect(MeetingRecordingTranscriber.alignedTokens(tokens, to: "Hello, world", offset: 0) == nil)
+    }
+
+    @Test("tokens carrying the text's punctuation still align")
+    func tokenAlignmentKeepsPunctuationTokens() throws {
+        let tokens = [
+            SpeechSegment(start: 0.0, end: 0.3, text: "Hello"),
+            SpeechSegment(start: 0.3, end: 0.4, text: ","),
+            SpeechSegment(start: 0.4, end: 0.7, text: "world"),
+            SpeechSegment(start: 0.7, end: 0.8, text: "."),
+        ]
+        let aligned = try #require(MeetingRecordingTranscriber.alignedTokens(tokens, to: "Hello, world.", offset: 0))
+        #expect(aligned.map(\.text) == [" Hello", ",", " world", "."])
+    }
+
     @Test("segments that are not tokens of the text keep the window fallback")
     func tokenAlignmentRejectsOtherSegments() async throws {
         let phrases = [SpeechSegment(start: 0, end: 2, text: "hello there")]

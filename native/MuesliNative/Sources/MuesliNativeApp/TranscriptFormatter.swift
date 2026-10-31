@@ -232,6 +232,11 @@ enum TranscriptFormatter {
 
         guard gap <= lexicalFragmentGapThreshold else { return false }
 
+        // A sign that opens a word stays with that word, not the one before it.
+        if isPunctuationOnly(trimmedRHS), rhs.first?.isWhitespace == true {
+            return false
+        }
+
         if isPunctuationOnly(trimmedLHS) || isPunctuationOnly(trimmedRHS) {
             return true
         }

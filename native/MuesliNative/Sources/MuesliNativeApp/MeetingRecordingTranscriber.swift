@@ -239,14 +239,12 @@ actor MeetingRecordingTranscriber {
     /// Maps a window's timed ASR tokens onto its reconciled text, shifted to the
     /// recording timeline. The text decides where words start, because meeting
     /// cleanup trims token whitespace, and it also drops overlapped words and
-    /// removed fillers. Each word's first token gets a leading space. Returns nil
-    /// when the segments are not tokens of this text, such as whole phrases or
-    /// the untimed placeholders most backends return.
+    /// removed fillers. Each word's first token gets a leading space. Matching
+    /// keeps punctuation and signs, so the tokens rebuild the text exactly. Returns
+    /// nil when they cannot, such as whole phrases, tokens missing the text's
+    /// punctuation, or the untimed placeholders most backends return.
     static func alignedTokens(_ tokens: [SpeechSegment], to text: String, offset: Double) -> [SpeechSegment]? {
-        func key(_ value: some StringProtocol) -> String {
-            value.lowercased().filter { $0.isLetter || $0.isNumber }
-        }
-        var words = text.split(whereSeparator: \.isWhitespace).map(key).filter { !$0.isEmpty }
+        var words = text.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
         var aligned: [SpeechSegment] = []
         var wordTokens: [SpeechSegment] = []
         var matched = ""
@@ -254,7 +252,9 @@ actor MeetingRecordingTranscriber {
         for token in tokens.reversed() {
             guard let word = words.last else { break }
             guard token.end > token.start else { return nil }
-            let part = key(token.text)
+            let tokenText = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tokenText.isEmpty else { continue }
+            let part = tokenText.lowercased()
             if !word.hasSuffix(part + matched) {
                 wordTokens = []
                 matched = ""
@@ -263,7 +263,7 @@ actor MeetingRecordingTranscriber {
             wordTokens.append(SpeechSegment(
                 start: token.start + offset,
                 end: token.end + offset,
-                text: token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                text: tokenText
             ))
             matched = part + matched
             if matched == word, let first = wordTokens.popLast() {
