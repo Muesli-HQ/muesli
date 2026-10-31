@@ -460,7 +460,8 @@ enum AudioFileImportController {
             systemSegments: transcribedSegments,
             diarizationSegments: diarizationSegments,
             meetingStart: meetingStart,
-            conservativeSpeakerAttribution: true
+            conservativeSpeakerAttribution: true,
+            systemSegmentsAreTokenTimed: true
         )
         return formatted.isEmpty ? rawText : formatted
     }
