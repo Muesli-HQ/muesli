@@ -231,6 +231,29 @@ struct AudioFileImportControllerTests {
         #expect(!result.contains("Speaker 2: ow"))
     }
 
+    @Test("formatTranscriptWithSpeakers keeps a broad window with trailing punctuation conservative")
+    func formatTranscriptWithSpeakersKeepsBroadWindowConservative() {
+        let segments = [
+            makeDiarSeg(speakerId: "SPEAKER_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "SPEAKER_1", start: 1.0, end: 2.0),
+        ]
+        let transcription = SpeechTranscriptionResult(
+            text: "hello there.",
+            segments: [
+                SpeechSegment(start: 0.2, end: 1.8, text: "hello there"),
+                SpeechSegment(start: 1.8, end: 1.9, text: "."),
+            ]
+        )
+
+        let result = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: segments,
+            meetingStart: localMidnight()
+        )
+
+        #expect(result.contains("Multiple speakers: hello there."))
+    }
+
     @Test("formatTranscriptWithSpeakers falls back to raw text without ASR segments")
     func formatTranscriptWithSpeakersFallsBackWithoutASRSegments() {
         let segments = [

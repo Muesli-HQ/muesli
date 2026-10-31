@@ -45,11 +45,18 @@ enum TranscriptFormatter {
             let speakerLabelMap = speakerLabelMap(for: diarizationSegments, prefix: "Speaker")
 
             let lexicalUnits = normalizeLexicalUnits(systemSegments)
-            taggedSystem = lexicalUnits.map { segment in
-                let speaker = conservativeSpeakerAttribution
-                    ? recordedSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap)
-                    : findSpeaker(for: segment, in: diarizationSegments, labelMap: speakerLabelMap, fallback: "Others")
-                return TaggedSegment(segment: segment, speaker: speaker)
+            taggedSystem = lexicalUnits.map { unit in
+                let speaker: String
+                if !conservativeSpeakerAttribution {
+                    speaker = findSpeaker(for: unit.segment, in: diarizationSegments, labelMap: speakerLabelMap, fallback: "Others")
+                } else if unit.isReconstructedWord {
+                    // A word rebuilt from token timings is narrow enough for
+                    // overlap attribution, unlike a broad ASR window.
+                    speaker = findSpeaker(for: unit.segment, in: diarizationSegments, labelMap: speakerLabelMap, fallback: "Unknown speaker")
+                } else {
+                    speaker = recordedSpeaker(for: unit.segment, in: diarizationSegments, labelMap: speakerLabelMap)
+                }
+                return TaggedSegment(segment: unit.segment, speaker: speaker)
             }
         } else {
             taggedSystem = systemSegments.map { TaggedSegment(segment: $0, speaker: "Others") }
@@ -163,14 +170,27 @@ enum TranscriptFormatter {
         return labelMap[speakerID] ?? fallback
     }
 
+    private struct LexicalUnit {
+        let segment: SpeechSegment
+        let isReconstructedWord: Bool
+    }
+
     /// Reassembles token-timed ASR fragments before speaker attribution so a
     /// diarization boundary cannot split one lexical word across speaker turns.
-    private static func normalizeLexicalUnits(_ segments: [SpeechSegment]) -> [SpeechSegment] {
+    private static func normalizeLexicalUnits(_ segments: [SpeechSegment]) -> [LexicalUnit] {
         let chronologicalSegments = segments.sorted { $0.start < $1.start }
         guard let first = chronologicalSegments.first else { return [] }
 
-        var result: [SpeechSegment] = []
+        var result: [LexicalUnit] = []
         var current = first
+        var combined = false
+
+        func finishCurrent() {
+            let isSingleWord = !current.text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .contains(where: \.isWhitespace)
+            result.append(LexicalUnit(segment: current, isReconstructedWord: combined && isSingleWord))
+        }
 
         for segment in chronologicalSegments.dropFirst() {
             let gap = max(0, segment.start - current.end)
@@ -180,13 +200,15 @@ enum TranscriptFormatter {
                     end: max(current.end, segment.end),
                     text: current.text + segment.text
                 )
+                combined = true
             } else {
-                result.append(current)
+                finishCurrent()
                 current = segment
+                combined = false
             }
         }
 
-        result.append(current)
+        finishCurrent()
         return result
     }
 
