@@ -1960,6 +1960,7 @@ struct SettingsView: View {
                     PasteShortcutControl(controller: controller, appState: appState)
                         .help("Custom applies to keyboard paste in Dictation, Quill, and Computer Use. Browser Paste commands and live streaming are unchanged. Re-record custom shortcuts after changing keyboard layouts.")
                 }
+                settingsDescription("Pauses playing media while dictating and resumes after.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow("Pause media during dictation") {
                     settingsControl("pause_media")
@@ -1967,6 +1968,44 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow("Mute system audio during dictation") {
                     settingsControl("mute_audio")
+                }
+                settingsDescription("Mutes the output device while dictating. Skipped for headphones.")
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Lower volume during dictation") {
+                    settingsSwitch(isOn: appState.config.lowerVolumeDuringDictation) { newValue in
+                        controller.updateConfig { $0.lowerVolumeDuringDictation = newValue }
+                    }
+                }
+                settingsDescription("Reduces output volume to the level below while dictation is active, then restores the exact prior level. Skipped for headphones and when no media is playing. Does not pause media.")
+                if appState.config.lowerVolumeDuringDictation {
+                    Divider().background(MuesliTheme.surfaceBorder)
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Volume")
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                            Text("\(Int(appState.config.dictationAttenuationLevel * 100))% — reduces volume to this fraction while dictating")
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                        Spacer()
+                        Slider(
+                            value: Binding(
+                                get: { appState.config.dictationAttenuationLevel },
+                                set: { newValue in
+                                    controller.updateConfig { $0.dictationAttenuationLevel = min(1.0, max(0.1, newValue)) }
+                                }
+                            ),
+                            in: 0.1...1.0,
+                            step: 0.05
+                        )
+                        .frame(width: 140)
+                        Text("\(Int(appState.config.dictationAttenuationLevel * 100))%")
+                            .font(MuesliTheme.body())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    .padding(.vertical, 4)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 screenContextRow("App context")
