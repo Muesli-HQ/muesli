@@ -27,14 +27,38 @@ struct ModelsView: View {
     let appState: AppState
     let controller: MuesliController
 
-    @State private var nemotron35UpdateAvailable = false
-    @State private var downloadingModels: Set<String> = []
-    @State private var downloadProgress: [String: Double] = [:]
-    @State private var downloadMessages: [String: String] = [:]
-    @State private var downloadSnapshots: [String: ModelDownloadProgress] = [:]
-    @State private var downloadGenerations: [String: UUID] = [:]
-    @State private var downloadedModels: Set<String> = []
-    @State private var downloadTasks: [String: Task<Void, Never>] = [:]
+    private var nemotron35UpdateAvailable: Bool {
+        get { appState.modelLibrary.nemotron35UpdateAvailable }
+        nonmutating set { appState.modelLibrary.nemotron35UpdateAvailable = newValue }
+    }
+    private var downloadingModels: Set<String> {
+        get { appState.modelLibrary.downloadingModels }
+        nonmutating set { appState.modelLibrary.downloadingModels = newValue }
+    }
+    private var downloadProgress: [String: Double] {
+        get { appState.modelLibrary.downloadProgress }
+        nonmutating set { appState.modelLibrary.downloadProgress = newValue }
+    }
+    private var downloadMessages: [String: String] {
+        get { appState.modelLibrary.downloadMessages }
+        nonmutating set { appState.modelLibrary.downloadMessages = newValue }
+    }
+    private var downloadSnapshots: [String: ModelDownloadProgress] {
+        get { appState.modelLibrary.downloadSnapshots }
+        nonmutating set { appState.modelLibrary.downloadSnapshots = newValue }
+    }
+    private var downloadGenerations: [String: UUID] {
+        get { appState.modelLibrary.downloadGenerations }
+        nonmutating set { appState.modelLibrary.downloadGenerations = newValue }
+    }
+    private var downloadedModels: Set<String> {
+        get { appState.modelLibrary.downloadedModels }
+        nonmutating set { appState.modelLibrary.downloadedModels = newValue }
+    }
+    private var downloadTasks: [String: Task<Void, Never>] {
+        get { appState.modelLibrary.downloadTasks }
+        nonmutating set { appState.modelLibrary.downloadTasks = newValue }
+    }
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
@@ -43,19 +67,49 @@ struct ModelsView: View {
     @State private var showExperimental: Bool
     @State private var showUnavailableDownloads = false
     @State private var appleSpeechLanguageOptions: [AppleSpeechLanguageOption] = [.system]
-    @State private var isLiveCaptionModelDownloaded = false
-    @State private var isDownloadingLiveCaptionModel = false
-    @State private var isCancellingLiveCaptionModelDownload = false
-    @State private var liveCaptionDownloadProgress = 0.0
-    @State private var liveCaptionDownloadTask: Task<Void, Never>?
-    @State private var liveCaptionDownloadGeneration = ModelDownloadGenerationState()
+    private var isLiveCaptionModelDownloaded: Bool {
+        get { appState.modelLibrary.isLiveCaptionModelDownloaded }
+        nonmutating set { appState.modelLibrary.isLiveCaptionModelDownloaded = newValue }
+    }
+    private var isDownloadingLiveCaptionModel: Bool {
+        get { appState.modelLibrary.isDownloadingLiveCaptionModel }
+        nonmutating set { appState.modelLibrary.isDownloadingLiveCaptionModel = newValue }
+    }
+    private var isCancellingLiveCaptionModelDownload: Bool {
+        get { appState.modelLibrary.isCancellingLiveCaptionModelDownload }
+        nonmutating set { appState.modelLibrary.isCancellingLiveCaptionModelDownload = newValue }
+    }
+    private var liveCaptionDownloadProgress: Double {
+        get { appState.modelLibrary.liveCaptionDownloadProgress }
+        nonmutating set { appState.modelLibrary.liveCaptionDownloadProgress = newValue }
+    }
+    private var liveCaptionDownloadTask: Task<Void, Never>? {
+        get { appState.modelLibrary.liveCaptionDownloadTask }
+        nonmutating set { appState.modelLibrary.liveCaptionDownloadTask = newValue }
+    }
+    private var liveCaptionDownloadGeneration: ModelDownloadGenerationState {
+        get { appState.modelLibrary.liveCaptionDownloadGeneration }
+        nonmutating set { appState.modelLibrary.liveCaptionDownloadGeneration = newValue }
+    }
     @State private var showDeleteLiveCaptionModelConfirmation = false
 
     // Post-processor state
-    @State private var downloadingPostProcModels: Set<String> = []
-    @State private var downloadProgressPostProc: [String: Double] = [:]
-    @State private var downloadedPostProcModels: Set<String> = []
-    @State private var downloadTasksPostProc: [String: Task<Void, Never>] = [:]
+    private var downloadingPostProcModels: Set<String> {
+        get { appState.modelLibrary.downloadingPostProcModels }
+        nonmutating set { appState.modelLibrary.downloadingPostProcModels = newValue }
+    }
+    private var downloadProgressPostProc: [String: Double] {
+        get { appState.modelLibrary.downloadProgressPostProc }
+        nonmutating set { appState.modelLibrary.downloadProgressPostProc = newValue }
+    }
+    private var downloadedPostProcModels: Set<String> {
+        get { appState.modelLibrary.downloadedPostProcModels }
+        nonmutating set { appState.modelLibrary.downloadedPostProcModels = newValue }
+    }
+    private var downloadTasksPostProc: [String: Task<Void, Never>] {
+        get { appState.modelLibrary.downloadTasksPostProc }
+        nonmutating set { appState.modelLibrary.downloadTasksPostProc = newValue }
+    }
     @State private var postProcModelToDelete: PostProcessorOption?
 
     // Cotypist
@@ -75,10 +129,10 @@ struct ModelsView: View {
         _showExperimental = State(initialValue: appState.activeFeatureTourTarget == .experimentalModels)
     }
 
+    @State private var presentationCatalog = SettingsPresentationCatalog()
+
     var body: some View {
-        // Build once for this surface; Observation refreshes dynamic choices.
-        let _ = appState.config
-        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
     }
 
     private var settingsContent: some View {
@@ -127,19 +181,13 @@ struct ModelsView: View {
         .background(MuesliTheme.backgroundBase)
         .task { await controller.medASRTerms.refresh() }
         .onAppear {
-            checkDownloadedModels()
-            checkDownloadedPostProcModels()
-            isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
+            controller.refreshSettingsModelAvailability(force: true)
             syncSelectionsFromActiveBackend()
             checkNemotron35Update()
             loadAppleSpeechLanguageOptions()
         }
-        .onChange(of: appState.settingsModelAvailabilityRevision) { _, _ in
-            // Deletion can finish in a previous view instance after navigation.
-            // Reconcile this instance from the controller’s detached scan, without disk I/O.
-            downloadedPostProcModels = appState.settingsModelAvailability.postProcessorIDs
-            isLiveCaptionModelDownloaded = appState.settingsModelAvailability.liveCaptionIDs
-                .contains(MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue)
+        .onChange(of: appState.modelLibrary.downloadedModels) { _, _ in
+            checkNemotron35Update()
         }
         .onChange(of: appState.selectedBackend.model) { _, _ in
             syncSelectionsFromActiveBackend()
@@ -523,7 +571,8 @@ struct ModelsView: View {
     }
 
     private func startLiveCaptionModelDownload() {
-        guard !isDownloadingLiveCaptionModel else { return }
+        guard !isDownloadingLiveCaptionModel,
+              appState.pendingModelFileOperations[MeetingLiveCaptionModelStore.modelID] == nil else { return }
         isCancellingLiveCaptionModelDownload = false
         isDownloadingLiveCaptionModel = true
         liveCaptionDownloadProgress = 0
@@ -972,9 +1021,10 @@ struct ModelsView: View {
                 if let operation = appState.pendingModelFileOperations[option.id] {
                     modelOperationStatus(operation)
                 } else if isDownloading {
-                    modelCardButton("Pause", prominent: false) {
+                    modelCardButton(appState.modelLibrary.cancellingDownloads.contains(option.id) ? "Pausing…" : "Pause", prominent: false) {
                         cancelPostProcDownload(option)
                     }
+                    .disabled(appState.modelLibrary.cancellingDownloads.contains(option.id))
                 } else if isDownloaded {
                     if !isActive {
                         modelCardButton(forQuill ? "Use for Quill" : "Use for Cleanup") {
@@ -1329,9 +1379,10 @@ struct ModelsView: View {
                 if let operation = appState.pendingModelFileOperations[option.model] {
                     modelOperationStatus(operation)
                 } else if isDownloading {
-                    modelCardButton("Pause", prominent: false) {
+                    modelCardButton(appState.modelLibrary.cancellingDownloads.contains(option.model) ? "Pausing…" : "Pause", prominent: false) {
                         cancelDownload(option)
                     }
+                    .disabled(appState.modelLibrary.cancellingDownloads.contains(option.model))
                 } else if isDownloaded {
                     if !isActive {
                         let disabledReason = incompatibilityReason ?? activationDisabledReason
@@ -1725,7 +1776,8 @@ struct ModelsView: View {
     // MARK: - Post-Processor Actions
 
     private func startPostProcDownload(_ option: PostProcessorOption, forQuill: Bool = false) {
-        guard option.isDownloadable else { return }
+        guard option.isDownloadable, appState.modelLibrary.canStartDownload(option.id, kind: .postProcessor),
+              appState.pendingModelFileOperations[option.id] == nil else { return }
         withAnimation { _ = downloadingPostProcModels.insert(option.id) }
         downloadProgressPostProc[option.id] = 0.02
         downloadMessages.removeValue(forKey: option.id)
@@ -1833,36 +1885,10 @@ struct ModelsView: View {
     }
 
     private func cancelPostProcDownload(_ option: PostProcessorOption) {
-        let task = downloadTasksPostProc[option.id]
-        let cancellationGeneration = UUID()
-        task?.cancel()
-        Task {
-            await ModelDownloadCoordinator.shared.cancel(modelID: option.id)
-            _ = await task?.value
-            await MainActor.run {
-                guard downloadGenerations[option.id] == cancellationGeneration else { return }
-                if option.isDownloaded {
-                    downloadedPostProcModels.insert(option.id)
-                    controller.refreshCleanupAvailability()
-                    downloadMessages.removeValue(forKey: option.id)
-                    downloadSnapshots.removeValue(forKey: option.id)
-                } else {
-                    downloadMessages[option.id] = "Paused — select Download to resume"
-                }
-                downloadGenerations.removeValue(forKey: option.id)
-            }
-        }
-        withAnimation {
-            downloadingPostProcModels.remove(option.id)
-            downloadProgressPostProc.removeValue(forKey: option.id)
-            // Invalidate callbacks from the cancelled task, but retain a
-            // generation until it has fully unwound so a race that finalizes
-            // the file can refresh the card immediately.
-            downloadGenerations[option.id] = cancellationGeneration
-            if let snapshot = downloadSnapshots[option.id] {
-                downloadSnapshots[option.id] = snapshot.replacing(phase: .paused, message: "Paused — select Download to resume")
-            }
-            downloadTasksPostProc.removeValue(forKey: option.id)
+        appState.modelLibrary.pauseDownload(option.id, kind: .postProcessor) {
+            await ModelDownloadCoordinator.shared.cancelAndWait(modelID: option.id)
+        } completion: {
+            controller.refreshSettingsModelAvailability(force: true)
         }
     }
 
@@ -1899,15 +1925,10 @@ struct ModelsView: View {
         }
     }
 
-    private func checkDownloadedPostProcModels() {
-        downloadedPostProcModels = PostProcessorOption.downloadedIDs
-        controller.refreshCleanupAvailability()
-    }
-
     // MARK: - Actions
 
     private func startDownload(_ option: BackendOption) {
-        guard option.isCompatible() else { return }
+        guard option.isCompatible(), appState.modelLibrary.canStartDownload(option.model, kind: .backend) else { return }
         if option == .medASR, !controller.medASRTerms.isAccepted {
             controller.requestMedASRLicense {
                 startDownload(option)
@@ -2063,39 +2084,10 @@ struct ModelsView: View {
     }
 
     private func cancelDownload(_ option: BackendOption) {
-        let modelID = option.model
-        let task = downloadTasks[modelID]
-        let cancellationGeneration = UUID()
-        task?.cancel()
-        withAnimation {
-            downloadingModels.remove(modelID)
-            downloadProgress.removeValue(forKey: modelID)
-            downloadMessages[modelID] = "Paused — select Download to resume"
-            // Keep a cancellation generation until the caller task has fully
-            // unwound. If a replacement starts first, this generation changes
-            // and the old cancellation must not stop the replacement transfer.
-            downloadGenerations[modelID] = cancellationGeneration
-            downloadTasks.removeValue(forKey: modelID)
-            if let snapshot = downloadSnapshots[modelID] {
-                downloadSnapshots[modelID] = snapshot.replacing(
-                    phase: .paused,
-                    message: "Paused — select Download to resume"
-                )
-            }
-        }
-        Task {
-            let shouldCancel = await MainActor.run {
-                downloadGenerations[modelID] == cancellationGeneration
-            }
-            guard shouldCancel else { return }
-
-            await ManagedASRModelDownloader.cancel(modelID: modelID)
-            _ = await task?.value
-
-            await MainActor.run {
-                guard downloadGenerations[modelID] == cancellationGeneration else { return }
-                downloadGenerations.removeValue(forKey: modelID)
-            }
+        appState.modelLibrary.pauseDownload(option.model, kind: .backend) {
+            await ManagedASRModelDownloader.cancelAndWait(modelID: option.model)
+        } completion: {
+            controller.refreshSettingsModelAvailability(force: true)
         }
     }
 
@@ -2251,20 +2243,11 @@ struct ModelsView: View {
 
     // MARK: - Check Downloaded Status
 
-    private func checkDownloadedModels() {
-        let fm = FileManager.default
-        for option in BackendOption.all + Gemma4LiteRTModel.allCases.filter(\.isCleanupOnly).map(BackendOption.gemma4LiteRT) {
-            if isModelDownloaded(option, fm: fm) {
-                downloadedModels.insert(option.model)
-            }
-        }
-    }
-
     /// Background check: does FluidInference's repo have a newer commit than what's
     /// installed for Nemotron 3.5? Never auto-downloads — just surfaces a badge.
     private func checkNemotron35Update() {
         guard #available(macOS 15, *),
-              isModelDownloaded(.nemotron35Multilingual, fm: FileManager.default) else { return }
+              downloadedModels.contains(BackendOption.nemotron35Multilingual.model) else { return }
         Task {
             let available = await Nemotron35StreamingTranscriber.updateAvailable()
             await MainActor.run { nemotron35UpdateAvailable = available }

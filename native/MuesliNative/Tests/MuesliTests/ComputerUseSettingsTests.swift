@@ -123,6 +123,121 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("model snapshots reconcile every family without invalidating equal state")
+    func modelLibrarySnapshots() throws {
+        let state = ModelLibraryState()
+        let backend = BackendOption.whisper
+        let cleanupGemma = Gemma4LiteRTModel.allCases.first { $0.isCleanupOnly }
+        let gemma = try #require(cleanupGemma)
+        let snapshot = SettingsModelAvailability(
+            backendIDs: [backend.backend + ":" + backend.model],
+            postProcessorIDs: ["synthetic-cleanup"],
+            liveCaptionIDs: [MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue],
+            gemmaIDs: [gemma.rawValue])
+        state.reconcile(snapshot)
+        #expect(state.downloadedModels.contains(backend.model))
+        #expect(state.downloadedModels.contains(gemma.rawValue))
+        #expect(state.downloadedPostProcModels == ["synthetic-cleanup"])
+        #expect(state.isLiveCaptionModelDownloaded)
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = state.downloadedModels
+            _ = state.downloadedPostProcModels
+            _ = state.isLiveCaptionModelDownloaded
+        } onChange: { changed.withLock { $0 = true } }
+        state.reconcile(snapshot)
+        #expect(!changed.withLock { $0 })
+        state.reconcile(.init())
+        #expect(changed.withLock { $0 })
+        #expect(state.downloadedModels.isEmpty)
+        #expect(state.downloadedPostProcModels.isEmpty)
+        #expect(!state.isLiveCaptionModelDownloaded)
+    }
+
+    @Test("pause survives navigation and blocks restart until transfer and caller settle", arguments: [false, true])
+    func modelPauseOwnership(postProcessor: Bool) async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = controller.appState.modelLibrary
+            let kind: ModelLibraryState.DownloadKind = postProcessor ? .postProcessor : .backend
+            let id = "synthetic-model"
+            var callerRelease: CheckedContinuation<Void, Never>?
+            var transferRelease: CheckedContinuation<Void, Never>?
+            let caller = Task { await withCheckedContinuation { callerRelease = $0 } }
+            if postProcessor {
+                state.downloadingPostProcModels.insert(id)
+                state.downloadTasksPostProc[id] = caller
+                state.downloadProgressPostProc[id] = 0.5
+            } else {
+                state.downloadingModels.insert(id)
+                state.downloadTasks[id] = caller
+                state.downloadProgress[id] = 0.5
+            }
+            for _ in 0..<500 where callerRelease == nil { await Task.yield() }
+            let releaseCaller = try #require(callerRelease)
+            var finished = false
+            let pause = try #require(state.pauseDownload(id, kind: kind) {
+                await withCheckedContinuation { transferRelease = $0 }
+            } completion: { finished = true })
+            for _ in 0..<500 where transferRelease == nil { await Task.yield() }
+            let releaseTransfer = try #require(transferRelease)
+            // Every new Models view reads the same shared progress and pause gate.
+            let remounted = controller.appState.modelLibrary
+            #expect(remounted === state)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            #expect((postProcessor ? remounted.downloadProgressPostProc[id] : remounted.downloadProgress[id]) == 0.5)
+            #expect(remounted.pauseDownload(id, kind: kind, cancelTransfer: {}, completion: {}) == nil)
+            releaseTransfer.resume()
+            await Task.yield()
+            #expect(!finished)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            releaseCaller.resume()
+            await pause.value
+            #expect(finished)
+            #expect(remounted.canStartDownload(id, kind: kind))
+            #expect(remounted.downloadTasks[id] == nil)
+            #expect(remounted.downloadTasksPostProc[id] == nil)
+        }
+    }
+
+    @Test("failed model deletion preserves installed snapshot and publishes error")
+    func failedModelDeletionSnapshot() async throws {
+        try await withShortcutSettings { controller, _ in
+            let backend = BackendOption.whisper
+            let snapshot = SettingsModelAvailability(backendIDs: [backend.backend + ":" + backend.model])
+            controller.settingsAvailabilityScan = { _ in snapshot }
+            controller.appState.modelLibrary.reconcile(snapshot)
+            let token = try #require(controller.beginModelFileOperation(.deleting, modelID: backend.model))
+            let revision = controller.appState.settingsModelAvailabilityRevision
+            controller.endModelFileOperation(token, modelID: backend.model, failure: "Synthetic failure")
+            for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+            #expect(controller.appState.modelLibrary.downloadedModels.contains(backend.model))
+            #expect(controller.appState.modelFileOperationErrors[backend.model] == "Synthetic failure")
+        }
+    }
+
+    @Test("running-app reads reuse the snapshot and unchanged refreshes do not invalidate views")
+    func runningAppCache() {
+        var scans = 0
+        var apps = [CotypistQuietApps.App(bundleID: "synthetic.app", name: "Synthetic")]
+        let cache = CotypistRunningAppsCache(observeWorkspace: false) {
+            scans += 1
+            return apps
+        }
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking { _ = cache.apps } onChange: { changed.withLock { $0 = true } }
+        for _ in 0..<20 { #expect(cache.apps == apps) }
+        #expect(scans == 1)
+        cache.refresh()
+        #expect(!changed.withLock { $0 })
+        apps = []
+        cache.refresh()
+        #expect(cache.apps.isEmpty)
+        #expect(changed.withLock { $0 })
+    }
+
     @Test("manual model selection revalidates files instead of trusting presentation availability")
     func stalePresentationDoesNotAuthorizeMissingModel() async throws {
         try await withShortcutSettings { controller, store in

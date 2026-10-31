@@ -196,6 +196,7 @@ final class AppState {
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
+    let modelLibrary = ModelLibraryState()
     var settingsModelAvailability = SettingsModelAvailability()
     // Successful scans also reconcile newly mounted Models views when facts are unchanged.
     var settingsModelAvailabilityRevision = 0

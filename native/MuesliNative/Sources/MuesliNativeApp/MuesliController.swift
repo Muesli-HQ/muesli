@@ -561,8 +561,8 @@ public final class MuesliController: NSObject {
     private var cleanupAvailabilityIDs: Set<String> = []
     private var cleanupDownloadNoticeIDs: Set<String> = []
 
-    func refreshCleanupAvailability() {
-        let available = PostProcessorOption.downloadedIDs
+    func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
+        let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
         guard available != cleanupAvailabilityIDs else { return }
         cleanupAvailabilityIDs = available
         nativeRecordingGate.invalidate()
@@ -1621,6 +1621,8 @@ public final class MuesliController: NSObject {
             if self.appState.settingsModelAvailability != snapshot {
                 self.appState.settingsModelAvailability = snapshot
             }
+            self.refreshCleanupAvailability(downloadedIDs: snapshot.postProcessorIDs)
+            self.appState.modelLibrary.reconcile(snapshot)
             self.appState.settingsModelAvailabilityRevision += 1
             if self.appState.selectedTab == .settings, self.appState.modelFileMutationCount == 0,
                !self.isMeetingRecording(), !self.isStartingMeetingRecording {
