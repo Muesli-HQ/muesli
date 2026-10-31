@@ -447,9 +447,9 @@ enum MeetingSummaryClient {
     static func summaryFailureReason(from notes: String) -> String? {
         guard isSummaryFailureNotes(notes), let lead = notes.range(of: summaryFailureLead, options: .caseInsensitive) else { return nil }
         let rest = notes[lead.upperBound...]
-        let end = ["\n\n### Written notes", "\n\n## Raw Transcript"]
-            .compactMap { rest.range(of: $0)?.lowerBound }
-            .min() ?? rest.endIndex
+        // Bound by the transcript first so the notes search never scans transcript text.
+        let rawStart = rest.range(of: "\n\n## Raw Transcript")?.lowerBound ?? rest.endIndex
+        let end = rest[..<rawStart].range(of: "\n\n### Written notes")?.lowerBound ?? rawStart
         let reason = rest[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
         return reason.isEmpty ? nil : reason
     }

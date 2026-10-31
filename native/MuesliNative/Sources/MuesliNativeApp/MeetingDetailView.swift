@@ -1053,7 +1053,7 @@ struct MeetingDetailView: View {
                            action: { summarizeWithSettings(meeting) }) {
                 resummarizeMenuItems(for: meeting)
             }
-            .disabled(isRetranscribing)
+            .disabled(isRetranscribing || isEditingNotes || isEditingTranscript)
             .accessibilityIdentifier("meeting.status.summary.failed")
         case .working:
             chip.help("Summarizing meeting")
@@ -1075,7 +1075,7 @@ struct MeetingDetailView: View {
             Image(systemName: systemImage)
                 .font(.system(size: 10, weight: .semibold))
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
             switch status {
             case .working:
                 ProgressView().controlSize(.mini)
