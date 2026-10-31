@@ -444,11 +444,17 @@ struct ComputerUseSettingsTests {
             func skipWhitespace() { while cursor < characters.count, characters[cursor].isWhitespace { cursor += 1 } }
             skipWhitespace()
             if cursor < characters.count, characters[cursor] == "(" {
+                let argumentsStart = cursor
                 var parens = 0
                 repeat {
                     if characters[cursor] == "(" { parens += 1 } else if characters[cursor] == ")" { parens -= 1 }
                     cursor += 1
                 } while parens > 0 && cursor < characters.count
+                // A closure passed inside the argument list runs under the same exclusive
+                // access. Plain arguments are evaluated before the access begins, so only
+                // flag an argument list that contains a closure.
+                let arguments = String(characters[argumentsStart..<cursor])
+                if arguments.contains("{"), arguments.contains("self.config") { offenders.append(arguments) }
                 skipWhitespace()
             }
             guard cursor < characters.count, characters[cursor] == "{" else { index = cursor; continue }
