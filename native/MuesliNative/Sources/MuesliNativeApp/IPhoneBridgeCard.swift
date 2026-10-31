@@ -224,10 +224,8 @@ struct IPhoneBridgeCard: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 28, height: 28)
-
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .help("Hide iOS companion prompt")
         }
         .padding(.horizontal, MuesliTheme.spacing12)

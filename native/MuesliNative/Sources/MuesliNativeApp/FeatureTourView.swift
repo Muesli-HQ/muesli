@@ -269,9 +269,9 @@ struct FeatureTourOverlay: View {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("End walkthrough")
                 .accessibilityLabel("End walkthrough")

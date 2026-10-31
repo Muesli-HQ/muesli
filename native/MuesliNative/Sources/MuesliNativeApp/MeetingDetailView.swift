@@ -310,8 +310,11 @@ struct MeetingDetailView: View {
                             .font(MuesliTheme.callout())
                     }
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
             }
 
             responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
@@ -816,6 +819,7 @@ struct MeetingDetailView: View {
                         .overlay(alignment: .bottom) {
                             if recordingMode == mode { Rectangle().fill(MuesliTheme.accent).frame(height: 2) }
                         }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(recordingMode == mode ? .isSelected : [])
@@ -1030,8 +1034,11 @@ struct MeetingDetailView: View {
                     Image(systemName: "chevron.down").font(.system(size: 9))
                 }
                 .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, 6)
+                .frame(minHeight: 28)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .popover(isPresented: $showRecordingDetails) {
                 VStack(alignment: .leading, spacing: 16) {
                     folderPill(for: meeting)
@@ -1686,6 +1693,8 @@ struct MeetingDetailView: View {
                     .lineLimit(1)
             }
             .foregroundStyle(MuesliTheme.accentText)
+            // Stacked links sit 3pt apart, so only close the icon/text gap rather than grow them.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Open this meeting")

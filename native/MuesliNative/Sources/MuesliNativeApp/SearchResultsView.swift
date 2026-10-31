@@ -74,6 +74,8 @@ struct SearchResultsView: View {
             .padding(.vertical, 8)
             .background(isSelected ? MuesliTheme.backgroundHover : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            // An unselected tab has a clear fill, which would leave its padding unclickable.
+            .contentShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -185,14 +187,15 @@ private struct SearchDictationRow: View {
                 )
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 if record.computerUseTrace != nil, let onCopyTrace {
                     Button(action: onCopyTrace) {
                         Image(systemName: "list.bullet.clipboard")
                             .font(.system(size: 12))
                             .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .help("Copy CUA trace")
                 }
 
@@ -200,14 +203,16 @@ private struct SearchDictationRow: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
             }
             .opacity(isHovered ? 1 : 0)
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
         .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
         }
@@ -254,6 +259,7 @@ private struct SearchMeetingRow: View {
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
         .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
         }

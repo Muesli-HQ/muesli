@@ -106,8 +106,11 @@ struct InsightsView: View {
         HStack(spacing: 16) {
             Button(action: onBack) {
                 Label(backLabel, systemImage: "chevron.left")
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 32)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .font(MuesliTheme.font(size: 13, weight: .semibold))
             .foregroundStyle(InsightsPalette.secondaryText)
             .keyboardShortcut(.cancelAction)

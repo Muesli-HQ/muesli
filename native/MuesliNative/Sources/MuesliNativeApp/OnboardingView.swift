@@ -735,8 +735,11 @@ struct OnboardingView: View {
                                 .font(.system(size: 9, weight: .semibold))
                         }
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 28)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .padding(.top, MuesliTheme.spacing4)
 
                     if showMoreModels {
@@ -1044,6 +1047,8 @@ struct OnboardingView: View {
                                 .foregroundStyle(MuesliTheme.textTertiary)
                         }
                         .foregroundStyle(MuesliTheme.textSecondary)
+                        // Covers the gap between the lines and the shorter title's margins.
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 2)

@@ -384,13 +384,14 @@ private struct TimelineCotypistRow: View {
                 TargetApplicationIconView(appName: record.targetAppName, bundleIdentifier: record.targetAppBundleID)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 Button(action: onCopy) {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .focused($focusedAction, equals: .copy)
                 .help("Copy the sentences with the accepted text")
                 .accessibilityLabel("Copy Cotypist sentences")
@@ -398,8 +399,9 @@ private struct TimelineCotypistRow: View {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.destructiveText)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .focused($focusedAction, equals: .delete)
                 .help("Remove from timeline")
                 .accessibilityLabel("Remove from timeline")

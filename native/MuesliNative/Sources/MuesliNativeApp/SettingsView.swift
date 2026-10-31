@@ -1856,7 +1856,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MuesliTheme.textSecondary)
                                 .frame(width: 20, height: 22)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
                         .help("Remove header")
                     }
                 }
@@ -2986,10 +2986,11 @@ struct SettingsView: View {
                 Image(systemName: isPreviewingClip ? "stop.fill" : "play.fill")
                     .font(.system(size: 11))
                     .foregroundColor(MuesliTheme.textSecondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
+            .buttonStyle(.muesli(.quiet))
+            .help(isPreviewingClip ? "Stop preview" : "Preview sound")
+            .accessibilityLabel(isPreviewingClip ? "Stop preview" : "Preview sound")
         }
     }
 

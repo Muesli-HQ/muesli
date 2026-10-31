@@ -106,9 +106,11 @@ private struct CotypistSetupGuideView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.white.opacity(0.55))
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .help("Cancel")
+                .accessibilityLabel("Close Cotypist setup guide")
             }
 
             step(1, "Next to **Input Sources**, click **Edit…**")
