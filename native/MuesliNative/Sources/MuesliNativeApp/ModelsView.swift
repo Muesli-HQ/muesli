@@ -200,7 +200,7 @@ struct ModelsView: View {
                             Button("Delete", role: .destructive) {
                                 modelToDelete = option
                             }
-                            .disabled(!controller.canModifyModelFiles)
+                            .disabled(!controller.canModifyModelFiles || appState.pendingModelFileOperations[option.model] != nil)
                         }
                     }
                 }
@@ -425,7 +425,7 @@ struct ModelsView: View {
                 if isActive {
                     Text("Active")
                         .font(MuesliTheme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
+                        .foregroundStyle(MuesliTheme.successText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(MuesliTheme.success.opacity(0.15))
@@ -449,8 +449,10 @@ struct ModelsView: View {
             }
 
             HStack(spacing: MuesliTheme.spacing8) {
-                if isDownloadingLiveCaptionModel {
-                    Button(isCancellingLiveCaptionModelDownload ? "Pausing…" : "Cancel") {
+                if let operation = appState.pendingModelFileOperations[MeetingLiveCaptionModelStore.modelID] {
+                    modelOperationStatus(operation)
+                } else if isDownloadingLiveCaptionModel {
+                    modelCardButton(isCancellingLiveCaptionModelDownload ? "Pausing…" : "Cancel", prominent: false) {
                         guard !isCancellingLiveCaptionModelDownload else { return }
                         let task = liveCaptionDownloadTask
                         task?.cancel()
@@ -482,50 +484,27 @@ struct ModelsView: View {
                         }
                     }
                     .disabled(isCancellingLiveCaptionModelDownload)
-                    .buttonStyle(.plain)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textSecondary)
                 } else if isLiveCaptionModelDownloaded {
                     if !isActive {
-                        Button("Set Active") {
+                        modelCardButton("Set Active") {
                             controller.updateConfig {
                                 $0.meetingLiveCaptionBackend = MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue
                                 $0.enableLiveStreamingPartials = true
                             }
                         }
-                        .buttonStyle(.plain)
-                        .font(MuesliTheme.font(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.accent)
-                        .padding(.horizontal, MuesliTheme.spacing12)
-                        .padding(.vertical, 4)
-                        .background(MuesliTheme.accentSubtle)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     }
 
-                    Button {
+                    modelDeleteButton("Delete live caption model") {
                         showDeleteLiveCaptionModelConfirmation = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.red.opacity(0.6))
-                            .frame(width: 20, height: 20)
                     }
-                    .buttonStyle(.plain)
                     .disabled(!controller.canModifyModelFiles)
-                    .help("Delete live caption model")
                 } else {
-                    Button("Download") {
+                    modelCardButton("Download") {
                         startLiveCaptionModelDownload()
                     }
-                    .buttonStyle(.plain)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
             }
+            modelOperationFailure(for: MeetingLiveCaptionModelStore.modelID)
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)
@@ -580,16 +559,24 @@ struct ModelsView: View {
     }
 
     private func deleteLiveCaptionModel() {
-        guard let mutation = controller.beginModelFileMutation() else { return }
-        defer { controller.endModelFileMutation(mutation) }
-        do {
-            try MeetingLiveCaptionModelStore.delete()
-            isLiveCaptionModelDownloaded = false
-            if appState.config.resolvedMeetingLiveCaptionBackend == .parakeetRealtimeEOU {
-                controller.updateConfig { $0.enableLiveStreamingPartials = false }
+        let modelID = MeetingLiveCaptionModelStore.modelID
+        guard let mutation = controller.beginModelFileOperation(.deleting, modelID: modelID) else { return }
+        Task {
+            var failure: String?
+            defer { controller.endModelFileOperation(mutation, modelID: modelID, failure: failure) }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try MeetingLiveCaptionModelStore.delete()
+                }.value
+                isLiveCaptionModelDownloaded = false
+                if appState.config.resolvedMeetingLiveCaptionBackend == .parakeetRealtimeEOU {
+                    controller.updateConfig { $0.enableLiveStreamingPartials = false }
+                }
+            } catch {
+                fputs("[muesli-native] live caption model delete failed: \(error)\n", stderr)
+                failure = "Couldn’t delete \(MeetingLiveCaptionModelStore.label): \(error.localizedDescription)"
+                isLiveCaptionModelDownloaded = MeetingLiveCaptionModelStore.isDownloaded()
             }
-        } catch {
-            fputs("[muesli-native] live caption model delete failed: \(error)\n", stderr)
         }
     }
 
@@ -774,7 +761,7 @@ struct ModelsView: View {
                 if isInUse {
                     Text("Cotypist Active")
                         .font(MuesliTheme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
+                        .foregroundStyle(MuesliTheme.successText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(MuesliTheme.success.opacity(0.15))
@@ -797,7 +784,7 @@ struct ModelsView: View {
             if case .failed(let message) = state {
                 Text("Download failed: \(message)")
                     .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.recording)
+                    .foregroundStyle(MuesliTheme.destructiveText)
                     .lineLimit(2)
             }
 
@@ -808,14 +795,7 @@ struct ModelsView: View {
                 case .ready:
                     if !isSelected {
                         cotypistCardButton("Use for Cotypist") { controller.setSettingFromUI("cotypist_model", value: model.rawValue) }
-                        Button { cotypistModelToDelete = model } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.red.opacity(0.6))
-                                .frame(width: 20, height: 20)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Delete \(model.label)")
+                        modelDeleteButton("Delete \(model.label)") { cotypistModelToDelete = model }
                     }
                 case .missing, .failed:
                     cotypistCardButton("Download") { cotypist.download(model) }
@@ -836,14 +816,30 @@ struct ModelsView: View {
     }
 
     private func cotypistCardButton(_ title: String, prominent: Bool = true, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(MuesliTheme.font(size: 12, weight: .medium))
-            .foregroundStyle(prominent ? MuesliTheme.accent : MuesliTheme.textSecondary)
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 4)
-            .background(prominent ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        modelCardButton(title, prominent: prominent, action: action)
+    }
+
+    /// Card actions keep their pill inside the label, so the whole pill is clickable.
+    private func modelCardButton(_ title: String, prominent: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(MuesliTheme.font(size: 12, weight: .medium))
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 4)
+        }
+        .buttonStyle(.muesli(prominent ? .tinted : .secondary, bordered: false))
+    }
+
+    private func modelDeleteButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "trash")
+                .font(.system(size: 12))
+                .foregroundStyle(MuesliTheme.destructiveText)
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.muesli(.quiet))
+        .help(title)
+        .accessibilityLabel(title)
     }
 
     private var quillSection: some View {
@@ -940,7 +936,7 @@ struct ModelsView: View {
                 if isActive {
                     Text(forQuill ? "Quill Selected" : "Cleanup Active")
                         .font(MuesliTheme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
+                        .foregroundStyle(MuesliTheme.successText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(MuesliTheme.success.opacity(0.15))
@@ -966,61 +962,37 @@ struct ModelsView: View {
             }
 
             HStack(spacing: MuesliTheme.spacing8) {
-                if isDownloading {
-                    Button("Pause") {
+                if let operation = appState.pendingModelFileOperations[option.id] {
+                    modelOperationStatus(operation)
+                } else if isDownloading {
+                    modelCardButton("Pause", prominent: false) {
                         cancelPostProcDownload(option)
                     }
-                    .buttonStyle(.plain)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else if isDownloaded {
                     if !isActive {
-                        Button(forQuill ? "Use for Quill" : "Use for Cleanup") {
+                        modelCardButton(forQuill ? "Use for Quill" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
                                 controller.selectPostProcessor(option)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .font(MuesliTheme.font(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.accent)
-                        .padding(.horizontal, MuesliTheme.spacing12)
-                        .padding(.vertical, 4)
-                        .background(MuesliTheme.accentSubtle)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     }
 
-                    Button {
+                    modelDeleteButton("Delete \(option.label)") {
                         postProcModelToDelete = option
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.red.opacity(0.6))
-                            .frame(width: 20, height: 20)
                     }
-                    .buttonStyle(.plain)
                 } else if option.isDownloadable {
-                    Button("Download") {
+                    modelCardButton("Download") {
                         startPostProcDownload(option, forQuill: forQuill)
                     }
-                    .buttonStyle(.plain)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 } else {
                     Text("No longer available")
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textTertiary)
                 }
             }
+            modelOperationFailure(for: option.id)
         }
         .padding(MuesliTheme.spacing16)
         .background(MuesliTheme.backgroundRaised)
@@ -1058,7 +1030,7 @@ struct ModelsView: View {
 
                         Text(defaultBadge)
                             .font(MuesliTheme.metadata())
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(MuesliTheme.accentSubtle)
@@ -1161,7 +1133,7 @@ struct ModelsView: View {
         if isActive {
             Text("Active")
                 .font(MuesliTheme.font(size: 11, weight: .semibold))
-                .foregroundStyle(MuesliTheme.success)
+                .foregroundStyle(MuesliTheme.successText)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(MuesliTheme.success.opacity(0.15))
@@ -1200,7 +1172,7 @@ struct ModelsView: View {
                 } else {
                     Text(snapshot.message ?? downloadPhaseLabel(snapshot.phase))
                         .font(MuesliTheme.captionMedium())
-                        .foregroundStyle(snapshot.phase == .failed ? MuesliTheme.recording : MuesliTheme.textSecondary)
+                        .foregroundStyle(snapshot.phase == .failed ? MuesliTheme.destructiveText : MuesliTheme.textSecondary)
                 }
 
                 if let detail = downloadDetailText(snapshot), !detail.isEmpty {
@@ -1343,65 +1315,66 @@ struct ModelsView: View {
         incompatibilityReason: String? = nil,
         onSetActive: (() -> Void)? = nil
     ) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
-            if isDownloading {
-                Button("Pause") {
-                    cancelDownload(option)
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                // A delete/update in flight replaces Set Active and Delete, so neither can
+                // select or remove a model while its files are changing.
+                if let operation = appState.pendingModelFileOperations[option.model] {
+                    modelOperationStatus(operation)
+                } else if isDownloading {
+                    modelCardButton("Pause", prominent: false) {
+                        cancelDownload(option)
+                    }
+                } else if isDownloaded {
+                    if !isActive {
+                        let disabledReason = incompatibilityReason ?? activationDisabledReason
+                        modelCardButton(actionTitle) {
+                            if let onSetActive {
+                                onSetActive()
+                            } else {
+                                controller.selectBackend(option)
+                            }
+                        }
+                        .disabled(disabledReason != nil)
+                        .help(disabledReason ?? actionTitle)
+                    }
+
+                    if !option.isSystemManaged {
+                        modelDeleteButton("Delete \(option.label)") {
+                            modelToDelete = option
+                        }
+                        .disabled(!controller.canModifyModelFiles)
+                    }
+                } else {
+                    modelCardButton("Download") {
+                        startDownload(option)
+                    }
+                    .disabled(incompatibilityReason != nil)
+                    .help(incompatibilityReason ?? "Download")
                 }
-                .buttonStyle(.plain)
+            }
+            modelOperationFailure(for: option.model)
+        }
+    }
+
+    private func modelOperationStatus(_ operation: ModelFileOperation) -> some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            ProgressView().controlSize(.small)
+            Text(operation == .deleting ? "Deleting…" : "Updating…")
                 .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(MuesliTheme.textSecondary)
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            } else if isDownloaded {
-                if !isActive {
-                    let disabledReason = incompatibilityReason ?? activationDisabledReason
-                    Button(actionTitle) {
-                        if let onSetActive {
-                            onSetActive()
-                        } else {
-                            controller.selectBackend(option)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(disabledReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 4)
-                    .background(disabledReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .disabled(disabledReason != nil)
-                    .help(disabledReason ?? actionTitle)
-                }
+        }
+        .frame(minHeight: 28)
+        .accessibilityElement(children: .combine)
+    }
 
-                if !option.isSystemManaged {
-                    Button {
-                        modelToDelete = option
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.red.opacity(0.6))
-                            .frame(width: 20, height: 20)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!controller.canModifyModelFiles)
-                }
-            } else {
-                Button("Download") {
-                    startDownload(option)
-                }
-                .buttonStyle(.plain)
-                .font(MuesliTheme.font(size: 12, weight: .medium))
-                .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, 4)
-                .background(incompatibilityReason == nil ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .disabled(incompatibilityReason != nil)
-                .help(incompatibilityReason ?? "Download")
-            }
+    @ViewBuilder
+    private func modelOperationFailure(for modelID: String) -> some View {
+        if let failure = appState.modelFileOperationErrors[modelID] {
+            Label(failure, systemImage: "exclamationmark.triangle")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.destructiveText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1491,7 +1464,7 @@ struct ModelsView: View {
                 } else if isActive {
                     Text(activeLabel)
                         .font(MuesliTheme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.success)
+                        .foregroundStyle(MuesliTheme.successText)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(MuesliTheme.success.opacity(0.15))
@@ -1647,7 +1620,8 @@ struct ModelsView: View {
                     .disabled(incompatibilityReason != nil)
                 }
 
-                if isDownloaded && nemotron35UpdateAvailable && !isDownloading {
+                if isDownloaded && nemotron35UpdateAvailable && !isDownloading
+                    && appState.pendingModelFileOperations[option.model] == nil {
                     HStack(spacing: MuesliTheme.spacing8) {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 11))
@@ -1655,10 +1629,7 @@ struct ModelsView: View {
                         Text("A newer model build is available.")
                             .font(MuesliTheme.caption())
                             .foregroundStyle(MuesliTheme.textSecondary)
-                        Button("Update") { updateNemotron35(option) }
-                            .buttonStyle(.plain)
-                            .font(MuesliTheme.font(size: 12, weight: .medium))
-                            .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                        modelCardButton("Update") { updateNemotron35(option) }
                             .disabled(incompatibilityReason != nil || !controller.canModifyModelFiles)
                             .help(incompatibilityReason ?? "Update")
                     }
@@ -1886,8 +1857,8 @@ struct ModelsView: View {
     }
 
     private func deletePostProcModel(_ option: PostProcessorOption) {
-        guard let mutation = controller.beginModelFileMutation() else { return }
-        defer { controller.endModelFileMutation(mutation) }
+        guard let mutation = controller.beginModelFileOperation(.deleting, modelID: option.id) else { return }
+        // Move cleanup off this model before its files start disappearing.
         if appState.activePostProcessor.id == option.id {
             let remainingDownloadedIDs = downloadedPostProcModels.subtracting([option.id])
             if let fallback = PostProcessorOption.firstDownloaded(excluding: option.id, downloadedIDs: remainingDownloadedIDs) {
@@ -1896,11 +1867,26 @@ struct ModelsView: View {
                 controller.setPostProcessorEnabled(false)
             }
         }
-        try? FileManager.default.removeItem(at: option.cacheDirectory)
-        downloadedPostProcModels.remove(option.id)
-        controller.refreshCleanupAvailability()
-        downloadSnapshots.removeValue(forKey: option.id)
-        downloadGenerations.removeValue(forKey: option.id)
+        let directory = option.cacheDirectory
+        Task {
+            var failure: String?
+            defer { controller.endModelFileOperation(mutation, modelID: option.id, failure: failure) }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.removeItemIfPresent(at: directory, fileManager: .default)
+                }.value
+            } catch {
+                fputs("[muesli-native] cleanup model delete failed for \(option.id): \(error)\n", stderr)
+                failure = "Couldn’t delete \(option.label): \(error.localizedDescription)"
+            }
+            // A partial failure keeps the card only if the model is still complete.
+            if failure == nil || !option.isDownloaded {
+                downloadedPostProcModels.remove(option.id)
+            }
+            controller.refreshCleanupAvailability()
+            downloadSnapshots.removeValue(forKey: option.id)
+            downloadGenerations.removeValue(forKey: option.id)
+        }
     }
 
     private func checkDownloadedPostProcModels() {
@@ -2106,9 +2092,11 @@ struct ModelsView: View {
         // Check before unloading or deleting the installed model: startDownload also
         // rejects incompatible backends, so otherwise no replacement would be started.
         guard option.isCompatible() else { return }
-        guard let mutation = controller.beginModelFileMutation() else { return }
+        // Reserved synchronously: the card shows "Updating…" and repeat clicks are refused.
+        guard let mutation = controller.beginModelFileOperation(.updating, modelID: option.model) else { return }
         Task {
-            defer { controller.endModelFileMutation(mutation) }
+            var failure: String?
+            defer { controller.endModelFileOperation(mutation, modelID: option.model, failure: failure) }
             do {
                 await controller.transcriptionCoordinator.unloadNemotron35Transcriber()
                 try await deleteModelFiles(option)
@@ -2119,12 +2107,13 @@ struct ModelsView: View {
                 }
             } catch {
                 fputs("[muesli-native] model update cleanup failed for \(option.backend)/\(option.model): \(error)\n", stderr)
+                failure = "Couldn’t update \(option.label): \(error.localizedDescription)"
             }
         }
     }
 
     private func deleteModel(_ option: BackendOption) {
-        guard let mutation = controller.beginModelFileMutation() else { return }
+        guard let mutation = controller.beginModelFileOperation(.deleting, modelID: option.model) else { return }
         if option == .nemotron35Multilingual,
            appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35 {
             controller.updateConfig { $0.enableLiveStreamingPartials = false }
@@ -2148,7 +2137,8 @@ struct ModelsView: View {
         // Stop any transfer before removing files so a late write cannot recreate
         // part of the model after the deletion has completed.
         Task {
-            defer { controller.endModelFileMutation(mutation) }
+            var failure: String?
+            defer { controller.endModelFileOperation(mutation, modelID: option.model, failure: failure) }
             let deletionToken = await ManagedASRModelDownloader.beginDeletion(
                 modelID: option.model
             )
@@ -2173,56 +2163,75 @@ struct ModelsView: View {
                 }
             } catch {
                 fputs("[muesli-native] model delete failed for \(option.backend)/\(option.model): \(error)\n", stderr)
+                failure = "Couldn’t delete \(option.label): \(error.localizedDescription)"
             }
             await ManagedASRModelDownloader.endDeletion(deletionToken)
         }
     }
 
+    /// Transcribers unload on their coordinator first; the file removal itself then runs
+    /// off the main actor so deleting multi-GB weights cannot stall rendering.
     private func deleteModelFiles(_ option: BackendOption) async throws {
-        let fm = FileManager.default
         switch option.backend {
+        case "medasr":
+            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
+        case "bodhan":
+            if let model = BodhanModel(rawValue: option.model), model.localOverride == nil {
+                await controller.transcriptionCoordinator.unloadBodhanTranscriber(ifLoadedModelID: model.rawValue)
+            }
+        case "gemma4-litert":
+            await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
+        case "fluidaudio":
+            await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(ifLoadedModelID: option.model)
+        case "parakeet-unified":
+            await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
+        case "qwen":
+            await controller.transcriptionCoordinator.unloadQwen3Transcriber()
+        default:
+            break
+        }
+        let backend = option.backend
+        let model = option.model
+        try await Task.detached(priority: .userInitiated) {
+            try Self.removeModelFiles(backend: backend, model: model)
+        }.value
+    }
+
+    /// Filesystem work only; no view or controller state.
+    nonisolated private static func removeModelFiles(backend: String, model: String) throws {
+        let fm = FileManager.default
+        switch backend {
         case "whisper":
-            WhisperKitTranscriber.deleteModel(option.model)
+            WhisperKitTranscriber.deleteModel(model)
         case "nemotron35":
             try removeItemIfPresent(at: Nemotron35ModelStore.cacheDirectory(fileManager: fm), fileManager: fm)
         case "medasr":
-            await controller.transcriptionCoordinator.unloadMedASRTranscriber()
             try MedASRModel.plan().delete(fileManager: fm)
         case "cohere":
             try removeItemIfPresent(at: CohereTranscribeModelStore.cacheDirectory(), fileManager: fm)
         case "bodhan":
-            if let model = BodhanModel(rawValue: option.model) {
-                if model.localOverride == nil {
-                    await controller.transcriptionCoordinator.unloadBodhanTranscriber(ifLoadedModelID: model.rawValue)
-                    try removeItemIfPresent(at: model.cacheDirectory, fileManager: fm)
-                }
+            if let bodhan = BodhanModel(rawValue: model), bodhan.localOverride == nil {
+                try removeItemIfPresent(at: bodhan.cacheDirectory, fileManager: fm)
             }
         case "sensevoice":
             SenseVoiceTranscriber.deleteModelFiles(fileManager: fm)
         case "gemma4-litert":
-            await controller.transcriptionCoordinator.unloadGemma4LiteRTTranscriber()
             try Gemma4LiteRTModelStore.deleteModelFiles(
-                model: Gemma4LiteRTModel.resolved(option.model),
+                model: Gemma4LiteRTModel.resolved(model),
                 fileManager: fm
             )
         case "fluidaudio":
-            await controller.transcriptionCoordinator.unloadFluidAudioTranscriber(
-                ifLoadedModelID: option.model
-            )
-            let plan = FluidAudioModel.plan(for: option.model)
-            try plan.delete(fileManager: fm)
+            try FluidAudioModel.plan(for: model).delete(fileManager: fm)
         case "parakeet-unified":
-            await controller.transcriptionCoordinator.unloadParakeetUnifiedTranscriber()
             try ManagedASRModelPlans.parakeetUnified().delete(fileManager: fm)
         case "qwen":
-            await controller.transcriptionCoordinator.unloadQwen3Transcriber()
             try Qwen3AsrModelStore.deleteModelFiles(fileManager: fm)
         default:
             break
         }
     }
 
-    private func removeItemIfPresent(at url: URL, fileManager: FileManager) throws {
+    nonisolated private static func removeItemIfPresent(at url: URL, fileManager: FileManager) throws {
         guard fileManager.fileExists(atPath: url.path) else { return }
         try fileManager.removeItem(at: url)
     }

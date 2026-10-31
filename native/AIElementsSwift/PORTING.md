@@ -62,3 +62,5 @@ Shimmer respects Reduce Motion and does not convey fabricated progress.
 metadata, tables and headings. The default remains the system font for standalone
 clients. Code blocks, verbatim tool payloads and source-number gutters retain
 monospaced fonts. Font loading and licensing stay in the host app.
+
+The prompt input accepts a host-provided `focus` color (defaulting to the accent) and draws a non-hit-testing 2pt focused border. This keeps focus readable independently of action fill colors.

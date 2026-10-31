@@ -207,7 +207,7 @@ struct IPhoneBridgeCard: View {
                     )
                 }
                 .font(MuesliTheme.font(size: 12, weight: .semibold))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .padding(.horizontal, 12)
                 .frame(height: 28)
                 .background(MuesliTheme.accentSubtle)

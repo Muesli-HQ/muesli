@@ -36,7 +36,7 @@ struct DashboardICloudSyncButton: View {
             return MuesliTheme.transcribing
         }
         if isEnabled {
-            return MuesliTheme.accent
+            return MuesliTheme.accentText
         }
         return MuesliTheme.textTertiary
     }
@@ -84,7 +84,7 @@ struct DashboardICloudSyncButton: View {
             }
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet, shape: .circle))
         .disabled(isSyncing)
         .help(label)
         .accessibilityLabel(label)
@@ -92,10 +92,13 @@ struct DashboardICloudSyncButton: View {
     }
 }
 
+/// Spins while syncing. Under Reduce Motion it stays still; the button's label and
+/// disabled state still report that a sync is in progress.
 struct RotatingSyncIcon: View {
     let systemName: String
     let isAnimating: Bool
     let font: Font
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var rotationDegrees = 0.0
 
     var body: some View {
@@ -105,14 +108,17 @@ struct RotatingSyncIcon: View {
             .rotationEffect(.degrees(rotationDegrees))
             .onAppear { updateRotation(animated: false) }
             .onChange(of: isAnimating) { _, _ in updateRotation(animated: true) }
+            .onChange(of: reduceMotion) { _, _ in updateRotation(animated: false) }
     }
 
     private func updateRotation(animated: Bool) {
-        guard isAnimating else {
-            if animated {
+        guard isAnimating, !reduceMotion else {
+            if animated && !reduceMotion {
                 withAnimation(.easeOut(duration: 0.15)) { rotationDegrees = 0 }
             } else {
-                rotationDegrees = 0
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { rotationDegrees = 0 }
             }
             return
         }

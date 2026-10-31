@@ -55,6 +55,7 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       LocalStorageUsageTests
@@ -212,6 +213,7 @@ case "${shard}" in
       MeetingChatExporterTests
       MeetingChatNotesActionTests
       MeetingChatReviewTests
+      MeetingChatHistoryLoadingTests
       MeetingChatPresentationTests
       MuesliTypographyTests
       MeetingChatSourceGroupingTests

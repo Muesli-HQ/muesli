@@ -132,7 +132,7 @@ private struct CotypistSetupGuideView: View {
             if model.suggestsRelogin {
                 Text("Not in the list? macOS lists new input sources after you log out and back in. Then turn Cotypist on again.")
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.accent)
+                    .foregroundStyle(MuesliTheme.accentText)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 6) {
@@ -156,7 +156,7 @@ private struct CotypistSetupGuideView: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("\(number)")
                 .font(MuesliTheme.font(size: 11, weight: .bold))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .frame(width: 18, height: 18)
                 .background(Circle().fill(MuesliTheme.accent.opacity(0.18)))
             Text(text)

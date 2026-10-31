@@ -61,8 +61,83 @@ surface #121212; selected surface #222222. Text uses white at 100%, 80%, 65%;
 borders use white at 28%. Primary accent is white and `onAccent` is black.
 Use `MuesliTheme.toggleAccent` on switches: their on state keeps the user’s
 saved accent (adaptive blue by default), including in Ultra Dark. Accent
-selection remains available there. Preserve semantic recording, warning,
-error and success colors.
+selection remains available there; its swatches preview the switch color, not
+the white action fill. Preserve semantic recording, warning, error and success
+colors.
+
+Fills keep the raw saved accent and semantic hues; foregrounds use a role
+matched to the surface beneath them (4.5:1 for labels, 3:1 for state glyphs):
+
+| Role | Use |
+| --- | --- |
+| `onAccent` | Text and glyphs on `accent` fills. Black or white, whichever contrasts more with the resolved fill, so Dark Default and light presets get dark ink. |
+| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark only as needed. Never a fill. White in Ultra Dark. |
+| `accentStateShade` | Hover/pressed overlay on accent fills (8%/16%), always moving away from `onAccent`. |
+| `onSuccess` | Dark ink on `success` fills (Donate, onboarding confirmations). Never `onAccent`. |
+| `recordingFill` | #DC2626 with white labels for labelled Stop/Record. `recording` (#EF4444) remains for dots, waveforms and badges. |
+| `destructiveText` | Destructive labels, trash glyphs and error text, on cards and red tints up to 16%. |
+| `successText`, `warningText` | Status labels; deeper shades in Light. |
+| `joinAction` | Join split buttons (dashboard and notification) with dark ink. |
+
+`MuesliAccentPalette` derives these once when the accent changes and caches
+them per swatch; views never parse hex or compute contrast while rendering.
+`MuesliColorRolesTests` checks every preset and a spread of arbitrary saved
+hex values in Light, Dark and Ultra Dark. Native controls keep system rendering.
+
+### Control feedback
+
+Custom buttons use `MuesliButtonStyle` (`.muesli(.primary | .secondary |
+.raised | .tinted | .destructive | .destructiveTinted | .success | .recording |
+.quiet)`). The label keeps its existing padding, height, width and typography;
+the style owns fill, border, foreground and a full-shape hit area, so visible
+padding is clickable. Hover and keyboard focus raise one flat color step and
+press a second. Quiet controls show hover and press as neutral fills, never
+outlines; only keyboard focus draws a ring. `.raised` is the field-like
+launcher surface (`backgroundRaised` with a border), used by the collapsed chat
+composer. Disabled controls render once, as `surfacePrimary` with
+`textTertiary`; do not add opacity on top.
+
+Press feedback is tactile but small. The pressed color appears on the same
+frame as mouse-down and fades back over 0.12s on release. The drawn control
+compresses to `MuesliMotion.pressedScale` (0.98) in 0.06s and releases in
+0.14s, via `MuesliPressCompression`. The scale is visual only: it is applied
+before `contentShape`, so layout and the full unscaled hit region do not move,
+and the action never waits for the animation. Reduce Motion removes the scale
+and keeps the instant color change. No shadows, springs or offsets.
+Full-width list rows (`compresses: false`) and sidebar navigation stay flat and
+acknowledge a press with an immediate fill. The 0.12s color fade, navigation
+and row-hover animations go through `MuesliMotion`; repeating motion (sync
+spinner, onboarding preparation bar, title marquee) becomes static under
+Reduce Motion. Native focus rings, keyboard shortcuts and button semantics are
+unchanged.
+
+Targets: icon and text actions use at least a 28pt hit region, 32pt where a row
+or footer allows (chat footer, Insights refresh, Meetings header actions). Put
+the padding inside the Button label; when a text action must stay aligned with
+its column, offset the button with negative outer padding rather than shrinking
+the label. `MuesliTextButton` is the shared text-only action. Adjacent targets
+must not overlap: a row's primary target and its trailing actions are separate
+buttons, and margins inside a row belong to one of them rather than being dead.
+Native switches, pickers and menus keep system rendering; enlarge a `Menu`
+label's frame and content shape instead of replacing it with gestures.
+
+Rows that host drag and drop or context menus remain gestures and show hover
+and selected fills, but no mouse-down fill: that would require a zero-distance
+gesture that competes with drag sources and scrolling. Rows with neither (for
+example All Meetings) are buttons. A primary button that shares a row with
+other actions reports its press so the row draws one shared fill.
+
+Asynchronous actions show their state at click time and refuse repeats:
+copy actions show a short visible confirmation; renames, deletes, model
+updates, imports/exports and Insights refresh show local progress and disable
+the conflicting controls; refreshing the same range keeps the previous content
+visible. Failures stay next to the control that caused them.
+
+Hover-revealed row actions also appear while one of them has keyboard focus,
+and carry labels. Rows that host drag and drop, context menus or nested buttons
+stay gestures and use `muesliRowActivation` for button/selected traits and
+Space/Return activation under full keyboard navigation. Send and Stop share
+one 32pt slot in the chat composer; sign-in progress occupies the button's frame.
 
 Use adaptive foreground attributes for native text inputs, including preset
 insertion and restored drafts. A replacement into empty NSTextStorage must
@@ -81,6 +156,8 @@ The native implementation owns behavior and token values. Browser specimens illu
 | Pattern | Native source under `native/MuesliNative/Sources/MuesliNativeApp/` |
 | --- | --- |
 | Adaptive colors, typography, spacing, reading width | `MuesliTheme.swift` |
+| Accent-derived foreground roles and contrast math | `MuesliAccentPalette.swift` |
+| Shared button feedback, motion policy, gesture-row activation | `MuesliControlStyles.swift` |
 | Sidebar width, compact layout, global tint | `DashboardRootView.swift`, `SidebarView.swift` |
 | Outlined statistics with centered icon/value/caption stacks | `StatsHeaderView.swift` |
 | Prominent, labeled Insights Share action and adaptive range controls | `InsightsView.swift` |
@@ -116,6 +193,8 @@ Center the expanded instruction and question panels beneath the visible bar (its
 Show the latest three tool summaries under the working status, using 10pt text and at most two lines per summary. Generate display copy from the operation and outcome (for example, “Read page text” or “Open app — failed”), never from raw response bodies. Full responses, observations, errors, and tool arguments remain in Timeline. Older trace events without a summary remain readable there and do not fall back to raw text in the notch. Use 13pt instruction text in a scrollable area. The normal panel starts at 100pt high and adds 30pt per result, capped at 190pt; review and question surfaces retain their dedicated layouts. Clear summaries when a new command starts or the session ends.
 
 Active dictation, processing, and computer-use sessions own the indicator until they finish. Background loading callbacks and cursor feedback must not hide or replace their presentation or cancellation controls. Loading may use the shared floating surface while idle; starting an activity retires that loading presentation so its later completion cannot reset the session.
+
+Custom button focus uses a non-hit-testing 2pt readable-accent outline; sidebar navigation uses subtle selected/hover fills without outlines; appearance choices retain their neutral selection outline. Sidebar rings are reserved for keyboard focus. Composer focus has its own host-supplied color through AIElementsTheme. Native text-editing and recording behavior remain unchanged.
 
 ## Official brand assets
 

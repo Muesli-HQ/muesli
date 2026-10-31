@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 private enum DictionaryRowMetrics {
     static let arrowWidth: CGFloat = 14
     static let thresholdWidth: CGFloat = 76
-    static let actionButtonSize: CGFloat = 24
+    static let actionButtonSize: CGFloat = 28
     static let actionsWidth: CGFloat = actionButtonSize * 2 + MuesliTheme.spacing8
     static let suggestionPageSize = 10
 }
@@ -22,6 +22,10 @@ struct DictionaryView: View {
     @State private var isShowingAccessibilityPrompt = false
     @State private var suggestionPage = 0
     @State private var dictionaryAlertMessage: String?
+    /// Import/export in flight: both buttons disable and the active one shows progress.
+    @State private var fileOperation: DictionaryFileOperation?
+
+    private enum DictionaryFileOperation { case importing, exporting }
 
     var body: some View {
         ScrollView {
@@ -87,36 +91,18 @@ struct DictionaryView: View {
                 Button {
                     importDictionary()
                 } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
-                        .font(MuesliTheme.font(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .padding(.horizontal, MuesliTheme.spacing12)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.surfacePrimary)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
+                    fileActionLabel("Import", systemImage: "square.and.arrow.down", busy: fileOperation == .importing)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.secondary))
+                .disabled(fileOperation != nil)
                 .help("Import dictionary entries from a JSON file")
                 Button {
                     exportDictionary()
                 } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                        .font(MuesliTheme.font(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .padding(.horizontal, MuesliTheme.spacing12)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.surfacePrimary)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
+                    fileActionLabel("Export", systemImage: "square.and.arrow.up", busy: fileOperation == .exporting)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.secondary))
+                .disabled(fileOperation != nil)
                 .help("Export the current dictionary as JSON")
                 Button {
                     isAdding = true
@@ -130,22 +116,29 @@ struct DictionaryView: View {
                         Text("Add new")
                             .font(MuesliTheme.font(size: 13, weight: .medium))
                     }
-                    .foregroundStyle(MuesliTheme.textPrimary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, MuesliTheme.spacing8)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.secondary))
             }
             Text("Add custom words for names, brands, and domain terms, and tune how aggressively each entry should fuzzy-match transcription errors.")
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
+    }
+
+    private func fileActionLabel(_ title: String, systemImage: String, busy: Bool) -> some View {
+        HStack(spacing: 6) {
+            if busy {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: systemImage)
+            }
+            Text(title)
+        }
+        .font(MuesliTheme.font(size: 12, weight: .medium))
+        .padding(.horizontal, MuesliTheme.spacing12)
+        .padding(.vertical, MuesliTheme.spacing8)
     }
 
     private func handleDictionaryCorrectionPromptsToggle(_ enabled: Bool) {
@@ -165,29 +158,37 @@ struct DictionaryView: View {
         panel.canCreateDirectories = false
 
         presentFilePanel(panel) { url in
-            do {
-                let data = try Data(contentsOf: url)
-                let imported = try CustomWordDictionaryCodec.decode(data)
-                let result = CustomWordDictionaryCodec.merge(
-                    imported,
-                    into: appState.config.customWords
-                )
-                controller.updateConfig { $0.customWords = result.words }
+            guard fileOperation == nil else { return }
+            fileOperation = .importing
+            Task {
+                defer { fileOperation = nil }
+                do {
+                    // File reads can stall on slow or network volumes; keep them off the main actor.
+                    let imported = try await Task.detached(priority: .userInitiated) {
+                        try CustomWordDictionaryCodec.decode(Data(contentsOf: url))
+                    }.value
+                    // Merge into the entries current at completion, not those when the panel opened.
+                    let result = CustomWordDictionaryCodec.merge(
+                        imported,
+                        into: appState.config.customWords
+                    )
+                    controller.updateConfig { $0.customWords = result.words }
 
-                let totalChanged = result.addedCount + result.updatedCount
-                if totalChanged == 0 {
-                    dictionaryAlertMessage = imported.isEmpty
-                        ? "The selected dictionary did not contain any entries."
-                        : "All dictionary entries were already present."
-                } else {
-                    var details = ["Imported \(result.addedCount) new", "updated \(result.updatedCount)"]
-                    if result.skippedCount > 0 {
-                        details.append("skipped \(result.skippedCount)")
+                    let totalChanged = result.addedCount + result.updatedCount
+                    if totalChanged == 0 {
+                        dictionaryAlertMessage = imported.isEmpty
+                            ? "The selected dictionary did not contain any entries."
+                            : "All dictionary entries were already present."
+                    } else {
+                        var details = ["Imported \(result.addedCount) new", "updated \(result.updatedCount)"]
+                        if result.skippedCount > 0 {
+                            details.append("skipped \(result.skippedCount)")
+                        }
+                        dictionaryAlertMessage = details.joined(separator: ", ") + " dictionary entries."
                     }
-                    dictionaryAlertMessage = details.joined(separator: ", ") + " dictionary entries."
+                } catch {
+                    dictionaryAlertMessage = "Could not import the dictionary. \(error.localizedDescription)"
                 }
-            } catch {
-                dictionaryAlertMessage = "Could not import the dictionary. \(error.localizedDescription)"
             }
         }
     }
@@ -201,12 +202,21 @@ struct DictionaryView: View {
         panel.canCreateDirectories = true
 
         presentFilePanel(panel) { url in
-            do {
-                let data = try CustomWordDictionaryCodec.encode(appState.config.customWords)
-                try data.write(to: url, options: .atomic)
-                dictionaryAlertMessage = "Exported \(appState.config.customWords.count) dictionary entries."
-            } catch {
-                dictionaryAlertMessage = "Could not export the dictionary. \(error.localizedDescription)"
+            guard fileOperation == nil else { return }
+            fileOperation = .exporting
+            // Export a value snapshot; encoding and writing both run off the main actor.
+            let words = appState.config.customWords
+            Task {
+                defer { fileOperation = nil }
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        let data = try CustomWordDictionaryCodec.encode(words)
+                        try data.write(to: url, options: .atomic)
+                    }.value
+                    dictionaryAlertMessage = "Exported \(words.count) dictionary entries."
+                } catch {
+                    dictionaryAlertMessage = "Could not export the dictionary. \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -577,15 +587,9 @@ private struct ThresholdEditor: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
+                .frame(minHeight: 28)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.secondary))
         .frame(width: DictionaryRowMetrics.thresholdWidth, alignment: .leading)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             thresholdPopover
@@ -755,9 +759,8 @@ private struct DictionaryIconButton: View {
                     width: DictionaryRowMetrics.actionButtonSize,
                     height: DictionaryRowMetrics.actionButtonSize
                 )
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
         .disabled(isDisabled)
         .help(label)
         .accessibilityLabel(label)

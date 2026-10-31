@@ -377,14 +377,50 @@
     --text-primary:rgba(0,0,0,0.88); --text-secondary:rgba(0,0,0,0.66); --text-tertiary:rgba(0,0,0,0.55);
     --accent:#2563EB; --accent-subtle:rgba(37,99,235,0.15); --border:rgba(0,0,0,0.08);
   }
-  :root { --toggle-accent:#6BA3F7; --on-accent:white; }
-  :root[data-theme="light"] { --toggle-accent:#2563EB; }
+  /* Accessible roles for the Default accent. Native values are derived per saved accent by
+     MuesliAccentPalette; these specimens approximate the Default result. */
+  :root {
+    --toggle-accent:#6BA3F7; --on-toggle-accent:#000; --on-accent:#000; --accent-shade:#FFF; --accent-text:#89B5F9;
+    --recording-fill:#DC2626; --on-success:#000; --join-action:#33B887; --join-action-secondary:#26946B;
+    --destructive-text:#F87171; --success-text:#34D399; --warning-text:#F59E0B;
+  }
+  :root[data-theme="light"] {
+    --toggle-accent:#2563EB; --on-toggle-accent:#FFF; --on-accent:#FFF; --accent-shade:#000; --accent-text:#1C4BB3;
+    --destructive-text:#B91C1C; --success-text:#065F46; --warning-text:#92400E;
+  }
   :root[data-theme="ultra"] {
     --bg-deep:#000; --bg-base:#000; --bg-raised:#0A0A0A; --bg-hover:#181818;
     --surface-primary:#121212; --surface-selected:#222; --text-primary:#FFF;
     --text-secondary:rgba(255,255,255,.80); --text-tertiary:rgba(255,255,255,.65);
     --accent:#FFF; --accent-subtle:rgba(255,255,255,.15); --border:rgba(255,255,255,.28); --on-accent:#000;
+    --accent-shade:#000; --accent-text:#FFF;
   }
+  /* Shared flat control feedback (MuesliButtonStyle): color only, no motion under Reduce Motion. */
+  .mb { font:inherit; font-size:12px; font-weight:500; height:26px; padding:0 10px; border-radius:6px; border:1px solid transparent; transition:background-color .12s ease-out, transform .14s ease-out; }
+  /* Pressed color is immediate; the visual compression never changes layout. */
+  .mb:active:not(:disabled) { transition:transform .06s ease-out; transform:scale(.98); }
+  .mb-quiet { background:transparent; color:var(--text-secondary); }
+  .mb-quiet:hover, .mb-quiet:focus-visible { background:color-mix(in srgb, var(--text-primary) 6%, transparent); }
+  .mb-quiet:active { background:color-mix(in srgb, var(--text-primary) 11%, transparent); }
+  .mb-raised { background:var(--bg-raised, var(--surface-primary)); color:var(--text-secondary); border-color:var(--border); border-radius:999px; }
+  @media (prefers-reduced-motion: reduce) { .mb, .mb:active:not(:disabled) { transition:none; transform:none; } }
+  .mb-primary { background:var(--accent); color:var(--on-accent); }
+  .mb-primary:hover, .mb-primary:focus-visible { background:color-mix(in srgb, var(--accent) 92%, var(--accent-shade)); }
+  .mb-primary:active { background:color-mix(in srgb, var(--accent) 84%, var(--accent-shade)); }
+  .mb-secondary { background:var(--surface-primary); color:var(--text-primary); border-color:var(--border); }
+  .mb-secondary:hover, .mb-secondary:focus-visible { background:color-mix(in srgb, var(--surface-primary) 94%, var(--text-primary)); }
+  .mb-secondary:active { background:color-mix(in srgb, var(--surface-primary) 89%, var(--text-primary)); }
+  .mb-tinted { background:color-mix(in srgb, var(--accent) 15%, transparent); color:var(--accent-text); }
+  .mb-tinted:hover, .mb-tinted:focus-visible { background:color-mix(in srgb, var(--accent) 21%, transparent); }
+  .mb-tinted:active { background:color-mix(in srgb, var(--accent) 27%, transparent); }
+  .mb-destructive { background:transparent; color:var(--destructive-text); border-color:var(--border); }
+  .mb-destructive:hover, .mb-destructive:focus-visible { background:color-mix(in srgb, var(--recording) 13%, transparent); }
+  .mb-destructive:active { background:color-mix(in srgb, var(--recording) 16%, transparent); }
+  .mb-success { background:var(--success); color:var(--on-success); }
+  .mb-success:hover, .mb-success:focus-visible { background:color-mix(in srgb, var(--success) 92%, white); }
+  .mb-recording { background:var(--recording-fill); color:#FFF; }
+  .mb-recording:hover, .mb-recording:focus-visible { background:color-mix(in srgb, var(--recording-fill) 92%, black); }
+  .mb:disabled { background:var(--surface-primary); color:var(--text-tertiary); border-color:transparent; cursor:not-allowed; }
   .settings-specimen { background:var(--bg-raised); border:1px solid var(--border); border-radius:10px; padding:16px; }
   .settings-specimen-row { display:flex; align-items:center; gap:20px; justify-content:space-between; padding:12px 0; }
   .switch-demo { width:34px; height:20px; border-radius:12px; background:var(--toggle-accent); padding:2px; flex-shrink:0; }
@@ -414,7 +450,7 @@
   .accent-examples { display:flex; flex-wrap:wrap; gap:18px; }
   .accent-example { text-align:center; font-size:12px; color:var(--text-secondary); }
   .accent-example i { display:grid; place-items:center; font-style:normal; width:22px; height:22px; margin:0 auto 6px; border-radius:50%; color:white; }
-  .accent-example i.selected { border:2px solid rgba(255,255,255,0.9); box-shadow:0 0 0 1px var(--border); font-size:10px; font-weight:700; }
+  .accent-example i.selected { border:2px solid color-mix(in srgb, currentColor 90%, transparent); box-shadow:0 0 0 1px var(--border); font-size:10px; font-weight:700; }
   .notification-dismiss { display:grid; place-items:center; width:22px; height:22px; padding:0; border:1px solid rgba(255,255,255,0.55); border-radius:50%; background:rgba(0,0,0,0.7); color:rgba(255,255,255,0.86); }
   .notch-schematic { display:flex; width:max-content; align-items:center; color:white; font-size:10px; line-height:1; }
   .notch-demo { display:flex; height:32px; background:black; border-radius:0 0 12px 12px; overflow:hidden; }
@@ -493,8 +529,24 @@
     <div class="swatch"><div class="color-block" style="background:#EF4444"></div><div class="info"><div class="name">recording</div><div class="hex">#EF4444</div></div></div>
     <div class="swatch"><div class="color-block" style="background:#F59E0B"></div><div class="info"><div class="name">transcribing</div><div class="hex">#F59E0B</div></div></div>
     <div class="swatch"><div class="color-block" style="background:#34D399"></div><div class="info"><div class="name">success</div><div class="hex">#34D399</div></div></div>
-    <div class="swatch"><div class="color-block" style="background:#33B888"></div><div class="info"><div class="name">joinRecord</div><div class="hex">rgb(0.20, 0.72, 0.53)</div></div></div>
+    <div class="swatch"><div class="color-block" style="background:#33B887"></div><div class="info"><div class="name">joinAction</div><div class="hex">#33B887 / #26946B chevron</div></div></div>
   </div>
+
+  <h3 id="color-roles">Accessible foreground roles</h3>
+  <p class="section-desc">Fills keep the raw saved accent and semantic hues. Text and glyphs use a role chosen for the surface they sit on, so every enabled label reaches 4.5:1 and state glyphs 3:1 in Light, Dark and Ultra Dark.</p>
+  <table>
+    <tr><th>Role</th><th>Rule</th><th>Ultra Dark</th></tr>
+    <tr><td><code>accent</code> / <code>toggleAccent</code></td><td>Raw saved accent (adaptive blue by default) for fills, selection and switches</td><td>Actions white; switches keep the saved accent</td></tr>
+    <tr><td><code>onAccent</code></td><td>Black or white, whichever contrasts more with the resolved fill (Default: white in Light, black in Dark)</td><td>Black</td></tr>
+    <tr><td><code>accentText</code></td><td>Same-hue shade of the saved accent, deepened in Light and lightened in Dark only until it reaches 4.5:1 on every neutral surface and on accent tints up to the pressed state. Never a fill.</td><td>White</td></tr>
+    <tr><td><code>accentStateShade</code></td><td>Hover/pressed overlay on accent fills (8% / 16%), moving the fill away from its label</td><td>Black</td></tr>
+    <tr><td><code>onSuccess</code></td><td>Dark ink on <code>success</code> fills; never <code>onAccent</code></td><td>Same</td></tr>
+    <tr><td><code>recordingFill</code></td><td>#DC2626 with white labels for labelled Stop/Record; <code>recording</code> stays for dots, waveforms and badges</td><td>Same</td></tr>
+    <tr><td><code>destructiveText</code></td><td>#B91C1C / #F87171 for destructive labels, trash glyphs and errors, including red tints up to 16%</td><td>#F87171</td></tr>
+    <tr><td><code>successText</code> / <code>warningText</code></td><td>#065F46 / #92400E in Light; #34D399 / #F59E0B in Dark</td><td>Dark values</td></tr>
+    <tr><td><code>joinAction</code></td><td>Join split buttons in the dashboard and notification, with dark ink</td><td>Same</td></tr>
+  </table>
+  <p class="pattern-note">Roles are derived once when the accent changes and cached per swatch; rendering does no contrast math. Native controls (switches, popups, alerts, bordered-prominent buttons) keep their system rendering and are verified on screen.</p>
 </section>
 
 <!-- 2. TYPOGRAPHY -->
@@ -693,25 +745,51 @@
     <div class="btn-secondary">&#x1F4CB; Copy notes</div>
     <div class="btn-secondary">&#x1F4DD; Copy transcript</div>
     <div class="btn-secondary">&#x2728; Re-summarize</div>
-    <div class="btn-secondary" style="border-color:var(--accent);color:var(--accent)">&#x270E; Edit</div>
-    <div class="btn-secondary" style="border-color:var(--success);color:var(--success)">&#x2713; Done</div>
+    <div class="btn-secondary" style="border-color:var(--accent);color:var(--accent-text)">&#x270E; Edit</div>
+    <div class="btn-secondary" style="border-color:var(--success);color:var(--success-text)">&#x2713; Done</div>
     <div class="btn-disabled" title="Requires macOS 15 or later">Download</div>
   </div>
   <div class="component-preview" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
     <div style="display:inline-flex;align-items:center;gap:0">
-      <div style="background:#33B888;color:white;font-size:11px;font-weight:600;padding:5px 10px;border-radius:5px 0 0 5px">Join &amp; Transcribe</div>
-      <div style="background:#2a9e74;color:white;font-size:11px;padding:5px 6px;border-radius:0 5px 5px 0;border-left:1px solid rgba(0,0,0,0.15)">&#x25BE;</div>
+      <div style="background:var(--join-action);color:#000;font-size:11px;font-weight:600;padding:5px 10px;border-radius:5px 0 0 5px">Join &amp; Transcribe</div>
+      <div style="background:var(--join-action-secondary);color:#000;font-size:11px;padding:5px 6px;border-radius:0 5px 5px 0;border-left:1px solid rgba(0,0,0,0.15)">&#x25BE;</div>
     </div>
-    <div class="btn-primary" style="font-size:11px;padding:5px 14px">Start Transcribing</div>
+    <div style="display:inline-block;background:#2563EB;color:#FFF;font-size:11px;font-weight:500;padding:5px 14px;border-radius:6px">Start Transcribing</div>
   </div>
   <table>
     <tr><th>Variant</th><th>Background</th><th>Text</th><th>Padding</th><th>Radius</th></tr>
-    <tr><td>Primary</td><td><code>accent</code></td><td>White</td><td>H:20 V:8</td><td>6pt</td></tr>
+    <tr><td>Primary</td><td><code>accent</code></td><td><code>onAccent</code></td><td>H:20 V:8</td><td>6pt</td></tr>
     <tr><td>Secondary / Icon</td><td><code>surfacePrimary</code></td><td><code>textSecondary</code></td><td>H:8 V:5</td><td>6pt</td></tr>
-    <tr><td>Join &amp; Transcribe (split)</td><td><code>joinRecord</code></td><td>White, 10pt semi</td><td>H:10 V:5 + chevron 6pt</td><td>5pt (split left/right)</td></tr>
-    <tr><td>Join &amp; Transcribe (inline)</td><td><code>joinRecord</code></td><td>White, 10pt medium</td><td>H:8 V:4</td><td>5pt</td></tr>
+    <tr><td>Join &amp; Transcribe (split)</td><td><code>joinAction</code></td><td><code>onJoinAction</code> (dark ink), 10pt semi</td><td>H:10 V:5 + chevron 6pt</td><td>5pt (split left/right)</td></tr>
+    <tr><td>Join &amp; Transcribe (inline)</td><td><code>joinAction</code></td><td><code>onJoinAction</code>, 10pt medium</td><td>H:8 V:4</td><td>5pt</td></tr>
+    <tr><td>Notification Start</td><td>#2563EB</td><td>White</td><td>30pt high</td><td>6pt</td></tr>
     <tr><td>Disabled</td><td><code>surfacePrimary</code></td><td><code>textTertiary</code></td><td>H:8 V:5</td><td>6pt</td></tr>
   </table>
+
+  <h3 id="control-feedback">Shared control feedback</h3>
+  <p class="pattern-note">Custom buttons use <code>MuesliButtonStyle</code>: the label keeps its existing padding, height, width and type; the style supplies fill, border, foreground and a full-shape hit area. Hover and keyboard focus raise one flat color step; press raises a second. Disabled controls use <code>surfacePrimary</code> with <code>textTertiary</code> once, without extra opacity. Pressing shows the pressed color immediately and compresses the drawn control to 0.98 (0.06s in, 0.14s release); layout and the full hit region do not move, and the action never waits. Reduce Motion removes the scale and the color fade but keeps the instant color change. Full-width list rows and sidebar navigation stay flat with a pressed fill. No shadows, springs or offsets. Quiet controls use fills, never outlines; only keyboard focus draws a ring. Icon and text actions have at least a 28pt hit region with the padding inside the label. Native focus rings remain.</p>
+  <div class="component-preview demo-row">
+    <button class="mb mb-primary">Sign in</button>
+    <button class="mb mb-secondary">Open</button>
+    <button class="mb mb-quiet">Change…</button>
+    <button class="mb mb-raised">Ask your meetings…</button>
+    <button class="mb mb-tinted">Grant</button>
+    <button class="mb mb-destructive">Clear history</button>
+    <button class="mb mb-success">♥ Donate</button>
+    <button class="mb mb-recording">■ Stop</button>
+    <button class="mb mb-primary" disabled>Continue</button>
+  </div>
+  <table>
+    <tr><th>Kind</th><th>Rest</th><th>Hover / focus</th><th>Pressed</th><th>Used by</th></tr>
+    <tr><td><code>.primary</code></td><td><code>accent</code> + <code>onAccent</code></td><td>+ shade 8%</td><td>+ shade 16%</td><td>Onboarding Continue, sign-in, Quick Note, Resume, chat Send</td></tr>
+    <tr><td><code>.secondary</code></td><td><code>surfacePrimary</code>, border</td><td>+ text 6%</td><td>+ text 11%</td><td>Settings/About/template/prompt actions, Back/Skip, chat Stop and chips</td></tr>
+    <tr><td><code>.tinted</code></td><td>accent 15% + <code>accentText</code></td><td>21%</td><td>27%</td><td>Grant, Models Download/Set Active, folder pill</td></tr>
+    <tr><td><code>.destructive</code> / <code>.destructiveTinted</code></td><td>clear or red 10% + <code>destructiveText</code></td><td>red 13%</td><td>red 16%</td><td>Clear history, Delete</td></tr>
+    <tr><td><code>.success</code> / <code>.recording</code></td><td>semantic fill + own foreground</td><td>8% toward higher contrast</td><td>16%</td><td>Donate, Stop, Stop Voice Note</td></tr>
+    <tr><td><code>.raised</code></td><td><code>backgroundRaised</code>, border</td><td>+ text 6%</td><td>+ text 11%</td><td>Collapsed chat composer</td></tr>
+    <tr><td><code>.quiet</code></td><td>no chrome; label keeps its color</td><td>+ text 6% fill</td><td>+ text 11% fill</td><td>Icon buttons, text actions (Change…, Sign Out), chat footer, popover rows</td></tr>
+  </table>
+  <p class="pattern-note">Row actions that appear on hover also appear while one of them has keyboard focus. Gesture rows that host drag and drop, context menus or nested buttons stay gestures; they gain button and selected traits and Space/Return activation when full keyboard navigation is on. They show hover and selection fills but no mouse-down fill, because that needs a zero-distance gesture that competes with dragging. Asynchronous actions show progress or a confirmation at click time and refuse repeats; Insights refresh keeps the previous results visible. Repeating motion (sync spinner, onboarding preparation bar, long-title marquee) is static under Reduce Motion.</p>
   <p style="font-size:12px;color:var(--text-tertiary);margin-top:8px">Disabled state: no border, <code>not-allowed</code> cursor, tooltip explains why. Used for actions unavailable on the current system (e.g. a model requiring a newer macOS) — see Models tab, issue #479.</p>
 
   <h3>History Rows</h3>
@@ -964,15 +1042,15 @@
 
   <h3>Default Accent &amp; Selection</h3>
   <div class="component-preview accent-examples">
-    <div class="accent-example"><i style="background:#2563eb"></i>Blue</div>
-    <div class="accent-example"><i style="background:#ef4444"></i>Red</div>
-    <div class="accent-example"><i style="background:#f59e0b"></i>Amber</div>
-    <div class="accent-example"><i style="background:#10b981"></i>Green</div>
-    <div class="accent-example"><i style="background:#8b5cf6"></i>Purple</div>
-    <div class="accent-example"><i style="background:#ec4899"></i>Pink</div>
-    <div class="accent-example"><i class="selected" style="background:var(--toggle-accent)" aria-label="Selected">✓</i>Default</div>
+    <div class="accent-example"><i style="background:#2563eb;color:#fff"></i>Blue</div>
+    <div class="accent-example"><i style="background:#ef4444;color:#000"></i>Red</div>
+    <div class="accent-example"><i style="background:#f59e0b;color:#000"></i>Amber</div>
+    <div class="accent-example"><i style="background:#10b981;color:#000"></i>Green</div>
+    <div class="accent-example"><i style="background:#8b5cf6;color:#000"></i>Purple</div>
+    <div class="accent-example"><i style="background:#ec4899;color:#000"></i>Pink</div>
+    <div class="accent-example"><i class="selected" style="background:var(--toggle-accent);color:var(--on-toggle-accent)" aria-label="Selected">✓</i>Default</div>
   </div>
-  <p class="pattern-note">Default is adaptive blue: #6BA3F7 in dark mode, #2563EB in light mode. Its stored legacy value, 1e1e2e, is a sentinel, never a dark swatch. Custom colors use their literal hex. A white checkmark plus ring indicates selection; accessibility announces the name and selected state.</p>
+  <p class="pattern-note">Default is adaptive blue: #6BA3F7 in dark mode, #2563EB in light mode. Its stored legacy value, 1e1e2e, is a sentinel, never a dark swatch. Custom colors use their literal hex. Swatches preview the color switches use, including in Ultra Dark (where primary actions stay white). The selected checkmark and ring use the swatch's own black-or-white foreground; accessibility announces the name and selected state.</p>
 
   <h3>Supporting Actions</h3>
   <div class="component-preview demo-row"><div><strong>Insights sharing</strong><span class="metadata">A visible action beside the time-range controls</span></div><span class="push-right" style="display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:var(--on-accent);padding:8px 14px;border-radius:6px;font-size:13px;font-weight:600"><svg width="16" height="18" viewBox="0 0 16 18" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M5 6H2V17H14V6H11M8 12V1M4 5L8 1L12 5" stroke-linecap="round" stroke-linejoin="round"/></svg>Share</span></div>
@@ -980,7 +1058,7 @@
   <div class="component-preview">
     <div class="demo-row"><div><strong>Sync with iPhone or iPad</strong><span class="metadata">Turn on iCloud sync to get started.</span></div><span class="quiet-button push-right">Set up sync</span></div>
     <div class="divider" style="margin:20px 0"></div>
-    <div class="demo-row"><span style="color:var(--success)">✓ Signed in</span><span class="metadata push-right">Sign Out</span></div>
+    <div class="demo-row"><span style="color:var(--success-text)">✓ Signed in</span><span class="metadata push-right">Sign Out</span></div>
   </div>
   <p class="pattern-note">Sync uses subtle accent fill without an enclosing card. Account status and Sign Out are separate. Destructive maintenance actions keep red labels and confirmation, but use compact controls with quiet borders. These specimens are non-interactive; they do not perform account or data actions.</p>
 

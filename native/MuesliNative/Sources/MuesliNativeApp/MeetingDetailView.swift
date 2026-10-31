@@ -1523,17 +1523,10 @@ struct MeetingDetailView: View {
                 Text(isPaused ? "Resume" : "Pause")
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(isPaused ? MuesliTheme.onAccent : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
-            .background(isPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isPaused ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isPaused ? .primary : .secondary))
         .disabled(!appState.isMeetingRecording)
         .help(isPaused ? "Resume recording" : "Pause recording")
     }
@@ -1586,6 +1579,7 @@ struct MeetingDetailView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
             .help("Resume recording, or start a follow-up meeting")
+            .accessibilityLabel("More resume options")
         }
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -1608,13 +1602,10 @@ struct MeetingDetailView: View {
                 Text("Stop")
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(.white)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
-            .background(MuesliTheme.recording)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.recording))
         .disabled(!appState.isMeetingRecording)
         .help("Stop recording")
     }
@@ -1694,7 +1685,7 @@ struct MeetingDetailView: View {
                     .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(MuesliTheme.accent)
+            .foregroundStyle(MuesliTheme.accentText)
         }
         .buttonStyle(.plain)
         .help("Open this meeting")
@@ -1717,17 +1708,10 @@ struct MeetingDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .foregroundStyle(hasFolder ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
             .frame(height: MeetingHeaderLayout.contextControlHeight)
-            .background(hasFolder ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(hasFolder ? Color.clear : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(hasFolder ? .tinted : .secondary))
         .help(hasFolder ? "Change folder" : "Add to folder")
         .popover(isPresented: $showFolderPopover, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 0) {
@@ -1776,14 +1760,14 @@ struct MeetingDetailView: View {
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     private var transcriptCTA: some View {
@@ -1805,7 +1789,7 @@ struct MeetingDetailView: View {
                     controller.openHistoryWindow(tab: .settings)
                 }
                 .font(MuesliTheme.font(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .buttonStyle(.plain)
             }
         }
@@ -2238,6 +2222,7 @@ struct MarqueeTitleTextField: View {
     let onSubmit: () -> Void
     let onTextChange: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @State private var contentWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
@@ -2319,14 +2304,18 @@ struct MarqueeTitleTextField: View {
             isHovering = hovering
             restartMarqueeIfNeeded()
         }
+        .onChange(of: reduceMotion) { _, _ in
+            restartMarqueeIfNeeded()
+        }
     }
 
     private var overflowDistance: CGFloat {
         max(contentWidth - containerWidth, 0)
     }
 
+    /// Reduce Motion keeps the truncated, editable title instead of scrolling it.
     private var shouldShowMarquee: Bool {
-        containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
+        !reduceMotion && containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
     }
 
     private func restartMarqueeIfNeeded() {
@@ -2334,7 +2323,7 @@ struct MarqueeTitleTextField: View {
             if marqueeOffset != 0 {
                 let runID = UUID()
                 marqueeRunID = runID
-                withAnimation(.easeOut(duration: 0.18)) {
+                withAnimation(MuesliMotion.animation(.easeOut(duration: 0.18), reduceMotion: reduceMotion)) {
                     marqueeOffset = 0
                 }
             }

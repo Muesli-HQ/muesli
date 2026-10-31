@@ -13,6 +13,8 @@ struct InsightsView: View {
     @State private var snapshot: InsightsSnapshot?
     @State private var errorMessage: String?
     @State private var loadGeneration = 0
+    @State private var isRefreshing = false
+    @State private var snapshotRange: InsightsRange?
     @State private var isSharing = false
     @State private var showsCuriosities = false
     @State private var initialScrollGate = InsightsInitialScrollGate()
@@ -40,6 +42,11 @@ struct InsightsView: View {
                     header
                     Group {
                         if let snapshot {
+                            if let errorMessage {
+                                Label("Couldn’t refresh: \(errorMessage) Showing the previous results.", systemImage: "exclamationmark.triangle")
+                                    .font(MuesliTheme.caption())
+                                    .foregroundStyle(MuesliTheme.warningText)
+                            }
                             hero(snapshot)
                             activityPanel(snapshot).id(initialSection == .meetings ? InsightsSection.meetings : .words)
                             usagePanel(snapshot).id(InsightsSection.pace)
@@ -155,15 +162,25 @@ struct InsightsView: View {
 
     private var refreshButton: some View {
         Button {
+            // Busy before the task starts, so a second click cannot queue another reload.
+            guard !isRefreshing else { return }
+            isRefreshing = true
             loadGeneration += 1
         } label: {
-            Image(systemName: "arrow.clockwise")
-                .frame(width: 28, height: 28)
+            Group {
+                if isRefreshing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .frame(width: 32, height: 32)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
         .foregroundStyle(InsightsPalette.secondaryText)
-        .help("Refresh local insights")
-        .accessibilityLabel("Refresh local insights")
+        .disabled(isRefreshing)
+        .help(isRefreshing ? "Refreshing local insights" : "Refresh local insights")
+        .accessibilityLabel(isRefreshing ? "Refreshing local insights" : "Refresh local insights")
     }
 
     private var shareButton: some View {
@@ -548,13 +565,20 @@ struct InsightsView: View {
         .insightsPanel()
     }
 
+    /// A refresh of the same range keeps the current snapshot visible behind a local busy
+    /// indicator; a different range clears it so old figures are never shown under a new label.
     private func refresh() async {
-        snapshot = nil
+        let generation = loadGeneration
+        isRefreshing = true
+        defer { if loadGeneration == generation { isRefreshing = false } }
+        if snapshotRange != range { snapshot = nil }
         errorMessage = nil
+        let requestedRange = range
         do {
-            let result = try await loadSnapshot(range)
+            let result = try await loadSnapshot(requestedRange)
             try Task.checkCancellation()
             snapshot = result
+            snapshotRange = requestedRange
         } catch is CancellationError {
             return
         } catch {
@@ -1077,7 +1101,7 @@ private struct InsightsCuriositiesView: View {
                     if let value = model.value {
                         Text(value.formatted(.number.precision(.fractionLength(0...1))))
                             .font(MuesliTheme.font(size: 28, weight: .bold, design: .rounded))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                     }
                     Text("English words before a language switch")
                         .font(MuesliTheme.font(.headline))

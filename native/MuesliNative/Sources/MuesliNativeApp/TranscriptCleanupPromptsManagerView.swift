@@ -112,7 +112,6 @@ struct TranscriptCleanupPromptsManagerView: View {
                     onClose()
                 }
                 .disabled(isEditingPromptInProgress)
-                .opacity(isEditingPromptInProgress ? 0.55 : 1)
                 .help(isEditingPromptInProgress ? "Finish or cancel prompt editing before closing." : "Close prompt manager")
             }
         }
@@ -199,14 +198,14 @@ struct TranscriptCleanupPromptsManagerView: View {
                     HStack(spacing: 6) {
                         Image(systemName: systemImage)
                             .font(.system(size: 10))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                         Text(name)
                             .font(MuesliTheme.captionMedium())
                             .foregroundStyle(MuesliTheme.textPrimary)
                         if isActive {
                             Text("Active")
                                 .font(MuesliTheme.font(size: 10, weight: .semibold))
-                                .foregroundStyle(MuesliTheme.accent)
+                                .foregroundStyle(MuesliTheme.accentText)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accentSubtle)
@@ -260,7 +259,7 @@ struct TranscriptCleanupPromptsManagerView: View {
                 if let nameValidationMessage {
                     Text(nameValidationMessage)
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.recording)
+                        .foregroundStyle(MuesliTheme.destructiveText)
                 }
             }
 
@@ -291,7 +290,7 @@ struct TranscriptCleanupPromptsManagerView: View {
                 if showPromptValidationError {
                     Text("Enter cleanup instructions for this preset.")
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.recording)
+                        .foregroundStyle(MuesliTheme.destructiveText)
                 }
             }
 
@@ -429,19 +428,9 @@ struct TranscriptCleanupPromptsManagerView: View {
                 Text(title)
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .frame(height: 28)
-            .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(
-                        isDestructive ? MuesliTheme.recording.opacity(0.2) : MuesliTheme.surfaceBorder,
-                        lineWidth: 1
-                    )
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructiveTinted : .secondary))
     }
 }

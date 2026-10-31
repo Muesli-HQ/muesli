@@ -43,9 +43,10 @@ struct SearchResultsView: View {
             } label: {
                 Text("Clear")
                     .font(MuesliTheme.callout())
-                    .foregroundStyle(MuesliTheme.accent)
+                    .foregroundStyle(MuesliTheme.accentText)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Clear search")
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
@@ -55,7 +56,7 @@ struct SearchResultsView: View {
     private func tabButton(_ tab: SearchTab, count: Int) -> some View {
         let isSelected = selectedTab == tab
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { selectedTab = tab }
+            MuesliMotion.perform { selectedTab = tab }
         } label: {
             HStack(spacing: 6) {
                 Text(tab.rawValue)
@@ -63,7 +64,7 @@ struct SearchResultsView: View {
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                 Text("\(count)")
                     .font(MuesliTheme.font(size: 11, weight: .medium))
-                    .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(isSelected ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
@@ -75,6 +76,7 @@ struct SearchResultsView: View {
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Tab Content
@@ -317,6 +319,6 @@ private func snippetText(from text: String, highlighting query: String) -> Text 
     let after = String(snippet[localRange.upperBound..<snippet.endIndex])
 
     return Text(prefix + before).foregroundStyle(MuesliTheme.textSecondary)
-        + Text(match).bold().foregroundStyle(MuesliTheme.accent)
+        + Text(match).bold().foregroundStyle(MuesliTheme.accentText)
         + Text(after + suffix).foregroundStyle(MuesliTheme.textSecondary)
 }

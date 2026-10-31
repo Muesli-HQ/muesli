@@ -9190,6 +9190,23 @@ public final class MuesliController: NSObject {
         appState.modelFileMutationCount = modelFileMutationTokens.count
     }
 
+    /// A lease plus per-model exclusion. Leases for different models may still overlap, as
+    /// the shared lease intends; a second delete/update of the same model is refused until
+    /// the first ends, and its card can show the pending operation immediately.
+    func beginModelFileOperation(_ operation: ModelFileOperation, modelID: String) -> UUID? {
+        guard appState.pendingModelFileOperations[modelID] == nil,
+              let token = beginModelFileMutation() else { return nil }
+        appState.pendingModelFileOperations[modelID] = operation
+        appState.modelFileOperationErrors[modelID] = nil
+        return token
+    }
+
+    func endModelFileOperation(_ token: UUID, modelID: String, failure: String? = nil) {
+        appState.pendingModelFileOperations[modelID] = nil
+        if let failure { appState.modelFileOperationErrors[modelID] = failure }
+        endModelFileMutation(token)
+    }
+
     private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
         if let retainedRecordingURL = result.retainedRecordingURL {
             try? FileManager.default.removeItem(at: retainedRecordingURL)
