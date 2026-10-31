@@ -200,12 +200,16 @@ enum TranscriptFormatter {
         for segment in chronologicalSegments.dropFirst() {
             let gap = max(0, segment.start - current.end)
             if shouldCombineIntoLexicalUnit(current.text, segment.text, gap: gap) {
+                // Attached punctuation says nothing about the word's timing, so
+                // only joined word fragments earn overlap attribution.
+                let isWordFragmentJoin = !isPunctuationOnly(current.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    && !isPunctuationOnly(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
                 current = SpeechSegment(
                     start: current.start,
                     end: max(current.end, segment.end),
                     text: current.text + segment.text
                 )
-                combined = true
+                combined = combined || isWordFragmentJoin
             } else {
                 finishCurrent()
                 current = segment

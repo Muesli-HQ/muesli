@@ -217,6 +217,67 @@ struct MeetingRecordingTranscriberTests {
         #expect(MeetingRecordingTranscriber.removingOverlap(previous: "first topic", next: "second topic") == "second topic")
     }
 
+    @Test("replay keeps trimmed token timings on the recording timeline with word starts restored")
+    func replayKeepsTokenTimings() async throws {
+        let url = try recording(seconds: 8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let probe = TokenWindowProbe()
+        let result = try await MeetingRecordingTranscriber().transcribe(url: url, infer: { _ in
+            await probe.next()
+        }, progress: { _, _ in })
+
+        #expect(result.text == "How are you? Fine thanks")
+        #expect(result.hasTokenTimedSegments)
+        #expect(result.segments.map(\.text) == [" H", "ow", " are", " you", "?", " Fine", " thanks"])
+        // The second window starts 0.4s before the first ends and repeats "you?".
+        #expect(abs(result.segments[5].start - 4.8) < 0.001)
+        let formatted = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: result,
+            diarizationSegments: [
+                TimedSpeakerSegment(speakerId: "1", embedding: [], startTimeSeconds: 0, endTimeSeconds: 1, qualityScore: 1),
+                TimedSpeakerSegment(speakerId: "2", embedding: [], startTimeSeconds: 1, endTimeSeconds: 8, qualityScore: 1),
+            ],
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+        #expect(formatted.contains("Speaker 1: How"))
+        #expect(formatted.contains("Speaker 2: are\n"))
+        #expect(formatted.contains("Speaker 2: you? Fine thanks"))
+    }
+
+    @Test("token alignment drops words the transcript text removed")
+    func tokenAlignmentFollowsText() throws {
+        let tokens = [
+            SpeechSegment(start: 0.0, end: 0.2, text: "this"),
+            SpeechSegment(start: 0.2, end: 0.4, text: "um"),
+            SpeechSegment(start: 0.4, end: 0.6, text: ","),
+            SpeechSegment(start: 0.6, end: 0.8, text: "account"),
+            SpeechSegment(start: 0.8, end: 1.0, text: "ing"),
+            SpeechSegment(start: 1.0, end: 1.2, text: "works"),
+        ]
+        let aligned = try #require(MeetingRecordingTranscriber.alignedTokens(tokens, to: "accounting works", offset: 10))
+        #expect(aligned.map(\.text) == [" account", "ing", " works"])
+        #expect(aligned.first?.start == 10.6)
+    }
+
+    @Test("segments that are not tokens of the text keep the window fallback")
+    func tokenAlignmentRejectsOtherSegments() async throws {
+        let phrases = [SpeechSegment(start: 0, end: 2, text: "hello there")]
+        #expect(MeetingRecordingTranscriber.alignedTokens(phrases, to: "hello there", offset: 0) == nil)
+        let placeholder = [SpeechSegment(start: 0, end: 0, text: "hello")]
+        #expect(MeetingRecordingTranscriber.alignedTokens(placeholder, to: "hello", offset: 0) == nil)
+        let mismatch = [SpeechSegment(start: 0, end: 1, text: "goodbye")]
+        #expect(MeetingRecordingTranscriber.alignedTokens(mismatch, to: "hello", offset: 0) == nil)
+
+        let url = try recording(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = try await MeetingRecordingTranscriber().transcribe(url: url, infer: { _ in
+            SpeechTranscriptionResult(text: "hello there", segments: phrases)
+        }, progress: { _, _ in })
+        #expect(!result.hasTokenTimedSegments)
+        #expect(result.segments.map(\.text) == ["hello there"])
+        #expect(result.segments.first?.end == 4)
+    }
+
     @Test("diarization reads an hour in ten-second windows without overlap or retained PCM")
     func diarizationWindows() throws {
         let url = try recording(seconds: 3_601)
@@ -335,6 +396,29 @@ struct MeetingRecordingTranscriberTests {
         }
         #expect(count == 3)
         #expect(abs(end - 23) < 0.1)
+    }
+}
+
+/// Two overlapping windows of trimmed tokens, as meeting cleanup leaves them.
+private actor TokenWindowProbe {
+    private var windows = [
+        SpeechTranscriptionResult(text: "How are you?", segments: [
+            SpeechSegment(start: 0.7, end: 1.0, text: "H"),
+            SpeechSegment(start: 1.0, end: 1.2, text: "ow"),
+            SpeechSegment(start: 1.2, end: 1.4, text: "are"),
+            SpeechSegment(start: 4.2, end: 4.4, text: "you"),
+            SpeechSegment(start: 4.4, end: 4.5, text: "?"),
+        ]),
+        SpeechTranscriptionResult(text: "you? Fine thanks", segments: [
+            SpeechSegment(start: 0.0, end: 0.1, text: "you"),
+            SpeechSegment(start: 0.1, end: 0.2, text: "?"),
+            SpeechSegment(start: 0.2, end: 0.5, text: "Fine"),
+            SpeechSegment(start: 0.5, end: 0.9, text: "thanks"),
+        ]),
+    ]
+
+    func next() -> SpeechTranscriptionResult {
+        windows.removeFirst()
     }
 }
 

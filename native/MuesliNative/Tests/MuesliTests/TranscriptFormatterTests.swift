@@ -457,6 +457,29 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("Speaker 2: ."))
     }
 
+    @Test("attached punctuation does not turn a broad window into a reconstructed word")
+    func diarizationKeepsPunctuationJoinConservative() {
+        let system = [
+            SpeechSegment(start: 0.2, end: 1.8, text: "hello"),
+            SpeechSegment(start: 1.8, end: 1.9, text: "."),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            conservativeSpeakerAttribution: true,
+            systemSegmentsAreTokenTimed: true
+        )
+
+        #expect(result.contains("Multiple speakers: hello."))
+    }
+
     @Test("diarization does not merge distant punctuation across speakers")
     func diarizationKeepsDistantPunctuationSeparate() {
         let system = [
