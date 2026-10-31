@@ -398,7 +398,8 @@ struct TranscriptFormatterTests {
             micSegments: [],
             systemSegments: system,
             diarizationSegments: diarization,
-            meetingStart: Date(timeIntervalSince1970: 0)
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
         )
 
         #expect(result.contains("Speaker 1: How"))
@@ -424,7 +425,8 @@ struct TranscriptFormatterTests {
             micSegments: [],
             systemSegments: system,
             diarizationSegments: diarization,
-            meetingStart: Date(timeIntervalSince1970: 0)
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
         )
 
         #expect(result.contains("Speaker 1: accounting completely healthiest"))
@@ -446,7 +448,8 @@ struct TranscriptFormatterTests {
             micSegments: [],
             systemSegments: system,
             diarizationSegments: diarization,
-            meetingStart: Date(timeIntervalSince1970: 0)
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
         )
 
         #expect(result.contains("Speaker 1: Hello."))
@@ -469,7 +472,8 @@ struct TranscriptFormatterTests {
             micSegments: [],
             systemSegments: system,
             diarizationSegments: diarization,
-            meetingStart: Date(timeIntervalSince1970: 0)
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
         )
 
         #expect(result.contains("Speaker 1: Hello"))
@@ -492,12 +496,36 @@ struct TranscriptFormatterTests {
             micSegments: [],
             systemSegments: system,
             diarizationSegments: diarization,
-            meetingStart: Date(timeIntervalSince1970: 0)
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
         )
 
         #expect(result.contains("Speaker 1: Hello"))
         #expect(result.contains("Speaker 2: world"))
         #expect(!result.contains("Helloworld"))
+    }
+
+    @Test("diarization keeps completed one-word chunks from different speakers apart")
+    func diarizationKeepsCompletedChunksApart() {
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.4, text: "Yes"),
+            SpeechSegment(start: 0.5, end: 0.9, text: "Okay"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 0.45),
+            makeDiarSeg(speakerId: "spk_1", start: 0.45, end: 1.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(result.contains("Speaker 1: Yes"))
+        #expect(result.contains("Speaker 2: Okay"))
+        #expect(!result.contains("YesOkay"))
     }
 
     @Test("three speakers identified correctly")

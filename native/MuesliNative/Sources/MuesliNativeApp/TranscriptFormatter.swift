@@ -16,7 +16,8 @@ enum TranscriptFormatter {
         diarizationSegments: [TimedSpeakerSegment]?,
         micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date,
-        conservativeSpeakerAttribution: Bool = false
+        conservativeSpeakerAttribution: Bool = false,
+        systemSegmentsAreTokenTimed: Bool = false
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
@@ -44,7 +45,11 @@ enum TranscriptFormatter {
         if let diarizationSegments, !diarizationSegments.isEmpty {
             let speakerLabelMap = speakerLabelMap(for: diarizationSegments, prefix: "Speaker")
 
-            let lexicalUnits = normalizeLexicalUnits(systemSegments)
+            // Only token-timed input holds word fragments. Completed chunks are
+            // trimmed, so neighboring replies would look like fragments of one word.
+            let lexicalUnits = systemSegmentsAreTokenTimed
+                ? normalizeLexicalUnits(systemSegments)
+                : systemSegments.map { LexicalUnit(segment: $0, isReconstructedWord: false) }
             taggedSystem = lexicalUnits.map { unit in
                 let speaker: String
                 if !conservativeSpeakerAttribution {
