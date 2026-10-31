@@ -164,6 +164,7 @@ struct MeetingChatHistoryLoadingTests {
         #expect(coordinator.isBusy)
         // Deliberately corrupt only this synthetic fixture after the worker is
         // queued, so the storage read throws rather than reporting empty history.
+        #expect(sqlite3_exec(db, "CREATE TEMP TABLE saved_turns AS SELECT id, body FROM meeting_chat_turns", nil, nil, nil) == SQLITE_OK)
         #expect(sqlite3_exec(db, "UPDATE meeting_chat_turns SET body='{}'", nil, nil, nil) == SQLITE_OK)
         #expect(sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK)
         await writer.value
@@ -181,6 +182,13 @@ struct MeetingChatHistoryLoadingTests {
         await coordinator.send(question: "Explain that answer", config: AppConfig())
         #expect(coordinator.errorMessage?.contains("Could not read") == true)
         #expect(coordinator.composerDraft == "Explain that answer")
+        // Repair only the synthetic fixture and refresh the same selection.
+        #expect(sqlite3_exec(db, "UPDATE meeting_chat_turns SET body=(SELECT body FROM saved_turns WHERE saved_turns.id=meeting_chat_turns.id)", nil, nil, nil) == SQLITE_OK)
+        await coordinator.refreshHistory()
+        #expect(coordinator.errorMessage == nil)
+        coordinator.errorMessage = "Unrelated provider failure"
+        await coordinator.refreshHistory()
+        #expect(coordinator.errorMessage == "Unrelated provider failure")
         coordinator.startDraft(scope: .init(selection: .meetings([])))
         await coordinator.send(question: "New question", config: AppConfig())
         #expect(coordinator.selectedSessionID == nil)

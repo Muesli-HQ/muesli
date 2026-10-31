@@ -241,6 +241,8 @@ final class AppState {
                 && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
         }
     }
+    var dictionaryFileOperation: DictionaryFileOperation?
+    var dictionaryFileMessage: String?
     var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle

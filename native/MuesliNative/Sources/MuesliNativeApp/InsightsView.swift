@@ -389,7 +389,7 @@ struct InsightsView: View {
             try await loadCuriosity(data.range, data.generatedAt)
         }
         // Refreshes and range changes create a fresh cache; disclosure changes do not.
-        .id(loadGeneration)
+        .id(data.generatedAt)
     }
 
     private func usagePanel(_ data: InsightsSnapshot) -> some View {

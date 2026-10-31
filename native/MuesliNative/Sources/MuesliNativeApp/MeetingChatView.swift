@@ -242,10 +242,8 @@ struct MeetingChatView: View {
                                 Spacer(minLength: 0)
                                 if pending != nil { ProgressView().controlSize(.mini) }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9)
-                                .background(coordinator.selectedSessionID == session.id ? MuesliTheme.backgroundRaised : Color.clear,
-                                            in: RoundedRectangle(cornerRadius: 7))
                                 .contentShape(Rectangle())
-                        }.buttonStyle(.muesli(.quiet, shape: .rounded(7), compresses: false))
+                        }.buttonStyle(.muesli(coordinator.selectedSessionID == session.id ? .raised : .quiet, shape: .rounded(7), bordered: false, compresses: false))
                             .disabled(pending != nil)
                             .accessibilityAddTraits(coordinator.selectedSessionID == session.id ? .isSelected : [])
                             .contextMenu {

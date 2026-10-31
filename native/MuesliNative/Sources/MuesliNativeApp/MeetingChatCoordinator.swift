@@ -374,6 +374,7 @@ final class MeetingChatCoordinator {
         // Navigation that moved on without a read keeps its own (already reset) turns.
         guard selectedSessionID == requested else { return }
         historyReadFailed = false
+        if errorMessage == Self.historyReadError || errorMessage == Self.previousAnswersReadError { errorMessage = nil }
         if let id = requested, sessionIDs.contains(id) { turns = snapshot.turns; turnsSessionID = id }
         else { selectedSessionID = nil; turns = []; turnsSessionID = nil }
     }
@@ -382,7 +383,7 @@ final class MeetingChatCoordinator {
         // from the conversation we left must not appear in that new composer.
         guard selectedSessionID == requested else { return }
         historyReadFailed = true
-        errorMessage = "Could not load meeting chat history."
+        errorMessage = Self.historyReadError
         // End the loading state; the conversation stays selected so the user can retry.
         if turnsSessionID != requested { turns = []; turnsSessionID = requested }
     }
@@ -511,6 +512,8 @@ final class MeetingChatCoordinator {
         cancelTitle(sessionID: id)
         do { try await worker.updateSession(id: id, title: title); await refreshHistory() } catch { errorMessage = error.localizedDescription }
     }
+    private static let historyReadError = "Could not load meeting chat history."
+    private static let previousAnswersReadError = "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."
     private static let emptyScopeMessage = "Attach a meeting or choose All saved meetings before sending. Your question is still in the composer."
     func send(question: String, config: AppConfig, isDraft: Bool = false, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
@@ -545,7 +548,7 @@ final class MeetingChatCoordinator {
                 guard answered else { errorMessage = Self.emptyScopeMessage; return }
             } catch {
                 guard activeRequestID == requestID, !Task.isCancelled else { return }
-                errorMessage = "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."
+                errorMessage = Self.previousAnswersReadError
                 return
             }
         }
@@ -582,6 +585,11 @@ final class MeetingChatCoordinator {
             if composerDrafts[submittedDraftKey] == submittedDraft, submittedDraft.trimmingCharacters(in: .whitespacesAndNewlines) == question { composerDrafts[submittedDraftKey] = nil }
             // Launch takes request ownership before the history read yields.
             errorMessage = nil; launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens)
+            // Publish the already-persisted turn without waiting behind retrieval.
+            // launch first owns cancellation if observation triggers Stop here.
+            if selectedSessionID == id, turnsSessionID == id, !turns.contains(where: { $0.id == turn.id }) {
+                turns.append(turn)
+            }
             await refreshHistory()
         } catch {
             guard activeRequestID == requestID else { return }

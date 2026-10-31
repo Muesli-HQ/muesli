@@ -31,11 +31,9 @@ struct MuesliSettingControl: View {
                                 .padding(.horizontal, compactAppearance ? 0 : 10)
                                 .frame(minWidth: 28, maxWidth: compactAppearance ? nil : .infinity, minHeight: compactAppearance ? 22 : 28)
                                 .foregroundStyle(state.current == choice.id ? MuesliTheme.accentText : MuesliTheme.textSecondary)
-                                .background(RoundedRectangle(cornerRadius: 4)
-                                    .fill(state.current == choice.id ? MuesliTheme.surfaceSelected : Color.clear))
                                 .muesliSelectionOutline(state.current == choice.id, radius: 4)
                             }
-                            .buttonStyle(.muesli(.quiet, shape: .rounded(4)))
+                            .buttonStyle(.muesli(state.current == choice.id ? .tinted : .quiet, shape: .rounded(4)))
                             .disabled(state.unavailable[choice.id] != nil)
                             .help(choice.label)
                             .accessibilityLabel(choice.label)

@@ -104,6 +104,35 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("presentation catalog follows asynchronous model and language choices")
+    func asynchronousPresentationChoices() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            _ = catalog.definitions(for: controller)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Summary test")]
+            let summaries = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            #expect(summaries.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "summary-test" } == true)
+            controller.appState.openRouterTranscriptionModels = [.init(id: "asr-test", label: "ASR test")]
+            let dictation = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+            #expect(dictation.first { $0.id == "openrouter_dictation_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "asr-test" } == true)
+            controller.appState.settingsAppleSpeechLanguages = [.init(id: "fr-FR", label: "French")]
+            let languages = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 4)
+            #expect(languages.first { $0.id == "apple_speech_language" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "fr-FR" } == true)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Renamed")]
+            let renamed = catalog.definitions(for: controller)
+            #expect(renamed.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.first { $0.id == "summary-test" }?.label == "Renamed")
+            for _ in 0..<20 { _ = catalog.definitions(for: controller) }
+            #expect(catalog.rebuildCount == 5)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()

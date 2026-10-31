@@ -437,7 +437,7 @@ struct SettingsView: View {
             }
             .background(MuesliTheme.backgroundBase)
             .onAppear {
-                refreshDownloadedModelOptions()
+                refreshDownloadedModelOptions(force: true)
                 refreshAudioInputDevices()
                 startPermissionMonitoring()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
@@ -458,7 +458,7 @@ struct SettingsView: View {
             .onChange(of: appState.selectedTab) { _, tab in
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
-                    refreshDownloadedModelOptions()
+                    refreshDownloadedModelOptions(force: true)
                     refreshAudioInputDevices()
                     refreshPermissionStatuses(for: .settingsSelected)
                 }
@@ -594,8 +594,8 @@ struct SettingsView: View {
         if stacksSettingsControls != stacks { stacksSettingsControls = stacks }
     }
 
-    private func refreshDownloadedModelOptions() {
-        controller.refreshSettingsModelAvailability()
+    private func refreshDownloadedModelOptions(force: Bool = false) {
+        controller.refreshSettingsModelAvailability(force: force)
     }
 
     private func refreshAudioInputDevices() {
@@ -2695,10 +2695,6 @@ struct SettingsView: View {
                         }
                         .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                         .frame(width: 26, height: 26)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
-                        )
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
                                 .strokeBorder(
@@ -2707,7 +2703,7 @@ struct SettingsView: View {
                                 )
                         )
                     }
-                    .buttonStyle(.muesli(.quiet, shape: .rounded(5)))
+                    .buttonStyle(.muesli(isSelected ? .tinted : .quiet, shape: .rounded(5)))
                     .help(option.label)
                     .accessibilityLabel(option.label)
                     .accessibilityAddTraits(isSelected ? .isSelected : [])

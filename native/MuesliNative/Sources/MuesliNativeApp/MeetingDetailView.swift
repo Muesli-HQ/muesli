@@ -2241,11 +2241,10 @@ struct MarqueeTitleTextField: View {
         // and keep the native field mounted for focus, selection, and undo.
         TextField("Meeting Title", text: $text)
             .font(titleFont)
-            .foregroundStyle(MuesliTheme.textPrimary)
+            .foregroundStyle(isTitleFocused ? MuesliTheme.textPrimary : Color.clear)
             .textFieldStyle(.plain)
             .lineLimit(1)
             .fixedSize(horizontal: false, vertical: true)
-            .opacity(isTitleFocused ? 1 : 0)
             .focused($isTitleFocused)
             .onSubmit(onSubmit)
             .onChange(of: text) { _, _ in
@@ -2266,6 +2265,7 @@ struct MarqueeTitleTextField: View {
                     .offset(x: marqueeOffset)
                     .opacity(isTitleFocused ? 0 : 1)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
             .clipped()
         .contentShape(Rectangle())

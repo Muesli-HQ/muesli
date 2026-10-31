@@ -36,6 +36,8 @@ final class SettingsPresentationCatalog {
     private var availability: SettingsModelAvailability?
     private var quietAppIDs: [String] = []
     private var calendarKey: [[String]] = []
+    private var modelChoices: [[String]] = []
+    private var speechLanguages: [AppleSpeechLanguageOption] = []
     private var summaryBackend: MeetingSummaryBackendOption?
     private var definitions: [MuesliSetting] = []
     private(set) var rebuildCount = 0
@@ -44,9 +46,14 @@ final class SettingsPresentationCatalog {
         let state = controller.appState
         let currentQuietAppIDs = CotypistQuietApps.chosen + CotypistQuietApps.running(excluding: []).map(\.bundleID)
         let calendars = state.availableEventKitCalendars.map { [$0.id, $0.sourceTitle, $0.title] }
+        let choices = [state.openRouterSummaryModels, state.openRouterTranscriptionModels]
+            .map { $0.flatMap { [$0.id, $0.label] } }
         if config != state.config || availability != state.settingsModelAvailability
             || calendarKey != calendars || quietAppIDs != currentQuietAppIDs
-            || summaryBackend != state.selectedMeetingSummaryBackend {
+            || summaryBackend != state.selectedMeetingSummaryBackend
+            || modelChoices != choices || speechLanguages != state.settingsAppleSpeechLanguages {
+            modelChoices = choices
+            speechLanguages = state.settingsAppleSpeechLanguages
             config = state.config
             availability = state.settingsModelAvailability
             calendarKey = calendars

@@ -76,15 +76,13 @@ struct DashboardICloudSyncButton: View {
             }
             .foregroundStyle(tint)
             .frame(width: 34, height: 34)
-            .background(MuesliTheme.surfacePrimary)
-            .clipShape(Circle())
             .overlay {
                 Circle()
                     .strokeBorder(tint.opacity(isEnabled || hasError ? 0.28 : 0.14), lineWidth: 1)
             }
             .contentShape(Circle())
         }
-        .buttonStyle(.muesli(.quiet, shape: .circle))
+        .buttonStyle(.muesli(.secondary, shape: .circle, bordered: false))
         .disabled(isSyncing)
         .help(label)
         .accessibilityLabel(label)
