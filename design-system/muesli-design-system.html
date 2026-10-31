@@ -395,10 +395,28 @@
     --accent:#FFF; --accent-subtle:rgba(255,255,255,.15); --border:rgba(255,255,255,.28); --on-accent:#000;
     --accent-shade:#000; --accent-text:#FFF;
   }
-  /* Shared flat control feedback (MuesliButtonStyle): color only, no motion under Reduce Motion. */
-  .mb { font:inherit; font-size:12px; font-weight:500; height:26px; padding:0 10px; border-radius:6px; border:1px solid transparent; transition:background-color .12s ease-out, transform .14s ease-out; }
-  /* Pressed color is immediate; the visual compression never changes layout. */
-  .mb:active:not(:disabled) { transition:transform .06s ease-out; transform:scale(.98); }
+  /* Resting depth (MuesliControlDepth): solid 1px edges only, approximated with unblurred inset
+     box-shadows. Lip = darker lower edge; rim = inset edge in the hover shade. */
+  :root { --lip-lifted:rgba(0,0,0,.26); --lip-edge:rgba(0,0,0,.20); --rim-lifted:10%; --rim-tinted:14%; }
+  :root[data-theme="light"] { --lip-lifted:rgba(0,0,0,.14); --lip-edge:rgba(0,0,0,.06); }
+  :root[data-theme="ultra"] { --lip-edge:transparent; }
+  /* Increase Contrast. The Ultra Dark rule above still removes the neutral lip. */
+  @media (prefers-contrast: more) {
+    :root { --lip-lifted:rgba(0,0,0,.40); --lip-edge:rgba(0,0,0,.32); --rim-lifted:20%; --rim-tinted:26%; }
+    :root[data-theme="light"] { --lip-lifted:rgba(0,0,0,.24); --lip-edge:rgba(0,0,0,.12); }
+  }
+  /* Shared control feedback (MuesliButtonStyle): color and edges only, no motion under Reduce Motion. */
+  .mb { font:inherit; font-size:12px; font-weight:500; height:26px; padding:0 10px; border-radius:6px; border:1px solid transparent; transition:background-color .12s ease-out, box-shadow .12s ease-out, transform .14s ease-out; }
+  /* Pressed color is immediate and depth drops at once; the visual compression never changes layout. */
+  .mb:active:not(:disabled) { transition:transform .06s ease-out; transform:scale(.98); box-shadow:none; }
+  .mb:disabled { box-shadow:none; }
+  .mb-primary, .mb-success, .mb-recording { box-shadow:inset 0 -1px 0 var(--lip-lifted), inset 0 0 0 1px var(--rim); }
+  .mb-primary { --rim:color-mix(in srgb, var(--accent-shade) var(--rim-lifted), transparent); }
+  .mb-success { --rim:color-mix(in srgb, #FFF var(--rim-lifted), transparent); }
+  .mb-recording { --rim:color-mix(in srgb, #000 var(--rim-lifted), transparent); }
+  /* Native draws the neutral lip beneath the 1pt border; inside the border here. */
+  .mb-secondary, .mb-raised { box-shadow:inset 0 -1px 0 var(--lip-edge); }
+  .mb-tinted { box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) var(--rim-tinted), transparent); }
   .mb-quiet { background:transparent; color:var(--text-secondary); }
   .mb-quiet:hover, .mb-quiet:focus-visible { background:color-mix(in srgb, var(--text-primary) 6%, transparent); }
   .mb-quiet:active { background:color-mix(in srgb, var(--text-primary) 11%, transparent); }
@@ -767,7 +785,7 @@
   </table>
 
   <h3 id="control-feedback">Shared control feedback</h3>
-  <p class="pattern-note">Custom buttons use <code>MuesliButtonStyle</code>: the label keeps its existing padding, height, width and type; the style supplies fill, border, foreground and a full-shape hit area. Hover and keyboard focus raise one flat color step; press raises a second. Disabled controls use <code>surfacePrimary</code> with <code>textTertiary</code> once, without extra opacity. Pressing shows the pressed color immediately and compresses the drawn control to 0.98 (0.06s in, 0.14s release); layout and the full hit region do not move, and the action never waits. Reduce Motion removes the scale and the color fade but keeps the instant color change. Full-width list rows and sidebar navigation stay flat with a pressed fill. No shadows, springs or offsets. Quiet controls use fills, never outlines; only keyboard focus draws a ring. Icon and text actions have at least a 28pt hit region with the padding inside the label. Native focus rings remain.</p>
+  <p class="pattern-note">Custom buttons use <code>MuesliButtonStyle</code>: the label keeps its existing padding, height, width and type; the style supplies fill, border, foreground and a full-shape hit area. Hover and keyboard focus raise one flat color step; press raises a second. Enabled controls rest with restrained depth made of solid 1pt edges (<code>MuesliControlDepth</code>): filled primary, success and recording buttons have a darker lower lip and an inset rim in their hover shade; secondary and raised buttons have a neutral lip under the bottom border (none in Ultra Dark); tinted buttons have a quieter accent rim. The lip exposes the lower edge of the opaque face, so the color under the label, and its contrast, never change. Increase Contrast strengthens the edges. Disabled controls are flat and use <code>surfacePrimary</code> with <code>textTertiary</code> once, without extra opacity. Pressing removes the depth and shows the pressed color immediately, and compresses the drawn control to 0.98 (0.06s in, 0.14s release); layout and the full hit region do not move, and the action never waits. Reduce Motion removes the scale and the fades but keeps the instant color and depth change. Full-width list rows (<code>compresses: false</code>), quiet controls and sidebar navigation stay flat with a pressed fill. No gradients, blur shadows, springs or offsets. Quiet controls use fills, never outlines; only keyboard focus draws a ring. Icon and text actions have at least a 28pt hit region with the padding inside the label; align them by those actual label bounds, never with negative outer padding, so adjacent targets do not overlap. Native focus rings remain. This specimen approximates the edges with unblurred inset box-shadows.</p>
   <div class="component-preview demo-row">
     <button class="mb mb-primary">Sign in</button>
     <button class="mb mb-secondary">Open</button>
@@ -780,14 +798,14 @@
     <button class="mb mb-primary" disabled>Continue</button>
   </div>
   <table>
-    <tr><th>Kind</th><th>Rest</th><th>Hover / focus</th><th>Pressed</th><th>Used by</th></tr>
-    <tr><td><code>.primary</code></td><td><code>accent</code> + <code>onAccent</code></td><td>+ shade 8%</td><td>+ shade 16%</td><td>Onboarding Continue, sign-in, Quick Note, Resume, chat Send</td></tr>
-    <tr><td><code>.secondary</code></td><td><code>surfacePrimary</code>, border</td><td>+ text 6%</td><td>+ text 11%</td><td>Settings/About/template/prompt actions, Back/Skip, chat Stop and chips</td></tr>
-    <tr><td><code>.tinted</code></td><td>accent 15% + <code>accentText</code></td><td>21%</td><td>27%</td><td>Grant, Models Download/Set Active, folder pill</td></tr>
-    <tr><td><code>.destructive</code> / <code>.destructiveTinted</code></td><td>clear or red 10% + <code>destructiveText</code></td><td>red 13%</td><td>red 16%</td><td>Clear history, Delete</td></tr>
-    <tr><td><code>.success</code> / <code>.recording</code></td><td>semantic fill + own foreground</td><td>8% toward higher contrast</td><td>16%</td><td>Donate, Stop, Stop Voice Note</td></tr>
-    <tr><td><code>.raised</code></td><td><code>backgroundRaised</code>, border</td><td>+ text 6%</td><td>+ text 11%</td><td>Collapsed chat composer</td></tr>
-    <tr><td><code>.quiet</code></td><td>no chrome; label keeps its color</td><td>+ text 6% fill</td><td>+ text 11% fill</td><td>Icon buttons, text actions (Change…, Sign Out), chat footer, popover rows</td></tr>
+    <tr><th>Kind</th><th>Rest</th><th>Resting depth</th><th>Hover / focus</th><th>Pressed</th><th>Used by</th></tr>
+    <tr><td><code>.primary</code></td><td><code>accent</code> + <code>onAccent</code></td><td>Lifted: lip + shade rim</td><td>+ shade 8%</td><td>+ shade 16%, flat</td><td>Onboarding Continue, sign-in, Quick Note, Resume, chat Send</td></tr>
+    <tr><td><code>.secondary</code></td><td><code>surfacePrimary</code>, border</td><td>Edge: neutral lip (not Ultra Dark)</td><td>+ text 6%</td><td>+ text 11%, flat</td><td>Settings/About/template/prompt actions, Back/Skip, chat Stop and chips</td></tr>
+    <tr><td><code>.tinted</code></td><td>accent 15% + <code>accentText</code></td><td>Rim: accent 14%</td><td>21%</td><td>27%, flat</td><td>Grant, Models Download/Set Active, folder pill</td></tr>
+    <tr><td><code>.destructive</code> / <code>.destructiveTinted</code></td><td>clear or red 10% + <code>destructiveText</code></td><td>Flat</td><td>red 13%</td><td>red 16%</td><td>Clear history, Delete</td></tr>
+    <tr><td><code>.success</code> / <code>.recording</code></td><td>semantic fill + own foreground</td><td>Lifted: lip + rim toward higher contrast</td><td>8% toward higher contrast</td><td>16%, flat</td><td>Donate, Stop, Stop Voice Note</td></tr>
+    <tr><td><code>.raised</code></td><td><code>backgroundRaised</code>, border</td><td>Edge: neutral lip (not Ultra Dark)</td><td>+ text 6%</td><td>+ text 11%, flat</td><td>Collapsed chat composer</td></tr>
+    <tr><td><code>.quiet</code></td><td>no chrome; label keeps its color</td><td>Flat (as is any <code>compresses: false</code> button)</td><td>+ text 6% fill</td><td>+ text 11% fill</td><td>Icon buttons, text actions (Change…, Sign Out), chat footer, popover rows, full-width list rows</td></tr>
   </table>
   <p class="pattern-note">Row actions that appear on hover also appear while one of them has keyboard focus. Gesture rows that host drag and drop, context menus or nested buttons stay gestures; they gain button and selected traits and Space/Return activation when full keyboard navigation is on. They show hover and selection fills but no mouse-down fill, because that needs a zero-distance gesture that competes with dragging. Asynchronous actions show progress or a confirmation at click time and refuse repeats; Insights refresh keeps the previous results visible. Repeating motion (sync spinner, onboarding preparation bar, long-title marquee) is static under Reduce Motion.</p>
   <p style="font-size:12px;color:var(--text-tertiary);margin-top:8px">Disabled state: no border, <code>not-allowed</code> cursor, tooltip explains why. Used for actions unavailable on the current system (e.g. a model requiring a newer macOS) — see Models tab, issue #479.</p>

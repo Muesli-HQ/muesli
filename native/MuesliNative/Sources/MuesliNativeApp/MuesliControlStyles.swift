@@ -68,11 +68,13 @@ struct MuesliControlShape: InsettableShape {
     }
 }
 
-/// Flat color feedback for muesli's custom buttons. Callers keep geometry (padding, height,
-/// width) and typography in the label; the style owns fill, border, foreground, hover,
-/// pressed, keyboard-focus and disabled colors, and makes the whole shape clickable.
-/// Pressing compresses the drawn control slightly; its layout and hit region do not change.
-/// Native focus rings, keyboard activation and shortcuts are unchanged.
+/// Color feedback and restrained resting depth for muesli's custom buttons. Callers keep
+/// geometry (padding, height, width) and typography in the label; the style owns fill, border,
+/// foreground, hover, pressed, keyboard-focus and disabled colors, and makes the whole shape
+/// clickable. Enabled compressing controls rest slightly raised (see `MuesliControlDepth`);
+/// pressing removes that depth at once and compresses the drawn control slightly; its layout
+/// and hit region do not change. Native focus rings, keyboard activation and shortcuts are
+/// unchanged.
 struct MuesliButtonStyle: ButtonStyle {
     enum Kind {
         /// Accent fill with `onAccent` content.
@@ -99,7 +101,7 @@ struct MuesliButtonStyle: ButtonStyle {
     var shape: MuesliControlShape = .rounded()
     /// Defaults to bordered for secondary, raised and destructive kinds.
     var bordered: Bool?
-    /// Full-width list rows stay flat and rely on the pressed fill alone.
+    /// Full-width list rows stay flat, without resting depth, and rely on the pressed fill alone.
     var compresses = true
 
     func makeBody(configuration: Configuration) -> some View {
@@ -138,6 +140,41 @@ struct MuesliPressCompression: ViewModifier {
     }
 }
 
+/// Resting depth for enabled, compressing buttons: solid 1pt edges, no shadows or gradients.
+/// - `lifted` (primary, success, recording): a darker lower lip plus an inset rim in the
+///   shade that already moves the fill away from its label, so label contrast never drops.
+/// - `edge` (secondary, raised): a neutral lip under the bottom border; omitted in Ultra Dark,
+///   whose 28% white border already defines the control.
+/// - `rim` (tinted): a quieter same-hue inset rim and no lip.
+/// Quiet and destructive kinds, `compresses: false` rows, pressed and disabled controls are flat.
+/// Edges sit at the shape's border, inside the label's own padding, never behind text.
+enum MuesliControlDepth {
+    case none, rim, edge, lifted
+
+    static let lipHeight: CGFloat = 1
+
+    /// Black lip opacity under an opaque face, by color scheme and Increase Contrast.
+    static func lipOpacity(_ depth: MuesliControlDepth, dark: Bool, increasedContrast: Bool, ultraDark: Bool) -> Double {
+        switch depth {
+        case .lifted:
+            return increasedContrast ? (dark ? 0.40 : 0.24) : (dark ? 0.26 : 0.14)
+        case .edge:
+            if ultraDark { return 0 }
+            return increasedContrast ? (dark ? 0.32 : 0.12) : (dark ? 0.20 : 0.06)
+        case .rim, .none:
+            return 0
+        }
+    }
+
+    static func rimOpacity(_ depth: MuesliControlDepth, increasedContrast: Bool) -> Double {
+        switch depth {
+        case .lifted: return increasedContrast ? 0.20 : 0.10
+        case .rim: return increasedContrast ? 0.26 : 0.14
+        case .edge, .none: return 0
+        }
+    }
+}
+
 enum MuesliControlState: Equatable {
     case rest, highlighted, pressed, disabled
 
@@ -163,6 +200,8 @@ private struct MuesliButtonChrome: View {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @State private var isHovered = false
 
     private var state: MuesliControlState {
@@ -173,12 +212,36 @@ private struct MuesliButtonChrome: View {
         )
     }
 
+    /// Fixed per button, so the layer structure never changes with state or appearance.
+    private var depth: MuesliControlDepth {
+        guard compresses else { return .none }
+        switch kind {
+        case .primary, .success, .recording: return .lifted
+        case .secondary, .raised: return .edge
+        case .tinted: return .rim
+        case .destructive, .destructiveTinted, .quiet: return .none
+        }
+    }
+
     var body: some View {
         styledLabel
             .background {
                 ZStack {
                     shape.fill(baseFill)
+                    if depth == .lifted || depth == .edge {
+                        // The lip is the lower edge of an opaque face lifted by a second copy of
+                        // the same fill, so the face under the label keeps its exact color.
+                        shape.fill(Color.black.opacity(lipOpacity))
+                            .allowsHitTesting(false)
+                        shape.fill(baseFill)
+                            .padding(.bottom, MuesliControlDepth.lipHeight)
+                            .allowsHitTesting(false)
+                    }
                     shape.fill(stateOverlay)
+                    if depth == .lifted || depth == .rim {
+                        shape.strokeBorder(rimColor, lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
                 }
                 .animation(MuesliMotion.stateColorAnimation(pressed: state == .pressed, reduceMotion: reduceMotion), value: state)
             }
@@ -221,6 +284,32 @@ private struct MuesliButtonChrome: View {
         case .secondary, .raised, .quiet: return MuesliTheme.textPrimary
         case .tinted: return MuesliTheme.accentText
         case .destructive, .destructiveTinted: return MuesliTheme.destructiveText
+        }
+    }
+
+    /// Depth shows at rest and on hover/focus only; pressed and disabled controls are flat.
+    private var isRaised: Bool {
+        state == .rest || state == .highlighted
+    }
+
+    private var lipOpacity: Double {
+        guard isRaised else { return 0 }
+        return MuesliControlDepth.lipOpacity(
+            depth,
+            dark: colorScheme == .dark,
+            increasedContrast: colorSchemeContrast == .increased,
+            ultraDark: MuesliTheme.appearance.ultraDark
+        )
+    }
+
+    /// The same shades the hover/pressed overlays use, so the rim also moves away from the label.
+    private var rimColor: Color {
+        let opacity = isRaised ? MuesliControlDepth.rimOpacity(depth, increasedContrast: colorSchemeContrast == .increased) : 0
+        switch kind {
+        case .primary: return MuesliTheme.accentStateShade.opacity(opacity)
+        case .success: return Color.white.opacity(opacity)
+        case .recording: return Color.black.opacity(opacity)
+        default: return MuesliTheme.accent.opacity(opacity)
         }
     }
 

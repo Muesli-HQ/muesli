@@ -94,16 +94,36 @@ padding is clickable. Hover and keyboard focus raise one flat color step and
 press a second. Quiet controls show hover and press as neutral fills, never
 outlines; only keyboard focus draws a ring. `.raised` is the field-like
 launcher surface (`backgroundRaised` with a border), used by the collapsed chat
-composer. Disabled controls render once, as `surfacePrimary` with
+composer. Disabled controls render once, flat, as `surfacePrimary` with
 `textTertiary`; do not add opacity on top.
 
-Press feedback is tactile but small. The pressed color appears on the same
-frame as mouse-down and fades back over 0.12s on release. The drawn control
+Resting depth is restrained and physical, built from solid 1pt shape edges
+(`MuesliControlDepth`), never gradients, blur, shadow filters or offscreen
+compositing:
+
+| Depth | Kinds | Treatment |
+| --- | --- | --- |
+| Lifted | `.primary`, `.success`, `.recording` | Black lower lip (Light 14%, Dark 26%; Increase Contrast 24%/40%) plus a 1pt inset rim (10%, 20% with Increase Contrast) in the same shade the hover overlay uses, so it moves away from the label. |
+| Edge | `.secondary`, `.raised` | Neutral lip beneath the bottom border (Light 6%, Dark 20%; 12%/32%). None in Ultra Dark, whose 28% white border already carries the edge. |
+| Rim | `.tinted` | Quieter accent rim (14%, 26% with Increase Contrast); no lip. |
+| Flat | `.quiet`, `.destructive`, `.destructiveTinted`, `compresses: false`, pressed, disabled | Existing fills/borders; quiet controls reserve their ring for keyboard focus. |
+
+The lip is the face's lower 1pt edge, exposed by drawing a second copy of the
+opaque face 1pt shorter; the face under the label keeps its exact color, so
+label/fill contrast is unchanged. Edges sit at the shape border inside the
+label's own padding, never behind text, and do not hit-test. The layer
+structure is fixed per button; only edge opacities change with state, color
+scheme and Increase Contrast, with no per-render contrast math.
+
+Press feedback is tactile but small. Mouse-down removes the lip and rim and
+shows the pressed color on the same frame; release restores them with the
+same 0.12s color fade. The drawn control
 compresses to `MuesliMotion.pressedScale` (0.98) in 0.06s and releases in
 0.14s, via `MuesliPressCompression`. The scale is visual only: it is applied
 before `contentShape`, so layout and the full unscaled hit region do not move,
 and the action never waits for the animation. Reduce Motion removes the scale
-and keeps the instant color change. No shadows, springs or offsets.
+and the fades but keeps the instant color and depth change. No blur shadows,
+springs or offsets.
 Full-width list rows (`compresses: false`) and sidebar navigation stay flat and
 acknowledge a press with an immediate fill. The 0.12s color fade, navigation
 and row-hover animations go through `MuesliMotion`; repeating motion (sync
@@ -113,10 +133,12 @@ unchanged.
 
 Targets: icon and text actions use at least a 28pt hit region, 32pt where a row
 or footer allows (chat footer, Insights refresh, Meetings header actions). Put
-the padding inside the Button label; when a text action must stay aligned with
-its column, offset the button with negative outer padding rather than shrinking
-the label. `MuesliTextButton` is the shared text-only action. Adjacent targets
-must not overlap: a row's primary target and its trailing actions are separate
+the padding inside the Button label, so the label's actual bounds are the
+drawn control and its hit region. Align a padded text action by those actual
+bounds, adjusting the column's spacing or alignment; do not pull it outward
+with negative outer padding, which makes targets overlap their neighbors.
+`MuesliTextButton` is the shared text-only action. Adjacent targets' actual
+bounds must not overlap: a row's primary target and its trailing actions are separate
 buttons, and margins inside a row belong to one of them rather than being dead.
 Native switches, pickers and menus keep system rendering; enlarge a `Menu`
 label's frame and content shape instead of replacing it with gestures.
@@ -157,7 +179,7 @@ The native implementation owns behavior and token values. Browser specimens illu
 | --- | --- |
 | Adaptive colors, typography, spacing, reading width | `MuesliTheme.swift` |
 | Accent-derived foreground roles and contrast math | `MuesliAccentPalette.swift` |
-| Shared button feedback, motion policy, gesture-row activation | `MuesliControlStyles.swift` |
+| Shared button feedback, resting depth, motion policy, gesture-row activation | `MuesliControlStyles.swift` |
 | Sidebar width, compact layout, global tint | `DashboardRootView.swift`, `SidebarView.swift` |
 | Outlined statistics with centered icon/value/caption stacks | `StatsHeaderView.swift` |
 | Prominent, labeled Insights Share action and adaptive range controls | `InsightsView.swift` |
