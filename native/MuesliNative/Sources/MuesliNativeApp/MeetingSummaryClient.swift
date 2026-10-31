@@ -440,6 +440,20 @@ enum MeetingSummaryClient {
             && [existingNotes, previousMeetingNotes].allSatisfy { ["", emptyRecordingNotes].contains(trimmed($0)) }
     }
 
+    /// Matched case-insensitively: notes saved before the lowercase rebrand say "Muesli".
+    private static let summaryFailureLead = "muesli could not generate structured meeting notes.\n\n"
+
+    /// The error text a failed summary stored in the notes, or nil when the notes are not a failure.
+    static func summaryFailureReason(from notes: String) -> String? {
+        guard isSummaryFailureNotes(notes), let lead = notes.range(of: summaryFailureLead, options: .caseInsensitive) else { return nil }
+        let rest = notes[lead.upperBound...]
+        // Bound by the transcript first so the notes search never scans transcript text.
+        let rawStart = rest.range(of: "\n\n## Raw Transcript")?.lowerBound ?? rest.endIndex
+        let end = rest[..<rawStart].range(of: "\n\n### Written notes")?.lowerBound ?? rawStart
+        let reason = rest[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? nil : reason
+    }
+
     static func summaryFailureNotes(transcript: String, meetingTitle: String, error: Error, manualNotes: String? = nil) -> String {
         let trimmedTitle = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -447,7 +461,7 @@ enum MeetingSummaryClient {
         if !trimmedTitle.isEmpty {
             sections.append("Meeting: \(trimmedTitle)")
         }
-        sections.append("muesli could not generate structured meeting notes.\n\n\(error.localizedDescription)")
+        sections.append("\(summaryFailureLead)\(error.localizedDescription)")
         if !trimmedManualNotes.isEmpty {
             sections.append("### Written notes\n\n\(trimmedManualNotes)")
         }
