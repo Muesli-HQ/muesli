@@ -23,11 +23,21 @@ struct LiveTranscriptFollowStateTests {
         #expect(!state.shouldFollowNewContent)
     }
 
-    @Test("a marker that is not loaded stops following")
+    @Test("a marker that unloads after the reader scrolls away stops following")
     func unloadedMarkerStopsFollowing() {
         var state = LiveTranscriptFollowState()
+        state.noteBottomMarker(markerMinY: 380, viewportHeight: 400)
         state.noteBottomMarker(markerMinY: .infinity, viewportHeight: 400)
         #expect(!state.shouldFollowNewContent)
+    }
+
+    @Test("a viewport measured before the first caption keeps following")
+    func viewportBeforeFirstCaptionKeepsFollowing() {
+        var state = LiveTranscriptFollowState()
+        state.noteBottomMarker(markerMinY: .infinity, viewportHeight: 400)
+        #expect(state.shouldFollowNewContent)
+        state.noteBottomMarker(markerMinY: 380, viewportHeight: 400)
+        #expect(state.shouldFollowNewContent)
     }
 
     @Test("returning to the bottom resumes following")

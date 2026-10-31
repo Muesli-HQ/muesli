@@ -152,6 +152,9 @@ final class LiveTranscriptPresentationModel {
 struct LiveTranscriptFollowState: Equatable {
     /// True at first render, before any bottom marker has been measured.
     private(set) var isAtBottom = true
+    /// `.infinity` means "unloaded, scrolled away" only once a real marker position has been
+    /// seen. Before the first caption there is no marker at all, and the panel keeps following.
+    private var hasMeasuredMarker = false
 
     /// How far below the visible area the marker may sit and still count as the bottom.
     static let bottomTolerance: CGFloat = 24
@@ -170,6 +173,7 @@ struct LiveTranscriptFollowState: Equatable {
     /// the reader can see it. An unloaded marker reports `.infinity`.
     mutating func noteBottomMarker(markerMinY: CGFloat, viewportHeight: CGFloat) {
         guard viewportHeight > 0 else { return }
+        if markerMinY.isFinite { hasMeasuredMarker = true } else if !hasMeasuredMarker { return }
         isAtBottom = markerMinY <= viewportHeight + Self.bottomTolerance
     }
 }
