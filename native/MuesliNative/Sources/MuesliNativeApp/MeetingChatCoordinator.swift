@@ -249,6 +249,7 @@ final class MeetingChatCoordinator {
     private(set) var turns: [MeetingChatTurn] = []
     /// The conversation whose turns `turns` holds; differs from the selection while it loads.
     private(set) var turnsSessionID: UUID?
+    private var historyReadFailed = false
     private(set) var pendingChatMutations: [UUID: MeetingChatPendingMutation] = [:]
     var isLoadingConversation: Bool { selectedSessionID != nil && turnsSessionID != selectedSessionID }
     private(set) var selectedSessionID: UUID?
@@ -372,6 +373,7 @@ final class MeetingChatCoordinator {
         composerDrafts = composerDrafts.filter { $0.key == nil || sessionIDs.contains($0.key!) }
         // Navigation that moved on without a read keeps its own (already reset) turns.
         guard selectedSessionID == requested else { return }
+        historyReadFailed = false
         if let id = requested, sessionIDs.contains(id) { turns = snapshot.turns; turnsSessionID = id }
         else { selectedSessionID = nil; turns = []; turnsSessionID = nil }
     }
@@ -379,9 +381,10 @@ final class MeetingChatCoordinator {
         // Index/new-draft navigation may intentionally skip another read. An error
         // from the conversation we left must not appear in that new composer.
         guard selectedSessionID == requested else { return }
+        historyReadFailed = true
         errorMessage = "Could not load meeting chat history."
         // End the loading state; the conversation stays selected so the user can retry.
-        if selectedSessionID == requested, turnsSessionID != requested { turns = []; turnsSessionID = requested }
+        if turnsSessionID != requested { turns = []; turnsSessionID = requested }
     }
     @discardableResult
     func createChat(scope: MeetingChatScope) async -> UUID? {
@@ -519,7 +522,7 @@ final class MeetingChatCoordinator {
         if case .meetings(let ids) = requestScope.selection, ids.isEmpty { explicitlyEmpty = true }
         // Turns decide whether an empty selection is a valid follow-up. When they have not
         // loaded yet, the worker answers below after the request is reserved.
-        let historyLoaded = turnsSessionID == selectedSessionID
+        let historyLoaded = turnsSessionID == selectedSessionID && (selectedSessionID == nil || !historyReadFailed)
         if explicitlyEmpty, historyLoaded,
            !turns.contains(where: { $0.state == .completed && $0.originalAnswer != nil }) {
             errorMessage = Self.emptyScopeMessage
@@ -536,9 +539,15 @@ final class MeetingChatCoordinator {
             }
         }
         if explicitlyEmpty, !historyLoaded, let draftKey {
-            let answered = (try? await worker.hasCompletedAnswer(sessionID: draftKey)) ?? false
-            guard activeRequestID == requestID, !Task.isCancelled else { return }
-            guard answered else { errorMessage = Self.emptyScopeMessage; return }
+            do {
+                let answered = try await worker.hasCompletedAnswer(sessionID: draftKey)
+                guard activeRequestID == requestID, !Task.isCancelled else { return }
+                guard answered else { errorMessage = Self.emptyScopeMessage; return }
+            } catch {
+                guard activeRequestID == requestID, !Task.isCancelled else { return }
+                errorMessage = "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."
+                return
+            }
         }
         await initialization?.value
         guard activeRequestID == requestID, !Task.isCancelled else { return }

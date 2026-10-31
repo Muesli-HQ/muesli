@@ -51,6 +51,59 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("availability refresh coalesces completion events without blocking the main actor")
+    func availabilityRefreshCoalescing() async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = OSAllocatedUnfairLock(initialState: (calls: 0, onMain: false))
+            let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }
+            controller.settingsAvailabilityScan = { _ in
+                let call = state.withLock { value in
+                    value.calls += 1
+                    value.onMain = value.onMain || Thread.isMainThread
+                    return value.calls
+                }
+                if call == 1 { _ = release.wait(timeout: .now() + 5) }
+                return SettingsModelAvailability(backendIDs: ["scan-\(call)"])
+            }
+            controller.refreshSettingsModelAvailability(force: true)
+            for _ in 0..<500 where state.withLock({ $0.calls }) == 0 {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(state.withLock { $0.calls } == 1)
+            // A slow filesystem scan cannot block UI work, and many completion
+            // notifications request only one follow-up scan, not one per render.
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability(force: true) }
+            #expect(state.withLock { $0.calls } == 1)
+            #expect(controller.appState.settingsModelAvailability.backendIDs != ["scan-1"])
+            release.signal()
+            for _ in 0..<500 where controller.appState.settingsModelAvailability.backendIDs != ["scan-2"] {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailability.backendIDs == ["scan-2"])
+            #expect(!state.withLock { $0.onMain })
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability() }
+            try await Task.sleep(for: .milliseconds(20))
+            #expect(state.withLock { $0.calls } == 2)
+        }
+    }
+
+    @Test("manual model selection revalidates files instead of trusting presentation availability")
+    func stalePresentationDoesNotAuthorizeMissingModel() async throws {
+        try await withShortcutSettings { controller, store in
+            let missing = try #require(PostProcessorOption.all.first { !$0.isDownloaded })
+            controller.appState.settingsModelAvailability.postProcessorIDs.insert(missing.id)
+            let original = controller.config
+            do {
+                try await controller.applySetting("cleanup_on_device_model", value: missing.id)
+                Issue.record("A missing model must not be activated from a stale presentation snapshot")
+            } catch {
+                #expect(controller.config == original)
+                #expect(store.load() == original)
+            }
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()

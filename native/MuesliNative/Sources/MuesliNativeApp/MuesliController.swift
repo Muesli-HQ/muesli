@@ -651,6 +651,7 @@ public final class MuesliController: NSObject {
     #if DEBUG
     var dictationOutputTestHooks: DictationOutputTestHooks?
     #endif
+    var settingsAvailabilityScan: @Sendable (String) -> SettingsModelAvailability = { SettingsModelAvailability.scan(claudeCodePath: $0) }
     private var settingsAvailabilityTask: Task<Void, Never>?
     private var settingsAvailabilityGeneration = UUID()
     private var settingsAvailabilityPath: String?
@@ -1599,9 +1600,10 @@ public final class MuesliController: NSObject {
         settingsAvailabilityPath = path
         let generation = UUID()
         settingsAvailabilityGeneration = generation
+        let scan = settingsAvailabilityScan
         settingsAvailabilityTask = Task { [weak self] in
             let snapshot = await Task.detached(priority: .utility) {
-                SettingsModelAvailability.scan(claudeCodePath: path)
+                scan(path)
             }.value
             guard !Task.isCancelled, let self, !self.isShuttingDown,
                   self.settingsAvailabilityGeneration == generation else { return }

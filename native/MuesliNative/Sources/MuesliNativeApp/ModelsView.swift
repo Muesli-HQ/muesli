@@ -523,6 +523,9 @@ struct ModelsView: View {
         downloadSnapshots.removeValue(forKey: MeetingLiveCaptionModelStore.modelID)
         let generation = liveCaptionDownloadGeneration.begin()
         liveCaptionDownloadTask = Task {
+            // Refresh once after files settle, including cancellation/failure races.
+            // The controller coalesces requests and scans off the main actor.
+            defer { controller.refreshSettingsModelAvailability(force: true) }
             do {
                 try await MeetingLiveCaptionModelStore.download { progress in
                     Task { @MainActor in
@@ -1724,6 +1727,9 @@ struct ModelsView: View {
         downloadGenerations[option.id] = generation
 
         let task = Task {
+            // Refresh once after files settle, including cancellation/failure races.
+            // The controller coalesces requests and scans off the main actor.
+            defer { controller.refreshSettingsModelAvailability(force: true) }
             let fm = FileManager.default
             do {
                 try fm.createDirectory(at: option.cacheDirectory, withIntermediateDirectories: true)
@@ -1910,6 +1916,9 @@ struct ModelsView: View {
 
         let startTime = Date()
         let task = Task {
+            // Refresh once after files settle, including cancellation/failure races.
+            // The controller coalesces requests and scans off the main actor.
+            defer { controller.refreshSettingsModelAvailability(force: true) }
             do {
                 try await controller.transcriptionCoordinator.preloadRequired(
                     backend: option,

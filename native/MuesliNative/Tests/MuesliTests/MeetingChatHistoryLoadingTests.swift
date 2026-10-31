@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SQLite3
 import Testing
 @testable import MuesliCore
@@ -114,8 +115,13 @@ struct MeetingChatHistoryLoadingTests {
         #expect(try coordinator.store.sessions().map(\.id) == [second])
     }
 
-    @Test func emptySelectionFollowUpIsCheckedAgainstStorageWhileHistoryLoads() async throws {
+    @Test(arguments: [false, true])
+    func emptySelectionFollowUpIsCheckedAgainstStorageWhileHistoryLoads(completedAnswer: Bool) async throws {
         let (store, coordinator, first, _) = try await fixture()
+        if completedAnswer {
+            let turn = try #require(coordinator.store.turns(sessionID: first).first)
+            #expect(try coordinator.store.finishTurn(turnID: turn.id, answer: "Previous answer", citations: [], dependencies: []))
+        }
         try coordinator.store.updateSession(id: first, title: nil, scope: .init(selection: .meetings([])))
         coordinator.reload()
         let (db, writer) = try await occupyWorker(coordinator, store: store, renaming: first)
@@ -133,12 +139,72 @@ struct MeetingChatHistoryLoadingTests {
         await writer.value
         await request.value
         await coordinator.waitForIdle()
-        // The only turn has no completed answer, so an empty selection must not widen or send.
         #expect(!coordinator.isBusy)
-        #expect(coordinator.errorMessage?.contains("Attach a meeting") == true)
-        #expect(coordinator.composerDraft == "Next steps?")
-        #expect(try coordinator.store.turns(sessionID: first).count == 1)
+        if completedAnswer {
+            #expect(coordinator.errorMessage?.contains("Attach a meeting") != true)
+            let turns = try coordinator.store.turns(sessionID: first)
+            #expect(turns.count == 2)
+            #expect(turns.last?.scope.selection == .meetings([]))
+        } else {
+            #expect(coordinator.errorMessage?.contains("Attach a meeting") == true)
+            #expect(coordinator.composerDraft == "Next steps?")
+            #expect(try coordinator.store.turns(sessionID: first).count == 1)
+        }
     }
+    @Test func unreadableFollowUpHistoryPreservesDraftAndReportsReadFailure() async throws {
+        let (store, coordinator, first, _) = try await fixture()
+        try coordinator.store.updateSession(id: first, title: nil, scope: .init(selection: .meetings([])))
+        coordinator.reload()
+        let (db, writer) = try await occupyWorker(coordinator, store: store, renaming: first)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        coordinator.selectChat(id: first)
+        coordinator.composerDraft = "Explain that answer"
+        let send = Task { await coordinator.send(question: "Explain that answer", config: AppConfig()) }
+        for _ in 0..<100 where !coordinator.isBusy { try await Task.sleep(for: .milliseconds(2)) }
+        #expect(coordinator.isBusy)
+        // Deliberately corrupt only this synthetic fixture after the worker is
+        // queued, so the storage read throws rather than reporting empty history.
+        #expect(sqlite3_exec(db, "UPDATE meeting_chat_turns SET body='{}'", nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK)
+        await writer.value
+        await send.value
+        await coordinator.waitForIdle()
+        #expect(!coordinator.isBusy)
+        #expect(coordinator.composerDraft == "Explain that answer")
+        // The concurrent history refresh can also publish its read error.
+        #expect(["Could not load meeting chat history.",
+                 "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."]
+            .contains(coordinator.errorMessage ?? ""))
+        #expect(coordinator.errorMessage?.contains("Attach a meeting") != true)
+        // A failed history publication must not make a retry look like loaded,
+        // empty history and replace the read error with an attachment warning.
+        await coordinator.send(question: "Explain that answer", config: AppConfig())
+        #expect(coordinator.errorMessage?.contains("Could not read") == true)
+        #expect(coordinator.composerDraft == "Explain that answer")
+        coordinator.startDraft(scope: .init(selection: .meetings([])))
+        await coordinator.send(question: "New question", config: AppConfig())
+        #expect(coordinator.selectedSessionID == nil)
+        #expect(coordinator.errorMessage?.contains("Attach a meeting") == true)
+    }
+
+    @Test func stopDuringPostSendHistoryPublicationCannotRelaunchTheRequest() async throws {
+        let (_, coordinator, first, _) = try await fixture()
+        coordinator.selectChat(id: first)
+        await coordinator.waitForIdle()
+        coordinator.composerDraft = "Summarize the launch"
+        withObservationTracking {
+            _ = coordinator.turns
+        } onChange: {
+            MainActor.assumeIsolated { coordinator.stop() }
+        }
+        await coordinator.send(question: "Summarize the launch", config: AppConfig())
+        await coordinator.waitForIdle()
+        #expect(!coordinator.isBusy)
+        let turns = try coordinator.store.turns(sessionID: first)
+        #expect(turns.count == 2)
+        #expect(turns.last?.state == .stopped)
+    }
+
 }
 
 private actor HistoryLoadingProbe: MeetingTextGenerating {
