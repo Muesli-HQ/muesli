@@ -5,6 +5,16 @@ import MuesliCore
 
 @Suite("Quill assistant")
 struct QuillAssistantTests {
+    @Test func quillCleanupSuppressesDebugContentLogging() async {
+        await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
+            #expect(!TranscriptCleanupDebugLogger.isEnabled)
+            let coordinator = TranscriptionCoordinator()
+            _ = await coordinator.finalizeQuillQuestion("Synthetic question", backend: .parakeetUnified, config: AppConfig())
+            #expect(TranscriptCleanupDebugLogger.suppressContentLogging)
+        }
+        #expect(!TranscriptCleanupDebugLogger.suppressContentLogging)
+    }
+
     @Test func opaqueClipboardSelectionRequiresRangeForEditing() {
         #expect(!QuillAssistantTargetPolicy.isEditable(role: "AXTextArea", valueWritable: true,
             selectionWritable: true, explicitlyEditable: true, usesClipboardFallback: true, hasSelectionRange: false))
@@ -25,6 +35,8 @@ struct QuillAssistantTests {
     @Test func oversizedSelectionStillAllowsAnswerButNeverPartialEdit() throws {
         for backend in [TranscriptCleanupBackendOption.gemma4LiteRT, .hosted(.openAI)] {
             let bounded = request(selection: String(repeating: "a", count: 25_000)).bounded(for: backend)
+            #expect(bounded.selectionTruncated)
+            #expect(try bounded.prompt().contains("\"selection_truncated\":true"))
             #expect(bounded.targetID == nil)
             #expect(bounded.tools.count == 1)
             try QuilModelPolicy.validate(selectedText: bounded.selectedText, backend: backend, model: "test")

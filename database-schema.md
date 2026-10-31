@@ -432,5 +432,11 @@ Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
 
 Quill Timeline reads isolate malformed `quill_conversation_turns.body` JSON:
-readable turns remain visible and conversations with no readable turns are
-omitted. This read-time handling does not mutate or repair stored bodies.
+readable turns remain visible. When both preview endpoints are damaged but
+unchecked middle turns remain, the row stays available for background expansion;
+a full read with no readable turns returns unavailable. This read-time handling
+does not mutate or repair stored bodies.
+
+Quill Timeline rows materialize only the first and last turn plus the stored turn
+count. Expanding a row reads complete history through the store on a background
+task; collapsing or removing the row cancels publication of a late result.

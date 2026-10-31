@@ -233,6 +233,14 @@ actor TranscriptionCoordinator {
     }
 
     private func transcribeQuillQuestionAudio(at url: URL, backend: BackendOption, config: AppConfig, preparation: QuillRecognitionPreparation, applyDictionary: Bool = true) async throws -> String {
+        try await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
+            try await transcribeQuillQuestionAudioWithoutLogging(at: url, backend: backend, config: config,
+                preparation: preparation, applyDictionary: applyDictionary)
+        }
+    }
+
+    private func transcribeQuillQuestionAudioWithoutLogging(at url: URL, backend: BackendOption, config: AppConfig,
+        preparation: QuillRecognitionPreparation, applyDictionary: Bool) async throws -> String {
         try Task.checkCancellation()
         // Never download an alternate recognizer for an optional display preview.
         guard backend.isDownloaded else { throw QuilTransformationError.modelUnavailable }
@@ -266,8 +274,10 @@ actor TranscriptionCoordinator {
     }
 
     func finalizeQuillQuestion(_ text: String, backend: BackendOption, config: AppConfig) async -> String {
-        await finalizeDictationTranscript(.init(text: text, segments: []), backend: backend,
-            enablePostProcessor: false, customWords: quillCustomWords(config)).text
+        await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
+            await finalizeDictationTranscript(.init(text: text, segments: []), backend: backend,
+                enablePostProcessor: false, customWords: quillCustomWords(config)).text
+        }
     }
 
     private func transcribeBufferedBodhan(samples: [Float], modelID: String,

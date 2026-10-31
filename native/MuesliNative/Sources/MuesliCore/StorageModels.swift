@@ -301,6 +301,8 @@ public struct QuillConversationRecord: Identifiable, Sendable {
     public let sessionID: UUID
     public let timestamp: String
     public let turns: [QuillHistoryTurn]
+    /// Total stored turns; Timeline previews contain only the endpoints.
+    public let turnCount: Int
 }
 
 public enum TimelineEntry: Identifiable, Sendable {

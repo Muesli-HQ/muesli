@@ -135,3 +135,9 @@ spoken follow-ups, Copy confirmation, collapse/reopen, dismissal, external-displ
 placement and activity transitions. Compare short direct-audio, long-audio and
 text-provider routes with synthetic requests. Verify native editing, dictation,
 selection and undo through pointer interactions as well as accessibility actions.
+
+Oversized selection context is explicitly marked as truncated in the prompt,
+and answers must disclose the partial reading. Quill uses the shared dictionary
+and deterministic cleanup with transcript-content debug logging suppressed.
+Timeline rows load bounded endpoint previews; expansion loads full history off
+the UI actor.

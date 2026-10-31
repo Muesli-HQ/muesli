@@ -10619,6 +10619,13 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func loadQuillConversation(id: Int64) async -> QuillConversationRecord? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return await Task.detached(priority: .userInitiated) {
+            try? DictationStore(databaseURL: databaseURL).quillConversation(id: id)
+        }.value
+    }
+
     func deleteQuillConversation(_ record: QuillConversationRecord) {
         if quillConversation.id == record.sessionID {
             handleQuilCancel()

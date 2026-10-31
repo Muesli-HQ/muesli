@@ -7,6 +7,7 @@ enum TranscriptCleanupDebugLogger {
     private static let writeQueue = DispatchQueue(label: "MuesliNative.TranscriptCleanupDebugLogger")
 
     @TaskLocal static var requestID: String?
+    @TaskLocal static var suppressContentLogging = false
 
     struct PromptEntry: Encodable {
         let requestID: String?
@@ -85,7 +86,8 @@ enum TranscriptCleanupDebugLogger {
         append(entry, to: AppIdentity.supportDirectoryURL.appendingPathComponent("transcript-cleanup-debug.jsonl"))
     }
 
-    private static var isEnabled: Bool {
+    static var isEnabled: Bool {
+        guard !suppressContentLogging else { return false }
         let raw = ProcessInfo.processInfo.environment[logEnv]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return raw == "1" || raw == "true" || raw == "yes" || Qwen3PostProcessorLogging.isPairLoggingEnabled
     }

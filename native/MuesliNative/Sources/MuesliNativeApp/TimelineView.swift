@@ -216,7 +216,7 @@ struct TimelineView: View {
                 controller.showTimelineMeetingDocument(id: record.id)
             }
         case .quill(let record):
-            TimelineQuillRow(record: record, onDelete: { controller.deleteQuillConversation(record) })
+            TimelineQuillRow(record: record, loadConversation: { await controller.loadQuillConversation(id: record.id) }, onDelete: { controller.deleteQuillConversation(record) })
         case .cotypist(let record):
             TimelineCotypistRow(
                 record: record,
@@ -446,9 +446,12 @@ private struct TimelineCotypistRow: View {
 /// One durable conversation; expansion reveals every exchange, not the bounded model context.
 private struct TimelineQuillRow: View {
     let record: QuillConversationRecord
+    let loadConversation: () async -> QuillConversationRecord?
     let onDelete: () -> Void
     @State private var expanded = false
     @State private var copiedTurn: UUID?
+    @State private var fullConversation: QuillConversationRecord?
+    @State private var loadFailed = false
 
     var body: some View {
         HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
@@ -477,13 +480,17 @@ private struct TimelineQuillRow: View {
                         Text(record.turns.first?.question ?? "Quill conversation")
                             .font(MuesliTheme.body()).lineLimit(2)
                         Spacer()
-                        Text("\(record.turns.count) \(record.turns.count == 1 ? "turn" : "turns")")
+                        Text("\(record.turnCount) \(record.turnCount == 1 ? "turn" : "turns")")
                             .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                         AIIcon(expanded ? .chevronUp : .chevronDown)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(expanded ? "Collapse Quill conversation" : "Expand Quill conversation")
                 if expanded {
-                    ForEach(record.turns) { turn in
+                    if fullConversation == nil {
+                        Text(loadFailed ? "Conversation unavailable" : "Loading conversation…")
+                            .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    ForEach(fullConversation?.turns ?? []) { turn in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(turn.question ?? "Question transcript unavailable")
                                 .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
@@ -499,7 +506,7 @@ private struct TimelineQuillRow: View {
                                 }.font(MuesliTheme.caption())
                             }.buttonStyle(.plain)
                         }.padding(.vertical, 8)
-                        if turn.id != record.turns.last?.id { Divider() }
+                        if turn.id != fullConversation?.turns.last?.id { Divider() }
                     }
                 } else if let last = record.turns.last {
                     Text(last.answer).font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(2)
@@ -509,6 +516,14 @@ private struct TimelineQuillRow: View {
                 .buttonStyle(.plain).help("Delete Quill conversation").accessibilityLabel("Delete Quill conversation")
         }
         .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
+        .task(id: expanded) {
+            guard expanded else { fullConversation = nil; return }
+            loadFailed = false
+            let loaded = await loadConversation()
+            guard !Task.isCancelled else { return }
+            fullConversation = loaded
+            loadFailed = loaded == nil
+        }
         .aiElementsTheme(.init(surface: MuesliTheme.backgroundRaised, border: MuesliTheme.surfaceBorder,
             accent: MuesliTheme.accent, muted: MuesliTheme.textSecondary,
             textFont: { MuesliTheme.font(size: $0, weight: $1) },

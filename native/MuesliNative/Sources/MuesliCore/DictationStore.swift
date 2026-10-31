@@ -543,7 +543,13 @@ public final class DictationStore {
         } catch { try? exec("ROLLBACK", db: db); throw error }
     }
 
-    private func quillConversation(id: Int64, db: OpaquePointer?) throws -> QuillConversationRecord? {
+    public func quillConversation(id: Int64) throws -> QuillConversationRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try quillConversation(id: id, db: db)
+    }
+
+    private func quillConversation(id: Int64, db: OpaquePointer?, previewOnly: Bool = false) throws -> QuillConversationRecord? {
         var identity: (UUID, String)?
         try withStatement("SELECT session_id, timestamp FROM quill_conversations WHERE id = ? AND deleted_at IS NULL", db: db,
             bind: { sqlite3_bind_int64($0, 1, id) }, row: {
@@ -552,12 +558,19 @@ public final class DictationStore {
                 }
             })
         guard let identity else { return nil }
+        var turnCount = 0
+        try withStatement("SELECT COUNT(*) FROM quill_conversation_turns WHERE conversation_id = ?", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { turnCount = Int(sqlite3_column_int64($0, 0)) })
+        // Decode only two bounded bodies during the shared synchronous Timeline refresh.
+        // Full conversation materialization happens off the UI actor on expansion.
+        let endpointFilter = previewOnly ? " AND (seq = (SELECT MIN(seq) FROM quill_conversation_turns WHERE conversation_id = ?1) OR seq = (SELECT MAX(seq) FROM quill_conversation_turns WHERE conversation_id = ?1))" : ""
         var bodies: [String] = []
-        try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ? ORDER BY seq", db: db,
+        try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ?1\(endpointFilter) ORDER BY seq", db: db,
             bind: { sqlite3_bind_int64($0, 1, id) }, row: { bodies.append(String(cString: sqlite3_column_text($0, 0))) })
         let turns = bodies.compactMap { try? JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
-        guard !turns.isEmpty else { return nil }
-        return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns)
+        // Damaged endpoints must not hide potentially readable middle turns.
+        guard !turns.isEmpty || (previewOnly && turnCount > 2) else { return nil }
+        return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns, turnCount: turnCount)
     }
 
     // MARK: - Cotypist
@@ -1242,7 +1255,7 @@ public final class DictationStore {
                 entries.append(.meeting(record))
             } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
                 entries.append(.cotypist(record))
-            } else if key.kind == 3, let record = try quillConversation(id: key.id, db: db) {
+            } else if key.kind == 3, let record = try quillConversation(id: key.id, db: db, previewOnly: true) {
                 entries.append(.quill(record))
             }
         }

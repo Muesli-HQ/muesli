@@ -35,12 +35,31 @@ struct DictationStoreTests {
         #expect(entries.count == 1)
         guard case .quill(let record) = try #require(entries.first) else { Issue.record("Missing conversation"); return }
         #expect(record.sessionID == session)
-        #expect(record.turns.count == 9) // independent of six-turn model context
-        #expect(record.turns.map(\.id) == turns.map(\.id))
+        #expect(record.turnCount == 9)
+        #expect(record.turns.count == 2) // bounded Timeline preview
+        let full = try #require(try reopened.quillConversation(id: record.id))
+        #expect(full.turns.map(\.id) == turns.map(\.id)) // full history survives
         #expect(record.turns[0].question == "Late transcript")
         #expect(record.turns.last?.answer == "Answer 8")
         #expect(try reopened.textRecordsForSyncMigration(kind: .dictation).isEmpty)
         #expect(try reopened.textRecordsForSyncMigration(kind: .meeting).isEmpty)
+    }
+
+    @Test("Damaged preview endpoints preserve access to readable middle turns")
+    func damagedQuillEndpointsKeepConversationAccessible() throws {
+        let store = try makeStore()
+        let session = UUID()
+        for i in 0..<3 {
+            try store.appendQuillTurn(sessionID: session, turn: .init(id: UUID(), question: "Question",
+                answer: "Answer \(i)", timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "test"))
+        }
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE quill_conversation_turns SET body = 'invalid' WHERE seq != 2", nil, nil, nil) == SQLITE_OK)
+        guard case .quill(let preview) = try #require(store.timelineEntries().first) else { Issue.record("Missing preview"); return }
+        #expect(preview.turns.isEmpty)
+        #expect(try store.quillConversation(id: preview.id)?.turns.first?.answer == "Answer 1")
     }
 
     @Test("Deleting Quill history removes text and blocks late callbacks")
