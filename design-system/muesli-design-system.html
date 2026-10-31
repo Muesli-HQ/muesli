@@ -430,6 +430,19 @@
   details p { margin-top:12px; font-size:15px; }
   details summary { color:var(--accent); font-size:12px; cursor:pointer; }
   @media(max-width:600px) { section { padding:36px 20px; } .cover { padding:40px 20px; } .radii-row { flex-wrap:wrap; } }
+  /* Approved brand assets, independent of native UI color tokens. */
+  .brand-cover-logo { display:block; width:min(100%,665px); height:auto; margin-bottom:32px; }
+  .brand-asset-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; margin:24px 0; }
+  .brand-asset { min-width:0; }
+  .brand-stage { display:flex; align-items:center; justify-content:center; height:180px; padding:24px; border:1px solid var(--border); border-radius:8px; }
+  .brand-stage img { display:block; max-width:100%; max-height:132px; width:auto; height:auto; object-fit:contain; }
+  .brand-stage-light { background:#FBF9F0; }
+  .brand-stage-dark { background:#17191C; }
+  .brand-stage-ink { background:#080E16; }
+  .brand-asset figcaption { padding:12px 0; font-size:13px; }
+  .brand-asset figcaption p { color:var(--text-secondary); margin:6px 0; }
+  .brand-asset a, #brand-assets + p a { color:var(--accent); text-underline-offset:3px; }
+  @media(max-width:600px) { .brand-asset-grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -440,32 +453,10 @@
 
 <!-- COVER -->
 <div class="cover">
-  <div style="display:flex;gap:3px;align-items:center;height:80px;padding:16px 20px;background:#1A1B1E;border-radius:18px;margin-bottom:40px">
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:20px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:30px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:36px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:54px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:72px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:78px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:34px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:78px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:72px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:54px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:36px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:30px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:20px"></div>
-  </div>
-  <h1>muesli</h1>
-  <div class="subtitle">design language system</div>
-  <div class="meta">PR #584 &middot; updated October 8, 2026 &middot; macOS native app</div>
+  <img class="brand-cover-logo" src="assets/brand/muesli-waveform-lockup-blue-on-ink.svg" width="665" height="161" alt="muesli: light blue waveform and wordmark on blue-black">
+  <h1>design language system</h1>
+  <p class="subtitle">Native macOS components and official brand assets</p>
+  <div class="meta">Brand and indicator audit: October 31, 2026 &middot; source e1b52117</div>
 </div>
 
 <!-- 1. COLORS -->
@@ -566,13 +557,14 @@
 <!-- 4. ICONOGRAPHY -->
 <section class="page-break">
   <h2><span class="num">04</span> Iconography</h2>
-  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, custom MWaveformIcon for branding.</p>
+  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, official assets for branding. Symbol names below are authoritative; browser emoji are illustrative placeholders, not SF Symbol renderings.</p>
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock<br>Timeline</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x301C;</span><div class="icon-label">waveform<br>Dictations</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2<br>Meetings</div></div>
+    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2 / person.2<br>Meetings (expanded / collapsed)</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true">&#x1F4AC;</span><div class="icon-label">bubble.left.and.bubble.right<br>Chat</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4CA;</span><div class="icon-label">chart.bar.xaxis<br>Insights</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4BB;</span><div class="icon-label">cpu<br>Models</div></div>
@@ -580,164 +572,114 @@
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
     <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Icons are outline-only at 14pt medium; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Chat follows Meetings; Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About sit in the bottom section. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Expanded row icons use 14pt medium; collapsed rail icons use 16pt medium. Meetings uses person.wave.2 expanded and person.2 collapsed. Icons are outline-only; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
-  <h3>Floating Indicator Controls</h3>
+  <h3>Indicator iconography and states</h3>
+  <p class="pattern-note">Source-audited against origin/main at <code>e1b52117</code>, October 31, 2026. These are static browser specimens. Validate native rendering, motion, and pointer behavior in the app before treating them as pixel-accurate screenshots.</p>
   <table>
-    <tr><th>Glyph</th><th>State</th><th>Context</th></tr>
-    <tr><td style="font-size:20px">&#x275A;&#x275A;&#x275A;</td><td>Idle, Preparing, Recording</td><td>Animated MWaveformIcon bars — dictation states render live amplitude, not emoji</td></tr>
-    <tr><td style="font-size:20px">&#x23F8;</td><td>Meeting recording</td><td>Pause — click to pause recording (<code>recordingControlSymbol()</code>)</td></tr>
-    <tr><td style="font-size:20px">&#x25B6;</td><td>Meeting paused</td><td>Resume — click to continue recording</td></tr>
-    <tr><td style="font-size:20px">&times;</td><td>Dictation recording</td><td>Discard — cancel recording</td></tr>
-    <tr><td style="font-size:20px">&#x23F9;</td><td>Meeting (menu/loading)</td><td>Stop glyph in menu-style indicator contexts</td></tr>
+    <tr><th>Surface / state</th><th>Current native presentation</th></tr>
+    <tr><td>Classic idle</td><td>MenuBarIconRenderer resting mark; optional compact hotkey cue. Hover reveals the configured start prompt.</td></tr>
+    <tr><td>Minimal idle</td><td>A resting grip; hover reveals the shortcut pill. The same active capsule renderer is used while recording.</td></tr>
+    <tr><td>Preparing / waiting</td><td>Five procedural standing bars with a timed waiting animation. This is not microphone amplitude.</td></tr>
+    <tr><td>Recording dictation</td><td>Five standing bars driven by smoothed microphone amplitude. Left cancel area and right stop square.</td></tr>
+    <tr><td>Recording meeting, floating</td><td>Standing bars with explicit xmark discard and stop.fill buttons. The waveform body is draggable; clicking it does not stop a meeting.</td></tr>
+    <tr><td>Transcribing</td><td>wand.and.sparkles with the current title; repeating wiggle on macOS 15+. Quill instruction progress uses its feather and spinner.</td></tr>
+    <tr><td>Notch recording</td><td>Seven standing bars; hands-free mode uses a 15-sample scrolling waveform. Reduce Motion uses standing bars and a slower update cadence.</td></tr>
+    <tr><td>Notch meeting controls</td><td>xmark discard in the left wing; pause.fill / play.fill and stop.fill in the right wing. Paused content shows pause.fill.</td></tr>
+    <tr><td>Notch processing / outcome</td><td>Mini progress indicator while active; circle.fill for success or exclamationmark.triangle.fill for failure.</td></tr>
   </table>
-
-  <h3>MWaveformIcon (Brand Mark)</h3>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">M-shaped waveform rendered as rounded bars. The full app icon uses ~21 bars forming a symmetrical "M" pattern with two peaks and a central valley. Simplified 9-bar preset for small contexts: [0.45, 0.65, 0.90, 1.0, 0.45, 1.0, 0.90, 0.65, 0.45]</p>
-
-  <h4>Full Icon (as in app icon)</h4>
-  <div style="display:flex;gap:3px;align-items:center;height:80px;margin:16px 0;padding:16px 20px;background:#1A1B1E;border-radius:18px;width:fit-content">
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:20px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:30px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:36px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:54px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:72px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:78px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:34px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:78px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:72px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:64px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:54px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:46px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:36px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:30px"></div>
-    <div style="width:4px;border-radius:2px;background:var(--accent);height:20px"></div>
+  <h3 id="brand-assets">Official brand assets</h3>
+  <p class="section-desc">Use the supplied artwork from <a href="https://muesli.works/brand">muesli.works/brand</a>. The waveform geometry, lowercase lettering, spacing, and proportions are already built into the files. All previews below load local assets and work offline.</p>
+  <div class="brand-asset-grid">
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-icon.png" width="1024" height="1024" alt="App icon for Muesli" loading="lazy"></div>
+      <figcaption><strong>App icon</strong><p>The original blue waveform on charcoal. Use for app listings, avatars, and product mentions.</p><a href="assets/brand/muesli-icon.png" download>Download PNG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-icon-black.svg" width="180" height="180" alt="Black and white for Muesli" loading="lazy"></div>
+      <figcaption><strong>Black and white</strong><p>Black waveform on white. Use on light backgrounds.</p><a href="assets/brand/muesli-icon-black.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-dark"><img src="assets/brand/muesli-icon-white.svg" width="180" height="180" alt="White and black for Muesli" loading="lazy"></div>
+      <figcaption><strong>White and black</strong><p>White waveform on black. Use on dark backgrounds.</p><a href="assets/brand/muesli-icon-white.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-waveform-lockup-navy.svg" width="665" height="161" alt="Primary lockup for Muesli" loading="lazy"></div>
+      <figcaption><strong>Primary lockup</strong><p>Our deep blue waveform and lowercase muesli wordmark on a transparent background.</p><a href="assets/brand/muesli-waveform-lockup-navy.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-waveform-lockup-black.svg" width="665" height="161" alt="Black lockup for Muesli" loading="lazy"></div>
+      <figcaption><strong>Black lockup</strong><p>Black waveform and wordmark on a transparent background for light surfaces.</p><a href="assets/brand/muesli-waveform-lockup-black.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-dark"><img src="assets/brand/muesli-waveform-lockup-white.svg" width="665" height="161" alt="White lockup for Muesli" loading="lazy"></div>
+      <figcaption><strong>White lockup</strong><p>White waveform and wordmark on a transparent background for dark surfaces.</p><a href="assets/brand/muesli-waveform-lockup-white.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-ink"><img src="assets/brand/muesli-waveform-lockup-blue-on-ink.svg" width="665" height="161" alt="Light blue Muesli waveform and lowercase wordmark on dark blue-black" loading="lazy"></div>
+      <figcaption><strong>Light blue on site ink</strong><p>Light blue waveform and lowercase muesli wordmark on #080e16, matching the site’s primary text and footer wordmark.</p><a href="assets/brand/muesli-waveform-lockup-blue-on-ink.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-wordmark-primary.svg" width="489" height="180" alt="Primary wordmark for Muesli" loading="lazy"></div>
+      <figcaption><strong>Primary wordmark</strong><p>Lowercase Muesli lettering, supplied as outlined paths so no font installation is needed.</p><a href="assets/brand/muesli-wordmark-primary.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-light"><img src="assets/brand/muesli-wordmark-black.svg" width="489" height="180" alt="Black wordmark for Muesli" loading="lazy"></div>
+      <figcaption><strong>Black wordmark</strong><p>Lowercase Muesli lettering, supplied as outlined paths so no font installation is needed.</p><a href="assets/brand/muesli-wordmark-black.svg" download>Download SVG</a></figcaption>
+    </figure>
+    <figure class="brand-asset">
+      <div class="brand-stage brand-stage-dark"><img src="assets/brand/muesli-wordmark-white.svg" width="489" height="180" alt="White wordmark for Muesli" loading="lazy"></div>
+      <figcaption><strong>White wordmark</strong><p>Lowercase Muesli lettering, supplied as outlined paths so no font installation is needed.</p><a href="assets/brand/muesli-wordmark-white.svg" download>Download SVG</a></figcaption>
+    </figure>
   </div>
-
-  <h4>Simplified (9-bar, for small UI contexts)</h4>
-  <div style="display:flex;gap:3px;align-items:center;height:48px;margin:16px 0">
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:22px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:31px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:43px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:48px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:22px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:48px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:43px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:31px"></div>
-    <div style="width:5px;border-radius:2.5px;background:var(--accent);height:22px"></div>
-  </div>
+  <h4>Brand color values</h4>
+  <table>
+    <tr><th>Role</th><th>Value</th><th>Use</th></tr>
+    <tr><td>Light blue</td><td><code>#6AA0F4</code></td><td>Waveform and wordmark on the blue-black brand background</td></tr>
+    <tr><td>Site ink / blue-black</td><td><code>#080E16</code></td><td>Dark logo background; matches the website's primary text and footer wordmark</td></tr>
+    <tr><td>Navy</td><td><code>#12365B</code></td><td>Primary transparent waveform lockup and wordmark</td></tr>
+    <tr><td>Monochrome</td><td><code>#000000</code> / <code>#FFFFFF</code></td><td>Black and white logo variants</td></tr>
+  </table>
+  <p class="pattern-note">Brand colors belong to these assets. Native UI controls continue to use the adaptive accent documented in the color section. Use the original app icon for app identity; use the transparent waveform lockup for brand layouts. Wordmarks contain outlined Nunito Sans lettering and require no installed font. Preserve the supplied spacing and aspect ratio.</p>
+  <p class="pattern-note">The live recording indicator uses amplitude-driven animation. Its illustrative bars elsewhere in this guide describe runtime behavior and are not replacement brand artwork. Do not reconstruct the logo with CSS bars or simplified bar-count presets.</p>
+  <p><a href="assets/brand/assets.json">Local asset index</a> &middot; <a href="https://muesli.works/brand/assets.json">Published asset index</a></p>
 </section>
 
 <!-- 5. FLOATING INDICATOR -->
 <section class="page-break">
   <h2><span class="num">05</span> Floating Indicator</h2>
-  <p class="section-desc">Always-on-top frosted glass pill. Draggable (position persisted), clickable, with smooth animated transitions between states.</p>
-
-  <h3>Material & Appearance</h3>
+  <p class="section-desc">Classic and Minimal floating surfaces share the active capsule. Notch has its own SwiftUI renderer. The approved brand logo is separate from these audio visualizations.</p>
+  <h3>Geometry and appearance</h3>
   <table>
-    <tr><th>Property</th><th>Value</th></tr>
-    <tr><td>Material</td><td><code>NSVisualEffectView</code> with <code>.hudWindow</code> material, <code>.withinWindow</code> blending</td></tr>
-    <tr><td>Idle background</td><td>Frosted glass (vibrancy blur, no solid color)</td></tr>
-    <tr><td>Recording background</td><td>Solid accent color at 72% opacity (hides frost)</td></tr>
-    <tr><td>Corner radius</td><td>Half of pill height (fully rounded)</td></tr>
-    <tr><td>Window level</td><td><code>.floating</code></td></tr>
-    <tr><td>Accent color</td><td>User-configurable via Settings &mdash; shared with dashboard controls and indicator previews; semantic success/error colors stay distinct</td></tr>
-    <tr><td>Draggable</td><td>Click+drag to reposition. Anchor point persisted to config as <code>indicatorAnchor</code></td></tr>
+    <tr><th>State</th><th>Current implementation</th></tr>
+    <tr><td>Classic idle</td><td>44×28pt; hover width is measured from the prompt and hotkey. Hover height is 36pt.</td></tr>
+    <tr><td>Minimal idle</td><td>40pt-high window sized to the shortcut pill; only the visible grip/pill is interactive.</td></tr>
+    <tr><td>Preparing</td><td>76×22pt, waiting bars, immediate transition.</td></tr>
+    <tr><td>Recording</td><td>76×22pt normally. Cursor-insertion-stopped feedback widens to fit its title.</td></tr>
+    <tr><td>Transcribing</td><td>Measured title width and 32pt height; instruction transcript mode has separate sizing.</td></tr>
+    <tr><td>Loading / notices</td><td>Message-dependent widths, 36pt high; use the dedicated loading/notice path.</td></tr>
+    <tr><td>Surface</td><td>NSVisualEffectView hudWindow material, withinWindow blending, with a separate tint layer.</td></tr>
+    <tr><td>Tint</td><td>Idle 1e1e2e at 44% / 72% on hover; preparing and transcribing 62%; recording uses the configured recording color at 85%.</td></tr>
+    <tr><td>Window alpha</td><td>Idle 0.90; hovered idle and active states 1.0.</td></tr>
+    <tr><td>Border</td><td>White 22% idle, 14% hovered idle, 16% preparing/recording/transcribing.</td></tr>
   </table>
-
-  <div class="indicator-grid">
-    <div class="indicator-card">
-      <div class="state-name">Idle (Compact)</div>
-      <div class="indicator-pill" style="width:44px;height:28px;background:rgba(30,30,46,0.44);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.22)">&#x1F3A4;</div>
-      <div class="dims">44 &times; 28 &middot; frosted glass &middot; #1e1e2e 44% &middot; alpha 0.85</div>
-    </div>
-    <div class="indicator-card">
-      <div class="state-name">Idle (Hover)</div>
-      <div class="indicator-pill" style="width:220px;height:36px;background:rgba(30,30,46,0.72);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.14);font-size:11px;padding:0 12px"><span>&#x1F3A4;</span><span style="color:rgba(255,255,255,0.75);font-weight:600;margin-left:4px">Hold Left Cmd to dictate</span></div>
-      <div class="dims">220 &times; 36 &middot; frosted glass &middot; #1e1e2e 72% &middot; alpha 1.0</div>
-    </div>
-    <div class="indicator-card">
-      <div class="state-name">Recording (Hold / Toggle)</div>
-      <div class="indicator-pill" style="width:96px;height:26px;background:rgba(239,68,68,0.85);border:1px solid rgba(255,255,255,0.16);padding:0 8px;gap:6px;justify-content:space-between">
-        <span style="color:rgba(255,255,255,0.45);font-size:12px;font-weight:300;cursor:pointer">&times;</span>
-        <div class="waveform-demo" style="height:16px;gap:3px"><div class="bar" style="height:5px;width:2.5px"></div><div class="bar" style="height:10px;width:2.5px"></div><div class="bar" style="height:10px;width:2.5px"></div><div class="bar" style="height:5px;width:2.5px"></div></div>
-        <div style="width:7px;height:7px;background:rgba(255,255,255,0.85);border-radius:1.5px;flex-shrink:0"></div>
-      </div>
-      <div class="dims">76 &times; 22 &middot; solid accent 85% (frost hidden)<br>Left zone (&lt;30pt): X cancel &middot; Right zone: stop square</div>
-    </div>
-    <div class="indicator-card">
-      <div class="state-name">Recording (Meeting)</div>
-      <div class="indicator-pill" style="width:96px;height:26px;background:rgba(239,68,68,0.85);border:1px solid rgba(255,255,255,0.16);padding:0 8px;gap:6px;justify-content:space-between">
-        <span style="color:rgba(255,255,255,0.85);font-size:10px;cursor:pointer">&#x23F9;</span>
-        <div class="waveform-demo" style="height:16px;gap:3px"><div class="bar" style="height:5px;width:2.5px"></div><div class="bar" style="height:10px;width:2.5px"></div><div class="bar" style="height:10px;width:2.5px"></div><div class="bar" style="height:5px;width:2.5px"></div></div>
-      </div>
-      <div class="dims">76 &times; 22 &middot; solid accent 85%<br>Left zone (&lt;30pt): discard &middot; Right zone: stop &#x23F9;</div>
-    </div>
-    <div class="indicator-card">
-      <div class="state-name">Transcribing</div>
-      <div class="indicator-pill" style="width:120px;height:32px;background:rgba(30,30,46,0.62);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.16);font-size:11px;padding:0 12px;gap:4px"><span>&#x270D;&#xFE0F;</span><span style="color:rgba(255,255,255,0.82);font-weight:600">Transcribing</span></div>
-      <div class="dims">120 &times; 32 &middot; frosted glass &middot; #1e1e2e 62% &middot; content bg #D99A11 92%</div>
-    </div>
-  </div>
-
-  <h3>State Dimensions</h3>
+  <h3>Standing waveform dynamics</h3>
   <table>
-    <tr><th>State</th><th>Width</th><th>Height</th><th>Tint</th><th>Alpha</th><th>Frost</th></tr>
-    <tr><td>Idle (compact)</td><td>44pt</td><td>28pt</td><td><code>#1e1e2e</code> 44%</td><td>0.85</td><td>Visible</td></tr>
-    <tr><td>Idle (hover)</td><td>220pt</td><td>36pt</td><td><code>#1e1e2e</code> 72%</td><td>1.0</td><td>Visible</td></tr>
-    <tr><td>Preparing</td><td>44pt</td><td>28pt</td><td><code>#1e1e2e</code> 62%</td><td>1.0</td><td>Visible</td></tr>
-    <tr><td>Recording</td><td>76pt</td><td>22pt</td><td><code>recordingColorHex</code> 85%</td><td>1.0</td><td>Hidden (solid)</td></tr>
-    <tr><td>Transcribing</td><td>120pt</td><td>32pt</td><td><code>#1e1e2e</code> 62%</td><td>1.0</td><td>Visible</td></tr>
-    <tr><td>Warning</td><td>260pt</td><td>36pt</td><td>&mdash;</td><td>1.0</td><td>&mdash;</td></tr>
-    <tr><td>Loading</td><td>180pt</td><td>36pt</td><td>&mdash;</td><td>1.0</td><td>&mdash;</td></tr>
+    <tr><th>Property</th><th>Source value</th></tr>
+    <tr><td>Floating bar count</td><td>5</td></tr>
+    <tr><td>Bar width / spacing</td><td>3pt / 3pt, scaled down if bounds are too narrow</td></tr>
+    <tr><td>Height</td><td>3 + 11 × amplitude pt, capped by available height (3–14pt at full size)</td></tr>
+    <tr><td>Standing envelope</td><td>[0.6, 0.85, 1.0, 0.85, 0.6]; interpolated for other bar counts</td></tr>
+    <tr><td>Audio normalization</td><td>clamp((dB + 68) / 38, 0, 1); non-finite input becomes zero</td></tr>
+    <tr><td>Smoothing</td><td>0.48 × current amplitude + 0.52 × previous</td></tr>
+    <tr><td>Update cadence</td><td>30Hz timer in common run-loop modes; notch Reduce Motion uses 10Hz</td></tr>
+    <tr><td>Waiting animation</td><td>sin(elapsed × 5.8 + index × 0.72), with per-bar height and opacity variation</td></tr>
+    <tr><td>Stop square</td><td>6×6pt, White 85%, 1pt radius; dictation only</td></tr>
   </table>
-
-  <h3>Meeting Indicator Click Zones</h3>
-  <table>
-    <tr><th>Zone</th><th>X Range</th><th>Action</th></tr>
-    <tr><td>Left</td><td><code>x &lt; 30pt</code></td><td>Discard meeting (with confirmation alert)</td></tr>
-    <tr><td>Right</td><td><code>x &ge; 30pt</code></td><td>Stop meeting recording</td></tr>
-  </table>
-  <p style="font-size:12px;color:var(--text-tertiary);margin:8px 0 24px">Toggle/hands-free dictation uses the same zones: left = cancel, right = stop.</p>
-
-  <h3>Border</h3>
-  <table>
-    <tr><th>State</th><th>Border Color</th></tr>
-    <tr><td>Idle (compact)</td><td>White 22%</td></tr>
-    <tr><td>Idle (hover)</td><td>White 14%</td></tr>
-    <tr><td>Preparing / Recording / Transcribing</td><td>White 16%</td></tr>
-  </table>
-
-  <h3>Waveform Specifications</h3>
-  <table>
-    <tr><th>Property</th><th>Value</th></tr>
-    <tr><td>Bar width</td><td><code>3pt</code></td></tr>
-    <tr><td>Bar spacing</td><td><code>4pt</code></td></tr>
-    <tr><td>Min height</td><td><code>5pt</code></td></tr>
-    <tr><td>Max height</td><td><code>26pt</code></td></tr>
-    <tr><td>Bar color</td><td>White 85%</td></tr>
-    <tr><td>Stop square</td><td>6&times;6pt, White 85%, 1pt radius</td></tr>
-    <tr><td>5-bar multipliers</td><td><code>[0.6, 0.85, 1.0, 0.85, 0.6]</code></td></tr>
-    <tr><td>4-bar multipliers</td><td><code>[0.7, 1.0, 1.0, 0.7]</code></td></tr>
-    <tr><td>Animation</td><td>Scale Y, 0.6s, easeInEaseOut, autoreverses, 0.07s stagger</td></tr>
-    <tr><td>Amplitude smoothing</td><td>Exponential average, 0.5 weight, 30fps</td></tr>
-  </table>
-
-  <h3>Transition Timings</h3>
-  <table>
-    <tr><th>Transition</th><th>Duration</th><th>Easing</th></tr>
-    <tr><td>Idle &harr; Hover</td><td>0.24s in / 0.20s out</td><td>easeInEaseOut</td></tr>
-    <tr><td>Idle &harr; Active state</td><td>0.18s</td><td>easeInEaseOut</td></tr>
-    <tr><td>Between active states</td><td>0.16s</td><td>easeInEaseOut</td></tr>
-    <tr><td>Hover exit delay</td><td>0.14s</td><td>&mdash;</td></tr>
-  </table>
+  <h3>Transitions and controls</h3>
+  <p class="pattern-note">Preparing and preparing-to-recording transitions are immediate. Idle hover uses 0.24s in / 0.20s out. Other idle transitions use 0.18s; other active transitions use 0.16s. Meeting actions use explicit buttons: discard and stop in the floating capsule; discard, pause/resume, and stop in the notch.</p>
+  <p class="pattern-note">Sources: <code>FloatingIndicatorController.swift</code>, <code>IndicatorWaveformDynamics.swift</code>, <code>NotchIndicatorController.swift</code>, <code>RecordingIndicatorStylePicker.swift</code>. The separate <code>MWaveformIcon.swift</code> retains 5/7/9/11/13-bar static presets for native UI contexts; these are not the approved logo files.</p>
 </section>
 
 <!-- 6. COMPONENTS -->
@@ -901,10 +843,10 @@
   <table>
     <tr><th>Context</th><th>Duration</th><th>Easing</th></tr>
     <tr><td>Hover state changes (buttons, cards)</td><td>0.15s</td><td>easeInOut</td></tr>
-    <tr><td>Indicator state transitions</td><td>0.16&ndash;0.18s</td><td>easeInEaseOut</td></tr>
+    <tr><td>Indicator state transitions</td><td>0 / 0.16 / 0.18s</td><td>Preparing is immediate; other transitions use easeInEaseOut</td></tr>
     <tr><td>Onboarding page navigation</td><td>0.20s</td><td>easeInOut</td></tr>
     <tr><td>Permission grant animation</td><td>0.25s</td><td>easeInOut</td></tr>
-    <tr><td>Waveform pulse cycle</td><td>0.60s</td><td>easeInEaseOut</td></tr>
+    <tr><td>Standing waveform update</td><td>30Hz</td><td>Audio smoothing or procedural waiting phase; see section 05</td></tr>
     <tr><td>Stat number transitions</td><td>System default</td><td>.numericText()</td></tr>
   </table>
 
@@ -914,7 +856,7 @@
     <tr><td>Indicator (idle)</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>Reposition</td></tr>
     <tr><td>Indicator (recording)</td><td>Stop & save</td><td>&mdash;</td><td>&mdash;</td><td>Reposition</td></tr>
     <tr><td>Indicator (toggle)</td><td>Left=discard, Right=save</td><td>Discard</td><td>Discard</td><td>Reposition</td></tr>
-    <tr><td>Indicator (meeting)</td><td>Stop & save</td><td>Discard confirm</td><td>Discard confirm</td><td>Reposition</td></tr>
+    <tr><td>Indicator (meeting)</td><td>Explicit discard / stop buttons; body does not stop</td><td>Surface-specific menu</td><td>Discard callback</td><td>Reposition floating body</td></tr>
     <tr><td>Meeting card</td><td>Select</td><td>Move to folder</td><td>&mdash;</td><td>&mdash;</td></tr>
     <tr><td>Folder row</td><td>Filter</td><td>Rename / Delete</td><td>&mdash;</td><td>&mdash;</td></tr>
   </table>

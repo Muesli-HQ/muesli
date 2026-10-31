@@ -117,6 +117,20 @@ Show the latest three tool summaries under the working status, using 10pt text a
 
 Active dictation, processing, and computer-use sessions own the indicator until they finish. Background loading callbacks and cursor feedback must not hide or replace their presentation or cancellation controls. Loading may use the shared floating surface while idle; starting an activity retires that loading presentation so its later completion cannot reset the session.
 
+## Official brand assets
+
+The cover and brand specimens use approved artwork from [muesli.works/brand](https://muesli.works/brand), copied from `Muesli-HQ/muesli-landing` commit `7b6b434e5fc54e51d05a002440355fd5b90a416f` (brand library PR #5). Files live in `assets/brand/`; `assets/brand/assets.json` maps local files to their published URLs and descriptions. Keep this directory beside the HTML when sharing the offline reference.
+
+Use the supplied icon, waveform lockups, and outlined wordmarks directly. Do not recreate the brand with CSS bars, a guessed bar count, or separately typeset letters. Outlined wordmarks preserve Nunito Sans lettering and spacing without a font download. The animated recording-indicator specimens remain UI behavior examples.
+
+The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary transparent lockup uses `#12365B`. These brand values do not replace the native app's adaptive UI accent. Copy updated official files and their metadata together when refreshing this reference.
+
+## Iconography and indicator audit (October 31, 2026)
+
+Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
+
+Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+
 ## Quill conversation answers
 
 The Dashboard & Notch specimen includes Quill's content-sized answer state using
