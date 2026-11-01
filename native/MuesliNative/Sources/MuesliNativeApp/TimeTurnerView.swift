@@ -17,11 +17,16 @@ struct MemoryImageView: View {
     let item: VisualMemoryItem
     let memory: VisualMemoryController
     var maximumSize: CGFloat = 400
+    var compact = false
     @State private var image: NSImage?
     @State private var unavailable = false
     var body: some View {
         Group {
-            if item.mediaDeletedAt != nil {
+            if compact && (item.mediaDeletedAt != nil || unavailable) {
+                Label(item.mediaDeletedAt != nil ? "Screenshot expired" : "Preview unavailable", systemImage: "photo")
+                    .font(MuesliTheme.caption()).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            else if item.mediaDeletedAt != nil {
                 VStack(spacing: 12) {
                     Label("Screenshot expired", systemImage: "text.page")
                     Text(item.text.isEmpty ? "App history is still available." : item.text)
@@ -94,7 +99,8 @@ struct TimeTurnerControls: View {
                 .help(memory.ambientStatus == "Skipping this app" ? "The current app is excluded from screen capture. Capture resumes when you switch to an allowed app." : memory.ambientStatus)
             if !standalone { Spacer() }
             if appState.config.timeTurnerEnabled {
-                Button(memory.ambientPaused ? "Resume" : "Pause") { memory.toggleAmbientPause() }
+                RecordingPauseButton(isPaused: memory.ambientPaused) { memory.toggleAmbientPause() }
+                    .help(memory.ambientPaused ? "Resume screen history" : "Pause screen history")
             }
             if !appState.config.timeTurnerEnabled {
                 Button("Set up Time Turner") { showsSetup = true }

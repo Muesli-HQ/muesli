@@ -55,7 +55,7 @@ The Time Turner header collapses the inline viewer into one row without pausing 
 
 ## Agent CLI
 
-The bundled `muesli-cli time-turner` commands open the visual catalog read-only, without migration or creating a missing catalog. Select the lane explicitly with `--support-dir` (or `MUESLI_SUPPORT_DIR`). Results use the CLI JSON envelope and original UTC capture timestamps with fractional seconds.
+The bundled `muesli-cli time-turner` commands open the visual catalog read-only, without migration or creating a missing catalog. Older catalogs without an FTS table build a temporary search index per CLI invocation; opening the catalog in the updated app creates the persistent index and avoids that repeated cost. Select the lane explicitly with `--support-dir` (or `MUESLI_SUPPORT_DIR`). Results use the CLI JSON envelope and original UTC capture timestamps with fractional seconds.
 
 ```bash
 CLI=/Applications/MuesliDevB.app/Contents/MacOS/muesli-cli

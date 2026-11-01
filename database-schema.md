@@ -570,7 +570,9 @@ Source validation runs on load, before navigation and every five seconds while
 visible. Removed/missing captures or revised/deleted meetings invalidate the
 whole recap, remove its saved record and require explicit regeneration. Capture
 deletion and history expiry additionally purge affected recaps without opening
-them, using the durable cleanup queue above. Meeting revision changes still use
+them, using the durable cleanup queue above. Cleanup binds capture IDs as one JSON
+array and deletes matching recaps in a single statement per batch, avoiding a
+full recap-source scan for each expired capture. Meeting revision changes still use
 read-time revalidation. Screenshot expiry alone does not invalidate OCR evidence.
 Temporary storage errors hide unverified content but preserve the saved record
 for retry; only confirmed stale evidence removes it. Media

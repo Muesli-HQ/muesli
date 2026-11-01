@@ -77,6 +77,33 @@ struct TimeTurnerRecapTests {
         #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) != nil)
     }
 
+    @Test func bulkCaptureDeletionPreservesUnrelatedRecaps() throws {
+        let (root, db, _, item) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try TimeTurnerRecapStore(databaseURL: db)
+        let quoted = capture("quoted'\"id")
+        let untouched = capture("untouched")
+        var keys: [String] = []
+        for (index, source) in [item, quoted, untouched].enumerated() {
+            let start = day.addingTimeInterval(Double(index) * 86400)
+            let recap = SavedTimeTurnerRecap(version: 1, dayStart: start, dayEnd: start.addingTimeInterval(86400),
+                timeZone: "UTC", generatedAt: day, provider: "test", model: "test", insights: [], sources: try packet([source]).sources)
+            try store.save(recap)
+            keys.append(recap.key)
+        }
+        try store.delete(captureIDs: [])
+        #expect(try store.load(key: keys[0]) != nil)
+        var ids = Set((0..<5000).map { "absent-\($0)" })
+        ids.insert(item.id)
+        ids.insert(quoted.id)
+        try store.delete(captureIDs: ids)
+        #expect(try store.load(key: keys[0]) == nil)
+        #expect(try store.load(key: keys[1]) == nil)
+        #expect(try store.load(key: keys[2]) != nil)
+        try store.delete(captureIDs: ids)
+        #expect(try store.load(key: keys[2]) != nil)
+    }
+
     @MainActor @Test func loadingExpiredEvidencePurgesSavedRecap() async throws {
         let (root, db, _, item) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

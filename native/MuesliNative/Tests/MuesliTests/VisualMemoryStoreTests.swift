@@ -547,6 +547,22 @@ struct VisualMemoryStoreTests {
         #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
     }
 
+    @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }
+        let scale = VisualMemoryScrubScale(dates: dates)
+        for index in stride(from: 0, to: dates.count, by: 37) {
+            let expected = Double(index) / Double(dates.count - 1)
+            #expect(abs(scale.fraction(for: dates[index]) - expected) < 0.000001)
+            #expect(abs(scale.date(at: expected)!.timeIntervalSince(dates[index])) < 0.000001)
+        }
+        #expect(scale.fraction(for: start.addingTimeInterval(-1)) == 0)
+        #expect(scale.fraction(for: dates.last!.addingTimeInterval(1)) == 1)
+        let duplicates = VisualMemoryScrubScale(dates: [start, start, start.addingTimeInterval(10), start.addingTimeInterval(10), start.addingTimeInterval(20)])
+        #expect(duplicates.fraction(for: start.addingTimeInterval(10)) == 0.5)
+        #expect(duplicates.date(at: 0.5) == start.addingTimeInterval(10))
+    }
+
     @Test func meetingResumeDoesNotOverrideExplicitVideoPause() {
         var state = ScreenRecordingPauseState()
         state.userPaused = true; state.meetingPaused = true

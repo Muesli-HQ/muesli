@@ -13,6 +13,8 @@ struct TimelineView: View {
     @State private var searchHasMore = false
     @State private var searchError: String?
     @State private var searchedHistoryRevision: UInt64?
+    @State private var completedSearchKey: String?
+    private var searchPending: Bool { isSearching && completedSearchKey != searchKey }
     private var isSearching: Bool { !search.isEmpty || contentFilter != "All activity" }
     private var searchKey: String {
         [search, contentFilter, String(searchLimit), appState.timelineFromDate ?? "", appState.timelineToDate ?? "",
@@ -31,7 +33,7 @@ struct TimelineView: View {
         let today = calendar.startOfDay(for: now)
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
         var entriesByDay: [Date: [TimelineEntry]] = [:]
-        for entry in (isSearching ? (searchedHistoryRevision == appState.timelineHistoryRevision ? searchRows : []) : appState.timelineRows) {
+        for entry in (isSearching ? (!searchPending && searchedHistoryRevision == appState.timelineHistoryRevision ? searchRows : []) : appState.timelineRows) {
             let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
             entriesByDay[calendar.startOfDay(for: date), default: []].append(entry)
         }
@@ -88,7 +90,9 @@ struct TimelineView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            if groupedEntries.isEmpty {
+            if searchPending {
+                ProgressView("Searching…").font(MuesliTheme.body()).padding()
+            } else if groupedEntries.isEmpty && searchError == nil {
                 emptyState
             }
             timelineEntries
@@ -98,18 +102,25 @@ struct TimelineView: View {
         .onChange(of: search) { _, _ in searchLimit = 50 }
         .onChange(of: contentFilter) { _, _ in searchLimit = 50 }
         .task(id: searchKey) {
-            guard isSearching else { searchRows = []; searchError = nil; return }
+            guard isSearching else { searchRows = []; searchError = nil; completedSearchKey = nil; return }
             let query = search, activity = contentFilter, limit = searchLimit
             let revision = appState.timelineHistoryRevision
+            let requestKey = searchKey
+            searchError = nil
             do {
                 try await Task.sleep(for: .milliseconds(150))
                 let rows = try await controller.searchTimeline(text: query, activity: activity, limit: limit + 1)
                 try Task.checkCancellation()
-                guard revision == appState.timelineHistoryRevision else { return }
+                guard revision == appState.timelineHistoryRevision, requestKey == searchKey else { return }
+                completedSearchKey = requestKey
                 searchedHistoryRevision = revision
                 searchRows = Array(rows.prefix(limit)); searchHasMore = rows.count > limit; searchError = nil
             } catch is CancellationError { }
-            catch { searchError = "Search unavailable. Try again." }
+            catch {
+                guard !Task.isCancelled, requestKey == searchKey else { return }
+                completedSearchKey = requestKey
+                searchError = "Search unavailable. Try again."
+            }
         }
         .scrollPosition(id: Binding(
             get: { appState.timelineScrollAnchor },
@@ -224,7 +235,7 @@ struct TimelineView: View {
                     }
                 }
 
-                if isSearching && searchHasMore {
+                if isSearching && !searchPending && searchError == nil && searchHasMore {
                     Button("Load more results") { searchLimit += 50 }
                 } else if !isSearching && appState.hasMoreTimelineEntries {
                     Color.clear

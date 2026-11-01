@@ -294,7 +294,11 @@ fresh. Background recognition does not display partial text while recording.
 
 Time Turner has a dedicated sidebar destination after Timeline. Its History and
 Recap tabs share a date selector; capture status, pause/resume and settings remain
-available in both. History prioritizes the screenshot and compact app scrubber.
+available in both. History prioritizes the screenshot and compact app scrubber. Center the day
+control in wide headers and place it on its own centered row at narrow widths;
+its formatted date opens a calendar. Meetings and Time Turner share the same
+pause/resume control. Recap screenshot citations show small image previews with
+timestamps, resolving current media locations after compaction.
 Recap uses a bounded reading column with evidence buttons, generation time and
 original model attribution. It has no permanent screenshot sidebar; a source
 opens the corresponding History moment or meeting passage. The title, date and compact capture controls share one header row, stacking at
