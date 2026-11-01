@@ -165,3 +165,11 @@ Validation also runs before a saved recap is shown. Capture deletion and history
 Durable deletion IDs bridge the separate databases and retry interrupted cleanup;
 source revision checks also run before display and publication. Manual regeneration is required
 after source changes. New captures do not silently regenerate an older recap.
+
+Retention and screenshot-budget controls remain available to voice settings. Reducing
+a limit requires explicit confirmation in both Settings and the Computer Use
+question UI before saving; increasing limits or selecting the current value does
+not. Confirmation is enforced locally, never inferred from a planner flag. A
+cancelled request or a setting changed while confirming performs no write. This
+confirms the policy change once; scheduled expiry under an accepted policy does
+not prompt on every cleanup pass.

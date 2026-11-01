@@ -315,3 +315,7 @@ OCR. Setup uses the same fixed-width SettingsRow menu column. A collapsed
 “How retention works” disclosure holds capture-time aging, cleanup while paused/off,
 and deletion details; the storage estimate remains visible. OCR-only history displays “Screenshot expired” with readable,
 selectable captured text rather than implying a corrupt screenshot.
+
+Time Turner retention and budget reductions show a confirmation before applying
+the policy. Manual Settings uses a sheet; voice uses the shared question UI. Keep
+current settings is the default action. Increasing limits needs no confirmation.

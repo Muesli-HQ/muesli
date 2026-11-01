@@ -179,9 +179,19 @@ extension MuesliController {
                 self.updateConfig { $0[keyPath: key] = option }
             }
         }
-        func textMenu(_ id: String, _ label: String, _ choices: [Choice], _ key: WritableKeyPath<AppConfig, String>) {
+        func textMenu(_ id: String, _ label: String, _ choices: [Choice], _ key: WritableKeyPath<AppConfig, String>,
+                      deletionWarning: String? = nil) {
             add(id, label, choices, read: { $0[keyPath: key] }) { value in
                 self.updateConfig { $0[keyPath: key] = value }
+            }
+            if let deletionWarning {
+                settings[settings.count - 1].deletionConfirmation = { config, value in
+                    let current = config[keyPath: key]
+                    guard current != value, value != "forever", let next = Int(value),
+                          current == "forever" || next < (Int(current) ?? 0) else { return nil }
+                    let choice = choices.first { $0.id == value }?.label ?? value
+                    return "Change \(label.lowercased()) to \(choice)? \(deletionWarning) This cannot be undone."
+                }
             }
         }
         func presets(_ id: String, _ label: String, _ options: [SummaryModelPreset], _ key: WritableKeyPath<AppConfig, String>,
@@ -250,14 +260,14 @@ extension MuesliController {
         }, \.timeTurnerInterval)
         textMenu("time_turner_budget", "Screen history storage", ["2", "5", "10", "20"].map {
             Choice(id: $0, label: "\($0) GB")
-        }, \.timeTurnerBudget)
+        }, \.timeTurnerBudget, deletionWarning: "A smaller budget may delete older screenshots. Searchable history is kept separately.")
 
         textMenu("time_turner_screenshot_retention", "Keep screenshots for", ["1", "7", "14", "30", "90"].map {
             Choice(id: $0, label: $0 == "1" ? "1 day" : "\($0) days")
-        }, \.timeTurnerScreenshotRetention)
+        }, \.timeTurnerScreenshotRetention, deletionWarning: "Screenshots older than this limit will be deleted. Searchable history is kept separately.")
         textMenu("time_turner_history_retention", "Keep searchable history for", ["7", "30", "90", "365", "forever"].map {
             Choice(id: $0, label: $0 == "forever" ? "Until I delete it" : "\($0) days")
-        }, \.timeTurnerHistoryRetention)
+        }, \.timeTurnerHistoryRetention, deletionWarning: "Older OCR and app history, associated screenshots and recaps will be deleted.")
 
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)

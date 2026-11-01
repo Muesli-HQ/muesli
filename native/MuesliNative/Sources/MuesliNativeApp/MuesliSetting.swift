@@ -35,6 +35,8 @@ struct MuesliSetting {
     var requestPermission: (() -> Void)? = nil
     var voiceUnavailable: (String) -> String? = { _ in nil }
     var activation: MuesliSettingActivation? = nil
+    /// Local policy, never a model-supplied approval flag.
+    var deletionConfirmation: (AppConfig, String) -> String? = { _, _ in nil }
     /// A manual UI may prepare a missing shortcut instead of applying an unavailable choice.
     /// The executor still rejects that choice until the prerequisite is supplied.
     var shortcutCapturePreparation: (String) -> ShortcutAssignment? = { _ in nil }
@@ -69,8 +71,9 @@ enum MuesliSettings {
     }
     enum Failure: LocalizedError {
         case rejected(String)
+        case confirmationRequired(String)
         var errorDescription: String? {
-            switch self { case .rejected(let message): return message }
+            switch self { case .rejected(let message), .confirmationRequired(let message): return message }
         }
     }
     static func apply(
@@ -79,7 +82,8 @@ enum MuesliSettings {
         snapshots: [MuesliSetting.Snapshot],
         source: ApplySource = .voice,
         config: () -> AppConfig,
-        persistedConfig: () throws -> AppConfig
+        persistedConfig: () throws -> AppConfig,
+        confirmDeletion: ((String) async throws -> Bool)? = nil
     ) async throws -> String {
         try Task.checkCancellation()
         guard let setting = settings.first(where: { $0.id == selection.setting }) else {
@@ -94,6 +98,16 @@ enum MuesliSettings {
             throw Failure.rejected("\(setting.label) changed while processing your command. Please try again.")
         }
         if let reason = setting.availability(choice.id, source: source) { throw Failure.rejected(reason) }
+        if let warning = setting.deletionConfirmation(config(), choice.id) {
+            guard let confirmDeletion else { throw Failure.confirmationRequired(warning) }
+            guard try await confirmDeletion(warning) else { throw CancellationError() }
+            try Task.checkCancellation()
+            // Approval belongs to this exact old/new value pair, not a later edit.
+            guard setting.read(config()) == snapshot.current else {
+                throw Failure.rejected("\(setting.label) changed while you were confirming. Please try again.")
+            }
+            if let reason = setting.availability(choice.id, source: source) { throw Failure.rejected(reason) }
+        }
         // Once the setter commits, finish readback even if Stop arrives.
         do {
             try await setting.apply(choice.id)
