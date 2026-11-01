@@ -212,6 +212,27 @@ enum MeetingURLNormalizer {
         return nil
     }
 
+    /// Only URLs that name one specific room. `normalize` also accepts any page on a meeting host,
+    /// which is right for the tab in front (a Teams web call has no room in its URL) and wrong for
+    /// a background tab, where an admin dashboard or a Zoom profile page is not a call.
+    static func normalizeRoom(_ rawValue: String) -> NormalizedMeetingURL? {
+        guard let normalized = normalize(rawValue) else { return nil }
+        let url = normalized.url
+        switch normalized.platform {
+        case .googleMeet, .slack, .facetime:
+            return normalized
+        case .zoom:
+            // The identity keeps the subdomain (us02web.zoom.us/j/...), so match the /j/ room path.
+            return url.contains("/j/") ? normalized : nil
+        case .teams:
+            return ["/meetup-join/", "/meet/", "pre-join"].contains { url.contains($0) } ? normalized : nil
+        case .webex:
+            return ["/meet/", "/join", "/j.php"].contains { url.contains($0) } ? normalized : nil
+        default:
+            return nil
+        }
+    }
+
     private static func isGoogleMeetCode(_ value: String) -> Bool {
         let parts = value.lowercased().split(separator: "-")
         guard parts.count == 3,
