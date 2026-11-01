@@ -2451,6 +2451,16 @@ struct SettingsView: View {
                 }
             }
 
+            settingsSection("Manual Export") {
+                settingsRow("Open file after exporting") {
+                    settingsControl("open_after_manual_export")
+                }
+                Text("Opens the exported file in its default app after saving from the Export menu. The Export menu also remembers your last-used format.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .padding(.horizontal, MuesliTheme.spacing16)
+            }
+
             settingsSection("Meeting Notifications") {
                 settingsCompactRow("Scheduled meetings", description: "For calendar events with a join link.") {
                     settingsControl("meeting_reminders")

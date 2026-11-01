@@ -46,34 +46,134 @@ enum MeetingAutoExportFileFormat: String, CaseIterable {
     }
 }
 
+enum MeetingManualExportFormat: String, CaseIterable {
+    case pdf
+    case markdown
+
+    var displayName: String {
+        switch self {
+        case .pdf: return "PDF"
+        case .markdown: return "Markdown"
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .pdf: return "pdf"
+        case .markdown: return "md"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> MeetingManualExportFormat {
+        MeetingManualExportFormat(rawValue: rawValue) ?? .pdf
+    }
+}
+
 struct MeetingExporter {
 
     static let mdType = UTType(filenameExtension: "md") ?? .plainText
     static let pdfType = UTType.pdf
 
-    static func export(meeting: MeetingRecord, content: MeetingExportContent, notesOverride: String? = nil) {
+    static func export(
+        meeting: MeetingRecord,
+        content: MeetingExportContent,
+        notesOverride: String? = nil,
+        preferredFormat: MeetingManualExportFormat = .pdf,
+        openAfterSaving: Bool = true,
+        onFormatConfirmed: ((MeetingManualExportFormat) -> Void)? = nil
+    ) {
         DispatchQueue.main.async {
             let markdown = buildMarkdown(meeting: meeting, content: content, notesOverride: notesOverride)
-            let filename = suggestedFilename(meeting: meeting, content: content)
+            let filename = suggestedFilename(
+                meeting: meeting,
+                content: content,
+                fileExtension: preferredFormat.fileExtension
+            )
 
             let panel = NSSavePanel()
             panel.nameFieldStringValue = filename
-            panel.allowedContentTypes = [pdfType]
+            panel.allowedContentTypes = [contentType(for: preferredFormat)]
             panel.canCreateDirectories = true
 
-            let formatPicker = ExportFormatAccessory(panel: panel)
+            let formatPicker = ExportFormatAccessory(panel: panel, initialFormat: preferredFormat)
             panel.accessoryView = formatPicker.view
 
             presentSavePanel(panel) { url in
-                if formatPicker.selectedFormat == .pdf {
+                processManualExport(
+                    outcome: .confirmed(url: url, format: formatPicker.selectedFormat),
+                    markdown: markdown,
+                    openAfterSaving: openAfterSaving,
+                    onFormatConfirmed: onFormatConfirmed
+                )
+            }
+        }
+    }
+
+    static func contentType(for format: MeetingManualExportFormat) -> UTType {
+        format == .pdf ? pdfType : mdType
+    }
+
+    // MARK: - Export outcome handling
+
+    enum ManualExportOutcome {
+        case cancelled
+        case confirmed(url: URL, format: MeetingManualExportFormat)
+    }
+
+    struct ManualExportIO {
+        var writePDF: (String, URL) throws -> Void
+        var writeMarkdown: (String, URL, @escaping (Error?) -> Void) -> Void
+        var openFile: (URL) -> Void
+        var showError: (String, String) -> Void
+
+        static let live = ManualExportIO(
+            writePDF: { markdown, url in
+                try MeetingExporter.writePDF(attributed: MeetingExporter.buildAttributedString(from: markdown), to: url)
+            },
+            writeMarkdown: { text, url, completion in
+                DispatchQueue.global(qos: .userInitiated).async {
                     do {
-                        try writePDF(attributed: buildAttributedString(from: markdown), to: url)
-                        NSWorkspace.shared.open(url)
+                        try text.write(to: url, atomically: true, encoding: .utf8)
+                        completion(nil)
                     } catch {
-                        showError("Export Failed", error.localizedDescription)
+                        completion(error)
                     }
-                } else {
-                    writeMarkdown(markdown, to: url)
+                }
+            },
+            openFile: { url in
+                DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+            },
+            showError: { title, message in
+                DispatchQueue.main.async { MeetingExporter.showError(title, message) }
+            }
+        )
+    }
+
+    static func processManualExport(
+        outcome: ManualExportOutcome,
+        markdown: String,
+        openAfterSaving: Bool,
+        onFormatConfirmed: ((MeetingManualExportFormat) -> Void)? = nil,
+        io: ManualExportIO = .live
+    ) {
+        guard case let .confirmed(url, format) = outcome else { return }
+        onFormatConfirmed?(format)
+        switch format {
+        case .pdf:
+            do {
+                try io.writePDF(markdown, url)
+                if openAfterSaving {
+                    io.openFile(url)
+                }
+            } catch {
+                io.showError("Export Failed", error.localizedDescription)
+            }
+        case .markdown:
+            io.writeMarkdown(markdown, url) { error in
+                if let error {
+                    io.showError("Export Failed", error.localizedDescription)
+                } else if openAfterSaving {
+                    io.openFile(url)
                 }
             }
         }
@@ -147,17 +247,6 @@ struct MeetingExporter {
     }
 
     // MARK: - Write files
-
-    private static func writeMarkdown(_ text: String, to url: URL) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                try text.write(to: url, atomically: true, encoding: .utf8)
-                DispatchQueue.main.async { NSWorkspace.shared.open(url) }
-            } catch {
-                DispatchQueue.main.async { showError("Export Failed", error.localizedDescription) }
-            }
-        }
-    }
 
     static func writePDF(attributed: NSAttributedString, to url: URL) throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
@@ -464,13 +553,13 @@ class ExportFormatAccessory: NSObject {
     private let popup: NSPopUpButton
     private weak var panel: NSSavePanel?
 
-    enum Format { case pdf, markdown }
-
-    var selectedFormat: Format {
-        popup.indexOfSelectedItem == 0 ? .pdf : .markdown
+    var selectedFormat: MeetingManualExportFormat {
+        let index = popup.indexOfSelectedItem
+        guard index >= 0, index < MeetingManualExportFormat.allCases.count else { return .pdf }
+        return MeetingManualExportFormat.allCases[index]
     }
 
-    init(panel: NSSavePanel) {
+    init(panel: NSSavePanel, initialFormat: MeetingManualExportFormat = .pdf) {
         self.panel = panel
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 32))
@@ -480,8 +569,8 @@ class ExportFormatAccessory: NSObject {
         label.frame = NSRect(x: 0, y: 6, width: 55, height: 20)
 
         let button = NSPopUpButton(frame: NSRect(x: 60, y: 2, width: 190, height: 28), pullsDown: false)
-        button.addItems(withTitles: ["PDF", "Markdown"])
-        button.selectItem(at: 0)
+        button.addItems(withTitles: MeetingManualExportFormat.allCases.map(\.displayName))
+        button.selectItem(at: MeetingManualExportFormat.allCases.firstIndex(of: initialFormat) ?? 0)
 
         container.addSubview(label)
         container.addSubview(button)
@@ -500,12 +589,8 @@ class ExportFormatAccessory: NSObject {
         let currentName = panel.nameFieldStringValue
         let stem = (currentName as NSString).deletingPathExtension
 
-        if selectedFormat == .pdf {
-            panel.allowedContentTypes = [MeetingExporter.pdfType]
-            panel.nameFieldStringValue = "\(stem).pdf"
-        } else {
-            panel.allowedContentTypes = [MeetingExporter.mdType]
-            panel.nameFieldStringValue = "\(stem).md"
-        }
+        let format = selectedFormat
+        panel.allowedContentTypes = [MeetingExporter.contentType(for: format)]
+        panel.nameFieldStringValue = "\(stem).\(format.fileExtension)"
     }
 }
