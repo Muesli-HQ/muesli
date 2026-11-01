@@ -8,6 +8,7 @@ import MuesliCore
 struct TimeTurnerSettingsView: View {
     let controller: MuesliController
     let appState: AppState
+    @State private var presentationCatalog = SettingsPresentationCatalog()
     @State private var setup = false
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
@@ -56,10 +57,16 @@ struct TimeTurnerSettingsView: View {
                 SettingsNote("Sensitive apps and private windows are skipped where detected. Pause before opening private content.")
                     .padding(.top, MuesliTheme.spacing8)
                 subsection("Storage & retention")
-                SettingsRow(label: "Storage budget") {
+                SettingsRow(label: "Keep screenshots for") {
+                    MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention")
+                }
+                SettingsRow(label: "Keep searchable history for") {
+                    MuesliSettingControl(controller: controller, id: "time_turner_history_retention")
+                }
+                SettingsRow(label: "Screenshot storage budget") {
                     MuesliSettingControl(controller: controller, id: "time_turner_budget")
                 }
-                SettingsRow(label: "Local media", controlWidth: nil) {
+                SettingsRow(label: "Screenshot storage", controlWidth: nil) {
                     Text(ByteCountFormatter.string(fromByteCount: memory.usedBytes, countStyle: .file))
                         .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -68,14 +75,16 @@ struct TimeTurnerSettingsView: View {
                         .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
                 }
                 SettingsNote(estimate).padding(.top, MuesliTheme.spacing8)
-                SettingsNote("Keeps up to 7 days within your budget. Reserves 2 GB of free disk space.")
+                SettingsNote("Screenshots may expire sooner when the budget fills. OCR and app history remain searchable for their own retention period and use additional disk space.")
+                    .padding(.top, MuesliTheme.spacing4)
+                SettingsNote("Age is measured from capture time, even while paused or off. Shortening retention applies to existing history. Deleting history also removes its screenshots and recaps.")
                     .padding(.top, MuesliTheme.spacing4)
                 if let message = memory.message {
                     SettingsNote(message, tone: .warning).padding(.top, MuesliTheme.spacing8)
                 }
             }
         }
-        .environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        .environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
         .onAppear { refresh(); consumeSetupRequest() }
         .onChange(of: appState.requestsTimeTurnerSetup) { _, _ in consumeSetupRequest() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
@@ -129,7 +138,7 @@ struct TimeTurnerSettingsView: View {
         saveExclusions(Array(Set(exclusions + selected)).sorted())
     }
     private var estimate: String {
-        let images = memory.items.filter { $0.kind == .moment && $0.frameIndex == nil }
+        let images = memory.items.filter { $0.kind == .moment && $0.frameIndex == nil && $0.mediaDeletedAt == nil }
         guard !images.isEmpty else { return "Daily storage estimate appears after your first captures." }
         let average = images.reduce(Int64(0)) { $0 + $1.bytes } / Int64(images.count)
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
@@ -142,6 +151,7 @@ struct TimeTurnerSetupView: View {
     let controller: MuesliController
     let appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @State private var presentationCatalog = SettingsPresentationCatalog()
     @State private var step = 0
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
@@ -181,7 +191,9 @@ struct TimeTurnerSetupView: View {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 HStack { Text("Check screen every"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_interval") }
                 HStack { Text("Storage budget"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_budget") }
-                Text("Changed screens and recognized text stay on this Mac. History is kept for up to seven days, within your budget. You can adjust exclusions and storage in Settings → Time Turner.").foregroundStyle(.secondary)
+                HStack { Text("Keep screenshots for"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention") }
+                HStack { Text("Keep searchable history for"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_history_retention") }
+                Text("OCR and app history can outlive screenshots. Retention runs even while paused or off; deleting history also deletes its recaps.").foregroundStyle(.secondary)
                 Text("Private-content detection is not exhaustive. Pause before opening sensitive content. Local agents can read saved history when you give them access.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 if !ready { Text("A required permission is missing. Go back to review permissions.").foregroundStyle(.orange) }
             }
@@ -199,7 +211,7 @@ struct TimeTurnerSetupView: View {
                 }
             }
         }.padding(28).frame(width: 560, height: 490)
-        .environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        .environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refresh() }
     }

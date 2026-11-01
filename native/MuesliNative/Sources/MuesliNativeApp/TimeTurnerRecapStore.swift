@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import MuesliCore
 
 struct SavedTimeTurnerRecap: Codable, Sendable {
     let version: Int
@@ -70,6 +71,25 @@ final class TimeTurnerRecapStore {
         bind(body, to: s, at: 6)
         guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
     }
+    /// Delete derived text, including stored OCR snapshots, without needing to open its day.
+    func delete(captureIDs: Set<String>) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let s = try statement("""
+                DELETE FROM time_turner_recaps WHERE EXISTS (
+                    SELECT 1 FROM json_each(time_turner_recaps.body, '$.sources')
+                    WHERE json_extract(value, '$.capture.id') = ?
+                )
+                """)
+            defer { sqlite3_finalize(s) }
+            for id in captureIDs {
+                sqlite3_reset(s); sqlite3_clear_bindings(s); bind(id, to: s, at: 1)
+                guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+            }
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
     func load(key: String) throws -> SavedTimeTurnerRecap? {
         let s = try statement("SELECT body FROM time_turner_recaps WHERE day_key=?")
         defer { sqlite3_finalize(s) }
@@ -87,5 +107,50 @@ final class TimeTurnerRecapStore {
         bind(key, to: s, at: 1)
         if let generatedAt { sqlite3_bind_double(s, 2, generatedAt.timeIntervalSince1970) }
         guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+    }
+}
+
+/// Serializes in-process source deletion and recap publication across the two local
+/// databases. Capture tombstones persist until recap cleanup succeeds, so a restart
+/// retries interrupted cleanup without relying on a user opening the recap.
+enum TimeTurnerRetention {
+    private static let lock = NSRecursiveLock()
+
+    static func maintain(store: VisualMemoryStore, databaseURL: URL,
+                         policy: VisualMemoryRetentionPolicy, now: Date = Date()) throws {
+        lock.lock(); defer { lock.unlock() }
+        // Expire source history even if a previous recap cleanup failed. Both success
+        // and failure paths retry durable IDs, independently of media cleanup.
+        do { try store.applyRetention(policy, now: now) }
+        catch {
+            try purgeDeletedSources(store: store, databaseURL: databaseURL)
+            throw error
+        }
+        try purgeDeletedSources(store: store, databaseURL: databaseURL)
+    }
+
+    static func delete(ids: Set<String>, store: VisualMemoryStore, databaseURL: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        do { try store.delete(ids: ids) }
+        catch {
+            try purgeDeletedSources(store: store, databaseURL: databaseURL)
+            throw error
+        }
+        try purgeDeletedSources(store: store, databaseURL: databaseURL)
+    }
+
+    private static func purgeDeletedSources(store: VisualMemoryStore, databaseURL: URL) throws {
+        let ids = try store.pendingCaptureDeletions()
+        guard !ids.isEmpty else { return }
+        try TimeTurnerRecapStore(databaseURL: databaseURL).delete(captureIDs: ids)
+        try store.acknowledgeCaptureDeletions(ids)
+    }
+
+    static func save(_ recap: SavedTimeTurnerRecap, root: URL?, databaseURL: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard try TimeTurnerRecap.sourcesAreCurrent(recap.sources, root: root, databaseURL: databaseURL) else {
+            throw TimeTurnerRecapError.changedSources
+        }
+        try TimeTurnerRecapStore(databaseURL: databaseURL).save(recap)
     }
 }

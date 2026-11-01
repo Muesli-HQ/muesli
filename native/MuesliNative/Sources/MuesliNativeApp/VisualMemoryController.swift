@@ -76,7 +76,11 @@ final class VisualMemoryController {
     @ObservationIgnored private var lastCompaction = Date.distantPast
     @ObservationIgnored private var compactionRunning = false
 
+    private let databaseURL: URL
+    @ObservationIgnored private var retentionTask: Task<Void, Never>?
+
     init(databaseURL: URL, supportDirectory: URL = AppIdentity.supportDirectoryURL) {
+        self.databaseURL = databaseURL
         do {
             meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
                 root: supportDirectory.appendingPathComponent("meeting-recordings/videos"))
@@ -101,6 +105,7 @@ final class VisualMemoryController {
                 await Task.detached(priority: .utility) {
                     do { try videos?.maintain(recoverRecording: Self.recoverableDuration) } catch { NSLog("Meeting video cleanup: %@", error.localizedDescription) }
                 }.value
+                await self?.maintainAmbientHistory()
                 self?.reload()
             }
         }
@@ -133,11 +138,12 @@ final class VisualMemoryController {
 
     func reload() {
         do {
+            let previousItems = items, previousBrowsable = browsableMoments
             let videos = try meetingStore?.items() ?? []
             let migratedIDs = Set(videos.map(\.id))
             items = ((try? store?.items()) ?? []).filter { !migratedIDs.contains($0.id) } + videos
             browsableMoments = items.filter { item in
-                guard item.kind == .moment, let url = mediaURL(item), FileManager.default.fileExists(atPath: url.path) else { return false }
+                guard item.kind == .moment, item.mediaDeletedAt == nil, let url = mediaURL(item), FileManager.default.fileExists(atPath: url.path) else { return false }
                 if item.frameIndex != nil { return true }
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -145,13 +151,16 @@ final class VisualMemoryController {
                       let height = props[kCGImagePropertyPixelHeight] as? Int else { return false }
                 return width >= 100 && height >= 100
             }
-            incompleteMomentCount = items.filter { $0.kind == .moment }.count - browsableMoments.count
-            catalogRevision += 1
+            incompleteMomentCount = items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.count - browsableMoments.count
+            if items != previousItems || browsableMoments != previousBrowsable { catalogRevision += 1 }
             updateSpace()
         }
         catch { message = error.localizedDescription }
     }
+    var historyMoments: [VisualMemoryItem] { items.filter { $0.kind == .moment } }
+
     func mediaURL(_ item: VisualMemoryItem) -> URL? {
+        guard item.mediaDeletedAt == nil else { return nil }
         if item.kind == .meetingVideo, let url = try? meetingStore?.url(for: item.path), FileManager.default.fileExists(atPath: url.path) { return url }
         return try? store?.url(for: item.path)
     }
@@ -161,16 +170,27 @@ final class VisualMemoryController {
     }
     var usedBytes: Int64 {
         var paths = Set<String>()
-        return items.reduce(0) { sum, item in sum + (paths.insert(item.path).inserted ? item.bytes : 0) }
+        return items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.reduce(0) { sum, item in sum + (paths.insert(item.path).inserted ? item.bytes : 0) }
     }
     func delete(_ item: VisualMemoryItem) {
-        do {
-            let ids = Set(items.filter { $0.kind == item.kind && $0.path == item.path }.map(\.id))
-            if item.kind == .meetingVideo { try meetingStore?.delete(ids: ids) }
-            try store?.delete(ids: ids)
-            reload()
-        } catch { message = error.localizedDescription }
+        let store = store, videos = meetingStore, databaseURL = databaseURL
+        Task {
+            do {
+                try await Task.detached(priority: .utility) {
+                    if item.kind == .meetingVideo {
+                        try videos?.delete(ids: [item.id])
+                        try store?.delete(ids: [item.id])
+                    } else if let store {
+                        // Shared archives are forgotten as a unit, including their OCR and recaps.
+                        let ids = Set(try store.items().filter { $0.kind == .moment && $0.path == item.path }.map(\.id))
+                        try TimeTurnerRetention.delete(ids: ids, store: store, databaseURL: databaseURL)
+                    }
+                }.value
+                reload()
+            } catch { message = error.localizedDescription }
+        }
     }
+
     func deleteMeeting(_ id: Int64) throws {
         let ids = Set(items.filter { $0.meetingID == id }.map(\.id))
         try meetingStore?.delete(ids: ids)
@@ -379,7 +399,14 @@ final class VisualMemoryController {
             || ambientConfig?.timeTurnerInterval != config.timeTurnerInterval
             || ambientConfig?.timeTurnerBudget != config.timeTurnerBudget
             || ambientConfig?.timeTurnerExcludedApps != config.timeTurnerExcludedApps
+        let retentionChanged = ambientConfig?.timeTurnerRetentionPolicy != config.timeTurnerRetentionPolicy
         ambientConfig = config
+        if retentionChanged {
+            Task { [weak self] in
+                await self?.maintainAmbientHistory()
+                self?.reload()
+            }
+        }
         if !config.timeTurnerEnabled || audioFallbackActive {
             ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
             ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
@@ -430,7 +457,6 @@ final class VisualMemoryController {
             ambientStatus = "Skipping private content"; lastFingerprint = nil; return
         }
         do {
-            try enforceAmbientRetention()
             updateSpace()
             guard freeBytes > 2_000_000_000 else { ambientStatus = "Paused — disk space low"; return }
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -483,29 +509,28 @@ final class VisualMemoryController {
         } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
     }
 
-    private func enforceAmbientRetention() throws {
-        guard let store else { return }
-        let moments = items.filter { $0.kind == .moment }
-        var paths = Set(moments.filter { $0.capturedAt < Date().addingTimeInterval(-7 * 86400) }.map(\.path))
-        let groups = Dictionary(grouping: moments, by: \.path)
-        let budget = Int64(ambientConfig?.timeTurnerBudget ?? "10") ?? 10
-        var total = groups.values.reduce(Int64(0)) { $0 + ($1.first?.bytes ?? 0) }
-        for group in groups.values.sorted(by: { ($0.first?.capturedAt ?? .distantPast) < ($1.first?.capturedAt ?? .distantPast) }) {
-            guard let first = group.first else { continue }
-            if paths.contains(first.path) || total > budget * 1_000_000_000 {
-                paths.insert(first.path); total -= first.bytes
-            }
+    /// Runs independently of capture gates; settings changes also schedule an immediate pass.
+    private func maintainAmbientHistory() async {
+        if let running = retentionTask { await running.value; return }
+        guard let store, let policy = ambientConfig?.timeTurnerRetentionPolicy else { return }
+        let databaseURL = databaseURL
+        let task = Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try TimeTurnerRetention.maintain(store: store, databaseURL: databaseURL, policy: policy)
+                }.value
+            } catch { self?.message = "History cleanup will retry: \(error.localizedDescription)" }
         }
-        if !paths.isEmpty {
-            try store.delete(ids: Set(moments.filter { paths.contains($0.path) }.map(\.id))); reload()
-        }
+        retentionTask = task
+        await task.value
+        retentionTask = nil
     }
 
     private func compactAmbientIfNeeded() async {
         guard !compactionRunning, Date().timeIntervalSince(lastCompaction) > 300,
               !ProcessInfo.processInfo.isLowPowerModeEnabled, let store else { return }
         lastCompaction = Date()
-        let candidates = items.filter { $0.kind == .moment && $0.frameIndex == nil && $0.capturedAt < Date().addingTimeInterval(-600) }.sorted { $0.capturedAt < $1.capturedAt }
+        let candidates = items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil && $0.frameIndex == nil && $0.capturedAt < Date().addingTimeInterval(-600) }.sorted { $0.capturedAt < $1.capturedAt }
         guard let first = candidates.first else { return }
         let batch = Array(candidates.filter { $0.source == first.source }.prefix(100))
         guard batch.count >= 25 else { return }
@@ -517,7 +542,7 @@ final class VisualMemoryController {
             let output = try store.url(for: path)
             try await Task.detached(priority: .utility) { try await VisualMemoryEncoding.compact(images: urls, destination: output) }.value
             let latest = try store.items()
-            guard batch.allSatisfy({ original in latest.contains(where: { $0.id == original.id && $0.path == original.path }) }) else {
+            guard batch.allSatisfy({ original in latest.contains(where: { $0.id == original.id && $0.path == original.path && $0.mediaDeletedAt == nil }) }) else {
                 try? FileManager.default.removeItem(at: output); return
             }
             let bytes = (try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -526,7 +551,9 @@ final class VisualMemoryController {
             let packed = batch.enumerated().map { index, original in
                 var item = original; item.path = path; item.frameIndex = index; item.bytes = bytes; return item
             }
-            try store.save(packed)
+            guard try store.replaceMedia(packed, ifUnchanged: batch) else {
+                try? FileManager.default.removeItem(at: output); return
+            }
             for url in urls { try? FileManager.default.removeItem(at: url) }
             reload()
         } catch { message = "History compaction deferred: \(error.localizedDescription)" }

@@ -116,8 +116,7 @@ enum TimeTurnerRecap {
             let store = try VisualMemoryStore(root: root, readOnly: true)
             for old in captures {
                 guard let current = try store.moment(id: old.id), current.text == old.text,
-                      current.capturedAt == old.capturedAt, current.source == old.source, current.bundleID == old.bundleID,
-                      FileManager.default.fileExists(atPath: try store.url(for: current.path).path) else { return false }
+                      current.capturedAt == old.capturedAt, current.source == old.source, current.bundleID == old.bundleID else { return false }
             }
         }
         let dependencies = sources.compactMap(\.meeting).map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) }
@@ -182,7 +181,7 @@ final class TimeTurnerRecapModel {
                     timeZone: timeZone, generatedAt: Date(), provider: self.providerLabel, model: self.modelLabel,
                     insights: result, sources: packet.sources)
                 try await Task.detached(priority: .utility) {
-                    try TimeTurnerRecapStore(databaseURL: databaseURL).save(saved)
+                    try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL)
                 }.value
                 // If navigation/cancellation occurred during the write, remove only this generation.
                 guard self.attempt == token, !Task.isCancelled else {

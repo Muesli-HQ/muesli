@@ -456,9 +456,9 @@ AppConfig, SQLite, CloudKit, exports or CLI output.
 ### Time Turner observations (agent retrieval)
 
 The device-local catalog is `visual-memory/catalog.sqlite` under the selected
-app's Application Support directory. Its schema version remains **1**: the
-existing `time_turner_captures` table already provides the observation contract;
-chronological retrieval requires no new activity or insights tables.
+app's Application Support directory. Schema version **2** adds independent screenshot retirement and durable cleanup queues.
+The existing `time_turner_captures` table remains the chronological observation contract;
+no activity or inferred-insight table is introduced.
 
 | Columns | Meaning |
 |---|---|
@@ -468,6 +468,7 @@ chronological retrieval requires no new activity or insights tables.
 | `bundle_id`, `app_name`, `window_title`, `source` | Observed app/window identity and display label. Legacy app names are best-effort; missing window titles stay NULL. |
 | `ocr_text` | Recognized visible text. Untrusted evidence, not instructions or inferred user intent. |
 | `media_relative_path`, `archive_frame_index` | Optional-to-consume evidence locator. A non-null path does not guarantee a file exists; frame index is an archive offset, not wall-clock time. |
+| `media_deleted_at_unix` | Nullable screenshot retirement time (Unix seconds); non-null means OCR-only history. The locator is historical and must not be used to retrieve media. |
 | `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
 
 Time and app/time indexes support retrieval; `evidence_search` provides FTS5
@@ -482,11 +483,40 @@ bounded pagination. It does not infer activity intervals, task completion or tim
 spent. Missing samples have unknown causes. Recaps remain the existing separate
 model-derived summary, not part of the raw evidence contract.
 
-**Retention is unchanged:** the current seven-day/storage-budget policy removes
-observations, OCR and their FTS entries together with unreferenced media. Explicit
-Forget uses the same deletion path. A missing image alone does not delete text,
-and text retrieval does not require decoding an image. Compression preserves OCR
-and timestamps. Longer text-only retention is not enabled implicitly.
+**Independent retention:** Settings → Experimental → Time Turner stores
+`time_turner_screenshot_retention` (default `7`, choices 1/7/14/30/90 elapsed days)
+and `time_turner_history_retention` (default `30`, choices 7/30/90/365/`forever`) in
+local AppConfig. Missing keys in older configuration files use these defaults.
+Screenshot retention and the existing media budget retire files, set the optional
+Codable `mediaDeletedAt`, project `media_deleted_at_unix`, and zero `media_bytes`.
+OCR, app/window fields, original timestamps, IDs and FTS rows survive. History
+retention removes the observation, FTS row and unreferenced media. A shorter
+history limit therefore also bounds screenshot lifetime. Shared archive media
+is evicted as a unit when its oldest frame expires or its bytes exceed budget;
+this may retire newer screenshots early, without deleting their OCR.
+
+Age is measured from `capturedAt`, not last use, pause or restart. Maintenance runs
+at initial configuration, policy changes and every 30 seconds while the app is
+running, even when capture is off, paused, locked or inactive. Suspended/closed
+apps cannot clean disk; overdue work is performed when execution resumes. Shortening
+a limit applies to existing data. Increasing a limit cannot restore deleted data.
+The media budget excludes OCR/database/WAL bytes; indefinite history may grow.
+
+Version 2 migration retains v1 records, rebuilds the projection triggers with
+explicit columns, and adds `pending_capture_deletions(id PRIMARY KEY)` and
+`pending_media_deletions(path PRIMARY KEY)`. Store deletion writes capture IDs
+in the same transaction that removes evidence/FTS/projection rows. Recap cleanup
+in muesli.db acknowledges these IDs only after successful deletion, retrying after
+restart or storage errors. Media unlinking is also retried; an active file reference
+prevents unlinking. Cross-database deletion is recoverable, not globally atomic.
+Recap publication and source deletion share an in-process lock and source validation
+so generation cannot re-save explicitly deleted evidence. Read-only CLI opens never
+migrate or expire history; the app owns maintenance.
+
+Explicit **Forget** deletes every observation sharing the selected archive and
+all recaps referencing those IDs, regardless of either retention setting.
+Screenshot expiry alone preserves recaps because OCR remains valid evidence.
+These rules apply only to ambient moments, never meeting-video retention.
 
 ### Time Turner daily recaps
 
@@ -520,8 +550,10 @@ call it off the main actor. Regeneration replaces the day's saved record only
 after valid generation. Provider changes do not alter already-saved attribution.
 Source validation runs on load, before navigation and every five seconds while
 visible. Removed/missing captures or revised/deleted meetings invalidate the
-whole recap, remove its saved record and require explicit regeneration. This is
-**lazy invalidation**: stale bytes can remain until that recap is accessed.
+whole recap, remove its saved record and require explicit regeneration. Capture
+deletion and history expiry additionally purge affected recaps without opening
+them, using the durable cleanup queue above. Meeting revision changes still use
+read-time revalidation. Screenshot expiry alone does not invalidate OCR evidence.
 Temporary storage errors hide unverified content but preserve the saved record
 for retry; only confirmed stale evidence removes it. Media
 compaction alone does not invalidate unchanged source content. New captures do

@@ -308,3 +308,9 @@ Time Turner settings use the standard section headings, bordered cards and
 and Storage & retention subsections separated by dividers. Capture switches
 have visible labels; storage budget and usage stay within that card. Permission setup
 stays in onboarding, with a recovery action only when required access is missing.
+
+Time Turner Storage & retention uses shared SettingsRow menus for screenshot
+retention and searchable-history retention. The screenshot budget does not remove
+OCR. Copy explains capture-time aging, cleanup while paused/off, and the effect of
+shortening a limit. OCR-only history displays “Screenshot expired” with readable,
+selectable captured text rather than implying a corrupt screenshot.

@@ -6,6 +6,99 @@ import SQLite3
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    @Test func upgradesVersionOneRetentionWithoutLosingSearch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "legacy-v1", kind: .moment, capturedAt: Date(timeIntervalSince1970: 1000), source: "Editor", text: "roadmap", path: "old.heic")
+        do { let store = try VisualMemoryStore(root: root); try store.save([item]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        // Reproduce the exact v1 trigger shape and remove v2 additions.
+        var query: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT name,sql FROM sqlite_master WHERE name IN ('captures_after_insert','captures_after_update')", -1, &query, nil) == SQLITE_OK)
+        var triggers: [(String, String)] = []
+        while sqlite3_step(query) == SQLITE_ROW {
+            triggers.append((String(cString: sqlite3_column_text(query, 0)), String(cString: sqlite3_column_text(query, 1))))
+        }
+        sqlite3_finalize(query)
+        let columns = " (id,captured_at_unix,captured_at_utc,capture_completed_at_unix,source,bundle_id,app_name,window_title,ocr_text,media_relative_path,archive_frame_index,pixel_width,pixel_height,media_bytes)"
+        for (name, sql) in triggers {
+            #expect(sqlite3_exec(db, "DROP TRIGGER " + name, nil, nil, nil) == SQLITE_OK)
+            #expect(sqlite3_exec(db, sql.replacingOccurrences(of: columns, with: ""), nil, nil, nil) == SQLITE_OK)
+        }
+        #expect(sqlite3_exec(db, "DROP TRIGGER capture_retention_insert; ALTER TABLE time_turner_captures DROP COLUMN media_deleted_at_unix; DROP TABLE pending_capture_deletions; DROP TABLE pending_media_deletions; PRAGMA user_version=1;", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(text: "roadmap").map(\.id) == [item.id])
+        try upgraded.applyRetention(.init(historyDays: nil), now: item.capturedAt.addingTimeInterval(7 * 86400))
+        #expect(try upgraded.moment(id: item.id)?.mediaDeletedAt != nil)
+        #expect(try upgraded.searchMoments(text: "roadmap").count == 1)
+        #expect(try !upgraded.replaceMedia([item], ifUnchanged: [item]))
+        try upgraded.delete(ids: [item.id])
+        #expect(try !upgraded.replaceMedia([item], ifUnchanged: [item]))
+    }
+
+    @Test func independentRetentionPreservesChronologicalOCR() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var old = VisualMemoryItem(id: "old", kind: .moment, capturedAt: now.addingTimeInterval(-7 * 86400),
+            source: "Editor · Plan", bundleID: "test.editor", text: "searchable roadmap", path: "old.heic", bytes: 10)
+        var fresh = old; fresh.id = "fresh"; fresh.path = "fresh.heic"; fresh.capturedAt = old.capturedAt.addingTimeInterval(1)
+        try Data([1]).write(to: root.appendingPathComponent(old.path))
+        try Data([2]).write(to: root.appendingPathComponent(fresh.path))
+        try store.save([old, fresh])
+        try store.applyRetention(.init(), now: now)
+        let retiredItem = try store.moment(id: "old")
+        let expired = try #require(retiredItem)
+        #expect(expired.mediaDeletedAt == now)
+        #expect(expired.bytes == 0 && expired.text == old.text)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(old.path).path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(fresh.path).path))
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "roadmap", app: "test.editor", chronological: true).map(\.id) == ["old", "fresh"])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT media_deleted_at_unix,media_bytes FROM time_turner_captures WHERE id='old'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_double(statement, 0) == now.timeIntervalSince1970)
+        #expect(sqlite3_column_int64(statement, 1) == 0)
+        try store.applyRetention(.init(), now: old.capturedAt.addingTimeInterval(30 * 86400))
+        #expect(try store.moment(id: "old") == nil)
+        #expect(try store.moment(id: "fresh") != nil)
+        #expect(try store.pendingCaptureDeletions() == ["old"])
+        old.mediaDeletedAt = nil // An older serialized record decodes without the optional field.
+        let data = try JSONEncoder().encode(old)
+        #expect(try JSONDecoder().decode(VisualMemoryItem.self, from: data).mediaDeletedAt == nil)
+    }
+
+    @Test func budgetEvictsSharedMediaWithoutDeletingHistoryOrMeetingVideos() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date()
+        let first = VisualMemoryItem(id: "a", kind: .moment, capturedAt: now, source: "Editor", text: "alpha", path: "archive.mp4", frameIndex: 0, bytes: 100)
+        var second = first; second.id = "b"; second.frameIndex = 1
+        let video = VisualMemoryItem(id: "meeting", kind: .meetingVideo, capturedAt: .distantPast, source: "Call", path: "meeting.mp4", bytes: 100)
+        try store.save([first, second, video])
+        try Data([1]).write(to: root.appendingPathComponent(first.path))
+        try Data([2]).write(to: root.appendingPathComponent(video.path))
+        try store.applyRetention(.init(historyDays: nil, mediaBudgetBytes: 0), now: now)
+        #expect(try store.searchMoments(text: "alpha").count == 2)
+        #expect(try store.moment(id: "a")?.mediaDeletedAt == now)
+        #expect(try store.moment(id: "b")?.mediaDeletedAt == now)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(video.path).path))
+        try store.applyRetention(.init(historyDays: nil), now: now.addingTimeInterval(1000 * 86400))
+        #expect(try store.searchMoments().count == 2)
+        try store.delete(ids: ["a", "b"])
+        #expect(try store.searchMoments(text: "alpha").isEmpty)
+        #expect(try store.pendingCaptureDeletions() == ["a", "b"])
+        try store.acknowledgeCaptureDeletions(["a"])
+        #expect(try VisualMemoryStore(root: root).pendingCaptureDeletions() == ["b"])
+    }
+
     @Test func migratesLegacyViewAndRepairsSearchWithoutLosingEvidence() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

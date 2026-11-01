@@ -88,7 +88,7 @@ struct TimeTurnerRecapView: View {
             } else {
                 Button(model.hasGenerated ? "Regenerate" : "Generate recap") {
                     expanded = true
-                    model.generate(day: day, captures: memory.browsableMoments, root: memory.store?.root,
+                    model.generate(day: day, captures: memory.historyMoments, root: memory.store?.root,
                         databaseURL: controller.timeTurnerRecapDatabaseURL, config: controller.config)
                 }
                 .buttonStyle(.borderedProminent)

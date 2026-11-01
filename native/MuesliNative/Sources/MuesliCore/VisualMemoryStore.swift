@@ -21,6 +21,8 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public var captureCompletedAt: Date?
     public var pixelWidth: Int?
     public var pixelHeight: Int?
+    /// Non-nil after screenshot expiry; OCR and identity remain searchable.
+    public var mediaDeletedAt: Date?
     public var bytes: Int64
 
     public init(id: String = UUID().uuidString, kind: Kind, meetingID: Int64? = nil,
@@ -59,6 +61,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         try execute("CREATE INDEX IF NOT EXISTS evidence_meeting ON evidence(meeting_id)")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS evidence_search USING fts5(id UNINDEXED, text)")
         try migrateCaptureTable()
+        try migrateRetention()
 
     }
     deinit { sqlite3_close(db) }
@@ -81,7 +84,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// compatibility record; triggers keep typed columns in sync even for older writers.
     private func migrateCaptureTable() throws {
         let version = try scalar("PRAGMA user_version")
-        guard version <= 1 else { throw NSError(domain: "VisualMemoryStore", code: 1,
+        guard version <= 2 else { throw NSError(domain: "VisualMemoryStore", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Screen history was created by a newer Muesli version."]) }
         guard version < 1 else { return }
         try execute("BEGIN IMMEDIATE")
@@ -131,7 +134,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
                     CREATE TRIGGER captures_after_\(event.lowercased()) AFTER \(event) ON evidence BEGIN
                         \(oldIDCleanup)
                         DELETE FROM time_turner_captures WHERE id=NEW.id;
-                        INSERT INTO time_turner_captures \(projection) AND id=NEW.id;
+                        INSERT INTO time_turner_captures (id,captured_at_unix,captured_at_utc,capture_completed_at_unix,source,bundle_id,app_name,window_title,ocr_text,media_relative_path,archive_frame_index,pixel_width,pixel_height,media_bytes) \(projection) AND id=NEW.id;
                     END;
                     """)
             }
@@ -146,6 +149,104 @@ public final class VisualMemoryStore: @unchecked Sendable {
                 """)
             hasCaptureTable = true
         } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    private func migrateRetention() throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if try scalar("PRAGMA user_version") < 2 {
+                let triggers = try strings("SELECT sql FROM sqlite_master WHERE type='trigger' AND name IN ('captures_after_insert','captures_after_update')")
+                for name in ["captures_after_insert", "captures_after_update"] { try execute("DROP TRIGGER IF EXISTS " + name) }
+                for trigger in triggers {
+                    let columns = "(id,captured_at_unix,captured_at_utc,capture_completed_at_unix,source,bundle_id,app_name,window_title,ocr_text,media_relative_path,archive_frame_index,pixel_width,pixel_height,media_bytes)"
+                    let updated = trigger.replacingOccurrences(of: "INSERT INTO time_turner_captures SELECT", with: "INSERT INTO time_turner_captures " + columns + " SELECT")
+                    try execute(updated)
+                }
+                try execute("""
+                    ALTER TABLE time_turner_captures ADD COLUMN media_deleted_at_unix REAL;
+                    CREATE TRIGGER capture_retention_insert AFTER INSERT ON time_turner_captures BEGIN
+                        UPDATE time_turner_captures SET media_deleted_at_unix =
+                            (SELECT json_extract(body,'$.mediaDeletedAt') + 978307200 FROM evidence WHERE id=NEW.id)
+                            WHERE id=NEW.id;
+                    END;
+                    CREATE TABLE pending_capture_deletions(id TEXT PRIMARY KEY NOT NULL);
+                    CREATE TABLE pending_media_deletions(path TEXT PRIMARY KEY NOT NULL);
+                    PRAGMA user_version=2;
+                    """)
+            }
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    private func bindAndRun(_ sql: String, value: String) throws {
+        var s: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(s) }
+        sqlite3_bind_text(s, 1, value, -1, transient)
+        guard sqlite3_step(s) == SQLITE_DONE else { throw failure() }
+    }
+    private func strings(_ sql: String) throws -> [String] {
+        var s: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(s) }
+        var result: [String] = []
+        var status = sqlite3_step(s)
+        while status == SQLITE_ROW {
+            result.append(String(cString: sqlite3_column_text(s, 0)))
+            status = sqlite3_step(s)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
+    /// Durable IDs allow recap cleanup to recover after a crash between the two databases.
+    public func pendingCaptureDeletions() throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(try strings("SELECT id FROM pending_capture_deletions"))
+    }
+    public func acknowledgeCaptureDeletions(_ ids: Set<String>) throws {
+        lock.lock(); defer { lock.unlock() }
+        for id in ids { try bindAndRun("DELETE FROM pending_capture_deletions WHERE id=?", value: id) }
+    }
+    public func finishMediaDeletions() throws {
+        lock.lock(); defer { lock.unlock() }
+        let active = Set(try items().filter { $0.mediaDeletedAt == nil }.map(\.path))
+        for path in try strings("SELECT path FROM pending_media_deletions") {
+            guard !active.contains(path) else { continue }
+            let file = try url(for: path)
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: path)
+        }
+    }
+
+    /// Applies wall-clock limits regardless of whether capture is enabled or paused.
+    /// An archive is evicted as a unit; OCR rows keep their individual timestamps.
+    public func applyRetention(_ policy: VisualMemoryRetentionPolicy, now: Date = Date()) throws {
+        lock.lock(); defer { lock.unlock() }
+        let moments = try items().filter { $0.kind == .moment }
+        let expired = Set(moments.filter { item in policy.historyDays.map { days in
+            item.capturedAt.addingTimeInterval(Double(days) * 86400) <= now
+        } ?? false }.map(\.id))
+        if !expired.isEmpty { try delete(ids: expired) }
+        let remaining = try items().filter { $0.kind == .moment && $0.mediaDeletedAt == nil }
+        let groups = Dictionary(grouping: remaining, by: \.path).values.sorted {
+            ($0.map(\.capturedAt).min() ?? .distantPast) < ($1.map(\.capturedAt).min() ?? .distantPast)
+        }
+        var total = groups.reduce(Int64(0)) { $0 + ($1.first?.bytes ?? 0) }
+        for group in groups {
+            guard let first = group.first else { continue }
+            let aged = group.contains { $0.capturedAt.addingTimeInterval(Double(policy.screenshotDays) * 86400) <= now }
+            guard aged || total > policy.mediaBudgetBytes else { continue }
+            let retired = group.map { item in
+                var value = item; value.mediaDeletedAt = now; value.bytes = 0; return value
+            }
+            // Queue before committing the retirement. A failed save leaves active references,
+            // preventing cleanup; the next maintenance pass retries the retirement.
+            try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions VALUES(?)", value: first.path)
+            try save(retired)
+            total -= first.bytes
+        }
+        try finishMediaDeletions()
     }
 
     public func url(for path: String) throws -> URL {
@@ -182,6 +283,17 @@ public final class VisualMemoryStore: @unchecked Sendable {
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
+    /// Do not let background compaction restore media or records removed by retention.
+    public func replaceMedia(_ replacements: [VisualMemoryItem], ifUnchanged expected: [VisualMemoryItem]) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard replacements.count == expected.count else { return false }
+        for original in expected {
+            guard let current = try moment(id: original.id), current == original, current.mediaDeletedAt == nil else { return false }
+        }
+        try save(replacements)
+        return true
+    }
+
     private func removeSearch(_ id: String) throws {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "DELETE FROM evidence_search WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
@@ -271,6 +383,13 @@ public final class VisualMemoryStore: @unchecked Sendable {
         let before = try items()
         try execute("BEGIN IMMEDIATE")
         do {
+            for item in before where ids.contains(item.id) && item.kind == .moment {
+                try bindAndRun("INSERT OR IGNORE INTO pending_capture_deletions VALUES(?)", value: item.id)
+            }
+            let retainedPaths = Set(before.filter { !ids.contains($0.id) && $0.mediaDeletedAt == nil }.map(\.path))
+            for path in Set(before.filter { ids.contains($0.id) }.map(\.path)).subtracting(retainedPaths) {
+                try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions VALUES(?)", value: path)
+            }
             for id in ids {
                 var stmt: OpaquePointer?
                 guard sqlite3_prepare_v2(db, "DELETE FROM evidence WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
@@ -281,11 +400,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
             }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
-        let retainedPaths = Set(before.filter { !ids.contains($0.id) }.map(\.path))
-        for path in Set(before.filter { ids.contains($0.id) }.map(\.path)).subtracting(retainedPaths) {
-            let file = try url(for: path)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        }
+        try finishMediaDeletions()
     }
 }
 
@@ -376,5 +491,17 @@ public struct VisualMemoryCursor: Codable, Sendable {
     public let id: String
     public init(capturedAtUnix: Double, id: String) {
         self.capturedAtUnix = capturedAtUnix; self.id = id
+    }
+}
+
+/// Capture age is measured in elapsed 24-hour days, not days of active recording.
+public struct VisualMemoryRetentionPolicy: Equatable, Sendable {
+    public let screenshotDays: Int
+    public let historyDays: Int?
+    public let mediaBudgetBytes: Int64
+    public init(screenshotDays: Int = 7, historyDays: Int? = 30, mediaBudgetBytes: Int64 = 10_000_000_000) {
+        self.screenshotDays = max(1, screenshotDays)
+        self.historyDays = historyDays.map { max(1, $0) }
+        self.mediaBudgetBytes = max(0, mediaBudgetBytes)
     }
 }

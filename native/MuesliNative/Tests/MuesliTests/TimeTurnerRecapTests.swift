@@ -51,8 +51,12 @@ struct TimeTurnerRecapTests {
         let item = capture("one")
         try store.save([item])
         let p = try packet([item])
-        // No corresponding image: refuse to publish a recap with a dead screenshot link.
-        #expect(try !TimeTurnerRecap.sourcesAreCurrent(p.sources, root: root, databaseURL: root.appendingPathComponent("meetings.sqlite")))
+        // OCR is valid evidence even after its screenshot expires.
+        let db = root.appendingPathComponent("meetings.sqlite")
+        try DictationStore(databaseURL: db).migrateIfNeeded()
+        #expect(try TimeTurnerRecap.sourcesAreCurrent(p.sources, root: root, databaseURL: db))
+        try store.delete(ids: [item.id])
+        #expect(try !TimeTurnerRecap.sourcesAreCurrent(p.sources, root: root, databaseURL: db))
     }
     @Test func persistedRecapSurvivesReopen() throws {
         let (root, db, _, item) = try fixture()
@@ -89,11 +93,92 @@ struct TimeTurnerRecapTests {
         #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) != nil)
         await model.load(day: day, root: root, databaseURL: db)
         #expect(model.hasGenerated)
-        try FileManager.default.removeItem(at: root.appendingPathComponent(item.path))
+        try VisualMemoryStore(root: root).delete(ids: [item.id])
         await model.load(day: day, root: root, databaseURL: db)
         #expect(!model.hasGenerated)
         #expect(model.error != nil)
         #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) == nil)
+    }
+
+    @Test func retentionPurgesUnopenedRecapsAndRecoversInterruptedDeletion() throws {
+        let (root, db, store, item) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let saved = SavedTimeTurnerRecap(version: 1, dayStart: day, dayEnd: day.addingTimeInterval(86400),
+            timeZone: "UTC", generatedAt: day, provider: "test", model: "test", insights: [], sources: try packet([item]).sources)
+        try TimeTurnerRecapStore(databaseURL: db).save(saved)
+        // No capture task, permissions, or enabled flag is required for maintenance.
+        try TimeTurnerRetention.maintain(store: store, databaseURL: db, policy: .init(), now: day.addingTimeInterval(7 * 86400))
+        #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) != nil)
+        #expect(try TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: root, databaseURL: db))
+        // Simulate process exit after the catalog transaction but before recap cleanup.
+        try store.delete(ids: [item.id])
+        #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) != nil)
+        try TimeTurnerRetention.maintain(store: VisualMemoryStore(root: root), databaseURL: db, policy: .init(historyDays: nil), now: day)
+        #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) == nil)
+        #expect(try store.pendingCaptureDeletions().isEmpty)
+        #expect(throws: (any Error).self) { try TimeTurnerRetention.save(saved, root: root, databaseURL: db) }
+    }
+
+    @Test func recapCleanupFailureRetainsRetryIDs() throws {
+        let (root, db, store, item) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let saved = SavedTimeTurnerRecap(version: 1, dayStart: day, dayEnd: day.addingTimeInterval(86400),
+            timeZone: "UTC", generatedAt: day, provider: "test", model: "test", insights: [], sources: try packet([item]).sources)
+        try TimeTurnerRecapStore(databaseURL: db).save(saved)
+        #expect(throws: (any Error).self) {
+            try TimeTurnerRetention.delete(ids: [item.id], store: store, databaseURL: root.appendingPathComponent("missing/db.sqlite"))
+        }
+        #expect(try store.pendingCaptureDeletions() == [item.id])
+        try TimeTurnerRetention.maintain(store: store, databaseURL: db, policy: .init(), now: day)
+        #expect(try store.pendingCaptureDeletions().isEmpty)
+        #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) == nil)
+    }
+
+    @Test func historyExpiryAndExplicitDeletionRemoveDerivedText() throws {
+        for explicit in [false, true] {
+            let (root, db, store, item) = try fixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let saved = SavedTimeTurnerRecap(version: 1, dayStart: day, dayEnd: day.addingTimeInterval(86400),
+                timeZone: "UTC", generatedAt: day, provider: "test", model: "test", insights: [], sources: try packet([item]).sources)
+            try TimeTurnerRecapStore(databaseURL: db).save(saved)
+            if explicit { try TimeTurnerRetention.delete(ids: [item.id], store: store, databaseURL: db) }
+            else { try TimeTurnerRetention.maintain(store: store, databaseURL: db, policy: .init(), now: day.addingTimeInterval(30 * 86400)) }
+            #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) == nil)
+            #expect(try store.searchMoments().isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(item.path).path))
+        }
+    }
+
+    @MainActor @Test func disabledCaptureStillRunsRetentionAtConfiguration() async throws {
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: support) }
+        let root = support.appendingPathComponent("visual-memory")
+        let store = try VisualMemoryStore(root: root)
+        let db = support.appendingPathComponent("muesli.sqlite")
+        try DictationStore(databaseURL: db).migrateIfNeeded()
+        var item = capture("expired-while-off")
+        item.capturedAt = Date().addingTimeInterval(-31 * 86400)
+        try store.save([item])
+        let memory = VisualMemoryController(databaseURL: db, supportDirectory: support)
+        var config = AppConfig(); config.timeTurnerEnabled = false
+        memory.configureAmbient(config, audioFallbackActive: false)
+        for _ in 0..<200 {
+            if try store.moment(id: item.id) == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(try store.moment(id: item.id) == nil)
+        #expect(memory.ambientStatus == "Off")
+    }
+
+    @Test func retentionSettingsRoundTripAndLegacyDefaults() throws {
+        let defaults = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(defaults.timeTurnerScreenshotRetention == "7")
+        #expect(defaults.timeTurnerHistoryRetention == "30")
+        var config = defaults
+        config.timeTurnerScreenshotRetention = "14"; config.timeTurnerHistoryRetention = "forever"
+        let reopened = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(reopened.timeTurnerRetentionPolicy.screenshotDays == 14)
+        #expect(reopened.timeTurnerRetentionPolicy.historyDays == nil)
     }
 
     private func fixture() throws -> (URL, URL, VisualMemoryStore, VisualMemoryItem) {

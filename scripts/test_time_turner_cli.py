@@ -27,10 +27,12 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
     database = root / "catalog.sqlite"
     db = sqlite3.connect(database)
     db.executescript("CREATE TABLE evidence(id TEXT PRIMARY KEY,kind TEXT,meeting_id INTEGER,captured REAL,body TEXT); CREATE VIRTUAL TABLE evidence_search USING fts5(id UNINDEXED,text);")
-    def insert(identifier, captured, app, bundle, path="still.png", frame=None):
+    def insert(identifier, captured, app, bundle, path="still.png", frame=None, retired=None):
         body = dict(id=identifier, kind="moment", capturedAt=captured-978307200, source=app+" · Plan", bundleID=bundle, text="roadmap evidence", path=path, duration=0, meetingOffset=0, bytes=0)
         body.update(captureCompletedAt=captured-978307200+0.25, pixelWidth=128, pixelHeight=128,
                     appName=app, windowTitle="Plan")
+        if retired is not None:
+            body["mediaDeletedAt"] = retired - 978307200
         if frame is not None:
             body["frameIndex"] = frame
         db.execute("INSERT INTO evidence VALUES(?,?,?,?,?)", (identifier, "moment", None, captured, json.dumps(body)))
@@ -43,6 +45,7 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
     if len(sys.argv) > 2:
         shutil.copyfile(sys.argv[2], root / "archive.mp4")
         insert("archived", 997, "Archive", "archive", "archive.mp4", 12)
+    insert("expired", 996, "Expired", "expired", retired=1000)
     now = time.time()
     insert("recent-a", now - 60, "Recent", "recent")
     insert("recent-b", now - 30, "Recent", "recent")
@@ -55,6 +58,12 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
         payload = json.loads(result.stdout)
         assert payload["ok"] == (code == 0), payload
         return payload
+    expired = run("get", "expired")["data"]
+    assert expired["ocrText"] == "roadmap evidence"
+    assert not expired["mediaExists"] and expired.get("mediaPath") is None
+    assert expired["mediaDeletedAt"]
+    run("get", "expired", "--output", str(support / "expired.png"), code=3)
+    assert run("search", "--app", "Expired")["data"][0]["id"] == "expired"
     data = run("search", "--query", "roadmap", "--app", "chatgpt", "--limit", "1", "--from", "1970-01-01T00:16:40Z", "--until", "1970-01-01T00:16:41Z")["data"]
     assert [item["id"] for item in data] == ["wanted"]
     assert data[0]["capturedAtUnix"] == 1000.125
@@ -108,7 +117,10 @@ with tempfile.TemporaryDirectory(prefix="muesli-cli-visual-") as directory:
     run("get", "unknown", code=3)
     assert not run("get", "missing-media")["data"]["mediaExists"]
     run("get", "missing-media", "--output", str(support / "missing.png"), code=3)
-    run("get", "unsafe", code=6)
+    assert run("get", "unsafe")["data"]["ocrText"] == "roadmap evidence"
+    run("get", "unsafe", "--output", str(support / "unsafe.png"), code=6)
+    assert any(row["id"] == "unsafe" for row in run("search")["data"])
+    assert any(row["id"] == "expired" for row in run("history", "--from", "1970-01-01T00:00:00Z", "--until", "1970-01-02T00:00:00Z")["data"]["observations"])
     if len(sys.argv) > 2:
         archive_output = support / "frame.png"
         assert run("get", "archived", "--output", str(archive_output))["data"]["archiveFrameIndex"] == 12

@@ -252,6 +252,13 @@ extension MuesliController {
             Choice(id: $0, label: "\($0) GB")
         }, \.timeTurnerBudget)
 
+        textMenu("time_turner_screenshot_retention", "Keep screenshots for", ["1", "7", "14", "30", "90"].map {
+            Choice(id: $0, label: $0 == "1" ? "1 day" : "\($0) days")
+        }, \.timeTurnerScreenshotRetention)
+        textMenu("time_turner_history_retention", "Keep searchable history for", ["7", "30", "90", "365", "forever"].map {
+            Choice(id: $0, label: $0 == "forever" ? "Until I delete it" : "\($0) days")
+        }, \.timeTurnerHistoryRetention)
+
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
         settings.append(appearanceDefinition())

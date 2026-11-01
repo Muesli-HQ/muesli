@@ -10,7 +10,7 @@ future work.
 
 ## Audited evidence contract
 
-The app upgrades `visual-memory/catalog.sqlite` transactionally to `user_version=1`.
+The app upgrades `visual-memory/catalog.sqlite` transactionally to `user_version=2`.
 The former `time_turner_captures` view becomes a physical typed table. It contains
 capture ID, Unix capture/start and completion times, UTC display time, source,
 bundle ID, app name, window title, OCR, relative media path, archive frame index,
@@ -104,6 +104,6 @@ app/window metadata. Continue with `--cursor` until `meta.hasMore` is false;
 the token preserves the resolved range and app filter. Search remains newest
 first for targeted lookup. Both use the existing observation schema; no separate
 activity-interval or inferred-work tables are needed. Daily Recap remains the
-model-derived summary. Text retention continues to follow capture retention;
+model-derived summary. Text retention is configurable separately from screenshot retention;
 longer-lived OCR would require an explicit user setting and deletion semantics.
 See [the schema contract](../database-schema.md#time-turner-observations-agent-retrieval).

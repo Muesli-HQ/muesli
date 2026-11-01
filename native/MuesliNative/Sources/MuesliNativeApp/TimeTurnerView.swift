@@ -21,11 +21,18 @@ struct MemoryImageView: View {
     @State private var unavailable = false
     var body: some View {
         Group {
-            if let image { Image(nsImage: image).resizable().scaledToFit() }
+            if item.mediaDeletedAt != nil {
+                VStack(spacing: 12) {
+                    Label("Screenshot expired", systemImage: "text.page")
+                    Text(item.text.isEmpty ? "App history is still available." : item.text)
+                        .lineLimit(12).textSelection(.enabled)
+                }.font(MuesliTheme.body()).padding(20)
+            }
+            else if let image { Image(nsImage: image).resizable().scaledToFit() }
             else if unavailable { Label("Capture unavailable or incomplete", systemImage: "photo.badge.exclamationmark").font(MuesliTheme.font(.caption)).multilineTextAlignment(.center) }
             else { ProgressView().controlSize(.small) }
         }
-        .task(id: item.id + item.path) {
+        .task(id: item.id + item.path + String(describing: item.mediaDeletedAt)) {
             image = nil; unavailable = false
             guard let url = memory.mediaURL(item) else { unavailable = true; return }
             let key = "\(item.path):\(item.frameIndex ?? -1):\(maximumSize)" as NSString
@@ -315,7 +322,7 @@ struct MemoryExplorerView: View {
                     .popover(isPresented: $showsSearch) {
                         TimeTurnerSearchView(memory: memory, initialDay: day) { item in
                             day = item.capturedAt
-                            dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day)
+                            dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day)
                             selectedCaptureID = item.id
                             playhead = item.capturedAt
                             showsSearch = false
@@ -380,14 +387,14 @@ struct MemoryExplorerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day) }
-        .onChange(of: memory.catalogRevision) { _, _ in dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day) }
+        .onAppear { dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day) }
+        .onChange(of: memory.catalogRevision) { _, _ in dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day) }
         .onChange(of: externalDay?.wrappedValue) { _, value in
             if let value { day = value }
         }
         .onChange(of: day) { _, _ in
             externalDay?.wrappedValue = day
-            dayMoments = VisualMemoryDayTimeline.moments(memory.browsableMoments, on: day)
+            dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day)
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start
             }
@@ -396,8 +403,8 @@ struct MemoryExplorerView: View {
         .frame(width: inline ? nil : (focusedSize?.width ?? 1000), height: inline ? (ordered.isEmpty ? 140 : 520) : (focusedSize?.height ?? 760))
         .modifier(TimeTurnerGlass(cornerRadius: inline ? 18 : 24))
         .confirmationDialog("Forget this recording chunk?", isPresented: $confirmForget) {
-            Button("Delete chunk and its captured text", role: .destructive) { if let selected { memory.delete(selected) }; closeExplorer() }
-        } message: { Text("All moments sharing this archive chunk will be deleted together.") }
+            Button("Delete chunk, history and recaps", role: .destructive) { if let selected { memory.delete(selected) }; closeExplorer() }
+        } message: { Text("All moments sharing this archive chunk, their captured text and associated recaps will be deleted together.") }
     }
 }
 
@@ -419,7 +426,7 @@ private struct TimeTurnerSearchView: View {
 
     private var apps: [(id: String, name: String)] {
         var names: [String: String] = [:]
-        for item in memory.browsableMoments where !item.bundleID.isEmpty {
+        for item in memory.historyMoments where !item.bundleID.isEmpty {
             names[item.bundleID] = item.appName ?? item.source.components(separatedBy: " · ").first ?? item.bundleID
         }
         return names.map { (id: $0.key, name: $0.value) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -513,7 +520,7 @@ private struct TimeTurnerSearchView: View {
             }.value
             guard !Task.isCancelled, token == generation else { return }
             let batch = Array(rows.prefix(50))
-            let available = Set(memory.browsableMoments.map(\.id))
+            let available = Set(memory.historyMoments.map(\.id))
             let visible = batch.filter { available.contains($0.id) }
             if append { results += visible } else { results = visible }
             cursor = rows.count > 50 ? batch.last.map {

@@ -40,11 +40,11 @@ struct TimeTurnerPage: View {
                     .frame(maxWidth: 820, alignment: .leading)
                 } else {
                     MemoryExplorerView(initialMoment: appState.timeTurnerSelectedCapture ??
-                        VisualMemoryDayTimeline.moments(controller.visualMemory.browsableMoments, on: appState.timeTurnerDay).last,
+                        VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: appState.timeTurnerDay).last,
                         memory: controller.visualMemory, inline: true, externalDay: $appState.timeTurnerDay,
                         onNavigate: { day, time in
                             appState.timeTurnerDay = day
-                            let moments = VisualMemoryDayTimeline.moments(controller.visualMemory.browsableMoments, on: day)
+                            let moments = VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: day)
                             if let index = VisualMemoryDayTimeline.nearestIndex(in: moments, to: time) {
                                 appState.timeTurnerSelectedCapture = moments[index]
                             }
