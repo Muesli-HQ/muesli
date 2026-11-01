@@ -311,6 +311,7 @@ stays in onboarding, with a recovery action only when required access is missing
 
 Time Turner Storage & retention uses shared SettingsRow menus for screenshot
 retention and searchable-history retention. The screenshot budget does not remove
-OCR. Copy explains capture-time aging, cleanup while paused/off, and the effect of
-shortening a limit. OCR-only history displays “Screenshot expired” with readable,
+OCR. Setup uses the same fixed-width SettingsRow menu column. A collapsed
+“How retention works” disclosure holds capture-time aging, cleanup while paused/off,
+and deletion details; the storage estimate remains visible. OCR-only history displays “Screenshot expired” with readable,
 selectable captured text rather than implying a corrupt screenshot.

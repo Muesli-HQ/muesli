@@ -75,10 +75,17 @@ struct TimeTurnerSettingsView: View {
                         .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
                 }
                 SettingsNote(estimate).padding(.top, MuesliTheme.spacing8)
-                SettingsNote("Screenshots may expire sooner when the budget fills. OCR and app history remain searchable for their own retention period and use additional disk space.")
-                    .padding(.top, MuesliTheme.spacing4)
-                SettingsNote("Age is measured from capture time, even while paused or off. Shortening retention applies to existing history. Deleting history also removes its screenshots and recaps.")
-                    .padding(.top, MuesliTheme.spacing4)
+                DisclosureGroup("How retention works") {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        SettingsNote("Screenshots expire sooner if the budget fills. Searchable text uses separate storage.")
+                        SettingsNote("Retention starts at capture, even while paused or off. Shorter limits apply to existing history.")
+                        SettingsNote("Deleting history also deletes its screenshots and recaps.")
+                    }
+                    .padding(.top, MuesliTheme.spacing8)
+                }
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.top, MuesliTheme.spacing8)
                 if let message = memory.message {
                     SettingsNote(message, tone: .warning).padding(.top, MuesliTheme.spacing8)
                 }
@@ -139,11 +146,11 @@ struct TimeTurnerSettingsView: View {
     }
     private var estimate: String {
         let images = memory.items.filter { $0.kind == .moment && $0.frameIndex == nil && $0.mediaDeletedAt == nil }
-        guard !images.isEmpty else { return "Daily storage estimate appears after your first captures." }
+        guard !images.isEmpty else { return "Storage estimate available after capture." }
         let average = images.reduce(Int64(0)) { $0 + $1.bytes } / Int64(images.count)
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
         let size = ByteCountFormatter.string(fromByteCount: average * 28_800 / interval, countStyle: .file)
-        return "Up to \(size) per 8 active hours before compression, estimated from recent captures."
+        return "Up to \(size) per 8 active hours, before compression."
     }
 }
 
@@ -189,12 +196,22 @@ struct TimeTurnerSetupView: View {
                 Button("Check again", action: refresh)
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
-                HStack { Text("Check screen every"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_interval") }
-                HStack { Text("Storage budget"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_budget") }
-                HStack { Text("Keep screenshots for"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention") }
-                HStack { Text("Keep searchable history for"); Spacer(); MuesliSettingControl(controller: controller, id: "time_turner_history_retention") }
-                Text("OCR and app history can outlive screenshots. Retention runs even while paused or off; deleting history also deletes its recaps.").foregroundStyle(.secondary)
-                Text("Private-content detection is not exhaustive. Pause before opening sensitive content. Local agents can read saved history when you give them access.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
+                VStack(spacing: MuesliTheme.spacing8) {
+                    SettingsRow(label: "Check screen every") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_interval")
+                    }
+                    SettingsRow(label: "Storage budget") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_budget")
+                    }
+                    SettingsRow(label: "Keep screenshots for") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention")
+                    }
+                    SettingsRow(label: "Keep searchable history for") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_history_retention")
+                    }
+                }
+                SettingsNote("Searchable text can outlive screenshots. Retention continues while paused.")
+                SettingsNote("Pause before viewing sensitive content. Agents you authorize can read saved history.")
                 if !ready { Text("A required permission is missing. Go back to review permissions.").foregroundStyle(.orange) }
             }
             if let error { Text(error).font(MuesliTheme.font(.caption)).foregroundStyle(.red) }
