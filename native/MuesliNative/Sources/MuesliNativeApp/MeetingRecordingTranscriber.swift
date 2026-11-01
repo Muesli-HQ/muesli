@@ -208,6 +208,7 @@ actor MeetingRecordingTranscriber {
         var transcript = ""
         var previousWindowText = ""
         var segments: [SpeechSegment] = []
+        var hasTokenTimedSegments = false
         while let window = try reader.next() {
             let result = try await infer(window.url)
             try Task.checkCancellation()
@@ -216,13 +217,65 @@ actor MeetingRecordingTranscriber {
             // from an earlier, non-overlapping speech region.
             previousWindowText = String(result.text.suffix(400))
             if !addition.isEmpty {
-                transcript += transcript.isEmpty ? addition : " " + addition
-                segments.append(SpeechSegment(start: window.start, end: window.end, text: addition))
+                let spoken = transcript.isEmpty ? addition : " " + addition
+                transcript += spoken
+                if let tokens = Self.alignedTokens(result.segments, to: addition, offset: window.start) {
+                    segments.append(contentsOf: tokens)
+                    hasTokenTimedSegments = true
+                } else {
+                    segments.append(SpeechSegment(start: window.start, end: window.end, text: spoken))
+                }
             }
             try FileManager.default.removeItem(at: window.url)
             await progress(window.fraction, String(transcript.suffix(2_000)))
         }
-        return SpeechTranscriptionResult(text: transcript, segments: segments)
+        return SpeechTranscriptionResult(
+            text: transcript,
+            segments: segments,
+            hasTokenTimedSegments: hasTokenTimedSegments
+        )
+    }
+
+    /// Maps a window's timed ASR tokens onto its reconciled text, shifted to the
+    /// recording timeline. The text decides where words start, because meeting
+    /// cleanup trims token whitespace, and it also drops overlapped words and
+    /// removed fillers. Each word's first token gets a leading space. Matching
+    /// keeps punctuation and signs, so the tokens rebuild the text exactly. Returns
+    /// nil when they cannot, such as whole phrases, tokens missing the text's
+    /// punctuation, or the untimed placeholders most backends return.
+    static func alignedTokens(_ tokens: [SpeechSegment], to text: String, offset: Double) -> [SpeechSegment]? {
+        var words = text.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
+        var aligned: [SpeechSegment] = []
+        var wordTokens: [SpeechSegment] = []
+        var matched = ""
+
+        for token in tokens.reversed() {
+            guard let word = words.last else { break }
+            guard token.end > token.start else { return nil }
+            let tokenText = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tokenText.isEmpty else { continue }
+            let part = tokenText.lowercased()
+            if !word.hasSuffix(part + matched) {
+                wordTokens = []
+                matched = ""
+                guard word.hasSuffix(part) else { continue }
+            }
+            wordTokens.append(SpeechSegment(
+                start: token.start + offset,
+                end: token.end + offset,
+                text: tokenText
+            ))
+            matched = part + matched
+            if matched == word, let first = wordTokens.popLast() {
+                aligned.append(contentsOf: wordTokens)
+                aligned.append(SpeechSegment(start: first.start, end: first.end, text: " " + first.text))
+                wordTokens = []
+                matched = ""
+                words.removeLast()
+            }
+        }
+        guard words.isEmpty, !aligned.isEmpty else { return nil }
+        return aligned.reversed()
     }
 
     /// Only reconcile the short shared boundary; never deduplicate the body of a chunk.

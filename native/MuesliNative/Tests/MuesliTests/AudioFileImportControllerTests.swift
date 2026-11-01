@@ -202,6 +202,109 @@ struct AudioFileImportControllerTests {
         #expect(!result.contains("## Speaker Segments"))
     }
 
+    @Test("formatTranscriptWithSpeakers keeps imported token fragments intact")
+    func formatTranscriptWithSpeakersKeepsImportedWordsIntact() {
+        let segments = [
+            makeDiarSeg(speakerId: "SPEAKER_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "SPEAKER_1", start: 1.0, end: 2.0),
+        ]
+        let transcription = SpeechTranscriptionResult(
+            text: "How are you?",
+            segments: [
+                SpeechSegment(start: 0.7, end: 1.0, text: "H"),
+                SpeechSegment(start: 1.0, end: 1.2, text: "ow"),
+                SpeechSegment(start: 1.2, end: 1.4, text: " are"),
+                SpeechSegment(start: 1.4, end: 1.6, text: " you"),
+                SpeechSegment(start: 1.6, end: 1.7, text: "?"),
+            ],
+            hasTokenTimedSegments: true
+        )
+
+        let result = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: segments,
+            meetingStart: localMidnight()
+        )
+
+        #expect(result.contains("Speaker 1: How"))
+        #expect(result.contains("Speaker 2: are you?"))
+        #expect(!result.contains("Speaker 1: H\n"))
+        #expect(!result.contains("Speaker 2: ow"))
+    }
+
+    @Test("formatTranscriptWithSpeakers keeps nearby trimmed phrases as separate words")
+    func formatTranscriptWithSpeakersKeepsTrimmedPhrasesSeparate() {
+        let segments = [
+            makeDiarSeg(speakerId: "SPEAKER_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "SPEAKER_1", start: 1.0, end: 2.0),
+        ]
+        let transcription = SpeechTranscriptionResult(
+            text: "Hello world",
+            segments: [
+                SpeechSegment(start: 0.2, end: 0.9, text: "Hello"),
+                SpeechSegment(start: 1.1, end: 1.8, text: "world"),
+            ]
+        )
+
+        let result = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: segments,
+            meetingStart: localMidnight()
+        )
+
+        #expect(result.contains("Speaker 1: Hello"))
+        #expect(result.contains("Speaker 2: world"))
+        #expect(!result.contains("Helloworld"))
+    }
+
+    @Test("formatTranscriptWithSpeakers keeps a broad single-word window with punctuation conservative")
+    func formatTranscriptWithSpeakersKeepsBroadSingleWordConservative() {
+        let segments = [
+            makeDiarSeg(speakerId: "SPEAKER_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "SPEAKER_1", start: 1.0, end: 2.0),
+        ]
+        let transcription = SpeechTranscriptionResult(
+            text: "hello.",
+            segments: [
+                SpeechSegment(start: 0.2, end: 1.8, text: "hello"),
+                SpeechSegment(start: 1.8, end: 1.9, text: "."),
+            ],
+            hasTokenTimedSegments: true
+        )
+
+        let result = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: segments,
+            meetingStart: localMidnight()
+        )
+
+        #expect(result.contains("Multiple speakers: hello."))
+    }
+
+    @Test("formatTranscriptWithSpeakers keeps a broad window with trailing punctuation conservative")
+    func formatTranscriptWithSpeakersKeepsBroadWindowConservative() {
+        let segments = [
+            makeDiarSeg(speakerId: "SPEAKER_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "SPEAKER_1", start: 1.0, end: 2.0),
+        ]
+        let transcription = SpeechTranscriptionResult(
+            text: "hello there.",
+            segments: [
+                SpeechSegment(start: 0.2, end: 1.8, text: "hello there"),
+                SpeechSegment(start: 1.8, end: 1.9, text: "."),
+            ],
+            hasTokenTimedSegments: true
+        )
+
+        let result = AudioFileImportController.formatTranscriptWithSpeakers(
+            transcription: transcription,
+            diarizationSegments: segments,
+            meetingStart: localMidnight()
+        )
+
+        #expect(result.contains("Multiple speakers: hello there."))
+    }
+
     @Test("formatTranscriptWithSpeakers falls back to raw text without ASR segments")
     func formatTranscriptWithSpeakersFallsBackWithoutASRSegments() {
         let segments = [
