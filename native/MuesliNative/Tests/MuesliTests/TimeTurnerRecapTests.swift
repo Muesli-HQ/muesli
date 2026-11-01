@@ -5,6 +5,16 @@ import MuesliCore
 
 @Suite("Time Turner daily recap")
 struct TimeTurnerRecapTests {
+    @Test func clipboardContainsOnlySectionHeadingsAndProse() {
+        let insights: [TimeTurnerRecapInsight] = [
+            .init(section: .followUps, text: "Review the release checklist.", sources: ["C2"]),
+            .init(section: .work, text: "Updated onboarding.", sources: ["C1", "M1"]),
+            .init(section: .work, text: "Reviewed accessibility.", sources: ["C3"])
+        ]
+        #expect(TimeTurnerRecap.plainText(insights) == "Work covered\n\nUpdated onboarding.\n\nReviewed accessibility.\n\nPossible follow-ups\n\nReview the release checklist.")
+        #expect(TimeTurnerRecap.plainText([]).isEmpty)
+    }
+
     let day = Date(timeIntervalSince1970: 1_700_000_000)
     func capture(_ id: String, offset: Double = 0, text: String = "Working on the release checklist") -> VisualMemoryItem {
         .init(id: id, kind: .moment, capturedAt: day.addingTimeInterval(offset), source: "Editor", bundleID: "test.editor", text: text, path: "\(id).png")

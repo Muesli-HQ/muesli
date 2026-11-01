@@ -8,6 +8,28 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_700_000_000))
+        let rows = (0..<3).map { index in
+            VisualMemoryItem(id: "hit-\(index)", kind: .moment,
+                capturedAt: start.addingTimeInterval(Double(index + 1) * 60),
+                source: "Editor", text: "Work", path: "\(index).heic")
+        }
+        var snapshot = TimeTurnerDaySnapshot()
+        snapshot.load(rows, on: rows[1].capturedAt)
+        // Reopening the exact selected search hit must not reduce the scrubber to 1/1.
+        snapshot.prepare(for: rows[1].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        snapshot.prepare(for: rows[2].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        let nextDay = start.addingTimeInterval(86400)
+        snapshot.prepare(for: nextDay, calendar: calendar)
+        #expect(snapshot.moments.isEmpty)
+        #expect(snapshot.day == nextDay)
+    }
+
     @Test func compactionSkipsMissingAndCorruptOldestGroupsWithoutDeletingHistory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

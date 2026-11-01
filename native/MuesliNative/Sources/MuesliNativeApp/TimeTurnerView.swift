@@ -157,7 +157,7 @@ struct MemoryExplorerView: View {
     let externalDay: Binding<Date>?
     let memory: VisualMemoryController
     @Environment(\.dismiss) private var dismiss
-    @State private var dayMoments: [VisualMemoryItem] = []
+    @State private var daySnapshot = TimeTurnerDaySnapshot()
     @State private var day: Date
     @State private var playhead: Date
     @State private var selectedCaptureID: String?
@@ -192,7 +192,7 @@ struct MemoryExplorerView: View {
         }
     }
     private func closeExplorer() { if let onClose { onClose() } else { dismiss() } }
-    private var ordered: [VisualMemoryItem] { dayMoments }
+    private var ordered: [VisualMemoryItem] { daySnapshot.moments }
     private var index: Int {
         if let selectedCaptureID, let exact = ordered.firstIndex(where: { $0.id == selectedCaptureID }) { return exact }
         return VisualMemoryDayTimeline.nearestIndex(in: ordered, to: playhead) ?? 0
@@ -329,9 +329,9 @@ struct MemoryExplorerView: View {
                     .help("Search by text, app, and date")
                     .popover(isPresented: $showsSearch) {
                         TimeTurnerSearchView(memory: memory, initialDay: day) { item in
+                            daySnapshot.prepare(for: item.capturedAt)
+                            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
                             day = item.capturedAt
-                            dayMoments = [item]
-                            scrubScale = VisualMemoryScrubScale(dates: [item.capturedAt])
                             selectedCaptureID = item.id
                             playhead = item.capturedAt
                             showsSearch = false
@@ -397,9 +397,10 @@ struct MemoryExplorerView: View {
             }
         }
         .task(id: "\(day)|\(memory.catalogRevision)") {
-            let moments = (try? await memory.moments(on: day)) ?? []
-            guard !Task.isCancelled else { return }
-            dayMoments = moments
+            let requestedDay = day
+            let moments = (try? await memory.moments(on: requestedDay)) ?? []
+            guard !Task.isCancelled, requestedDay == day else { return }
+            daySnapshot.load(moments, on: requestedDay)
             scrubScale = VisualMemoryScrubScale(dates: moments.map(\.capturedAt))
         }
         .onChange(of: externalDay?.wrappedValue) { _, value in
@@ -407,8 +408,8 @@ struct MemoryExplorerView: View {
         }
         .onChange(of: day) { _, _ in
             externalDay?.wrappedValue = day
-            dayMoments = []
-            scrubScale = VisualMemoryScrubScale(dates: [])
+            daySnapshot.prepare(for: day)
+            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start
             }

@@ -113,6 +113,16 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+    @Test func timelinePaginationKeepsRowsButChangedSearchInvalidatesThem() {
+        let completed = TimelineSearchRequest(scope: "release|revision1", limit: 50)
+        #expect(completed.canDisplay(completed))
+        #expect(TimelineSearchRequest(scope: completed.scope, limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "different query|revision1", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "release|revision2", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: completed.scope, limit: 25).canDisplay(completed))
+        #expect(!completed.canDisplay(nil))
+    }
+
 
     @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
     func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {

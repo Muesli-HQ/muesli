@@ -152,6 +152,9 @@ Source buttons select an exact capture or open the original meeting passage.
 Recaps are saved locally in `muesli.db` by day start and time zone, with model,
 provider, generation time, insights and every supplied evidence dependency.
 Switching tabs or restarting reloads the saved recap without a provider call.
+**Copy summary** copies section headings and insight text only, without source
+references or model metadata, and shows a brief copied confirmation. Evidence is
+revalidated before copying, as it is before opening a source.
 Changing the selected meeting model affects the next explicit generation; it
 does not relabel or discard an existing recap. Leaving the view cancels pending
 work. See [database-schema.md](../database-schema.md#time-turner-daily-recaps)

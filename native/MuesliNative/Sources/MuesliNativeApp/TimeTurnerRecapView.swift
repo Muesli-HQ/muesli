@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MuesliCore
 
 struct TimeTurnerRecapView: View {
@@ -7,6 +8,7 @@ struct TimeTurnerRecapView: View {
     let onCapture: (VisualMemoryItem) -> Void
     @State private var model = TimeTurnerRecapModel()
     @State private var expanded = true
+    @State private var copied = false
     private var memory: VisualMemoryController { controller.visualMemory }
     private var provider: MeetingSummaryBackendOption { .resolved(controller.config.meetingSummaryBackend) }
     private var selectedModel: String { MeetingTextGenerationClient.model(controller.config) }
@@ -66,6 +68,12 @@ struct TimeTurnerRecapView: View {
                 await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
             }
         }
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
+        }
+        .onChange(of: selectionID) { _, _ in copied = false }
         .onDisappear { model.cancel(clear: true) }
     }
     private var heading: some View {
@@ -83,6 +91,25 @@ struct TimeTurnerRecapView: View {
     }
     private var actions: some View {
         HStack(spacing: 10) {
+            if model.hasGenerated {
+                Button {
+                    let requestID = model.requestID
+                    let selectedDay = selectionID
+                    Task {
+                        await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
+                        guard selectedDay == selectionID, requestID == model.requestID,
+                              model.hasGenerated, !model.isGenerating else { return }
+                        let text = TimeTurnerRecap.plainText(model.insights)
+                        guard !text.isEmpty else { return }
+                        NSPasteboard.general.clearContents()
+                        copied = NSPasteboard.general.setString(text, forType: .string)
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy summary", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+                .disabled(model.isGenerating || model.isLoading || model.insights.isEmpty)
+                .help("Copy summary text without screenshot references or model details")
+            }
             if model.isGenerating {
                 Button("Cancel") { model.cancel() }
             } else {
