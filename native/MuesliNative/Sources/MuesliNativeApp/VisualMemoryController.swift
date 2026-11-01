@@ -19,6 +19,13 @@ struct TimeTurnerPauseState {
 final class VisualMemoryController {
     var items: [VisualMemoryItem] = []
     var browsableMoments: [VisualMemoryItem] = []
+    var historyMoments: [VisualMemoryItem] = []
+    var historyIDs: Set<String> = []
+    struct HistoryApp: Identifiable, Sendable {
+        let id: String
+        let name: String
+    }
+    var historyApps: [HistoryApp] = []
     var incompleteMomentCount = 0
     var catalogRevision = 0
     var message: String?
@@ -26,6 +33,8 @@ final class VisualMemoryController {
     private var recordedSessions: Set<UUID> = []
     private var sessionClipIDs: [UUID: Set<String>] = [:]
     private var recordingSessionID: UUID?
+    @ObservationIgnored private var initializationTask: Task<Void, Never>?
+    @ObservationIgnored private var spaceTask: Task<Int64, Never>?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
     var recordingMeetingID: Int64?
     var isAwaitingConfirmation = false
@@ -42,13 +51,18 @@ final class VisualMemoryController {
     var ambientPaused: Bool { ambientPauseState.userPaused }
     var ambientStatus = "Off" {
         didSet {
+            guard ambientStatus != oldValue else { return }
             if !ambientStatus.hasPrefix("On") { onAmbientCaptureActivity?(false) }
             guard let store, let data = try? JSONSerialization.data(withJSONObject: [
                 "status": ambientStatus, "updated_at_unix": Date().timeIntervalSince1970
             ]) else { return }
-            try? data.write(to: store.root.appendingPathComponent("capture-health.json"), options: .atomic)
+            let url = store.root.appendingPathComponent("capture-health.json")
+            healthWriteQueue.async { try? data.write(to: url, options: .atomic) }
         }
     }
+    @ObservationIgnored private let healthWriteQueue = DispatchQueue(label: "muesli.capture-health", qos: .utility)
+    @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var reloadGeneration = 0
     var freeBytes: Int64 = 0
     let audioRouter = ScreenAudioRouter()
     @ObservationIgnored private(set) var store: VisualMemoryStore?
@@ -81,23 +95,28 @@ final class VisualMemoryController {
 
     init(databaseURL: URL, supportDirectory: URL = AppIdentity.supportDirectoryURL) {
         self.databaseURL = databaseURL
-        do {
-            meetingStore = try MeetingVideoStore(databaseURL: databaseURL,
-                root: supportDirectory.appendingPathComponent("meeting-recordings/videos"))
-        } catch { message = error.localizedDescription }
-        // Legacy migration is optional; its failure must not disable new captures.
-        let legacyRoot = supportDirectory.appendingPathComponent("visual-memory")
-        do { store = try VisualMemoryStore(root: legacyRoot) }
-        catch { NSLog("Screen history catalog unavailable: %@", error.localizedDescription) }
-        reload()
-        let videos = meetingStore, legacy = store
+        initializationTask = Task { [weak self] in
+            let stores = await Task.detached(priority: .utility) {
+                let videos = Result { try MeetingVideoStore(databaseURL: databaseURL,
+                    root: supportDirectory.appendingPathComponent("meeting-recordings/videos")) }
+                let legacy = Result { try VisualMemoryStore(root: supportDirectory.appendingPathComponent("visual-memory")) }
+                return (videos, legacy)
+            }.value
+            guard let self else { return }
+            do { self.meetingStore = try stores.0.get() } catch { self.message = error.localizedDescription }
+            do { self.store = try stores.1.get() } catch { NSLog("Screen history catalog unavailable: %@", error.localizedDescription) }
+            self.reload()
+        }
         maintenanceTask = Task { [weak self] in
+            await self?.initializationTask?.value
+            let videos = self?.meetingStore, legacy = self?.store
             await Task.detached(priority: .utility) {
                 do {
                     try videos?.maintain(recoverRecording: Self.recoverableDuration)
                     if let legacy { try videos?.migrateLegacyVideos(from: legacy) }
                 } catch { NSLog("Meeting video recovery: %@", error.localizedDescription) }
             }.value
+            await self?.maintainAmbientHistory()
             self?.reload()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
@@ -136,28 +155,63 @@ final class VisualMemoryController {
         (try? meetingStore?.hasMedia(meetingID: meetingID)) ?? true
     }
 
-    func reload() {
-        do {
-            let previousItems = items, previousBrowsable = browsableMoments
-            let videos = try meetingStore?.items() ?? []
-            let migratedIDs = Set(videos.map(\.id))
-            items = ((try? store?.items()) ?? []).filter { !migratedIDs.contains($0.id) } + videos
-            browsableMoments = items.filter { item in
-                guard item.kind == .moment, item.mediaDeletedAt == nil, let url = mediaURL(item), FileManager.default.fileExists(atPath: url.path) else { return false }
-                if item.frameIndex != nil { return true }
-                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                      let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                      let width = props[kCGImagePropertyPixelWidth] as? Int,
-                      let height = props[kCGImagePropertyPixelHeight] as? Int else { return false }
-                return width >= 100 && height >= 100
-            }
-            incompleteMomentCount = items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.count - browsableMoments.count
-            if items != previousItems || browsableMoments != previousBrowsable { catalogRevision += 1 }
-            updateSpace()
-        }
-        catch { message = error.localizedDescription }
+    func refreshCatalog() async {
+        await initializationTask?.value
+        reload()
+        await reloadTask?.value
     }
-    var historyMoments: [VisualMemoryItem] { items.filter { $0.kind == .moment } }
+
+    func reload() {
+        reloadGeneration += 1
+        guard reloadTask == nil else { return }
+        reloadTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.reloadTask = nil }
+            while !Task.isCancelled {
+                let generation = self.reloadGeneration
+                let store = self.store, meetingStore = self.meetingStore
+                do {
+                    let snapshot = try await Task.detached(priority: .utility) {
+                        let videos = try meetingStore?.items() ?? []
+                        let migratedIDs = Set(videos.map(\.id))
+                        let items = (try store?.items() ?? []).filter { !migratedIDs.contains($0.id) } + videos
+                        let browsable = items.filter { item in
+                            guard item.kind == .moment, item.mediaDeletedAt == nil,
+                                  let url = try? store?.url(for: item.path),
+                                  FileManager.default.fileExists(atPath: url.path) else { return false }
+                            if item.frameIndex != nil { return true }
+                            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                                  let width = props[kCGImagePropertyPixelWidth] as? Int,
+                                  let height = props[kCGImagePropertyPixelHeight] as? Int else { return false }
+                            return width >= 100 && height >= 100
+                        }
+                        let history = items.filter { $0.kind == .moment }
+                        var names: [String: String] = [:]
+                        for item in history where !item.bundleID.isEmpty {
+                            names[item.bundleID] = item.appName ?? item.source.components(separatedBy: " · ").first ?? item.bundleID
+                        }
+                        let apps = names.map { HistoryApp(id: $0.key, name: $0.value) }
+                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                        return (items, browsable, history, Set(history.map(\.id)), apps)
+                    }.value
+                    if generation == self.reloadGeneration {
+                        if self.items != snapshot.0 || self.browsableMoments != snapshot.1 {
+                            self.items = snapshot.0
+                            self.browsableMoments = snapshot.1
+                            self.historyMoments = snapshot.2
+                            self.historyIDs = snapshot.3
+                            self.historyApps = snapshot.4
+                            self.catalogRevision += 1
+                        }
+                        self.incompleteMomentCount = snapshot.0.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.count - snapshot.1.count
+                        self.updateSpace()
+                    }
+                } catch { if generation == self.reloadGeneration { self.message = error.localizedDescription } }
+                if generation == self.reloadGeneration { return }
+            }
+        }
+    }
 
     func mediaURL(_ item: VisualMemoryItem) -> URL? {
         guard item.mediaDeletedAt == nil else { return nil }
@@ -165,8 +219,17 @@ final class VisualMemoryController {
         return try? store?.url(for: item.path)
     }
     func updateSpace() {
-        guard let root = meetingStore?.root else { return }
-        freeBytes = ((try? FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
+        Task { [weak self] in await self?.refreshSpace() }
+    }
+    private func refreshSpace() async {
+        if let spaceTask { freeBytes = await spaceTask.value; return }
+        let root = databaseURL.deletingLastPathComponent()
+        let task = Task.detached(priority: .utility) {
+            ((try? FileManager.default.attributesOfFileSystem(forPath: root.path)[.systemFreeSize]) as? NSNumber)?.int64Value ?? 0
+        }
+        spaceTask = task
+        freeBytes = await task.value
+        spaceTask = nil
     }
     var usedBytes: Int64 {
         var paths = Set<String>()
@@ -211,6 +274,8 @@ final class VisualMemoryController {
         startTask = Task {
             defer { if token == attempt { isPreparing = false } }
             do {
+                await initializationTask?.value
+                guard token == attempt, isStillActive() else { return }
                 guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
                     throw ScreenVideoRecorder.error("Allow Screen Recording in System Settings, then try again.")
                 }
@@ -438,6 +503,18 @@ final class VisualMemoryController {
         return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) >= 60
     }
 
+    private nonisolated static func ambientWindow(processID: pid_t) async -> (secure: Bool, window: DictationContextCapture.FocusedWindowSnapshot?) {
+        await Task.detached(priority: .utility) {
+            guard let app = NSRunningApplication(processIdentifier: processID) else { return (true, nil) }
+            var secure = false
+            if let element = DictationContextCapture.focusedUIElement(for: app, messagingTimeout: 0.5) {
+                AXUIElementSetMessagingTimeout(element, 0.5)
+                secure = DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
+            }
+            return (secure, DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false, messagingTimeout: 0.5))
+        }.value
+    }
+
     private func captureMoment(generation: UUID) async {
         guard generation == ambientGeneration, !Task.isCancelled else { return }
         guard !ambientPaused, !locked else { ambientStatus = "Paused"; return }
@@ -452,15 +529,15 @@ final class VisualMemoryController {
         let excluded = [Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"]
         let customExcluded = (ambientConfig?.timeTurnerExcludedApps ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         guard !customExcluded.contains(bundle), !excluded.contains(bundle) else { ambientStatus = "Skipping this app"; lastFingerprint = nil; return }
-        if let element = DictationContextCapture.focusedUIElement(for: app),
-           DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField" {
-            ambientStatus = "Skipping private content"; lastFingerprint = nil; return
-        }
+        let pid = app.processIdentifier
+        let before = await Self.ambientWindow(processID: pid)
+        guard generation == ambientGeneration, !Task.isCancelled else { return }
+        guard !before.secure else { ambientStatus = "Skipping private content"; lastFingerprint = nil; return }
         do {
-            updateSpace()
+            await refreshSpace()
             guard freeBytes > 2_000_000_000 else { ambientStatus = "Paused — disk space low"; return }
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-            guard let focused = DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false),
+            guard let focused = before.window,
                   let frame = focused.frame,
                   let window = content.windows.first(where: { $0.owningApplication?.processID == app.processIdentifier && VisualMemoryWindowMatch.matches(candidate: $0.frame, focused: frame, layer: Int($0.windowLayer)) }) else {
                 ambientStatus = "Waiting for a visible window"; return
@@ -487,10 +564,11 @@ final class VisualMemoryController {
                 throw ScreenVideoRecorder.error("Screen capture returned unexpected dimensions; no image was saved.")
             }
             let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
-            guard generation == ambientGeneration, !Task.isCancelled, !ambientPaused, !locked, !isInactive,
+            let after = await Self.ambientWindow(processID: pid)
+            guard !after.secure, generation == ambientGeneration, !Task.isCancelled, !ambientPaused, !locked, !isInactive,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-                  DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false)?.frame == frame,
-                  DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false)?.title == focused.title else { return }
+                  after.window?.frame == frame,
+                  after.window?.title == focused.title else { return }
             ambientStatus = "On · this Mac"
             onAmbientCaptureActivity?(true)
             let source = [app.localizedName ?? bundle, title].filter { !$0.isEmpty }.joined(separator: " · ")
@@ -498,13 +576,21 @@ final class VisualMemoryController {
                 ambientStatus = "On · screen unchanged"; return
             }
             let path = UUID().uuidString + ".heic"
-            let url = try store.url(for: path)
-            try result.data.write(to: url, options: .atomic)
-            do { try store.save([VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, bundleID: bundle,
-                text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted, pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)]) }
-            catch { try? FileManager.default.removeItem(at: url); throw error }
+            let item = VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, bundleID: bundle,
+                text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted,
+                pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)
+            try await Task.detached(priority: .utility) {
+                let url = try store.url(for: path)
+                try result.data.write(to: url, options: .atomic)
+                do { try store.save([item]) }
+                catch { try? FileManager.default.removeItem(at: url); throw error }
+            }.value
+            guard generation == ambientGeneration, !Task.isCancelled, !locked, !ambientPaused else {
+                try await Task.detached(priority: .utility) { try store.delete(ids: [item.id]) }.value
+                return
+            }
             lastFingerprint = result.fingerprint; lastText = result.text; lastSource = source
-            reload(); ambientStatus = "On · this Mac"
+            await refreshCatalog(); ambientStatus = "On · this Mac"
             await compactAmbientIfNeeded()
         } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
     }
@@ -530,31 +616,28 @@ final class VisualMemoryController {
         guard !compactionRunning, Date().timeIntervalSince(lastCompaction) > 300,
               !ProcessInfo.processInfo.isLowPowerModeEnabled, let store else { return }
         lastCompaction = Date()
-        let candidates = items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil && $0.frameIndex == nil && $0.capturedAt < Date().addingTimeInterval(-600) }.sorted { $0.capturedAt < $1.capturedAt }
-        guard let first = candidates.first else { return }
-        let batch = Array(candidates.filter { $0.source == first.source }.prefix(100))
-        guard batch.count >= 25 else { return }
+        let batch = VisualMemoryCompaction.batch(from: browsableMoments)
+        guard !batch.isEmpty else { return }
         compactionRunning = true
         defer { compactionRunning = false }
-        let path = UUID().uuidString + ".mp4"
         do {
-            let urls = try batch.map { try store.url(for: $0.path) }
-            let output = try store.url(for: path)
-            try await Task.detached(priority: .utility) { try await VisualMemoryEncoding.compact(images: urls, destination: output) }.value
-            let latest = try store.items()
-            guard batch.allSatisfy({ original in latest.contains(where: { $0.id == original.id && $0.path == original.path && $0.mediaDeletedAt == nil }) }) else {
-                try? FileManager.default.removeItem(at: output); return
-            }
-            let bytes = (try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
-            let originals = batch.reduce(Int64(0)) { $0 + $1.bytes }
-            guard bytes < originals else { try FileManager.default.removeItem(at: output); return }
-            let packed = batch.enumerated().map { index, original in
-                var item = original; item.path = path; item.frameIndex = index; item.bytes = bytes; return item
-            }
-            guard try store.replaceMedia(packed, ifUnchanged: batch) else {
-                try? FileManager.default.removeItem(at: output); return
-            }
-            for url in urls { try? FileManager.default.removeItem(at: url) }
+            try await Task.detached(priority: .utility) {
+                let output = try store.url(for: UUID().uuidString + ".mp4")
+                var committed = false
+                defer { if !committed { try? FileManager.default.removeItem(at: output) } }
+                let urls = try batch.map { try store.url(for: $0.path) }
+                try await VisualMemoryEncoding.compact(images: urls, destination: output)
+                let bytes = (try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
+                let originals = batch.reduce(Int64(0)) { $0 + $1.bytes }
+                guard bytes < originals else { return }
+                let packed = batch.enumerated().map { index, original in
+                    var item = original; item.path = output.lastPathComponent; item.frameIndex = index; item.bytes = bytes; return item
+                }
+                // Atomic source validation prevents retention/deletion from being undone.
+                guard try store.replaceMedia(packed, ifUnchanged: batch) else { return }
+                committed = true
+                for url in urls { try? FileManager.default.removeItem(at: url) }
+            }.value
             reload()
         } catch { message = "History compaction deferred: \(error.localizedDescription)" }
     }

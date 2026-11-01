@@ -179,6 +179,9 @@ struct TimeTurnerRecapTests {
         let reopened = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
         #expect(reopened.timeTurnerRetentionPolicy.screenshotDays == 14)
         #expect(reopened.timeTurnerRetentionPolicy.historyDays == nil)
+        config.timeTurnerScreenshotRetention = "forever"
+        let unlimited = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(unlimited.timeTurnerRetentionPolicy.screenshotDays == nil)
     }
 
     private func fixture() throws -> (URL, URL, VisualMemoryStore, VisualMemoryItem) {

@@ -484,10 +484,11 @@ spent. Missing samples have unknown causes. Recaps remain the existing separate
 model-derived summary, not part of the raw evidence contract.
 
 **Independent retention:** Settings → Experimental → Time Turner stores
-`time_turner_screenshot_retention` (default `7`, choices 1/7/14/30/90 elapsed days)
+`time_turner_screenshot_retention` (default `7`, choices 1/7/14/30/90 elapsed days or `forever` (“Until storage budget fills”))
 and `time_turner_history_retention` (default `30`, choices 7/30/90/365/`forever`) in
 local AppConfig. Missing keys in older configuration files use these defaults.
-Screenshot retention and the existing media budget retire files, set the optional
+The `forever` screenshot option disables age-based media expiry; the budget and
+independent history retention still apply. Screenshot retention and the existing media budget retire files, set the optional
 Codable `mediaDeletedAt`, project `media_deleted_at_unix`, and zero `media_bytes`.
 OCR, app/window fields, original timestamps, IDs and FTS rows survive. History
 retention removes the observation, FTS row and unreferenced media. A shorter
@@ -517,6 +518,12 @@ Explicit **Forget** deletes every observation sharing the selected archive and
 all recaps referencing those IDs, regardless of either retention setting.
 Screenshot expiry alone preserves recaps because OCR remains valid evidence.
 These rules apply only to ambient moments, never meeting-video retention.
+
+Version 3 aligns `evidence_search.rowid` with `evidence.rowid` and uses in-place
+upserts to keep that identity stable. FTS updates and deletion use indexed rowid
+lookups rather than scanning the unindexed ID column. Existing indexes are rebuilt
+transactionally on upgrade. Legacy read-only catalogs without FTS use a temporary
+in-memory FTS table; reading does not change the catalog on disk.
 
 ### Time Turner daily recaps
 

@@ -424,13 +424,7 @@ private struct TimeTurnerSearchView: View {
     @State private var page = 0
     @State private var generation = UUID()
 
-    private var apps: [(id: String, name: String)] {
-        var names: [String: String] = [:]
-        for item in memory.historyMoments where !item.bundleID.isEmpty {
-            names[item.bundleID] = item.appName ?? item.source.components(separatedBy: " · ").first ?? item.bundleID
-        }
-        return names.map { (id: $0.key, name: $0.value) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
+    private var apps: [VisualMemoryController.HistoryApp] { memory.historyApps }
     private var request: String { "\(query)|\(app)|\(restrictDate)|\(date.timeIntervalSince1970)|\(memory.catalogRevision)" }
 
     var body: some View {
@@ -520,7 +514,7 @@ private struct TimeTurnerSearchView: View {
             }.value
             guard !Task.isCancelled, token == generation else { return }
             let batch = Array(rows.prefix(50))
-            let available = Set(memory.historyMoments.map(\.id))
+            let available = memory.historyIDs
             let visible = batch.filter { available.contains($0.id) }
             if append { results += visible } else { results = visible }
             cursor = rows.count > 50 ? batch.last.map {

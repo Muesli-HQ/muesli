@@ -26,6 +26,21 @@ struct ComputerUseSettingsTests {
             }
             var unlimited = controller.config
             unlimited.timeTurnerHistoryRetention = "forever"
+            unlimited.timeTurnerScreenshotRetention = "forever"
+            let screenshots = try #require(definitions.first { $0.id == "time_turner_screenshot_retention" })
+            #expect(screenshots.deletionConfirmation(unlimited, "90") != nil)
+            #expect(screenshots.deletionConfirmation(controller.config, "forever") == nil)
+            #expect(unlimited.timeTurnerRetentionPolicy.screenshotDays == nil)
+            var malformed = controller.config
+            malformed.timeTurnerHistoryRetention = "invalid"
+            malformed.timeTurnerScreenshotRetention = "invalid"
+            malformed.timeTurnerBudget = "invalid"
+            for (id, value) in [("time_turner_history_retention", "7"), ("time_turner_screenshot_retention", "1"), ("time_turner_budget", "2")] {
+                let definition = try #require(definitions.first { $0.id == id })
+                #expect(definition.deletionConfirmation(malformed, value) != nil)
+            }
+            malformed.timeTurnerBudget = String(Int64.max)
+            #expect(malformed.timeTurnerRetentionPolicy.mediaBudgetBytes > 0)
             let history = try #require(definitions.first { $0.id == "time_turner_history_retention" })
             #expect(history.deletionConfirmation(unlimited, "365") != nil)
         }

@@ -164,6 +164,7 @@ struct MeetingVideoStoreTests {
         defer { sqlite3_close(db) }
         #expect(sqlite3_exec(db, "CREATE TABLE meetings(id INTEGER PRIMARY KEY, deleted_at REAL); INSERT INTO meetings VALUES(42,NULL)", nil, nil, nil) == SQLITE_OK)
         try MeetingVideoStore.migrate(db: db)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("videos"), withIntermediateDirectories: true)
         try body(MeetingVideoStore(databaseURL: database, root: root.appendingPathComponent("videos")), db, root)
     }
 

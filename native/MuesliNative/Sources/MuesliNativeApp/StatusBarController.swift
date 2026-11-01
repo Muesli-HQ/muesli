@@ -42,6 +42,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let captureDot = NSView(frame: .zero)
     private var captureIndicatorTimer: Timer?
 
+    deinit { captureIndicatorTimer?.invalidate() }
+
     init(controller: MuesliController, runtime: RuntimePaths) {
         self.controller = controller
         self.runtime = runtime

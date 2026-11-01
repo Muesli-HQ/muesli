@@ -54,7 +54,14 @@ public final class VisualMemoryStore: @unchecked Sendable {
         }
         sqlite3_busy_timeout(db, 5_000)
         hasCaptureTable = try scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='time_turner_captures'") > 0
-        if readOnly { return }
+        if readOnly {
+            if try scalar("SELECT count(*) FROM sqlite_master WHERE name='evidence_search'") == 0 {
+                try execute("PRAGMA temp_store=MEMORY")
+                try execute("CREATE VIRTUAL TABLE temp.evidence_search USING fts5(id UNINDEXED, text)")
+                try execute("INSERT INTO temp.evidence_search SELECT id,json_extract(body,'$.source') || ' ' || json_extract(body,'$.text') FROM evidence")
+            }
+            return
+        }
         try execute("PRAGMA journal_mode=WAL")
         try execute("CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY, kind TEXT NOT NULL, meeting_id INTEGER, captured REAL NOT NULL, body TEXT NOT NULL)")
         try execute("CREATE INDEX IF NOT EXISTS evidence_time ON evidence(kind,captured)")
@@ -62,6 +69,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS evidence_search USING fts5(id UNINDEXED, text)")
         try migrateCaptureTable()
         try migrateRetention()
+        try migrateSearchRowIDs()
 
     }
     deinit { sqlite3_close(db) }
@@ -84,13 +92,13 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// compatibility record; triggers keep typed columns in sync even for older writers.
     private func migrateCaptureTable() throws {
         let version = try scalar("PRAGMA user_version")
-        guard version <= 2 else { throw NSError(domain: "VisualMemoryStore", code: 1,
+        guard version <= 3 else { throw NSError(domain: "VisualMemoryStore", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Screen history was created by a newer Muesli version."]) }
         guard version < 1 else { return }
         try execute("BEGIN IMMEDIATE")
         do {
             // Another connection may have upgraded while BEGIN waited for its lock.
-            if try scalar("PRAGMA user_version") == 1 {
+            if try scalar("PRAGMA user_version") >= 1 {
                 try execute("COMMIT"); hasCaptureTable = true; return
             }
             try execute("DROP VIEW IF EXISTS time_turner_captures")
@@ -152,6 +160,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
 
     private func migrateRetention() throws {
+        guard try scalar("PRAGMA user_version") < 2 else { return }
         try execute("BEGIN IMMEDIATE")
         do {
             if try scalar("PRAGMA user_version") < 2 {
@@ -172,6 +181,23 @@ public final class VisualMemoryStore: @unchecked Sendable {
                     CREATE TABLE pending_capture_deletions(id TEXT PRIMARY KEY NOT NULL);
                     CREATE TABLE pending_media_deletions(path TEXT PRIMARY KEY NOT NULL);
                     PRAGMA user_version=2;
+                    """)
+            }
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    /// Preserve evidence rowids on updates so FTS deletion is an indexed lookup.
+    private func migrateSearchRowIDs() throws {
+        guard try scalar("PRAGMA user_version") < 3 else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if try scalar("PRAGMA user_version") < 3 {
+                try execute("""
+                    DELETE FROM evidence_search;
+                    INSERT INTO evidence_search(rowid,id,text)
+                        SELECT rowid,id,json_extract(body,'$.source') || ' ' || json_extract(body,'$.text') FROM evidence;
+                    PRAGMA user_version=3;
                     """)
             }
             try execute("COMMIT")
@@ -210,7 +236,11 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
     public func finishMediaDeletions() throws {
         lock.lock(); defer { lock.unlock() }
-        let active = Set(try items().filter { $0.mediaDeletedAt == nil }.map(\.path))
+        let active = Set(try strings("""
+            SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
+            UNION SELECT json_extract(body,'$.path') FROM evidence
+                WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
+            """))
         for path in try strings("SELECT path FROM pending_media_deletions") {
             guard !active.contains(path) else { continue }
             let file = try url(for: path)
@@ -223,29 +253,59 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// An archive is evicted as a unit; OCR rows keep their individual timestamps.
     public func applyRetention(_ policy: VisualMemoryRetentionPolicy, now: Date = Date()) throws {
         lock.lock(); defer { lock.unlock() }
-        let moments = try items().filter { $0.kind == .moment }
+        // Read only retention metadata, never materialize OCR bodies for maintenance.
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id,captured_at_unix,media_relative_path,media_bytes,media_deleted_at_unix FROM time_turner_captures", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        var moments: [VisualMemoryItem] = []
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            var item = VisualMemoryItem(id: String(cString: sqlite3_column_text(statement, 0)), kind: .moment,
+                capturedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 1)), source: "",
+                path: String(cString: sqlite3_column_text(statement, 2)), bytes: sqlite3_column_int64(statement, 3))
+            if sqlite3_column_type(statement, 4) != SQLITE_NULL {
+                item.mediaDeletedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+            }
+            moments.append(item)
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        sqlite3_reset(statement)
         let expired = Set(moments.filter { item in policy.historyDays.map { days in
             item.capturedAt.addingTimeInterval(Double(days) * 86400) <= now
         } ?? false }.map(\.id))
-        if !expired.isEmpty { try delete(ids: expired) }
-        let remaining = try items().filter { $0.kind == .moment && $0.mediaDeletedAt == nil }
+        // Retire shared media before deleting expired observations. Otherwise the older
+        // frame becomes invisible to subsequent age checks while remaining in the archive.
+        let expiredPaths = Set(moments.filter { expired.contains($0.id) }.map(\.path))
+        let remaining = moments.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }
         let groups = Dictionary(grouping: remaining, by: \.path).values.sorted {
             ($0.map(\.capturedAt).min() ?? .distantPast) < ($1.map(\.capturedAt).min() ?? .distantPast)
         }
         var total = groups.reduce(Int64(0)) { $0 + ($1.first?.bytes ?? 0) }
         for group in groups {
             guard let first = group.first else { continue }
-            let aged = group.contains { $0.capturedAt.addingTimeInterval(Double(policy.screenshotDays) * 86400) <= now }
-            guard aged || total > policy.mediaBudgetBytes else { continue }
-            let retired = group.map { item in
-                var value = item; value.mediaDeletedAt = now; value.bytes = 0; return value
+            let aged = expiredPaths.contains(first.path) || group.contains { item in
+                policy.screenshotDays.map { item.capturedAt.addingTimeInterval(Double($0) * 86400) <= now } ?? false
             }
-            // Queue before committing the retirement. A failed save leaves active references,
-            // preventing cleanup; the next maintenance pass retries the retirement.
-            try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions VALUES(?)", value: first.path)
-            try save(retired)
+            guard aged || total > policy.mediaBudgetBytes else { continue }
+            // The queue and JSON/projection update commit together. OCR and FTS stay intact.
+            try execute("BEGIN IMMEDIATE")
+            do {
+                try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions VALUES(?)", value: first.path)
+                var update: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "UPDATE evidence SET body=json_set(body,'$.mediaDeletedAt',?,'$.bytes',0) WHERE id=?", -1, &update, nil) == SQLITE_OK else { throw failure() }
+                defer { sqlite3_finalize(update) }
+                for item in group {
+                    sqlite3_reset(update)
+                    sqlite3_bind_double(update, 1, now.timeIntervalSinceReferenceDate)
+                    sqlite3_bind_text(update, 2, item.id, -1, transient)
+                    guard sqlite3_step(update) == SQLITE_DONE else { throw failure() }
+                }
+                try execute("COMMIT")
+            } catch { try? execute("ROLLBACK"); throw error }
             total -= first.bytes
         }
+        if !expired.isEmpty { try delete(ids: expired) }
         try finishMediaDeletions()
     }
 
@@ -264,7 +324,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
                 _ = try url(for: item.path)
                 let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
                 var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO evidence VALUES(?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+                guard sqlite3_prepare_v2(db, "INSERT INTO evidence VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,meeting_id=excluded.meeting_id,captured=excluded.captured,body=excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
                 defer { sqlite3_finalize(stmt) }
                 sqlite3_bind_text(stmt, 1, item.id, -1, transient)
                 sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
@@ -274,10 +334,11 @@ public final class VisualMemoryStore: @unchecked Sendable {
                 guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
                 try removeSearch(item.id)
                 var search: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search VALUES(?,?)", -1, &search, nil) == SQLITE_OK else { throw failure() }
+                guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search(rowid,id,text) SELECT rowid,?,? FROM evidence WHERE id=?", -1, &search, nil) == SQLITE_OK else { throw failure() }
                 defer { sqlite3_finalize(search) }
                 sqlite3_bind_text(search, 1, item.id, -1, transient)
                 sqlite3_bind_text(search, 2, item.source + " " + item.text, -1, transient)
+                sqlite3_bind_text(search, 3, item.id, -1, transient)
                 guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
             }
             try execute("COMMIT")
@@ -296,7 +357,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
 
     private func removeSearch(_ id: String) throws {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM evidence_search WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+        guard sqlite3_prepare_v2(db, "DELETE FROM evidence_search WHERE rowid=(SELECT rowid FROM evidence WHERE id=?)", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, id, -1, transient)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
@@ -380,23 +441,17 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// never a surviving reference to deliberately forgotten evidence.
     public func delete(ids: Set<String>) throws {
         lock.lock(); defer { lock.unlock() }
-        let before = try items()
         try execute("BEGIN IMMEDIATE")
         do {
-            for item in before where ids.contains(item.id) && item.kind == .moment {
-                try bindAndRun("INSERT OR IGNORE INTO pending_capture_deletions VALUES(?)", value: item.id)
-            }
-            let retainedPaths = Set(before.filter { !ids.contains($0.id) && $0.mediaDeletedAt == nil }.map(\.path))
-            for path in Set(before.filter { ids.contains($0.id) }.map(\.path)).subtracting(retainedPaths) {
-                try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions VALUES(?)", value: path)
-            }
             for id in ids {
+                try bindAndRun("INSERT OR IGNORE INTO pending_capture_deletions SELECT id FROM evidence WHERE id=? AND kind='moment'", value: id)
+                try bindAndRun("INSERT OR IGNORE INTO pending_media_deletions SELECT json_extract(body,'$.path') FROM evidence WHERE id=?", value: id)
+                try removeSearch(id)
                 var stmt: OpaquePointer?
                 guard sqlite3_prepare_v2(db, "DELETE FROM evidence WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
                 defer { sqlite3_finalize(stmt) }
                 sqlite3_bind_text(stmt, 1, id, -1, transient)
                 guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
-                try removeSearch(id)
             }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
@@ -496,12 +551,33 @@ public struct VisualMemoryCursor: Codable, Sendable {
 
 /// Capture age is measured in elapsed 24-hour days, not days of active recording.
 public struct VisualMemoryRetentionPolicy: Equatable, Sendable {
-    public let screenshotDays: Int
+    public let screenshotDays: Int?
     public let historyDays: Int?
     public let mediaBudgetBytes: Int64
-    public init(screenshotDays: Int = 7, historyDays: Int? = 30, mediaBudgetBytes: Int64 = 10_000_000_000) {
-        self.screenshotDays = max(1, screenshotDays)
+    public init(screenshotDays: Int? = 7, historyDays: Int? = 30, mediaBudgetBytes: Int64 = 10_000_000_000) {
+        self.screenshotDays = screenshotDays.map { max(1, $0) }
         self.historyDays = historyDays.map { max(1, $0) }
         self.mediaBudgetBytes = max(0, mediaBudgetBytes)
+    }
+}
+
+/// Choose the oldest encodable group; a short-lived window must not starve others.
+public enum VisualMemoryCompaction {
+    private struct Key: Hashable {
+        let source: String
+        let width: Int
+        let height: Int
+    }
+    public static func batch(from items: [VisualMemoryItem], now: Date = Date()) -> [VisualMemoryItem] {
+        let candidates = items.filter {
+            $0.kind == .moment && $0.mediaDeletedAt == nil && $0.frameIndex == nil &&
+            $0.capturedAt < now.addingTimeInterval(-600) && ($0.pixelWidth ?? 0) > 0 && ($0.pixelHeight ?? 0) > 0
+        }.sorted { ($0.capturedAt, $0.id) < ($1.capturedAt, $1.id) }
+        let groups = Dictionary(grouping: candidates) {
+            Key(source: $0.source, width: $0.pixelWidth!, height: $0.pixelHeight!)
+        }
+        return groups.values.filter { $0.count >= 25 }
+            .min { ($0[0].capturedAt, $0[0].id) < ($1[0].capturedAt, $1[0].id) }
+            .map { Array($0.prefix(100)) } ?? []
     }
 }

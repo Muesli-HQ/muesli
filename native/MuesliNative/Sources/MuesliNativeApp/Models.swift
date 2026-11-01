@@ -3017,8 +3017,8 @@ enum DictationState: String {
 
 extension AppConfig {
     var timeTurnerRetentionPolicy: VisualMemoryRetentionPolicy {
-        VisualMemoryRetentionPolicy(screenshotDays: Int(timeTurnerScreenshotRetention) ?? 7,
+        VisualMemoryRetentionPolicy(screenshotDays: timeTurnerScreenshotRetention == "forever" ? nil : (Int(timeTurnerScreenshotRetention) ?? 7),
             historyDays: timeTurnerHistoryRetention == "forever" ? nil : (Int(timeTurnerHistoryRetention) ?? 30),
-            mediaBudgetBytes: (Int64(timeTurnerBudget) ?? 10) * 1_000_000_000)
+            mediaBudgetBytes: min(max(Int64(timeTurnerBudget) ?? 10, 0), Int64.max / 1_000_000_000) * 1_000_000_000)
     }
 }

@@ -1020,7 +1020,7 @@ struct MeetingsNavigationTests {
     }
 
     @Test("a corrupt legacy catalog cannot disable meeting video storage")
-    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+    func corruptLegacyCatalogKeepsPrimaryVideoStorage() async throws {
         let database = try makeStore()
         let support = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: support) }
@@ -1029,13 +1029,14 @@ struct MeetingsNavigationTests {
         try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
         let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
         let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        await controller.refreshCatalog()
         #expect(controller.store == nil)
         #expect(!controller.hasMedia(meetingID: id))
         let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
         try videos.save([clip])
-        controller.reload()
+        await controller.refreshCatalog()
         #expect(controller.items == [clip])
     }
 
@@ -1049,6 +1050,7 @@ struct MeetingsNavigationTests {
         let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try FileManager.default.createDirectory(at: videos.root, withIntermediateDirectories: true)
         try Data([1]).write(to: videos.url(for: clip.path))
         try videos.save([clip])
         let controller = makeController(dictationStore: store, configStore: config)

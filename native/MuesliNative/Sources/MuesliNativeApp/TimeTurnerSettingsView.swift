@@ -9,6 +9,7 @@ struct TimeTurnerSettingsView: View {
     let controller: MuesliController
     let appState: AppState
     @State private var presentationCatalog = SettingsPresentationCatalog()
+    @State private var exclusionNames: [String: String] = [:]
     @State private var setup = false
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
@@ -47,10 +48,10 @@ struct TimeTurnerSettingsView: View {
                 ForEach(exclusions, id: \.self) { bundle in
                     HStack(spacing: MuesliTheme.spacing8) {
                         TargetApplicationIconView(appName: bundle, bundleIdentifier: bundle).accessibilityLabel(bundle)
-                        Text(appName(bundle)).font(MuesliTheme.body()).lineLimit(1)
+                        Text(exclusionNames[bundle] ?? bundle).font(MuesliTheme.body()).lineLimit(1)
                         Spacer()
                         Button("Remove") { saveExclusions(exclusions.filter { $0 != bundle }) }
-                            .accessibilityLabel("Remove \(appName(bundle)) exclusion")
+                            .accessibilityLabel("Remove \(exclusionNames[bundle] ?? bundle) exclusion")
                     }
                     .padding(.vertical, MuesliTheme.spacing4)
                 }
@@ -92,6 +93,9 @@ struct TimeTurnerSettingsView: View {
             }
         }
         .environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
+        .task(id: exclusions) {
+            exclusionNames = Dictionary(exclusions.map { ($0, appName($0)) }, uniquingKeysWith: { first, _ in first })
+        }
         .onAppear { refresh(); consumeSetupRequest() }
         .onChange(of: appState.requestsTimeTurnerSetup) { _, _ in consumeSetupRequest() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
@@ -150,7 +154,7 @@ struct TimeTurnerSettingsView: View {
         let average = images.reduce(Int64(0)) { $0 + $1.bytes } / Int64(images.count)
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
         let size = ByteCountFormatter.string(fromByteCount: average * 28_800 / interval, countStyle: .file)
-        return "Up to \(size) per 8 active hours, before compression."
+        return "Estimated \(size) per 8 active hours, before compression."
     }
 }
 
@@ -200,7 +204,7 @@ struct TimeTurnerSetupView: View {
                     SettingsRow(label: "Check screen every") {
                         MuesliSettingControl(controller: controller, id: "time_turner_interval")
                     }
-                    SettingsRow(label: "Storage budget") {
+                    SettingsRow(label: "Screenshot storage budget") {
                         MuesliSettingControl(controller: controller, id: "time_turner_budget")
                     }
                     SettingsRow(label: "Keep screenshots for") {

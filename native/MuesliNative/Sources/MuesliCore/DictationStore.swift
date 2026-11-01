@@ -1171,7 +1171,9 @@ public final class DictationStore {
         fromDate: String? = nil,
         toDate: String? = nil,
         origin: RecordOriginFilter = .all,
-        targetApplication: DictationTargetApplication? = nil
+        targetApplication: DictationTargetApplication? = nil,
+        searchText: String = "",
+        activity: String = "All activity"
     ) throws -> [TimelineEntry] {
         guard limit > 0 else { return [] }
         let db = try openDatabase()
@@ -1240,18 +1242,32 @@ public final class DictationStore {
         // Pagination counts readable entries, not SQL keys that may be omitted.
         var entries: [TimelineEntry] = []
         var remainingOffset = max(0, offset)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         while sqlite3_step(statement) == SQLITE_ROW {
+            try Task.checkCancellation()
             let kind = sqlite3_column_int(statement, 0)
             let id = sqlite3_column_int64(statement, 1)
+            let labels = ["Dictations", "Meetings", "Cotypist", "Quill"]
+            guard activity == "All activity" || (kind >= 0 && Int(kind) < labels.count && labels[Int(kind)] == activity) else { continue }
             let entry: TimelineEntry?
             switch kind {
             case 0: entry = try dictation(id: id, db: db).map(TimelineEntry.dictation)
             case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
             case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
-            case 3: entry = try quillConversation(id: id, db: db, previewOnly: true).map(TimelineEntry.quill)
+            case 3: entry = try quillConversation(id: id, db: db, previewOnly: query.isEmpty).map(TimelineEntry.quill)
             default: entry = nil
             }
             guard let entry else { continue }
+            if !query.isEmpty {
+                let text: String
+                switch entry {
+                case .meeting(let record): text = [record.title, record.rawTranscript, record.formattedNotes, record.manualNotes].joined(separator: "\n")
+                case .dictation(let record): text = record.rawText
+                case .quill(let record): text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
+                case .cotypist(let record): text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
+                }
+                guard text.localizedCaseInsensitiveContains(query) else { continue }
+            }
             if remainingOffset > 0 { remainingOffset -= 1; continue }
             entries.append(entry)
             if entries.count == limit { break }

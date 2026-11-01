@@ -6996,6 +6996,19 @@ public final class MuesliController: NSObject {
         appState.hasMoreDictations = more.count >= appState.dictationPageSize
     }
 
+    func searchTimeline(text: String, activity: String, limit: Int) async throws -> [TimelineEntry] {
+        let store = dictationStore
+        let from = appState.timelineFromDate, to = appState.timelineToDate
+        let origin = appState.timelineOriginFilter, app = appState.timelineApplicationFilter
+        let query = Task.detached(priority: .userInitiated) {
+            try store.timelineEntries(limit: limit, fromDate: from, toDate: to,
+                origin: origin, targetApplication: app, searchText: text, activity: activity)
+        }
+        return try await withTaskCancellationHandler {
+            try await query.value
+        } onCancel: { query.cancel() }
+    }
+
     func loadMoreTimelineEntries() {
         guard appState.hasMoreTimelineEntries else { return }
         let offset = appState.timelineRows.count

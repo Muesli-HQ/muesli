@@ -8,6 +8,16 @@ struct TimelineView: View {
 
     @State private var contentFilter = "All activity"
     @State private var search = ""
+    @State private var searchRows: [TimelineEntry] = []
+    @State private var searchLimit = 50
+    @State private var searchHasMore = false
+    @State private var searchError: String?
+    private var isSearching: Bool { !search.isEmpty || contentFilter != "All activity" }
+    private var searchKey: String {
+        [search, contentFilter, String(searchLimit), appState.timelineFromDate ?? "", appState.timelineToDate ?? "",
+         String(describing: appState.timelineOriginFilter), String(describing: appState.timelineApplicationFilter),
+         appState.timelineRows.first?.id ?? ""].joined(separator: "|")
+    }
     private struct DayGroup: Identifiable {
         let id: Date
         let header: String
@@ -20,20 +30,7 @@ struct TimelineView: View {
         let today = calendar.startOfDay(for: now)
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
         var entriesByDay: [Date: [TimelineEntry]] = [:]
-        for entry in appState.timelineRows {
-            let include: Bool
-            let text: String
-            switch entry {
-            case .meeting(let record): include = contentFilter == "All activity" || contentFilter == "Meetings"; text = record.title + " " + record.rawTranscript
-            case .dictation(let record): include = contentFilter == "All activity" || contentFilter == "Dictations"; text = record.rawText
-            case .quill(let record):
-                include = contentFilter == "All activity" || contentFilter == "Quill"
-                text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
-            case .cotypist(let record):
-                include = contentFilter == "All activity" || contentFilter == "Cotypist"
-                text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
-            }
-            guard include, search.isEmpty || text.localizedCaseInsensitiveContains(search) else { continue }
+        for entry in (isSearching ? searchRows : appState.timelineRows) {
             let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
             entriesByDay[calendar.startOfDay(for: date), default: []].append(entry)
         }
@@ -92,10 +89,23 @@ struct TimelineView: View {
 
             if groupedEntries.isEmpty {
                 emptyState
-            } else {
-                timelineEntries
             }
+            timelineEntries
+            if let searchError { Text(searchError).foregroundStyle(MuesliTheme.textSecondary) }
         }
+        }
+        .onChange(of: search) { _, _ in searchLimit = 50 }
+        .onChange(of: contentFilter) { _, _ in searchLimit = 50 }
+        .task(id: searchKey) {
+            guard isSearching else { searchRows = []; searchError = nil; return }
+            let query = search, activity = contentFilter, limit = searchLimit
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+                let rows = try await controller.searchTimeline(text: query, activity: activity, limit: limit + 1)
+                try Task.checkCancellation()
+                searchRows = Array(rows.prefix(limit)); searchHasMore = rows.count > limit; searchError = nil
+            } catch is CancellationError { }
+            catch { searchError = "Search unavailable. Try again." }
         }
         .scrollPosition(id: Binding(
             get: { appState.timelineScrollAnchor },
@@ -210,7 +220,9 @@ struct TimelineView: View {
                     }
                 }
 
-                if appState.hasMoreTimelineEntries {
+                if isSearching && searchHasMore {
+                    Button("Load more results") { searchLimit += 50 }
+                } else if !isSearching && appState.hasMoreTimelineEntries {
                     Color.clear
                         .frame(height: 1)
                         .onAppear { controller.loadMoreTimelineEntries() }

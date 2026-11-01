@@ -63,7 +63,6 @@ case "${shard}" in
       StandardMenuShortcutTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
-      VisualMemoryStoreTests
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests

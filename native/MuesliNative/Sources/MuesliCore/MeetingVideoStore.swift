@@ -10,7 +10,6 @@ public final class MeetingVideoStore: @unchecked Sendable {
 
     public init(databaseURL: URL, root: URL) throws {
         self.root = root
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         guard sqlite3_open_v2(databaseURL.path, &db,
                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw failure()
@@ -98,6 +97,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     /// Persist ownership before capture/finalization; active files are never recovered mid-write.
     public func beginRecording(_ item: VisualMemoryItem) throws {
         lock.lock(); defer { lock.unlock() }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(item).write(to: url(for: item.path + ".recording.json"), options: .atomic)
         activeRecordings.insert(item.id)
     }
@@ -113,8 +113,13 @@ public final class MeetingVideoStore: @unchecked Sendable {
         return try journals().contains { $0.meetingID == meetingID }
     }
 
+    private func mediaFiles() throws -> [URL] {
+        do { return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) }
+        catch CocoaError.fileReadNoSuchFile { return [] }
+    }
+
     private func journals() throws -> [VisualMemoryItem] {
-        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        try mediaFiles()
             .filter { $0.lastPathComponent.hasSuffix(".pending.json") || $0.lastPathComponent.hasSuffix(".recording.json") }
             .compactMap { try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: $0)) }
     }
@@ -123,6 +128,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     /// leaves both the MP4 and its owner metadata available for recovery on next launch.
     public func persistCompleted(_ item: VisualMemoryItem) throws {
         lock.lock(); defer { lock.unlock() }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let pending = try url(for: item.path + ".pending.json")
         try JSONEncoder().encode(item).write(to: pending, options: .atomic)
         try save([item])
@@ -134,7 +140,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     public func maintain(recoverRecording: ((URL) -> Double?)? = nil) throws {
         lock.lock(); defer { lock.unlock() }
         var firstError: Error?
-        for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        for file in try mediaFiles()
             where file.lastPathComponent.hasSuffix(".pending.json") || file.lastPathComponent.hasSuffix(".recording.json") {
             do {
                 guard var item = try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: file)) else { continue }
@@ -234,6 +240,7 @@ public extension MeetingVideoStore {
                         throw NSError(domain: "MeetingVideoStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "Existing video differs; original retained."])
                     }
                 } else {
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
                     try FileManager.default.copyItem(at: source, to: destination)
                     copied = destination
                 }

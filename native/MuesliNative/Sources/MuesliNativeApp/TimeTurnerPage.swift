@@ -5,6 +5,8 @@ import MuesliCore
 struct TimeTurnerPage: View {
     @Bindable var appState: AppState
     let controller: MuesliController
+    @State private var dayMoments: [VisualMemoryItem] = []
+    @State private var cachedDay: Date?
 
     var body: some View {
         ScrollView {
@@ -40,17 +42,26 @@ struct TimeTurnerPage: View {
                     .frame(maxWidth: 820, alignment: .leading)
                 } else {
                     MemoryExplorerView(initialMoment: appState.timeTurnerSelectedCapture ??
-                        VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: appState.timeTurnerDay).last,
+                        dayMoments.last,
                         memory: controller.visualMemory, inline: true, externalDay: $appState.timeTurnerDay,
                         onNavigate: { day, time in
                             appState.timeTurnerDay = day
-                            let moments = VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: day)
+                            let moments = cachedDay.map { Calendar.current.isDate($0, inSameDayAs: day) } == true
+                                ? dayMoments : VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: day)
                             if let index = VisualMemoryDayTimeline.nearestIndex(in: moments, to: time) {
                                 appState.timeTurnerSelectedCapture = moments[index]
                             }
                         })
                 }
             }.padding(MuesliTheme.pageInset)
+        }.task(id: "\(appState.timeTurnerDay)|\(controller.visualMemory.catalogRevision)") {
+            let items = controller.visualMemory.historyMoments, day = appState.timeTurnerDay
+            let moments = await Task.detached(priority: .userInitiated) {
+                VisualMemoryDayTimeline.moments(items, on: day)
+            }.value
+            guard !Task.isCancelled else { return }
+            dayMoments = moments
+            cachedDay = day
         }
     }
 
