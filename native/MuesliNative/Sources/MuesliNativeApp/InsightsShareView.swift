@@ -62,8 +62,9 @@ struct InsightsShareSheet: View {
                         self.saveErrorMessage = nil
                     } label: {
                         Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .accessibilityLabel("Dismiss save error")
                 }
                 .padding(10)

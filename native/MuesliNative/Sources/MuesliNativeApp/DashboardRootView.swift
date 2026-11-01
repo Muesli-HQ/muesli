@@ -92,7 +92,17 @@ struct DashboardRootView: View {
                 sidebarView
                 .frame(width: sidebarPresentation.isCollapsed ? 68 : 240)
             } detail: {
-                detailContent
+                VStack(spacing: 0) {
+                    detailContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        // One structural location across all three destinations preserves the
+                        // native editor, selection and undo stack while browsing.
+                        if showsPersistentChat {
+                            MeetingChatView(appState: appState, controller: controller,
+                                            coordinator: controller.meetingChatCoordinator, docked: true)
+                        }
+                    }
             }
         }
         .tint(MuesliTheme.accent)
@@ -196,6 +206,10 @@ struct DashboardRootView: View {
             )
         }
         .font(MuesliTheme.body())
+    }
+
+    private var showsPersistentChat: Bool {
+        [.timeline, .dictations, .meetings].contains(appState.selectedTab)
     }
 
     private var hasOpenMeeting: Bool {

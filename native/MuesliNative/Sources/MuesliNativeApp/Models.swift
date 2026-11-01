@@ -1487,8 +1487,8 @@ struct MeetingSummaryBackendOption: Equatable {
 
     static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
 
-    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
-        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
+        guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
               selected != .claudeCode else { return all }
         return all.filter { $0 != .claudeCode }
     }
@@ -2239,7 +2239,7 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
-struct AppConfig: Codable {
+struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
@@ -2381,8 +2381,8 @@ struct AppConfig: Codable {
     var disabledCalendarIDs: [String] = []
     var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
-    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
-    var quilModel: String = PostProcessorOption.defaultQuilOption.id
+    var quilBackend: String = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+    var quilModel: String = Gemma4LiteRTModel.e2b.repoID
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
     var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
@@ -2815,7 +2815,7 @@ struct AppConfig: Codable {
         calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         quilBackend = TranscriptCleanupBackendOption
-            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .resolved((try? c.decode(String.self, forKey: .quilBackend)) ?? defaults.quilBackend)
             .backend
         let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
         quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend
@@ -2946,14 +2946,14 @@ struct AppConfig: Codable {
     }
 }
 
-struct WindowFrame: Codable {
+struct WindowFrame: Codable, Equatable {
     let x: Double
     let y: Double
     let width: Double
     let height: Double
 }
 
-struct CGPointCodable: Codable {
+struct CGPointCodable: Codable, Equatable {
     let x: Double
     let y: Double
 

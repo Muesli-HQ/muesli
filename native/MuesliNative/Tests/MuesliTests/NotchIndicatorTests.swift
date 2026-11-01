@@ -14,6 +14,99 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("Quill processing labels the assistant, not the foreground app")
+    @MainActor
+    func quillHeaderDoesNotImpersonateProvider() throws {
+        _ = NSApplication.shared
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.updateInstructionApp(name: "ChatGPT", bundleID: "com.apple.finder")
+        indicator.instructionMode = .quill
+        indicator.isToggleDictation = true
+        var stops = 0
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.setState(.recording, config: config)
+        #expect(indicator.notchInstruction == nil)
+        notch.onStopRecording?()
+        #expect(stops == 1)
+        indicator.showQuilInstruction("A question", config: config)
+        #expect(indicator.notchInstruction == "A question")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+        indicator.updateInstructionApp(name: "Another app", bundleID: "com.apple.TextEdit")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+    }
+
+    @Test("Quill answers persist across idle callbacks and collapse, then yield to recording")
+    @MainActor
+    func quillResponseLifecycle() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.showQuilInstruction("A question", config: config)
+        let processingFrame = try #require(notch.screenFrame)
+        #expect(notch.expandedPanelFrame != nil)
+        // Complete directly from processing, before the controller's idle callback.
+        indicator.showQuillAnswer("An answer", question: "A question", config: config, onDismiss: {}, onFollowUp: {})
+        #expect(notch.screenFrame == processingFrame)
+        indicator.setState(.idle, config: config)
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.quillQuestion == "A question")
+        #expect(try #require(notch.expandedPanelFrame).height < 180)
+        #expect(notch.expandedPanelFrame != nil)
+        #expect(notch.expandedPanelFrame?.width == notch.screenFrame?.width)
+        #expect(notch.expandedPanelFrame?.minX == notch.screenFrame?.minX)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame == nil)
+        indicator.setState(.idle, config: config)
+        indicator.showLoading("Late model preparation")
+        indicator.hideLoading()
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.expandedPanelFrame == nil)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame != nil)
+        indicator.instructionMode = .quill
+        indicator.setState(.recording, config: config)
+        #expect(notch.quillAnswer == nil)
+        #expect(notch.isVisible)
+    }
+
+    @Test("Short Quill answers fit their content and long answers have a bounded viewport")
+    @MainActor
+    func answerSizing() {
+        let short = QuillAssistantLayout.contentHeight(answer: "The capital of Azerbaijan is Baku.", question: nil, width: 420)
+        let long = QuillAssistantLayout.contentHeight(answer: String(repeating: "A longer explanation with multiple paragraphs.\n\n", count: 40), question: nil, width: 420)
+        if let path = ProcessInfo.processInfo.environment["MUESLI_QUILL_SNAPSHOT"] {
+            let height = QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420)
+            let view = NSHostingView(rootView: QuillAssistantView(
+                answer: "The capital of Azerbaijan is Baku.", question: nil,
+                contentHeight: height - QuillAssistantLayout.chromeHeight, onFollowUp: {}, onDismiss: {}))
+            view.frame = CGRect(x: 0, y: 0, width: 420, height: height)
+            view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+        }
+        #expect(short > 0)
+        #expect(QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420) < 150)
+        #expect(long > 420)
+        #expect(QuillAssistantLayout.height(contentHeight: long, maximumHeight: 420) == 420)
+    }
+
     @Test("Insertion-stop notice persists during recording and resets before the next session", arguments: [false, true], [false, true])
     @MainActor
     func cursorStopNoticeLifecycle(useNotch: Bool, decoderFailed: Bool) throws {
@@ -85,6 +178,38 @@ struct NotchIndicatorTests {
         indicator.hideLoading()
         indicator.hideComputerUseCursor()
         #expect(notch.isVisible)
+    }
+
+    @Test("Quill warmup and ready feedback stay in the notch with a floating dictation preference")
+    @MainActor
+    func quillPreparationFeedbackUsesNotch() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        store.save(config)
+        indicator.showLoading("Preparing models… Mic off", preferNotch: true)
+        #expect(notch.status == .loading)
+        #expect(notch.isVisible)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(!indicator.isShowingLoading)
+        indicator.showSuccess("Ready — start recording", preferNotch: true)
+        #expect(notch.status == .success)
+        #expect(notch.isVisible)
+        indicator.showWarning("Model preparation failed", preferNotch: true)
+        #expect(notch.status == .warning)
+        indicator.instructionMode = .quill
+        indicator.setState(.preparing, config: config)
+        #expect(notch.status == nil)
+        #expect(notch.isVisible)
+        indicator.setState(.recording, config: config)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(notch.isVisible)
+        #expect(store.load().indicatorAnchor == .custom)
     }
 
     @Test("Changing progress preserves collapsed disclosure", arguments: [NotchStatus.loading, .cursor])
@@ -470,7 +595,13 @@ struct NotchIndicatorTests {
         #expect(NotchOutcome.quillFailure(QuilTransformationError.emptyResponse) == .failure)
         #expect(NotchOutcome.success.color == .systemGreen)
         #expect(NotchOutcome.needsInput.color == .systemYellow)
-        #expect(NotchOutcome.failure.color == .systemRed)
+        let failureColor = NotchOutcome.failure.color.usingColorSpace(.sRGB)!
+        #expect(failureColor.redComponent > failureColor.greenComponent)
+        #expect(failureColor.redComponent > failureColor.blueComponent)
+        let failureHex = (Int((failureColor.redComponent * 255).rounded()) << 16)
+            | (Int((failureColor.greenComponent * 255).rounded()) << 8)
+            | Int((failureColor.blueComponent * 255).rounded())
+        #expect(MuesliContrast.ratio(0xFFFFFF, failureHex) >= 4.5)
         #expect(NotchOutcome.success.duration == 2)
         #expect(NotchOutcome.needsInput.duration == nil)
         #expect(NotchOutcome.failure.duration == 5)

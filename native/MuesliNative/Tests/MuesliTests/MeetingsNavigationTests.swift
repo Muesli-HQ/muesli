@@ -1274,6 +1274,40 @@ struct MeetingsNavigationTests {
         #expect(controller.canModifyModelFiles)
     }
 
+    @Test("per-model operations refuse a repeat on the same model without blocking other leases")
+    func modelOperationExcludesSameModelOnly() throws {
+        let controller = makeController(dictationStore: try makeStore())
+        let delete = try #require(controller.beginModelFileOperation(.deleting, modelID: "model-a"))
+        #expect(controller.appState.pendingModelFileOperations["model-a"] == .deleting)
+        // A repeat click or a conflicting update of the same files is refused synchronously.
+        #expect(controller.beginModelFileOperation(.deleting, modelID: "model-a") == nil)
+        #expect(controller.beginModelFileOperation(.updating, modelID: "model-a") == nil)
+        // Leases still overlap across models and for plain lease holders.
+        let other = try #require(controller.beginModelFileOperation(.updating, modelID: "model-b"))
+        let lease = try #require(controller.beginModelFileMutation())
+        #expect(controller.appState.modelFileMutationCount == 3)
+
+        controller.endModelFileOperation(delete, modelID: "model-a", failure: "Couldn’t delete model A")
+        #expect(controller.appState.pendingModelFileOperations["model-a"] == nil)
+        #expect(controller.appState.modelFileOperationErrors["model-a"] == "Couldn’t delete model A")
+        #expect(controller.appState.modelFileMutationCount == 2)
+
+        // Starting again clears the previous failure; the reservation is per model.
+        let retry = try #require(controller.beginModelFileOperation(.deleting, modelID: "model-a"))
+        #expect(controller.appState.modelFileOperationErrors["model-a"] == nil)
+        controller.endModelFileOperation(retry, modelID: "model-a")
+        controller.endModelFileOperation(other, modelID: "model-b")
+        controller.endModelFileMutation(lease)
+        #expect(controller.appState.pendingModelFileOperations.isEmpty)
+        #expect(controller.appState.modelFileOperationErrors.isEmpty)
+        #expect(controller.appState.modelFileMutationCount == 0)
+
+        // Global prerequisites still apply before any per-model reservation is recorded.
+        controller.appState.activeAudioImportCount = 1
+        #expect(controller.beginModelFileOperation(.deleting, modelID: "model-a") == nil)
+        #expect(controller.appState.pendingModelFileOperations.isEmpty)
+    }
+
     @Test("prompt policy surfaces writer errors without asking to save a nonexistent file")
     func retentionPolicyPreservesWriterFailure() async {
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: false, writerFailed: true, prompt: {
@@ -2011,13 +2045,20 @@ struct MeetingsNavigationTests {
         #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(controller.selectedPostProcessorBackend == .local)
         #expect(controller.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilModel == PostProcessorOption.defaultQuilOption.id)
+        let availableQuillModel = Gemma4LiteRTModel.allCases.first {
+            !$0.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: $0)
+        }
+        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(controller.config.quilModel == (availableQuillModel ?? .e2b).repoID)
+        if availableQuillModel == nil {
+            #expect(!controller.config.enableQuilMode)
+        }
 
         let persisted = configStore.load()
         #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(persisted.quilModel == controller.config.quilModel)
         #expect(persisted.resolvedDictationProvider == .local)
         #expect(persisted.openRouterDictationModel == "provider/transcribe")
     }

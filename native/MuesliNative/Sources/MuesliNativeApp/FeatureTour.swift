@@ -270,3 +270,15 @@ final class FeatureTourStore {
         defaults.set(tour.version, forKey: Key.lastPresentedVersion)
     }
 }
+
+/// A scroll belongs to one tour target and its destination pane, never an old onAppear.
+struct SettingsTourScrollRequest: Equatable {
+    let target: FeatureTourTarget?
+    let pane: SettingsPane
+
+    var scrollTarget: FeatureTourTarget? {
+        guard let target, case .settings(let destination) = target.navigationRoute,
+              destination == pane else { return nil }
+        return target
+    }
+}

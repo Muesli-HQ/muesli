@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 
 /// Apps Cotypist can be kept quiet in. Each candidate is a finite on/off setting in the shared
 /// catalog (`cotypist_quiet_app.<bundle ID>`, grouped for voice discovery), so Settings and voice
@@ -40,12 +41,10 @@ enum CotypistQuietApps {
     }
 
     /// Open apps with windows, other than Muesli itself.
+    private static let runningCache = CotypistRunningAppsCache()
+
     static func running(excluding quiet: [String]) -> [App] {
-        NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
-            .compactMap { app in app.bundleIdentifier.map { App(bundleID: $0, name: app.localizedName ?? name(of: $0)) } }
-            .filter { !quiet.contains($0.bundleID) && $0.bundleID != Bundle.main.bundleIdentifier }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        runningCache.apps.filter { !quiet.contains($0.bundleID) }
     }
 
     static func name(of bundleID: String) -> String { info(bundleID: bundleID).name }
@@ -74,5 +73,45 @@ enum CotypistQuietApps {
         )
         cache[bundleID] = info
         return info
+    }
+}
+
+/// Enumerate on workspace events, not each Settings render. The observable snapshot
+/// still invalidates the catalog when an app launches, exits, or becomes foreground.
+@MainActor
+@Observable
+final class CotypistRunningAppsCache {
+    private(set) var apps: [CotypistQuietApps.App] = []
+    @ObservationIgnored private let scan: @MainActor () -> [CotypistQuietApps.App]
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    init(observeWorkspace: Bool = true, scan: @escaping @MainActor () -> [CotypistQuietApps.App] = {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app in
+                app.bundleIdentifier.map { CotypistQuietApps.App(bundleID: $0, name: app.localizedName ?? CotypistQuietApps.name(of: $0)) }
+            }
+            .filter { $0.bundleID != Bundle.main.bundleIdentifier }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }) {
+        self.scan = scan
+        refresh()
+        if observeWorkspace {
+            for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                         NSWorkspace.didActivateApplicationNotification] {
+                observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor [weak self] in self?.refresh() }
+                })
+            }
+        }
+    }
+
+    func refresh() {
+        let current = scan()
+        if apps != current { apps = current }
+    }
+
+    deinit {
+        for observer in observers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     }
 }

@@ -44,7 +44,6 @@ struct MeetingTemplatesManagerView: View {
                         onClose()
                     }
                     .disabled(isEditingTemplateInProgress)
-                    .opacity(isEditingTemplateInProgress ? 0.55 : 1)
                     .help(isEditingTemplateInProgress ? "Finish or cancel template editing before closing." : "Close template manager")
                 }
             }
@@ -122,7 +121,7 @@ struct MeetingTemplatesManagerView: View {
                     HStack(spacing: 6) {
                         Image(systemName: template.icon)
                             .font(.system(size: 10))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                         Text(template.name)
                             .font(MuesliTheme.captionMedium())
                             .foregroundStyle(MuesliTheme.textPrimary)
@@ -180,7 +179,7 @@ struct MeetingTemplatesManagerView: View {
                 if showNameValidationError {
                     Text("Enter a template name.")
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.recording)
+                        .foregroundStyle(MuesliTheme.destructiveText)
                 }
             }
 
@@ -218,7 +217,7 @@ struct MeetingTemplatesManagerView: View {
                 if showPromptValidationError {
                     Text("Enter the prompt instructions for this template.")
                         .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.recording)
+                        .foregroundStyle(MuesliTheme.destructiveText)
                 }
             }
 
@@ -311,7 +310,7 @@ struct MeetingTemplatesManagerView: View {
             HStack(spacing: MuesliTheme.spacing8) {
                 Image(systemName: draftTemplateIcon)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
+                    .foregroundStyle(MuesliTheme.accentText)
                     .frame(width: 24, height: 24)
                     .background(MuesliTheme.accentSubtle)
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -329,7 +328,7 @@ struct MeetingTemplatesManagerView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(
                                 draftTemplateIcon == icon.symbolName
-                                    ? MuesliTheme.accent
+                                    ? MuesliTheme.accentText
                                     : MuesliTheme.textSecondary
                             )
                             .frame(maxWidth: .infinity, minHeight: 28)
@@ -353,6 +352,8 @@ struct MeetingTemplatesManagerView: View {
                     }
                     .buttonStyle(.plain)
                     .help(icon.label)
+                    .accessibilityLabel(icon.label)
+                    .accessibilityAddTraits(draftTemplateIcon == icon.symbolName ? .isSelected : [])
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -378,19 +379,9 @@ struct MeetingTemplatesManagerView: View {
                 Text(title)
                     .font(MuesliTheme.font(size: 13, weight: .medium))
             }
-            .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
-            .background(isDestructive ? MuesliTheme.recording.opacity(0.1) : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(
-                        isDestructive ? MuesliTheme.recording.opacity(0.2) : MuesliTheme.surfaceBorder,
-                        lineWidth: 1
-                    )
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructiveTinted : .secondary))
     }
 }

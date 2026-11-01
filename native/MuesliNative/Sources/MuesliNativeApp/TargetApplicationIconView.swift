@@ -116,7 +116,7 @@ struct TargetApplicationFilterMenu: View {
                         .font(MuesliTheme.font(size: 11, weight: .medium))
                 }
             }
-            .foregroundStyle(selection == nil ? MuesliTheme.textTertiary : MuesliTheme.accent)
+            .foregroundStyle(selection == nil ? MuesliTheme.textTertiary : MuesliTheme.accentText)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(selection == nil ? Color.clear : MuesliTheme.accent.opacity(0.12))

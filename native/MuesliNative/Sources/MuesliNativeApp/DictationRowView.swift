@@ -8,10 +8,39 @@ struct DictationRowView: View {
     var onCopyTrace: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
 
+    private enum RowAction: Hashable {
+        case details, copyTrace, copy, delete
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     @State private var showDeleteConfirmation = false
     @State private var isExpanded = false
     @State private var showsFullText = false
+    /// Row actions are revealed by hover or by keyboard focus, never left invisible but focused.
+    @FocusState private var focusedAction: RowAction?
+    @State private var copyConfirmation: CopyConfirmation?
+
+    /// A fresh identity per copy restarts the confirmation timer on repeated copies.
+    private struct CopyConfirmation: Equatable {
+        let id = UUID()
+        let action: RowAction
+    }
+
+    private let actionSize: CGFloat = 28
+
+    private var copiedAction: RowAction? { copyConfirmation?.action }
+
+    /// Pasteboard writes are synchronous, so the confirmation follows the write directly.
+    private func copy(_ action: RowAction, using perform: () -> Void) {
+        perform()
+        withAnimation(rowAnimation) { copyConfirmation = CopyConfirmation(action: action) }
+        AccessibilityNotification.Announcement(action == .copyTrace ? "Trace copied" : "Copied").post()
+    }
+
+    private var rowAnimation: Animation? {
+        MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)
+    }
 
     private var isComputerUseCommand: Bool {
         record.source == "cua"
@@ -52,7 +81,7 @@ struct DictationRowView: View {
                         if isComputerUseCommand {
                             Text("CUA")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(MuesliTheme.accent)
+                                .foregroundStyle(MuesliTheme.accentText)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accentSubtle)
@@ -69,7 +98,7 @@ struct DictationRowView: View {
                                 Text("QUILL")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                             }
-                                .foregroundStyle(MuesliTheme.accent)
+                                .foregroundStyle(MuesliTheme.accentText)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(MuesliTheme.accentSubtle)
@@ -85,6 +114,14 @@ struct DictationRowView: View {
                             .foregroundStyle(MuesliTheme.textPrimary)
                             .lineLimit(showsFullText || !canExpandText ? nil : 3)
                             .lineSpacing(3)
+                            .muesliRowActivation {
+                                if hasExpandableDetails {
+                                    withAnimation(rowAnimation) { isExpanded.toggle() }
+                                } else {
+                                    copy(.copy, using: onCopy)
+                                }
+                            }
+                            .accessibilityHint(hasExpandableDetails ? "Show or hide details" : "Copy dictation")
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -103,12 +140,20 @@ struct DictationRowView: View {
                     }
 
                     if canExpandText {
-                        Button(showsFullText ? "Show less" : "Show more") {
+                        Button {
                             showsFullText.toggle()
+                        } label: {
+                            Text(showsFullText ? "Show less" : "Show more")
+                                .font(MuesliTheme.captionMedium())
+                                .foregroundStyle(MuesliTheme.accentText)
+                                .padding(.horizontal, 6)
+                                .frame(minHeight: 28)
                         }
-                        .font(MuesliTheme.captionMedium())
-                        .foregroundStyle(MuesliTheme.accent)
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
+                        // Text stays aligned with the dictation and keeps its row spacing;
+                        // the invisible padding only extends the target.
+                        .padding(.leading, -6)
+                        .padding(.vertical, -6)
                         .accessibilityLabel(showsFullText ? "Collapse dictation text" : "Show full dictation text")
                         .accessibilityIdentifier("dictation.expand.\(record.id)")
                     }
@@ -126,48 +171,79 @@ struct DictationRowView: View {
                     )
                 }
 
-                HStack(spacing: 8) {
+                // 28pt targets so near-misses land on the action rather than the row's copy tap.
+                HStack(spacing: 2) {
+                    if let copiedAction {
+                        Text(copiedAction == .copyTrace ? "Trace copied" : "Copied")
+                            .font(MuesliTheme.captionMedium())
+                            .foregroundStyle(MuesliTheme.successText)
+                            .padding(.trailing, 4)
+                            .transition(.opacity)
+                    }
+
                     if hasExpandableDetails {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.15)) {
+                            withAnimation(rowAnimation) {
                                 isExpanded.toggle()
                             }
                         } label: {
                             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(MuesliTheme.textTertiary)
+                                .frame(width: actionSize, height: actionSize)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
+                        .focused($focusedAction, equals: .details)
+                        .help(isExpanded ? "Hide details" : "Show details")
+                        .accessibilityLabel(isExpanded ? "Hide details" : "Show details")
                     }
 
                     if !isQuilTransformation, record.computerUseTrace != nil, let onCopyTrace {
-                        Button(action: onCopyTrace) {
-                            Image(systemName: "list.bullet.clipboard")
+                        Button { copy(.copyTrace, using: onCopyTrace) } label: {
+                            Image(systemName: copiedAction == .copyTrace ? "checkmark" : "list.bullet.clipboard")
                                 .font(.system(size: 12))
-                                .foregroundStyle(MuesliTheme.textTertiary)
+                                .foregroundStyle(copiedAction == .copyTrace ? MuesliTheme.successText : MuesliTheme.textTertiary)
+                                .frame(width: actionSize, height: actionSize)
                         }
-                        .buttonStyle(.plain)
-                        .help("Copy CUA trace")
+                        .buttonStyle(.muesli(.quiet))
+                        .focused($focusedAction, equals: .copyTrace)
+                        .help(copiedAction == .copyTrace ? "CUA trace copied" : "Copy CUA trace")
+                        .accessibilityLabel("Copy CUA trace")
                     }
 
-                    Button(action: onCopy) {
-                        Image(systemName: "doc.on.doc")
+                    Button { copy(.copy, using: onCopy) } label: {
+                        Image(systemName: copiedAction == .copy ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 12))
-                            .foregroundStyle(MuesliTheme.textTertiary)
+                            .foregroundStyle(copiedAction == .copy ? MuesliTheme.successText : MuesliTheme.textTertiary)
+                            .frame(width: actionSize, height: actionSize)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
+                    .focused($focusedAction, equals: .copy)
+                    .help(copiedAction == .copy ? "Dictation copied" : "Copy dictation")
+                    .accessibilityLabel("Copy dictation")
 
                     if onDelete != nil {
                         Button { showDeleteConfirmation = true } label: {
                             Image(systemName: "trash")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.red.opacity(0.6))
+                                .foregroundStyle(MuesliTheme.destructiveText)
+                                .frame(width: actionSize, height: actionSize)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
+                        .focused($focusedAction, equals: .delete)
+                        .help("Delete dictation")
+                        .accessibilityLabel("Delete dictation")
                     }
                 }
-                .opacity(isHovered || isExpanded || hasExpandableDetails ? 1 : 0)
+                // Glyphs keep their former vertical position beside the first text line.
+                .padding(.vertical, -(actionSize - 14) / 2)
+                .opacity(isHovered || isExpanded || hasExpandableDetails || focusedAction != nil || copiedAction != nil ? 1 : 0)
             }
+        }
+        .task(id: copyConfirmation) {
+            guard copyConfirmation != nil else { return }
+            do { try await Task.sleep(for: .seconds(1.6)) } catch { return }
+            withAnimation(rowAnimation) { copyConfirmation = nil }
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing16)
@@ -179,17 +255,17 @@ struct DictationRowView: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(rowAnimation) {
                 isHovered = hovering
             }
         }
         .onTapGesture {
             if hasExpandableDetails {
-                withAnimation(.easeInOut(duration: 0.15)) {
+                withAnimation(rowAnimation) {
                     isExpanded.toggle()
                 }
             } else {
-                onCopy()
+                copy(.copy, using: onCopy)
             }
         }
         .alert("Delete Dictation", isPresented: $showDeleteConfirmation) {
@@ -249,13 +325,13 @@ struct DictationRowView: View {
     private func statusColor(_ status: String) -> Color {
         switch status.lowercased() {
         case "done", "executed":
-            return MuesliTheme.success
+            return MuesliTheme.successText
         case "confirm", "needsconfirmation":
-            return MuesliTheme.transcribing
+            return MuesliTheme.warningText
         case "timed_out", "timedout":
-            return MuesliTheme.transcribing
+            return MuesliTheme.warningText
         case "failed", "unsupported":
-            return MuesliTheme.recording
+            return MuesliTheme.destructiveText
         default:
             return MuesliTheme.textTertiary
         }

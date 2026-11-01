@@ -561,8 +561,8 @@ public final class MuesliController: NSObject {
     private var cleanupAvailabilityIDs: Set<String> = []
     private var cleanupDownloadNoticeIDs: Set<String> = []
 
-    func refreshCleanupAvailability() {
-        let available = PostProcessorOption.downloadedIDs
+    func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
+        let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
         guard available != cleanupAvailabilityIDs else { return }
         cleanupAvailabilityIDs = available
         nativeRecordingGate.invalidate()
@@ -621,6 +621,16 @@ public final class MuesliController: NSObject {
     private let quilInstructionPreview = QuilInstructionPreview()
     private var quilTask: Task<Void, Never>?
     private var quilTaskID: UUID?
+    private var quillConversation = QuillAssistantConversation()
+    private var quillCapturedTarget = false
+    private var quillQuestionRecognition: QuillQuestionRecognition?
+    private var quillAnswerRequestID: UUID?
+    private var quillHistoryWriteTask: Task<Void, Never>?
+    private var quillPendingHistoryBackend = ""
+    private var quillPendingHistoryModel = ""
+    private var quillPendingHistoryTimestamp = ""
+    private var quillPendingInstruction = ""
+    private var quillPendingOutput = ""
     private var quilSelectionSnapshot: QuilSelectionSnapshot?
     private var quilTargetCaptureError: Error?
     private var quilContextCaptureTask: Task<DictationContext?, Never>?
@@ -641,6 +651,11 @@ public final class MuesliController: NSObject {
     #if DEBUG
     var dictationOutputTestHooks: DictationOutputTestHooks?
     #endif
+    var settingsAvailabilityScan: @Sendable (String) -> SettingsModelAvailability = { SettingsModelAvailability.scan(claudeCodePath: $0) }
+    private var settingsAvailabilityTask: Task<Void, Never>?
+    private var settingsAvailabilityGeneration = UUID()
+    private var settingsAvailabilityPath: String?
+    private var settingsAvailabilityNeedsRefresh = false
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
@@ -1001,6 +1016,7 @@ public final class MuesliController: NSObject {
             }
         }
         installICloudPersistentSyncObservers()
+        refreshSettingsModelAvailability()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
@@ -1208,6 +1224,7 @@ public final class MuesliController: NSObject {
         cancelHostedDictation()
         cancelInFlightDictationTranscription()
         clearQuilSession(cancelAudioReason: "shutdown")
+        await quillHistoryWriteTask?.value
         activeComputerUseAudioSessionID = nil
         pendingComputerUseStopSessionID = nil
         pendingComputerUseStopStartedAt = nil
@@ -1560,6 +1577,62 @@ public final class MuesliController: NSObject {
         appState.iCloudBridgeRemoteDevicePlatform = MuesliBridgeDeviceIdentity.remoteDevicePlatform
     }
 
+    /// Observation publishes assignments even when their values have not changed.
+    func publishConfig() {
+        guard appState.config != config else { return }
+        let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
+        appState.config = config
+        if pathChanged { refreshSettingsModelAvailability() }
+    }
+
+    func refreshSettingsModelAvailability(force: Bool = false) {
+        guard !isShuttingDown else { return }
+        guard appState.modelFileMutationCount == 0 else {
+            settingsAvailabilityNeedsRefresh = true
+            return
+        }
+        let path = config.claudeCodeExecutablePath
+        if settingsAvailabilityTask != nil {
+            settingsAvailabilityNeedsRefresh = settingsAvailabilityNeedsRefresh || force || settingsAvailabilityPath != path
+            return
+        }
+        guard force || settingsAvailabilityPath != path else { return }
+        settingsAvailabilityPath = path
+        let generation = UUID()
+        settingsAvailabilityGeneration = generation
+        let scan = settingsAvailabilityScan
+        settingsAvailabilityTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                scan(path)
+            }.value
+            guard !Task.isCancelled, let self, !self.isShuttingDown,
+                  self.settingsAvailabilityGeneration == generation else { return }
+            self.settingsAvailabilityTask = nil
+            guard self.appState.modelFileMutationCount == 0 else {
+                self.settingsAvailabilityNeedsRefresh = true
+                return
+            }
+            // A mutation or path change during the scan invalidates its result.
+            if self.settingsAvailabilityNeedsRefresh || self.config.claudeCodeExecutablePath != path {
+                self.settingsAvailabilityNeedsRefresh = false
+                self.refreshSettingsModelAvailability(force: true)
+                return
+            }
+            if self.appState.settingsModelAvailability != snapshot {
+                self.appState.settingsModelAvailability = snapshot
+            }
+            self.refreshCleanupAvailability(downloadedIDs: snapshot.postProcessorIDs)
+            self.appState.modelLibrary.reconcile(snapshot)
+            self.appState.settingsModelAvailabilityRevision += 1
+            if self.appState.selectedTab == .settings, self.appState.modelFileMutationCount == 0,
+               !self.isMeetingRecording(), !self.isStartingMeetingRecording {
+                self.normalizeMeetingTranscriptionSelectionForAvailability(
+                    downloadedOptions: BackendOption.compatibleOptions().filter { snapshot.contains($0) }
+                )
+            }
+        }
+    }
+
     func syncAppState() {
         storedMeetingChatCoordinator?.refreshForSourceChanges()
         let timelineRows = (try? dictationStore.timelineEntries(
@@ -1620,7 +1693,7 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
-        appState.config = config
+        publishConfig()
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
         appState.isMeetingStarting = isStartingMeetingRecording
@@ -1783,7 +1856,7 @@ public final class MuesliController: NSObject {
             appState.selectedMeetingTranscriptionBackend = backend
         }
         if configChanged {
-            appState.config = config
+            publishConfig()
         }
     }
 
@@ -1951,7 +2024,7 @@ public final class MuesliController: NSObject {
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
-        appState.config = config
+        publishConfig()
         appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
         appState.isOpenRouterAuthenticated = openRouterAuth.isAuthenticated
         appState.isOpenRouterEnvironmentManaged = openRouterAuth.hasEnvironmentCredential
@@ -2031,7 +2104,7 @@ public final class MuesliController: NSObject {
             configStore.save(config)
         }
 
-        appState.config = config
+        publishConfig()
         appState.contributionMilestonePrompt = ContributionMilestonePolicy.prompt(
             kind: .dictationWords,
             total: totalWords,
@@ -2079,7 +2152,7 @@ public final class MuesliController: NSObject {
             config.contributionPromptNextMeetingCount = nextMilestone
         }
         configStore.save(config)
-        appState.config = config
+        publishConfig()
         TelemetryDeck.signal("contribution_prompt_dismissed", parameters: [
             "kind": prompt.kind.rawValue,
             "count": "\(prompt.count)",
@@ -2469,6 +2542,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
                     intent: .incoming,
                     delay: 0.5,
@@ -3451,7 +3525,7 @@ public final class MuesliController: NSObject {
             configStore.save(config)
             selectedMeetingTranscriptionBackend = option
             appState.selectedMeetingTranscriptionBackend = option
-            appState.config = config
+            publishConfig()
             activeMeetingSession?.updateBackend(option)
             applyConfigRuntimeSideEffects(
                 wasICloudSyncEnabled: wasICloudSyncEnabled,
@@ -3618,9 +3692,8 @@ public final class MuesliController: NSObject {
         let available: Bool
         switch backend {
         case .local:
-            let model = PostProcessorOption.resolve(id: config.quilModel)
-            available = model.supportsQuil
-                && (model.isDownloaded || Qwen3PostProcessorConfig.devOverrideURL() != nil)
+            // Legacy GGUF selections must choose a native Gemma model before recording.
+            available = false
         case .gemma4LiteRT:
             let model = Gemma4LiteRTModel.resolved(config.quilModel)
             available = !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
@@ -3994,9 +4067,13 @@ public final class MuesliController: NSObject {
             selectPostProcessorBackend(.local)
         }
         if TranscriptCleanupBackendOption.resolved(config.quilBackend) == .hosted(.openRouter) {
-            updateConfig {
-                $0.quilBackend = TranscriptCleanupBackendOption.local.backend
-                $0.quilModel = PostProcessorOption.defaultQuilOption.id
+            let fallback = Gemma4LiteRTModel.allCases.first {
+                !$0.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: $0)
+            }
+            updateConfig { QuillAssistantModelPolicy.applyDisconnectedProviderFallback(to: &$0, availableModel: fallback) }
+            if fallback == nil {
+                statusBarController?.setStatus("Quill disabled — download a local Quill model or choose another provider")
+                indicator.showWarning("Quill disabled — choose or download a model", duration: 4, preferNotch: true)
             }
         }
         if selectedDictationProvider == .openRouter {
@@ -5299,6 +5376,10 @@ public final class MuesliController: NSObject {
         progress: @escaping (Double, String?) -> Void,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        // A download may finish before warm-up fails or is cancelled. Invalidate
+        // once this shared foreground/background onboarding path has settled;
+        // the existing scanner remains detached and coalesces overlapping work.
+        defer { refreshSettingsModelAvailability(force: true) }
         let wasDownloaded = backend.isDownloaded
         progress(
             wasDownloaded ? 0.75 : 0.0,
@@ -9188,6 +9269,24 @@ public final class MuesliController: NSObject {
     func endModelFileMutation(_ token: UUID) {
         modelFileMutationTokens.remove(token)
         appState.modelFileMutationCount = modelFileMutationTokens.count
+        refreshSettingsModelAvailability(force: true)
+    }
+
+    /// A lease plus per-model exclusion. Leases for different models may still overlap, as
+    /// the shared lease intends; a second delete/update of the same model is refused until
+    /// the first ends, and its card can show the pending operation immediately.
+    func beginModelFileOperation(_ operation: ModelFileOperation, modelID: String) -> UUID? {
+        guard appState.pendingModelFileOperations[modelID] == nil,
+              let token = beginModelFileMutation() else { return nil }
+        appState.pendingModelFileOperations[modelID] = operation
+        appState.modelFileOperationErrors[modelID] = nil
+        return token
+    }
+
+    func endModelFileOperation(_ token: UUID, modelID: String, failure: String? = nil) {
+        appState.pendingModelFileOperations[modelID] = nil
+        if let failure { appState.modelFileOperationErrors[modelID] = failure }
+        endModelFileMutation(token)
     }
 
     private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
@@ -9222,7 +9321,7 @@ public final class MuesliController: NSObject {
         guard cleanupOrphanedMeetingWaveformCacheFiles() else { return }
         guard cleanupLegacyJSONMeetingWaveformCacheFiles() else { return }
         config.waveformCacheOrphanCleanupMigrationApplied = true
-        appState.config = config
+        publishConfig()
         configStore.save(config)
     }
 
@@ -10019,11 +10118,16 @@ public final class MuesliController: NSObject {
 
     private func handleQuilPrepare() {
         guard canPrepareQuil else { return }
+        quillAnswerRequestID = nil
+        quilInstructionPreview.stop()
+        indicator.beginQuillTurn()
         guard ensureQuilModelIsAvailable() else { return }
         guard ensureDictationBackendReady(forQuill: true) else { return }
         indicator.instructionMode = .quill
         quilSelectionSnapshot = nil
+        quillCapturedTarget = false
         quilTargetCaptureError = nil
+        captureQuilTargetIfNeeded()
         meetingMonitor.suppressWhileActive()
         meetingMonitor.refreshState()
         setState(.preparing)
@@ -10033,15 +10137,20 @@ public final class MuesliController: NSObject {
 
     private func handleQuilStart() {
         guard canStartQuil else { return }
+        quillAnswerRequestID = nil
+        quilInstructionPreview.stop()
+        indicator.beginQuillTurn()
         guard ensureQuilModelIsAvailable(), ensureDictationBackendReady(forQuill: true) else {
             quilHotkeyMonitor.cancelToggleMode()
             return
         }
+        captureQuilTargetIfNeeded()
         indicator.instructionMode = .quill
         quilStartedAt = Date()
         indicator.powerProvider = { [weak self] in
             self?.quilAudioSessionManager.currentPower() ?? -160
         }
+        beginQuillQuestionRecognition()
         setState(.preparing)
         quilAudioSessionManager.beginRecording(
             mode: "quil",
@@ -10051,8 +10160,34 @@ public final class MuesliController: NSObject {
         activeQuilAudioSessionID = quilAudioSessionManager.currentSessionID
     }
 
+    private func beginQuillQuestionRecognition() {
+        quillQuestionRecognition?.cancel()
+        quilAudioSessionManager.onAudioBuffer = nil
+        if let hosted = makeSelectedHostedDictationSession() {
+            let recognition = QuillQuestionRecognition(hostedSession: hosted)
+            quillQuestionRecognition = recognition
+            quilAudioSessionManager.onAudioBuffer = { [weak recognition] samples in recognition?.append(samples) }
+            return
+        }
+        do {
+            let recognition = try transcriptionCoordinator.makeQuillQuestionRecognition(
+                backend: selectedBackend, config: config, directAudio: quillUsesDirectAudio,
+                // Decode while recording for latency, but publish only the finalized
+                // question after stop. Partial ASR revisions are not conversation UI.
+                onUpdate: { _ in }, onFailure: { error in
+                    Gemma4LiteRTLogging.profile("quill live_question_failed domain=\((error as NSError).domain) code=\((error as NSError).code)")
+                })
+            quillQuestionRecognition = recognition
+            quilAudioSessionManager.onAudioBuffer = { [weak recognition] samples in recognition?.append(samples) }
+        } catch {
+            quillQuestionRecognition = nil
+            Gemma4LiteRTLogging.profile("quill live_question_start_failed code=\((error as NSError).code)")
+        }
+    }
+
     private func captureQuilTargetIfNeeded() {
-        if quilSelectionSnapshot == nil {
+        if !quillCapturedTarget {
+            quillCapturedTarget = true
             do {
                 let snapshot = try QuilSelectionSnapshot.capture()
                 quilSelectionSnapshot = snapshot
@@ -10116,6 +10251,9 @@ public final class MuesliController: NSObject {
     }
 
     private func finishQuilAudioStop(wavURL: URL?, startedAt: Date) {
+        // The recorder has drained all PCM into both the WAV and the live decoder.
+        quilAudioSessionManager.onAudioBuffer = nil
+        let questionRecognition = quillQuestionRecognition
         guard let wavURL else {
             handleQuilCancel()
             return
@@ -10126,27 +10264,19 @@ public final class MuesliController: NSObject {
             presentQuilFailure(QuilTransformationError.emptyInstruction)
             return
         }
-        guard let snapshot = quilSelectionSnapshot else {
-            try? FileManager.default.removeItem(at: wavURL)
-            presentQuilFailure(quilTargetCaptureError ?? QuilTransformationError.noTextTarget)
-            return
-        }
-        guard snapshot.isStillCurrent() else {
-            try? FileManager.default.removeItem(at: wavURL)
-            presentQuilFailure(QuilTransformationError.selectionChanged)
-            return
-        }
+        let snapshot = quilSelectionSnapshot
+        let capturedTargetID = snapshot?.isEditable == true ? UUID().uuidString : nil
+        let conversation = quillConversation.turns
         indicator.setTranscribingTitle("Parsing instruction", config: config)
         setState(.transcribing)
         let taskID = UUID()
         quilTaskID = taskID
         let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
         let configuredModel = config.quilModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = configuredModel.isEmpty
-            ? (backend == .local
-                ? PostProcessorOption.defaultQuilOption.id
-                : TranscriptCleanupClient.defaultModel(for: backend))
-            : configuredModel
+        let model = configuredModel.isEmpty ? TranscriptCleanupClient.defaultModel(for: backend) : configuredModel
+        quillPendingHistoryBackend = backend.backend
+        quillPendingHistoryModel = model
+        quillPendingHistoryTimestamp = ISO8601DateFormatter().string(from: startedAt)
         let dictationBackend = selectedBackend
         let audioEligible = QuilModelPolicy.usesDirectAudio(backend: backend, model: model)
         let configSnapshot = config
@@ -10157,7 +10287,10 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             // Both consumers retain the recording until their actual work finishes,
             // including a preview that takes time to observe cancellation.
-            defer { withExtendedLifetime(audio) {}; self.quilInstructionPreview.stop(requestID: taskID) }
+            defer {
+                withExtendedLifetime(audio) {}
+                self.quilInstructionPreview.stopUnlessOwned(requestID: taskID, activeRequestID: self.quilTaskID, answerRequestID: self.quillAnswerRequestID)
+            }
             var longAudioFallback = false
             do {
                 if audioEligible { longAudioFallback = try QuilModelPolicy.requiresLongAudioFallback(wavURL: audio.url) }
@@ -10168,49 +10301,67 @@ public final class MuesliController: NSObject {
                     instruction = "Audio instruction"
                     await MainActor.run {
                         guard self.quilTaskID == taskID else { return }
-                        self.indicator.showQuilInstruction("Audio instruction", config: self.config)
+                        self.indicator.showQuilInstruction("Transcribing your question…", config: self.config)
                     }
                     try Task.checkCancellation()
                     guard self.quilTaskID == taskID else { throw CancellationError() }
                     let coordinator = self.transcriptionCoordinator
                     self.quilInstructionPreview.start(audio: audio, requestID: taskID,
-                        transcribe: { try await coordinator.transcribeQuilDisplayAudio(at: $0) },
+                        transcribe: { url in
+                            if let questionRecognition { return try await questionRecognition.finish(recordedURL: url) }
+                            return try await coordinator.transcribeQuilDisplayAudio(at: url, previewOnly: true)
+                        },
                         display: { [weak self] text in
-                            guard let self, self.quilTaskID == taskID else { return }
-                            self.indicator.showQuilInstruction(text, config: self.config)
+                            guard let self else { return }
+                            if self.quilTaskID == taskID {
+                                self.indicator.showQuilInstruction(text, config: self.config)
+                            } else if self.quillAnswerRequestID == taskID {
+                                self.quillConversation.updateLatestInstruction(text)
+                                self.queueQuillHistoryWrite { try $0.updateQuillQuestion(turnID: taskID, question: text) }
+                                self.indicator.updateQuillQuestion(text)
+                            }
                         })
                 } else if longAudioFallback {
                     // Required full-recording ASR, with no display-preview deadline.
-                    // Do not use the selected dictation backend: it may itself be Gemma.
-                    let text = try await self.transcriptionCoordinator.transcribeQuilDisplayAudio(at: audio.url)
+                    // Reuse the completed selected-ASR session; a Gemma ASR
+                    // selection retains the separate long-audio fallback.
+                    let text: String
+                    if let questionRecognition { text = try await questionRecognition.finish(recordedURL: audio.url) }
+                    else { text = try await self.transcriptionCoordinator.transcribeQuilDisplayAudio(at: audio.url) }
                     try Task.checkCancellation()
                     guard self.quilTaskID == taskID else { throw CancellationError() }
                     instruction = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
-                    self.statusBarController?.setStatus("Rewriting selection")
+                    self.statusBarController?.setStatus("Quill is responding")
                     self.indicator.showQuilInstruction(instruction, config: self.config)
                 } else {
 
-                    let result = try await self.transcriptionCoordinator.transcribeDictation(
-                        at: wavURL,
-                        backend: dictationBackend,
-                        cohereLanguage: configSnapshot.resolvedCohereLanguage,
-                        bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
-                        bodhanOutputMode: configSnapshot.resolvedBodhanOutputMode,
-                        whisperLanguage: configSnapshot.resolvedWhisperLanguage,
-                        qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
-                        parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
-                        appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
-                        enablePostProcessor: false,
-                        customWords: self.serializedCustomWords(),
-                        appContext: nil
-                    )
+                    if let questionRecognition {
+                        instruction = try await questionRecognition.finish(recordedURL: audio.url)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        let result = try await self.transcriptionCoordinator.transcribeDictation(
+                            at: wavURL,
+                            backend: dictationBackend,
+                            cohereLanguage: configSnapshot.resolvedCohereLanguage,
+                            bodhanLanguage: configSnapshot.resolvedBodhanLanguage,
+                            bodhanOutputMode: configSnapshot.resolvedBodhanOutputMode,
+                            whisperLanguage: configSnapshot.resolvedWhisperLanguage,
+                            qwen3AsrLanguage: configSnapshot.resolvedQwen3AsrLanguage,
+                            parakeetLanguage: configSnapshot.resolvedParakeetLanguage,
+                            appleSpeechLanguage: configSnapshot.resolvedAppleSpeechLanguage,
+                            enablePostProcessor: false,
+                            customWords: self.serializedCustomWords(),
+                            appContext: nil
+                        )
+                        try Task.checkCancellation()
+                        instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
                     try Task.checkCancellation()
-                    instruction = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !instruction.isEmpty else { throw QuilTransformationError.emptyInstruction }
                     await MainActor.run {
                         guard self.quilTaskID == taskID else { return }
-                        self.statusBarController?.setStatus("Rewriting selection")
+                        self.statusBarController?.setStatus("Quill is responding")
                         self.indicator.showQuilInstruction(instruction, config: self.config)
                     }
                 }
@@ -10221,34 +10372,28 @@ public final class MuesliController: NSObject {
                     capturedContext = nil
                 }
                 try Task.checkCancellation()
-                let contextStillBelongsToSelection = await MainActor.run {
-                    snapshot.isStillCurrent() && snapshot.matches(context: capturedContext)
-                }
-                guard contextStillBelongsToSelection else {
-                    throw QuilTransformationError.selectionChanged
-                }
-                let promptContext = capturedContext.map { DictationContextCapture.formatForPrompt($0) }
-                let replacement: String
+                let contextIsCurrent = snapshot.map { $0.isStillCurrent() && $0.matches(context: capturedContext) } ?? false
+                let promptContext = contextIsCurrent ? capturedContext.map { DictationContextCapture.formatForPrompt($0) } : nil
+                let request = QuillAssistantRequest(instruction: instruction,
+                    selectedText: contextIsCurrent ? (snapshot?.text ?? "") : "",
+                    targetID: contextIsCurrent ? capturedTargetID : nil, context: promptContext, history: conversation)
                 let generationStartedAt = Date()
-                if directAudio {
-                    replacement = try await self.transcriptionCoordinator.transformAudioForQuil(
-                        wavURL: audio.url, selectedText: snapshot.text, appContext: promptContext, model: model
-                    )
-                } else {
-                    replacement = try await WritingService.generate(
-                        selectedText: snapshot.text, instruction: instruction, appContext: promptContext,
-                        config: configSnapshot, coordinator: self.transcriptionCoordinator
-                    )
-                }
+                let action = try await self.transcriptionCoordinator.respondToQuill(request,
+                    audioURL: directAudio ? audio.url : nil, model: model, config: configSnapshot)
+                let replacement = action.text
                 try Task.checkCancellation()
-                let previewText = self.quilInstructionPreview.stop(requestID: taskID)
+                let previewText = self.quilInstructionPreview.availableText
                 let displayInstruction = directAudio ? (previewText ?? instruction) : instruction
                 Gemma4LiteRTLogging.profile("quill request=\(taskID) generation_completed seconds=\(Date().timeIntervalSince(generationStartedAt)) stop_to_generation_seconds=\(Date().timeIntervalSince(processingStartedAt)) preview_available=\(previewText != nil)")
-                let selectionStillCurrent = await MainActor.run {
-                    snapshot.isStillCurrentForReplacement()
+                guard self.quilTaskID == taskID else { throw CancellationError() }
+                self.quillPendingInstruction = displayInstruction
+                self.quillPendingOutput = replacement
+                if case .reply = action {
+                    self.completeQuillAssistant(taskID: taskID, response: replacement)
+                    return
                 }
-                guard selectionStillCurrent else {
-                    throw QuilTransformationError.selectionChanged
+                guard let snapshot, snapshot.isEditable, snapshot.isStillCurrentForReplacement() else {
+                    throw QuillAssistantError.unavailableTarget
                 }
                 await MainActor.run {
                     guard self.quilTaskID == taskID else { return }
@@ -10275,7 +10420,7 @@ public final class MuesliController: NSObject {
                         text: replacement,
                         shortcut: configSnapshot.pasteShortcut,
                         targetApplicationProvider: { snapshot.application },
-                        shouldDispatchPaste: { snapshot.isTargetStillFocused() },
+                        shouldDispatchPaste: { self.quilTaskID == taskID && snapshot.isStillCurrent() },
                         dispatchStrategy: DictationContextCapture.isBrowserApplication(snapshot.application)
                             ? .targetApplicationPasteCommand
                             : .keyboardShortcut,
@@ -10463,12 +10608,29 @@ public final class MuesliController: NSObject {
     @MainActor
     private func finishQuilTask(taskID: UUID, message: String?, outcome: NotchOutcome) {
         guard quilTaskID == taskID else { return }
-        let instruction = indicator.notchInstruction
-        clearQuilSession()
+        let result = message ?? "Paste dispatched to the captured field."
+        let response = outcome == .success ? result : result + "\n\n" + quillPendingOutput
+        completeQuillAssistant(taskID: taskID, response: response,
+            memory: result + "\nGenerated text:\n" + quillPendingOutput)
+    }
+
+    private func completeQuillAssistant(taskID: UUID, response: String, memory: String? = nil) {
+        guard quilTaskID == taskID else { return }
+        quillConversation.append(instruction: quillPendingInstruction, response: memory ?? response)
+        let question = quilInstructionPreview.availableText
+            ?? (quillPendingInstruction == "Audio instruction" ? nil : quillPendingInstruction)
+        let sessionID = quillConversation.id
+        let turn = QuillHistoryTurn(id: taskID, question: question, answer: memory ?? response,
+            timestamp: quillPendingHistoryTimestamp, backend: quillPendingHistoryBackend, model: quillPendingHistoryModel)
+        queueQuillHistoryWrite { try $0.appendQuillTurn(sessionID: sessionID, turn: turn) }
+        clearQuilSession(preservePreview: true)
+        quillAnswerRequestID = taskID
+        indicator.showQuillAnswer(response, question: question, config: config, onDismiss: { [weak self] in
+            self?.quillAnswerRequestID = nil
+            self?.quilInstructionPreview.stop()
+            self?.quillConversation.reset()
+        }, onFollowUp: { [weak self] in self?.quilHotkeyMonitor.startToggleMode() })
         resumeAfterQuil()
-        if indicator.showInstructionOutcome(outcome, mode: .quill, instruction: instruction,
-                                            message: message ?? "Reformatted", config: config) { return }
-        if let message { indicator.showWarning(message, icon: "", duration: 2.0) }
     }
 
     @MainActor
@@ -10483,8 +10645,14 @@ public final class MuesliController: NSObject {
         indicator.showWarning(message, icon: "!", duration: 3.0)
     }
 
-    private func clearQuilSession(cancelAudioReason: String? = nil) {
-        quilInstructionPreview.stop()
+    private func clearQuilSession(cancelAudioReason: String? = nil, preservePreview: Bool = false) {
+        quilAudioSessionManager.onAudioBuffer = nil
+        if !preservePreview { quillQuestionRecognition?.cancel() }
+        quillQuestionRecognition = nil
+        if !preservePreview {
+            quillAnswerRequestID = nil
+            quilInstructionPreview.stop()
+        }
         quilTask?.cancel()
         quilTask = nil
         quilTaskID = nil
@@ -10494,11 +10662,62 @@ public final class MuesliController: NSObject {
         pendingQuilStopSessionID = nil
         pendingQuilStopStartedAt = nil
         quilSelectionSnapshot = nil
+        quillCapturedTarget = false
+        quillPendingInstruction = ""
+        quillPendingOutput = ""
         quilTargetCaptureError = nil
         quilContextCaptureTask?.cancel()
         quilContextCaptureTask = nil
         quilHotkeyMonitor.cancelToggleMode()
         indicator.isToggleDictation = false
+    }
+
+    /// Serialize answer, late-preview and deletion writes without blocking the UI.
+    private func queueQuillHistoryWrite(_ operation: @escaping @Sendable (DictationStore) throws -> Void) {
+        let previous = quillHistoryWriteTask
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        quillHistoryWriteTask = Task { [weak self] in
+            await previous?.value
+            do {
+                try await Task.detached(priority: .utility) {
+                    try operation(DictationStore(databaseURL: databaseURL))
+                }.value
+                guard let self, !self.isShuttingDown else { return }
+                let from = self.appState.timelineFromDate
+                let to = self.appState.timelineToDate
+                let origin = self.appState.timelineOriginFilter
+                let application = self.appState.timelineApplicationFilter
+                let limit = max(self.appState.timelinePageSize, self.appState.timelineRows.count)
+                let rows = try await Task.detached(priority: .utility) {
+                    try DictationStore(databaseURL: databaseURL).timelineEntries(limit: limit,
+                        fromDate: from, toDate: to, origin: origin, targetApplication: application)
+                }.value
+                guard self.appState.timelineFromDate == from, self.appState.timelineToDate == to,
+                      self.appState.timelineOriginFilter == origin,
+                      self.appState.timelineApplicationFilter == application else { return }
+                self.appState.timelineRows = rows
+                self.appState.hasMoreTimelineEntries = rows.count >= limit
+            } catch {
+                self?.presentErrorAlert(title: "Couldn't update Quill history",
+                    message: "Timeline could not be updated. " + error.localizedDescription)
+            }
+        }
+    }
+
+    func loadQuillConversation(id: Int64) async -> QuillConversationRecord? {
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        return await Task.detached(priority: .userInitiated) {
+            try? DictationStore(databaseURL: databaseURL).quillConversation(id: id)
+        }.value
+    }
+
+    func deleteQuillConversation(_ record: QuillConversationRecord) {
+        if quillConversation.id == record.sessionID {
+            handleQuilCancel()
+            indicator.beginQuillTurn()
+            quillConversation.reset()
+        }
+        queueQuillHistoryWrite { try $0.deleteQuillConversation(id: record.id) }
     }
 
     private func resumeAfterQuil() {
@@ -11113,14 +11332,14 @@ public final class MuesliController: NSObject {
             return GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
         }
         let directQuill = forQuill && quillUsesDirectAudio
-        let dictation: Gemma4LiteRTModel? = !directQuill && (forQuill || !selectedDictationProvider.isHosted) && selectedBackend.backend == "gemma4-litert"
+        let dictation: Gemma4LiteRTModel? = !directQuill && !selectedDictationProvider.isHosted && selectedBackend.backend == "gemma4-litert"
             ? Gemma4LiteRTModel.resolved(selectedBackend.model) : nil
         let cleanup: Gemma4LiteRTModel? = !forQuill && !selectedDictationProvider.isHosted && config.enablePostProcessor && selectedPostProcessorBackend.isCompatible(with: selectedBackend) && config.postProcessorBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.postProcessorGemmaModel) : nil
         let quill: Gemma4LiteRTModel? = config.enableQuilMode && config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend
             ? Gemma4LiteRTModel.resolved(config.quilModel) : nil
-        // Hosted dictation readiness says nothing about the local ASR Quill uses.
-        let localASRKey = forQuill && !directQuill && selectedBackend.backend != "gemma4-litert"
+        // Cloud ASR does not require a local recognizer to be loaded.
+        let localASRKey = forQuill && !selectedDictationProvider.isHosted && !directQuill && selectedBackend.backend != "gemma4-litert"
             ? "quill-asr:\(selectedBackend.backend):\(selectedBackend.model):\(config.resolvedAppleSpeechLanguage)" : nil
         let localCleanup = LocalCleanupPreparationPolicy.option(
             enabled: config.enablePostProcessor && selectedPostProcessorBackend == .local,
@@ -11138,7 +11357,7 @@ public final class MuesliController: NSObject {
     private func ensureNativeModelsReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
         let plan = nativePreparationPlan(forQuill: forQuill)
-        if plan.isEmpty { indicator.hideLoading() }
+        if plan.isEmpty { indicator.hideLoading(restoreIdlePresentation: !forQuill) }
         let localBackend = selectedBackend
         let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
         let cleanupOption = cachedCleanupOption()
@@ -11156,7 +11375,7 @@ public final class MuesliController: NSObject {
                 guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else { throw CancellationError() }
                 let message = "Preparing \(cleanupOption.label)… Mic off"
                 if self.dictationState == .idle && !self.isMeetingRecording() {
-                    self.indicator.showLoading(message)
+                    self.indicator.showLoading(message, preferNotch: forQuill)
                     self.statusBarController?.setStatus(message)
                 }
                 cleanupPreparationFailed = try await !LocalCleanupPreparationPolicy.prepare {
@@ -11173,7 +11392,7 @@ public final class MuesliController: NSObject {
                     guard let self, self.nativeRecordingGate.pendingKey == plan.key,
                           self.nativePreparationPlan(forQuill: forQuill).key == plan.key,
                           self.dictationState == .idle, !self.isMeetingRecording() else { return }
-                    self.indicator.showLoading(message)
+                    self.indicator.showLoading(message, preferNotch: forQuill)
                     self.statusBarController?.setStatus(message)
                 }
             }
@@ -11181,36 +11400,36 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else {
                 self.nativeRecordingGate.invalidate()
-                self.indicator.hideLoading()
+                self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
                 return
             }
             guard (forQuill && self.quillUsesDirectAudio) || self.dictationBackendReadiness.allowsDictation else {
                 if let message = self.dictationBackendReadiness.blockingMessage(backendLabel: self.selectedBackend.label) {
                     self.statusBarController?.setStatus(message)
                     switch self.dictationBackendReadiness {
-                    case .preparing: self.indicator.showLoading(message)
-                    case .failed: self.indicator.showWarning(message, icon: "!")
+                    case .preparing: self.indicator.showLoading(message, preferNotch: forQuill)
+                    case .failed: self.indicator.showWarning(message, icon: "!", preferNotch: forQuill)
                     case .ready: break
                     }
                 }
                 return
             }
-            self.indicator.hideLoading()
+            self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
             if self.dictationState == .idle && !self.isMeetingRecording() {
                 if cleanupPreparationFailed {
                     self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
-                    self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4)
+                    self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4, preferNotch: forQuill)
                 } else {
                     self.statusBarController?.setStatus("Models ready")
-                    self.indicator.showSuccess("Ready — start recording", duration: 3)
+                    self.indicator.showSuccess("Ready — start recording", duration: 3, preferNotch: forQuill)
                 }
             }
         }, failed: { [weak self] error in
             guard let self else { return }
-            self.indicator.hideLoading()
+            self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
             if self.dictationState == .idle && !self.isMeetingRecording() {
                 self.statusBarController?.setStatus("Model preparation failed")
-                self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4)
+                self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4, preferNotch: forQuill)
             }
             fputs("[gemma-preparation] failed: \(error)\n", stderr)
         })
@@ -11220,7 +11439,7 @@ public final class MuesliController: NSObject {
             quilHotkeyMonitor.cancelToggleMode()
             hotkeyMonitor.cancelToggleMode()
             if dictationState == .idle && !isMeetingRecording() {
-                indicator.showLoading("Preparing models… Mic off")
+                indicator.showLoading("Preparing models… Mic off", preferNotch: forQuill)
             }
         }
         return allowed
@@ -11228,22 +11447,25 @@ public final class MuesliController: NSObject {
 
     private func ensureDictationBackendReady(forQuill: Bool = false) -> Bool {
         guard !isDictationTestMode else { return true }
-        // Gemma Quill needs only its own audio model. Display-only Parakeet
-        // never gates recording or waits for the selected dictation backend.
-        if forQuill && quillUsesDirectAudio { return ensureNativeModelsReady(forQuill: true) }
-        // Other Quill backends still use the selected local ASR for instructions.
-        if !forQuill, let message = HostedDictationActivationPolicy.blockingMessage(
+        if let message = HostedDictationActivationPolicy.blockingMessage(
             provider: selectedDictationProvider,
             openAIAPIKey: resolvedOpenAIAPIKey(),
             openRouterAPIKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
-            openRouterModel: config.openRouterDictationModel
+            openRouterModel: config.openRouterDictationModel,
+            requiresTranscript: !(forQuill && quillUsesDirectAudio)
         ) {
             return blockHostedDictationStart(
                 status: message,
                 warning: selectedDictationProvider == .openRouter
                     ? "OpenRouter not ready"
-                    : "OpenAI not configured"
+                    : "OpenAI not configured",
+                forQuill: forQuill
             )
+        }
+        // Transcript-based requests require cloud credentials. Direct-audio Quill
+        // only requires its answer model; local and cloud previews are best-effort.
+        if selectedDictationProvider.isHosted || (forQuill && quillUsesDirectAudio) {
+            return ensureNativeModelsReady(forQuill: forQuill)
         }
         guard !dictationBackendReadiness.allowsDictation else { return ensureNativeModelsReady(forQuill: forQuill) }
         guard let message = dictationBackendReadiness.blockingMessage(
@@ -11254,19 +11476,19 @@ public final class MuesliController: NSObject {
         statusBarController?.refresh()
         switch dictationBackendReadiness {
         case .preparing:
-            indicator.showLoading(message)
+            indicator.showLoading(message, preferNotch: forQuill)
         case .failed:
-            indicator.showWarning(message, icon: "!")
+            indicator.showWarning(message, icon: "!", preferNotch: forQuill)
         case .ready:
             break
         }
         return false
     }
 
-    private func blockHostedDictationStart(status: String, warning: String) -> Bool {
+    private func blockHostedDictationStart(status: String, warning: String, forQuill: Bool = false) -> Bool {
         statusBarController?.setStatus(status)
         statusBarController?.refresh()
-        indicator.showWarning(warning, icon: "!", duration: 3)
+        indicator.showWarning(warning, icon: "!", duration: 3, preferNotch: forQuill)
         return false
     }
 
@@ -11517,11 +11739,6 @@ public final class MuesliController: NSObject {
             SoundController.playQuillStart(
                 enabled: shouldPlayQuilLifecycleSounds && !isDictationTestMode
             )
-            // Mic activation is the primary Quill interaction. Discover the
-            // selection/insertion target only after the stream and activation cue
-            // are live, so AX or Google Docs clipboard fallback work cannot delay
-            // or suppress recording. A missing target is reported after release.
-            captureQuilTargetIfNeeded()
         case .speechDetected(let sessionID, _):
             guard activeQuilAudioSessionID == sessionID else { break }
         case .noAudioTimeout(let sessionID, _):
@@ -11759,21 +11976,7 @@ public final class MuesliController: NSObject {
         guard !isDictationTestMode, selectedDictationProvider.isHosted else { return true }
         cancelHostedDictation()
 
-        let session: any HostedDictationSession
-        switch selectedDictationProvider {
-        case .local:
-            return true
-        case .openAI:
-            session = OpenAIHostedDictationSession(configuration: OpenAIDictationConfiguration(
-                apiKey: resolvedOpenAIAPIKey(),
-                model: config.openaiDictationModel
-            ))
-        case .openRouter:
-            session = OpenRouterHostedDictationSession(configuration: OpenRouterDictationConfiguration(
-                apiKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
-                model: config.openRouterDictationModel
-            ))
-        }
+        guard let session = makeSelectedHostedDictationSession() else { return true }
         hostedDictationSession = session
         if session.acceptsLiveAudio {
             dictationAudioSessionManager.onAudioBuffer = { [weak session] samples in
@@ -11781,6 +11984,24 @@ public final class MuesliController: NSObject {
             }
         }
         return true
+    }
+
+    /// Shared provider/model snapshot for ordinary dictation and Quill.
+    private func makeSelectedHostedDictationSession() -> (any HostedDictationSession)? {
+        switch selectedDictationProvider {
+        case .local:
+            return nil
+        case .openAI:
+            return OpenAIHostedDictationSession(configuration: OpenAIDictationConfiguration(
+                apiKey: resolvedOpenAIAPIKey(),
+                model: config.openaiDictationModel
+            ))
+        case .openRouter:
+            return OpenRouterHostedDictationSession(configuration: OpenRouterDictationConfiguration(
+                apiKey: openRouterAuth.resolvedAPIKey(legacyAPIKey: config.openRouterAPIKey),
+                model: config.openRouterDictationModel
+            ))
+        }
     }
 
     private func detachHostedDictation() -> (any HostedDictationSession)? {

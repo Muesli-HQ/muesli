@@ -82,7 +82,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
         guard (200..<300).contains(http.statusCode) else { throw MeetingTextGenerationError.failed(http.statusCode) }
-        return try MeetingNativeToolTransport.parseResponse(data)
+        return try MeetingNativeToolTransport.parseResponse(data, maximumArgumentBytes: request.maximumArgumentBytes)
     }
 
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
