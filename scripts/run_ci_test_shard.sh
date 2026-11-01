@@ -76,6 +76,7 @@ case "${shard}" in
       DictationBackendPreparationTests
       BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
+      LiveTranscriptFollowStateTests
       CotypistShaperTests
       CotypistHistoryTests
       CotypistSetupGuideLayoutTests
