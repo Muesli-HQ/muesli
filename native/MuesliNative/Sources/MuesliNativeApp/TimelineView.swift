@@ -6,6 +6,23 @@ struct TimelineView: View {
     let appState: AppState
     let controller: MuesliController
 
+    @State private var contentFilter = "All activity"
+    @State private var search = ""
+    @State private var searchRows: [TimelineEntry] = []
+    @State private var searchLimit = 50
+    @State private var searchHasMore = false
+    @State private var searchError: String?
+    @State private var completedSearch: TimelineSearchRequest?
+    @State private var settledSearch: TimelineSearchRequest?
+    private var searchPending: Bool { isSearching && settledSearch != searchRequest }
+    private var keepsSearchRows: Bool { searchRequest.canDisplay(completedSearch) }
+    private var isSearching: Bool { !search.isEmpty || contentFilter != "All activity" }
+    private var searchScope: String {
+        [search, contentFilter, appState.timelineFromDate ?? "", appState.timelineToDate ?? "",
+         String(describing: appState.timelineOriginFilter), String(describing: appState.timelineApplicationFilter),
+         String(appState.timelineHistoryRevision)].joined(separator: "|")
+    }
+    private var searchRequest: TimelineSearchRequest { .init(scope: searchScope, limit: searchLimit) }
     private struct DayGroup: Identifiable {
         let id: Date
         let header: String
@@ -18,10 +35,9 @@ struct TimelineView: View {
         let today = calendar.startOfDay(for: now)
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
         var entriesByDay: [Date: [TimelineEntry]] = [:]
-        for entry in appState.timelineRows {
-            let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? now
-            let day = calendar.startOfDay(for: date)
-            entriesByDay[day, default: []].append(entry)
+        for entry in (isSearching ? (keepsSearchRows ? searchRows : []) : appState.timelineRows) {
+            let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
+            entriesByDay[calendar.startOfDay(for: date), default: []].append(entry)
         }
         return entriesByDay.keys.sorted(by: >).map { day in
             let header: String
@@ -32,12 +48,15 @@ struct TimelineView: View {
             } else {
                 header = day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)).uppercased()
             }
-            return DayGroup(id: day, header: header, entries: entriesByDay[day] ?? [])
+            return DayGroup(id: day, header: header, entries: (entriesByDay[day] ?? []).sorted {
+                (MeetingBrowserLogic.parseDate($0.timestamp) ?? .distantPast) > (MeetingBrowserLogic.parseDate($1.timestamp) ?? .distantPast)
+            })
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollView {
+        LazyVStack(spacing: 0) {
             DashboardPageHeader(
                 title: "Timeline",
                 appState: appState,
@@ -56,6 +75,13 @@ struct TimelineView: View {
 
             DictationFormattingSetupCard(appState: appState, controller: controller)
 
+            HStack {
+                TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
+                Picker("Activity", selection: $contentFilter) {
+                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
+                }.frame(width: 180)
+            }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
+
             if appState.config.showIOSCompanionPrompt {
                 IPhoneBridgeCard(appState: appState, controller: controller)
                     .padding(.horizontal, MuesliTheme.pageInset)
@@ -66,12 +92,42 @@ struct TimelineView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
-            if appState.timelineRows.isEmpty {
+            if searchPending && !keepsSearchRows {
+                ProgressView("Searching…").font(MuesliTheme.body()).padding()
+            } else if groupedEntries.isEmpty && searchError == nil {
                 emptyState
-            } else {
-                timelineScrollView
+            }
+            timelineEntries
+            if let searchError { Text(searchError).foregroundStyle(MuesliTheme.textSecondary) }
+        }
+        }
+        .onChange(of: search) { _, _ in searchLimit = 50 }
+        .onChange(of: contentFilter) { _, _ in searchLimit = 50 }
+        .task(id: searchRequest) {
+            guard isSearching else { searchRows = []; searchError = nil; completedSearch = nil; settledSearch = nil; return }
+            let query = search, activity = contentFilter, limit = searchLimit
+            let revision = appState.timelineHistoryRevision
+            let request = searchRequest
+            searchError = nil
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+                let rows = try await controller.searchTimeline(text: query, activity: activity, limit: limit + 1)
+                try Task.checkCancellation()
+                guard revision == appState.timelineHistoryRevision, request == searchRequest else { return }
+                completedSearch = request
+                settledSearch = request
+                searchRows = Array(rows.prefix(limit)); searchHasMore = rows.count > limit; searchError = nil
+            } catch is CancellationError { }
+            catch {
+                guard !Task.isCancelled, request == searchRequest else { return }
+                settledSearch = request
+                searchError = "Search unavailable. Try again."
             }
         }
+        .scrollPosition(id: Binding(
+            get: { appState.timelineScrollAnchor },
+            set: { appState.timelineScrollAnchor = $0 }
+        ), anchor: .top)
     }
 
     private var filterBar: some View {
@@ -143,12 +199,12 @@ struct TimelineView: View {
             Text(emptyStateTitle)
                 .font(MuesliTheme.title3())
                 .foregroundStyle(MuesliTheme.textSecondary)
-            Text("Try another source, app, or time range")
+            Text("Try another search, source, app, or time range")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textTertiary)
             Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 200)
     }
 
     private var emptyStateTitle: String {
@@ -162,8 +218,7 @@ struct TimelineView: View {
         }
     }
 
-    private var timelineScrollView: some View {
-        ScrollView {
+    private var timelineEntries: some View {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
                 ForEach(groupedEntries) { group in
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
@@ -174,8 +229,7 @@ struct TimelineView: View {
 
                         VStack(spacing: 0) {
                             ForEach(group.entries) { entry in
-                                timelineRow(entry)
-                                    .id(entry.id)
+                                timelineRow(entry).id(entry.id)
                             }
                         }
                         .scrollTargetLayout()
@@ -183,7 +237,10 @@ struct TimelineView: View {
                     }
                 }
 
-                if appState.hasMoreTimelineEntries {
+                if isSearching && keepsSearchRows && searchHasMore {
+                    Button(searchPending ? "Loading more…" : "Load more results") { searchLimit += 50 }
+                        .disabled(searchPending)
+                } else if !isSearching && appState.hasMoreTimelineEntries {
                     Color.clear
                         .frame(height: 1)
                         .onAppear { controller.loadMoreTimelineEntries() }
@@ -191,11 +248,6 @@ struct TimelineView: View {
             }
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.bottom, MuesliTheme.spacing24)
-        }
-        .scrollPosition(id: Binding(
-            get: { appState.timelineScrollAnchor },
-            set: { appState.timelineScrollAnchor = $0 }
-        ), anchor: .top)
     }
 
     @ViewBuilder
@@ -550,5 +602,16 @@ private struct TimelineQuillRow: View {
             textFont: { MuesliTheme.font(size: $0, weight: $1) },
             heading: MuesliTheme.title3(), subheading: MuesliTheme.headline()))
         .overlay(alignment: .bottom) { Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1) }
+    }
+}
+
+/// Pagination may reuse visible rows only while their filters and source revision match.
+struct TimelineSearchRequest: Equatable {
+    let scope: String
+    let limit: Int
+
+    func canDisplay(_ completed: Self?) -> Bool {
+        guard let completed else { return false }
+        return scope == completed.scope && limit >= completed.limit
     }
 }

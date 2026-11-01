@@ -113,6 +113,16 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+    @Test func timelinePaginationKeepsRowsButChangedSearchInvalidatesThem() {
+        let completed = TimelineSearchRequest(scope: "release|revision1", limit: 50)
+        #expect(completed.canDisplay(completed))
+        #expect(TimelineSearchRequest(scope: completed.scope, limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "different query|revision1", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "release|revision2", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: completed.scope, limit: 25).canDisplay(completed))
+        #expect(!completed.canDisplay(nil))
+    }
+
 
     @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
     func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
@@ -524,6 +534,26 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.timelineDateFilter == .lastWeek)
         #expect(controller.appState.timelineApplicationFilter == notes)
         #expect(controller.appState.timelineScrollAnchor == "dictation:77")
+    }
+
+    @Test("timeline search invalidates after deleting a match outside the visible page")
+    func timelineSearchInvalidatesHiddenDeletion() async throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        let oldID = try store.insertDictation(text: "older needle", durationSeconds: 1,
+            startedAt: base, endedAt: base.addingTimeInterval(1))
+        _ = try store.insertDictation(text: "newest unrelated", durationSeconds: 1,
+            startedAt: base.addingTimeInterval(2), endedAt: base.addingTimeInterval(3))
+        let controller = makeController(dictationStore: store)
+        controller.appState.timelinePageSize = 1
+        controller.syncAppState()
+        let firstID = controller.appState.timelineRows.first?.id
+        let revision = controller.appState.timelineHistoryRevision
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).count == 1)
+        controller.deleteDictation(id: oldID)
+        #expect(controller.appState.timelineRows.first?.id == firstID)
+        #expect(controller.appState.timelineHistoryRevision != revision)
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).isEmpty)
     }
 
     @Test("timeline pagination and filter changes reset to the newest composite anchor")
@@ -1019,23 +1049,58 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
-    @Test("a corrupt legacy catalog cannot disable meeting video storage")
-    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+    @Test("meeting video lookup and deletion stay within meeting storage", arguments: [false, true])
+    func meetingVideoStorageIsIndependentOfTimeTurner(deleteAll: Bool) async throws {
         let database = try makeStore()
         let support = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: support) }
-        let legacy = support.appendingPathComponent("visual-memory")
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
-        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
         let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
         let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        await controller.refreshCatalog()
+        let history = try #require(controller.store)
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(id: "shared-id", kind: .meetingVideo, meetingID: id, source: "Display", path: "clip.mp4")
+        let moment = VisualMemoryItem(id: clip.id, kind: .moment, source: "Editor", path: clip.path)
+        let historyURL = try history.url(for: moment.path)
+        try Data([1]).write(to: historyURL)
+        try history.save([moment])
+        let videoURL = try videos.url(for: clip.path)
+        // A missing meeting file must never resolve to a file in Time Turner.
+        #expect(controller.mediaURL(clip) == videoURL)
+        #expect(controller.mediaURL(moment) == historyURL)
+        try FileManager.default.createDirectory(at: videos.root, withIntermediateDirectories: true)
+        try Data([2]).write(to: videoURL)
+        try videos.save([clip])
+        await controller.refreshCatalog()
+        #expect(controller.items == [clip])
+        if deleteAll { try controller.deleteAllMeetings() }
+        else { try controller.deleteMeeting(id) }
+        await controller.refreshCatalog()
+        #expect(controller.items.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: videoURL.path))
+        #expect(try history.items() == [moment])
+        #expect(try Data(contentsOf: historyURL) == Data([1]))
+    }
+
+    @Test("a corrupt Time Turner catalog cannot disable meeting video storage")
+    func corruptTimeTurnerCatalogKeepsPrimaryVideoStorage() async throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let history = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: history.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        await controller.refreshCatalog()
         #expect(controller.store == nil)
         #expect(!controller.hasMedia(meetingID: id))
         let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
         try videos.save([clip])
-        controller.reload()
+        await controller.refreshCatalog()
         #expect(controller.items == [clip])
     }
 
@@ -1049,6 +1114,7 @@ struct MeetingsNavigationTests {
         let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try FileManager.default.createDirectory(at: videos.root, withIntermediateDirectories: true)
         try Data([1]).write(to: videos.url(for: clip.path))
         try videos.save([clip])
         let controller = makeController(dictationStore: store, configStore: config)

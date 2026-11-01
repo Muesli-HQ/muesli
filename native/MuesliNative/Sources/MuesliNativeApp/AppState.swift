@@ -4,6 +4,7 @@ import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case timeline
+    case timeTurner
     case dictations
     case insights
     case meetings
@@ -165,7 +166,11 @@ enum OpenRouterModelCatalogLoadState: Equatable {
 @Observable
 final class AppState {
     // Dashboard data
-    var timelineRows: [TimelineEntry] = []
+    // Also changes when a mutation affects a row outside the first visible page.
+    var timelineHistoryRevision: UInt64 = 0
+    var timelineRows: [TimelineEntry] = [] {
+        didSet { timelineHistoryRevision &+= 1 }
+    }
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0
@@ -311,7 +316,11 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
+    var timeTurnerDay = Date()
+    var timeTurnerShowsRecap = false
+    var timeTurnerSelectedCapture: VisualMemoryItem?
     var selectedTab: DashboardTab = .timeline
+    var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
     var insightsBackLabel: String {
@@ -319,6 +328,7 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsTimeTurnerSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
     var pendingFeatureTourInvitation: FeatureTour?
     var activeFeatureTour: FeatureTour?

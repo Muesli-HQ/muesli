@@ -138,7 +138,10 @@ struct SidebarView: View {
     private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {
         Button {
             withAnimation(navigationAnimation) {
-                if tab == .timeline {
+                if tab == .timeTurner {
+                    appState.searchQuery = ""
+                    appState.selectedTab = .timeTurner
+                } else if tab == .timeline {
                     controller.showTimelineHome()
                 } else if tab == .meetings {
                     // Mirror the expanded Meetings action: returning to the
@@ -152,7 +155,7 @@ struct SidebarView: View {
                 }
             }
         } label: {
-            Image(systemName: icon)
+            (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                 .frame(width: 40, height: 36)
@@ -538,7 +541,10 @@ struct SidebarView: View {
         let isSelected = appState.selectedTab == tab
         Button {
             withAnimation(navigationAnimation) {
-                if tab == .timeline {
+                if tab == .timeTurner {
+                    appState.searchQuery = ""
+                    appState.selectedTab = .timeTurner
+                } else if tab == .timeline {
                     controller.showTimelineHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
@@ -548,7 +554,7 @@ struct SidebarView: View {
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
-                Image(systemName: icon)
+                (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)

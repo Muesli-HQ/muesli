@@ -9,6 +9,104 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Time Turner reductions require confirmation but remain voice discoverable")
+    func timeTurnerDeletionPolicy() async throws {
+        try await withShortcutSettings { controller, _ in
+            let definitions = controller.settingsDefinitions()
+            for (id, lower, higher) in [
+                ("time_turner_budget", "2", "20"),
+                ("time_turner_screenshot_retention", "1", "30"),
+                ("time_turner_history_retention", "7", "forever")
+            ] {
+                let setting = try #require(definitions.first { $0.id == id })
+                #expect(setting.voiceRestriction == nil)
+                #expect(setting.deletionConfirmation(controller.config, lower) != nil)
+                #expect(setting.deletionConfirmation(controller.config, higher) == nil)
+                #expect(setting.deletionConfirmation(controller.config, setting.read(controller.config)) == nil)
+            }
+            var unlimited = controller.config
+            unlimited.timeTurnerHistoryRetention = "forever"
+            unlimited.timeTurnerScreenshotRetention = "forever"
+            let screenshots = try #require(definitions.first { $0.id == "time_turner_screenshot_retention" })
+            #expect(screenshots.deletionConfirmation(unlimited, "90") != nil)
+            #expect(screenshots.deletionConfirmation(controller.config, "forever") == nil)
+            #expect(unlimited.timeTurnerRetentionPolicy.screenshotDays == nil)
+            var malformed = controller.config
+            malformed.timeTurnerHistoryRetention = "invalid"
+            malformed.timeTurnerScreenshotRetention = "invalid"
+            malformed.timeTurnerBudget = "invalid"
+            for (id, value) in [("time_turner_history_retention", "7"), ("time_turner_screenshot_retention", "1"), ("time_turner_budget", "2")] {
+                let definition = try #require(definitions.first { $0.id == id })
+                #expect(definition.deletionConfirmation(malformed, value) != nil)
+            }
+            malformed.timeTurnerBudget = String(Int64.max)
+            #expect(malformed.timeTurnerRetentionPolicy.mediaBudgetBytes > 0)
+            let history = try #require(definitions.first { $0.id == "time_turner_history_retention" })
+            #expect(history.deletionConfirmation(unlimited, "365") != nil)
+        }
+    }
+
+    @Test("deletion confirmation is enforced for every mutation source and revalidates after waiting")
+    func deletionConfirmationExecutor() async throws {
+        for source in [MuesliSettings.ApplySource.voice, .manualUI, .confirmedPreference] {
+            var config = AppConfig()
+            var writes = 0
+            var setting = MuesliSetting(id: "history", label: "History", choices: [.init(id: "7", label: "7 days")],
+                read: { $0.timeTurnerHistoryRetention }, unavailable: { _ in nil }, apply: { value in
+                    writes += 1; config.timeTurnerHistoryRetention = value
+                })
+            setting.deletionConfirmation = { _, _ in "Delete older history?" }
+            let snapshots = [setting.snapshot(config: config)]
+            let selection = MuesliSettings.Selection(setting: "history", value: "7")
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config })
+            }
+            await #expect(throws: CancellationError.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config }, confirmDeletion: { _ in false })
+            }
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config }, confirmDeletion: { _ in
+                        config.timeTurnerHistoryRetention = "90"; return true
+                    })
+            }
+            #expect(writes == 0)
+            _ = try await MuesliSettings.apply(selection, settings: [setting], snapshots: [setting.snapshot(config: config)], source: source,
+                config: { config }, persistedConfig: { config }, confirmDeletion: { _ in true })
+            #expect(writes == 1)
+        }
+    }
+
+    @Test("voice deletion asks locally and cannot accept a model-supplied confirmation flag")
+    func voiceDeletionConfirmation() async throws {
+        for answer in ["Keep current settings", "Change and allow deletion", "yes", "ambiguous"] {
+            var config = AppConfig()
+            var writes = 0, calls = 0, questions = 0
+            var setting = MuesliSetting(id: "history", label: "History", choices: [.init(id: "7", label: "7 days")],
+                read: { $0.timeTurnerHistoryRetention }, unavailable: { _ in nil }, apply: { value in
+                    writes += 1; config.timeTurnerHistoryRetention = value
+                })
+            setting.deletionConfirmation = { _, _ in "Delete older history?" }
+            let result = await ComputerUseSettings.run(command: "Keep seven days", settings: [setting],
+                config: { config }, persistedConfig: { config }, ask: { question in
+                    questions += 1
+                    #expect(writes == 0)
+                    #expect(question.options.first == "Keep current settings")
+                    return answer
+                }, plan: { _, _ in
+                    calls += 1
+                    return calls == 1 ? ("inspect_muesli_setting", #"{"setting":"history"}"#)
+                        : ("set_muesli_setting", #"{"setting":"history","value":"7","confirmed":true}"#)
+                })
+            #expect(questions == 1)
+            let approved = answer == "Change and allow deletion" || answer == "yes"
+            #expect(writes == (approved ? 1 : 0))
+            #expect(result?.status == (approved ? .done : .cancelled))
+        }
+    }
+
     @Test("unchanged config publication does not invalidate observed settings")
     func unchangedConfigPublication() async throws {
         try await withShortcutSettings { controller, _ in

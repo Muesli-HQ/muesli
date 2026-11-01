@@ -1296,6 +1296,8 @@ public final class MuesliController: NSObject {
         return report
     }
 
+    var timeTurnerRecapDatabaseURL: URL { dictationStore.resolvedDatabaseURL }
+
     func meeting(id: Int64) -> MeetingRecord? {
         if let row = appState.meetingRows.first(where: { $0.id == id }) {
             return row
@@ -1694,6 +1696,7 @@ public final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         publishConfig()
+        visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
         appState.isMeetingStarting = isStartingMeetingRecording
@@ -3241,6 +3244,7 @@ public final class MuesliController: NSObject {
     func setSettingFromUI(_ id: String, value: String) {
         Task { @MainActor in
             do { try await applySetting(id, value: value) }
+            catch is CancellationError { return }
             catch { presentErrorAlert(title: "Setting could not be changed", message: error.localizedDescription) }
         }
     }
@@ -3262,11 +3266,30 @@ public final class MuesliController: NSObject {
             snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
             persistedConfig: {
                 try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: self.configStore.configPath()))
+            }, confirmDeletion: { warning in
+                await self.confirmSettingsDeletion(warning)
             })
         if let dictationToggleShortcut {
             let saved = try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: configStore.configPath()))
             guard config.dictationHotkey == dictationToggleShortcut, saved.dictationHotkey == dictationToggleShortcut else {
                 throw MuesliSettings.Failure.rejected("The toggle shortcut could not be verified. Check Shortcuts before using it.")
+            }
+        }
+    }
+
+    private func confirmSettingsDeletion(_ warning: String) async -> Bool {
+        guard var window = alertPresentationWindow(showHistoryIfNeeded: true) else { return false }
+        // Setup itself may be a sheet; present the confirmation on its visible host.
+        while let sheet = window.attachedSheet { window = sheet }
+        let alert = NSAlert()
+        alert.messageText = "Change history limits?"
+        alert.informativeText = warning
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Keep Current Settings")
+        alert.addButton(withTitle: "Change and Allow Deletion")
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { response in
+                continuation.resume(returning: response == .alertSecondButtonReturn)
             }
         }
     }
@@ -6001,11 +6024,16 @@ public final class MuesliController: NSObject {
         }
         return nil
     }
-    func showMeetingChatSource(_ target: MeetingChatDocumentTarget) {
+    func showMeetingChatSource(_ target: MeetingChatDocumentTarget, fromTimeTurner: Bool = false) {
         guard meeting(id: target.citation.meetingID) != nil else { meetingChatCoordinator.errorMessage = "This source meeting is no longer available."; return }
         showMeetingDocument(id: target.citation.meetingID); appState.meetingChatDocumentTarget = target
+        appState.meetingSourceReturnsToTimeTurner = fromTimeTurner
     }
-    func returnToMeetingChat() { appState.selectedTab = .meetingChat; appState.meetingChatDocumentTarget = nil }
+    func returnToMeetingChat() {
+        appState.selectedTab = appState.meetingSourceReturnsToTimeTurner ? .timeTurner : .meetingChat
+        appState.meetingSourceReturnsToTimeTurner = false
+        appState.meetingChatDocumentTarget = nil
+    }
 
     private func showActiveMeetingDocumentIfNeeded() {
         guard let activeMeetingID,
@@ -6966,6 +6994,19 @@ public final class MuesliController: NSObject {
         )) ?? []
         appState.dictationRows.append(contentsOf: more)
         appState.hasMoreDictations = more.count >= appState.dictationPageSize
+    }
+
+    func searchTimeline(text: String, activity: String, limit: Int) async throws -> [TimelineEntry] {
+        let store = dictationStore
+        let from = appState.timelineFromDate, to = appState.timelineToDate
+        let origin = appState.timelineOriginFilter, app = appState.timelineApplicationFilter
+        let query = Task.detached(priority: .userInitiated) {
+            try store.timelineEntries(limit: limit, fromDate: from, toDate: to,
+                origin: origin, targetApplication: app, searchText: text, activity: activity)
+        }
+        return try await withTaskCancellationHandler {
+            try await query.value
+        } onCancel: { query.cancel() }
     }
 
     func loadMoreTimelineEntries() {

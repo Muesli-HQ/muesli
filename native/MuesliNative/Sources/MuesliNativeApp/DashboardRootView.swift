@@ -252,6 +252,8 @@ struct DashboardRootView: View {
             switch appState.selectedTab {
             case .timeline:
                 TimelineView(appState: appState, controller: controller)
+            case .timeTurner:
+                TimeTurnerPage(appState: appState, controller: controller)
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
             case .insights:

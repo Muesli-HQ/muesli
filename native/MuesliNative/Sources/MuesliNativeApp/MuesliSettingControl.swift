@@ -124,6 +124,7 @@ struct MuesliSettingControl: View {
         Task { @MainActor in
             defer { isApplying = false }
             do { try await controller.applySetting(id, value: value) }
+            catch is CancellationError { return }
             catch { errorMessage = error.localizedDescription }
         }
     }

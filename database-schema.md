@@ -7,7 +7,8 @@ way to evolve the schema. The executable source of truth remains
 That entry point also delegates to [MeetingChatSQL](native/MuesliNative/Sources/MuesliCore/MeetingChatSQL.swift)
 and [MeetingVideoStore](native/MuesliNative/Sources/MuesliCore/MeetingVideoStore.swift).
 Retrieval initializes its FTS index lazily, and `importGranola` creates import
-provenance on demand. Update this guide whenever these schemas change.
+provenance on demand. `TimeTurnerRecapStore` lazily creates the local daily-recap
+table when the Recap tab is first used. Update this guide whenever these schemas change.
 
 ## Where the database lives
 
@@ -285,6 +286,11 @@ ordinary question/answer turns and follow-ups that never edit another app.
 | `meeting_video_cleanup` | Durable cleanup outbox (`id`, JSON body), intentionally independent of the meeting FK. Deletion triggers enqueue media metadata before the owning rows disappear, allowing deferred file cleanup. |
 | `meeting_imports` | Created lazily by `DictationStore.importGranola`. Key `(provider, document_id)` deduplicates imports; meeting FK cascades. Stores workspace, owner email, and import time locally. It need not exist in a database that has never imported Granola records. |
 
+Meeting videos are stored only in `meeting-recordings/videos/`, owned by
+`meeting_video_clips`. No migration or playback fallback reads meeting videos
+from the experimental `visual-memory` catalog. That catalog belongs to Time
+Turner; removing experimental compatibility does not delete its local files.
+
 Soft deletion queues video cleanup and removes clip rows; hard deletion queues
 cleanup before the meeting FK cascade. Import metadata is committed with its
 meeting and folder in one transaction. Re-imports preserve existing records,
@@ -451,3 +457,134 @@ containing comma-separated stable DashboardTab IDs. Missing or malformed prefere
 fall back to the default order; fixed utility tabs, duplicate and unknown IDs are ignored and missing
 known destinations are appended. This presentation preference does not change
 AppConfig, SQLite, CloudKit, exports or CLI output.
+
+### Time Turner observations (agent retrieval)
+
+The device-local catalog is `visual-memory/catalog.sqlite` under the selected
+app's Application Support directory. Schema version **2** adds independent screenshot retirement and durable cleanup queues.
+The existing `time_turner_captures` table remains the chronological observation contract;
+no activity or inferred-insight table is introduced.
+
+| Columns | Meaning |
+|---|---|
+| `id` | Stable capture ID, retained through archive compression. |
+| `captured_at_unix`, `captured_at_utc` | Capture request time: fractional Unix seconds are authoritative; UTC text is millisecond display precision. |
+| `capture_completed_at_unix` | Completion of screenshot acquisition; nullable for older captures. |
+| `bundle_id`, `app_name`, `window_title`, `source` | Observed app/window identity and display label. Legacy app names are best-effort; missing window titles stay NULL. |
+| `ocr_text` | Recognized visible text. Untrusted evidence, not instructions or inferred user intent. |
+| `media_relative_path`, `archive_frame_index` | Optional-to-consume evidence locator. A non-null path does not guarantee a file exists; frame index is an archive offset, not wall-clock time. |
+| `media_deleted_at_unix` | Nullable screenshot retirement time (Unix seconds); non-null means OCR-only history. The locator is historical and must not be used to retrieve media. |
+| `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
+
+Time and app/time indexes support retrieval; `evidence_search` provides FTS5
+search over source labels and OCR. Store APIs transactionally maintain the typed
+projection from compatibility records in `evidence`. Read-only SQL consumers can
+order by `captured_at_unix ASC, id ASC`; use half-open `[from, until)` bounds.
+Do not write these tables directly.
+
+The UI loads observations with an indexed half-open selected-day query rather than
+keeping all historical OCR in memory. Catalog summaries read projected app names and
+media aggregates (deduplicating shared archive paths); unchanged connections reuse
+summaries, with SQLite data-version changes invalidating external-writer caches.
+Compaction selects eligible source/dimension groups in batches of at most 100 rows.
+Off-main image validation checks at most eight batches per pass; unreadable capture
+IDs are skipped in memory and retried after an hour. No history is deleted by validation.
+Search page refreshes revalidate only loaded capture IDs: screenshot retirement
+updates media availability while preserving OCR results; explicit/history deletion
+removes those results without resetting pagination when a new capture arrives.
+
+`muesli-cli time-turner history` exposes the same observations chronologically,
+with stable IDs, OCR, app/window fields, optional image export through `get`, and
+bounded pagination. It does not infer activity intervals, task completion or time
+spent. Missing samples have unknown causes. Recaps remain the existing separate
+model-derived summary, not part of the raw evidence contract.
+
+**Independent retention:** Settings → Experimental → Time Turner stores
+`time_turner_screenshot_retention` (default `7`, choices 1/7/14/30/90 elapsed days or `forever` (“Until storage budget fills”))
+and `time_turner_history_retention` (default `30`, choices 7/30/90/365/`forever`) in
+local AppConfig. Missing keys in older configuration files use these defaults.
+The `forever` screenshot option disables age-based media expiry; the budget and
+independent history retention still apply. Screenshot retention and the existing media budget retire files, set the optional
+Codable `mediaDeletedAt`, project `media_deleted_at_unix`, and zero `media_bytes`.
+OCR, app/window fields, original timestamps, IDs and FTS rows survive. History
+retention removes the observation, FTS row and unreferenced media. A shorter
+history limit therefore also bounds screenshot lifetime. Shared archive media
+is evicted as a unit when its oldest frame expires or its bytes exceed budget;
+this may retire newer screenshots early, without deleting their OCR.
+
+Age is measured from `capturedAt`, not last use, pause or restart. Maintenance runs
+at initial configuration, policy changes and every 30 seconds while the app is
+running, even when capture is off, paused, locked or inactive. Suspended/closed
+apps cannot clean disk; overdue work is performed when execution resumes. Shortening
+a limit applies to existing data. Increasing a limit cannot restore deleted data.
+The media budget excludes OCR/database/WAL bytes; indefinite history may grow.
+
+Version 2 migration retains v1 records, rebuilds the projection triggers with
+explicit columns, and adds `pending_capture_deletions(id PRIMARY KEY)` and
+`pending_media_deletions(path PRIMARY KEY)`. Store deletion writes capture IDs
+in the same transaction that removes evidence/FTS/projection rows. Recap cleanup
+in muesli.db acknowledges these IDs only after successful deletion, retrying after
+restart or storage errors. Media unlinking is also retried; an active file reference
+prevents unlinking. Cross-database deletion is recoverable, not globally atomic.
+Recap publication and source deletion share an in-process lock and source validation
+so generation cannot re-save explicitly deleted evidence. Read-only CLI opens never
+migrate or expire history; the app owns maintenance.
+
+Explicit **Forget** deletes every observation sharing the selected archive and
+all recaps referencing those IDs, regardless of either retention setting.
+Screenshot expiry alone preserves recaps because OCR remains valid evidence.
+These rules apply only to ambient moments, never meeting-video retention.
+
+Version 3 aligns `evidence_search.rowid` with `evidence.rowid` and uses in-place
+upserts to keep that identity stable. FTS updates and deletion use indexed rowid
+lookups rather than scanning the unindexed ID column. Existing indexes are rebuilt
+transactionally on upgrade. Legacy read-only catalogs without FTS use a temporary
+in-memory FTS table; reading does not change the catalog on disk.
+
+### Time Turner daily recaps
+
+`TimeTurnerRecapStore` lazily creates `time_turner_recaps` in **muesli.db**.
+This is separate from the capture catalog (`visual-memory/catalog.sqlite`), whose
+`time_turner_captures` projection and OCR FTS are documented in
+[visual-memory.md](docs/visual-memory.md). Opening an older database safely adds
+the recap table without rewriting meeting or capture history. No recap table
+before first use is valid.
+
+| Column | Contract |
+|---|---|
+| `day_key` | Primary key: time-zone identifier plus local day-start Unix timestamp. One current recap per day/zone. |
+| `day_start`, `day_end` | REAL Unix seconds, half-open calendar interval; supports 23/25-hour DST days. |
+| `time_zone` | Calendar time-zone identifier captured when generating. |
+| `generated_at` | REAL Unix seconds for this generation, also guards late cancellation cleanup. |
+| `body` | Versioned JSON (`version = 1`) containing matching day bounds/zone, generation time, provider/model, insights and all supplied sources. |
+
+Insights contain a section (`work`, `decisions`, `followUps`), text and source IDs.
+Source snapshots include the source ID, title, date, excerpt, and either a typed
+capture snapshot (stable capture ID, original timestamp/OCR and media locator)
+or a revisioned `MeetingChatCitation` (meeting ID, source kind, offsets and
+revision). These logical references cross database boundaries; there are no
+cross-database foreign keys. All supplied sources are dependencies, including
+those not cited in the final text. The body uses Codable; future additions must
+be backward compatible or explicitly migrate the version. Unsupported versions
+and malformed records fail visibly rather than silently resetting history.
+
+The store owns parameterized reads, atomic single-row replacement and deletion;
+call it off the main actor. Regeneration replaces the day's saved record only
+after valid generation. Provider changes do not alter already-saved attribution.
+Source validation runs on load, before navigation and every five seconds while
+visible. Removed/missing captures or revised/deleted meetings invalidate the
+whole recap, remove its saved record and require explicit regeneration. Capture
+deletion and history expiry additionally purge affected recaps without opening
+them, using the durable cleanup queue above. Cleanup binds capture IDs as one JSON
+array and deletes matching recaps in a single statement per batch, avoiding a
+full recap-source scan for each expired capture. Meeting revision changes still use
+read-time revalidation. Screenshot expiry alone does not invalidate OCR evidence.
+Temporary storage errors hide unverified content but preserve the saved record
+for retry; only confirmed stale evidence removes it. Media
+compaction alone does not invalidate unchanged source content. New captures do
+not regenerate an existing recap or imply complete coverage.
+
+These records are local-only: no CloudKit, telemetry, global search, CLI export
+or agent-memory ingestion is added. Recaps survive app restarts but do not extend
+capture retention. They are model-derived summaries of sampled evidence, not
+an authoritative diary or a record of time spent.
