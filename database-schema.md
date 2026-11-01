@@ -581,3 +581,52 @@ These records are local-only: no CloudKit, telemetry, global search, CLI export
 or agent-memory ingestion is added. Recaps survive app restarts but do not extend
 capture retention. They are model-derived summaries of sampled evidence, not
 an authoritative diary or a record of time spent.
+
+### Global search foundation (stacked implementation)
+
+`GlobalSearchIndex` lazily installs a local, rebuildable index in `muesli.db`
+when global search is constructed. It does not change source ownership,
+CloudKit serialization, exports, or meeting-agent retrieval scope.
+
+- `global_search_documents`: integer `rowid`, unique namespaced `identity`, typed
+  `kind`, original `source_id`, Unix `timestamp`, `title`, searchable `text`,
+  `app_name`, and `bundle_id`. These are derived projections, never writable
+  history APIs. Source IDs are used to navigate back to the authoritative store.
+- `global_search_fts`: external-content FTS5 over title/text, maintained by
+  insert/update/delete triggers on `global_search_documents`.
+- `global_search_<source>_v1`: versioned projection views and source-table
+  triggers. Each available source is backfilled transactionally once. Subsequent
+  writes refresh only the affected parent document. Schema-version checks discover
+  Chat and Recap tables created after first search without reindexing all history.
+
+Sources are dictations, CUA **input commands only**, meetings (title, transcript,
+manual/generated notes as one result), Quill conversations, accepted Cotypist
+text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
+Cotypist suggestions, chat drafts/provider fields, rolling model memory, and
+recap source snapshots are deliberately excluded.
+
+Source deletion/soft deletion updates the index in the same SQLite transaction.
+Chat `sourceDeleted` turns are excluded and invalidated answers disappear through
+existing source-owner updates. Because edited evidence can invalidate otherwise
+persisted derived text, Chat and Recap hits additionally require a current-source
+validator; the core API fails closed without one. `GlobalSearchWorker` supplies
+existing meeting dependency and recap evidence validation. Main-database mutation
+during validation produces `GlobalSearchError.changedSources` instead of returning
+a stale excerpt; the caller must retry or discard that request. This does not replace
+source retention/cleanup. In particular, cross-database recap invalidation remains
+recoverable through Time Turner's existing deletion queue.
+
+`GlobalSearchService` federates the source-owned Time Turner OCR FTS rather than
+copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable text;
+observation deletion removes it. Results use a shared `GlobalSearchResult` envelope
+with kind, source ID, date, title, excerpt, app identity, and media availability.
+Queries apply type, exact app/bundle, and half-open date filters before limits;
+an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
+
+This first implementation returns a bounded first page (at most 200 candidates
+per store, at most 200 results), not a complete export. Independent BM25 corpus
+scores are not directly compared: title-match tiers, recency and stable IDs order
+the merged candidates. A shared cursor, Spotlight panel, navigation actions, and
+migration of existing UI search entry points remain follow-up work. No existing
+search UI is redirected yet. UI integration must cancel/discard superseded queries,
+revalidate navigation targets, and refresh loaded results after source mutations.
