@@ -18,15 +18,14 @@ struct TimeTurnerPauseState {
 @MainActor @Observable
 final class VisualMemoryController {
     var items: [VisualMemoryItem] = []
-    var browsableMoments: [VisualMemoryItem] = []
-    var historyMoments: [VisualMemoryItem] = []
-    var historyIDs: Set<String> = []
+    var usedBytes: Int64 = 0
+    var averageImageBytes: Int64?
+    @ObservationIgnored private var summaryRevision: String?
     struct HistoryApp: Identifiable, Sendable {
         let id: String
         let name: String
     }
     var historyApps: [HistoryApp] = []
-    var incompleteMomentCount = 0
     var catalogRevision = 0
     var message: String?
     var messageMeetingID: Int64?
@@ -89,6 +88,8 @@ final class VisualMemoryController {
     @ObservationIgnored private var lastSource = ""
     @ObservationIgnored private var lastCompaction = Date.distantPast
     @ObservationIgnored private var compactionRunning = false
+    @ObservationIgnored private var invalidCompactionIDs: Set<String> = []
+    @ObservationIgnored private var lastCompactionValidationReset = Date()
 
     private let databaseURL: URL
     @ObservationIgnored private var retentionTask: Task<Void, Never>?
@@ -172,39 +173,18 @@ final class VisualMemoryController {
                 let store = self.store, meetingStore = self.meetingStore
                 do {
                     let snapshot = try await Task.detached(priority: .utility) {
-                        let videos = try meetingStore?.items() ?? []
-                        let migratedIDs = Set(videos.map(\.id))
-                        let items = (try store?.items() ?? []).filter { !migratedIDs.contains($0.id) } + videos
-                        let browsable = items.filter { item in
-                            guard item.kind == .moment, item.mediaDeletedAt == nil,
-                                  let url = try? store?.url(for: item.path),
-                                  FileManager.default.fileExists(atPath: url.path) else { return false }
-                            if item.frameIndex != nil { return true }
-                            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                                  let width = props[kCGImagePropertyPixelWidth] as? Int,
-                                  let height = props[kCGImagePropertyPixelHeight] as? Int else { return false }
-                            return width >= 100 && height >= 100
-                        }
-                        let history = items.filter { $0.kind == .moment }
-                        var names: [String: String] = [:]
-                        for item in history where !item.bundleID.isEmpty {
-                            names[item.bundleID] = item.appName ?? item.source.components(separatedBy: " · ").first ?? item.bundleID
-                        }
-                        let apps = names.map { HistoryApp(id: $0.key, name: $0.value) }
-                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                        return (items, browsable, history, Set(history.map(\.id)), apps)
+                        (try meetingStore?.items() ?? [], try store?.summary())
                     }.value
                     if generation == self.reloadGeneration {
-                        if self.items != snapshot.0 || self.browsableMoments != snapshot.1 {
-                            self.items = snapshot.0
-                            self.browsableMoments = snapshot.1
-                            self.historyMoments = snapshot.2
-                            self.historyIDs = snapshot.3
-                            self.historyApps = snapshot.4
+                        if self.items != snapshot.0 { self.items = snapshot.0 }
+                        if self.summaryRevision != snapshot.1?.revision {
+                            self.summaryRevision = snapshot.1?.revision
+                            self.historyApps = (snapshot.1?.apps ?? [:]).map { HistoryApp(id: $0.key, name: $0.value) }
+                                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                            self.usedBytes = snapshot.1?.mediaBytes ?? 0
+                            self.averageImageBytes = snapshot.1?.averageImageBytes
                             self.catalogRevision += 1
                         }
-                        self.incompleteMomentCount = snapshot.0.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.count - snapshot.1.count
                         self.updateSpace()
                     }
                 } catch { if generation == self.reloadGeneration { self.message = error.localizedDescription } }
@@ -231,10 +211,15 @@ final class VisualMemoryController {
         freeBytes = await task.value
         spaceTask = nil
     }
-    var usedBytes: Int64 {
-        var paths = Set<String>()
-        return items.filter { $0.kind == .moment && $0.mediaDeletedAt == nil }.reduce(0) { sum, item in sum + (paths.insert(item.path).inserted ? item.bytes : 0) }
+    /// Selected-day reads run off the main actor and retain OCR-only observations.
+    func moments(on day: Date) async throws -> [VisualMemoryItem] {
+        await initializationTask?.value
+        guard let interval = Calendar.current.dateInterval(of: .day, for: day), let store else { return [] }
+        return try await Task.detached(priority: .userInitiated) {
+            try store.moments(from: interval.start, until: interval.end)
+        }.value
     }
+
     func delete(_ item: VisualMemoryItem) {
         let store = store, videos = meetingStore, databaseURL = databaseURL
         Task {
@@ -245,7 +230,7 @@ final class VisualMemoryController {
                         try store?.delete(ids: [item.id])
                     } else if let store {
                         // Shared archives are forgotten as a unit, including their OCR and recaps.
-                        let ids = Set(try store.items().filter { $0.kind == .moment && $0.path == item.path }.map(\.id))
+                        let ids = try store.momentIDs(mediaPath: item.path)
                         try TimeTurnerRetention.delete(ids: ids, store: store, databaseURL: databaseURL)
                     }
                 }.value
@@ -347,7 +332,8 @@ final class VisualMemoryController {
     private func beginClip(attempt: UUID) async throws {
         guard let store = meetingStore else { throw ScreenVideoRecorder.error("Meeting video storage is unavailable. Please restart muesli and try again.") }
         guard token == attempt, recorder == nil, let filter, recordingMeetingID != nil, !pauseState.isPaused else { return }
-        updateSpace()
+        await refreshSpace()
+        guard token == attempt, recorder == nil, recordingMeetingID != nil, !pauseState.isPaused else { return }
         guard freeBytes > 2_000_000_000 else { throw ScreenVideoRecorder.error("Screen recording needs at least 2 GB of free disk space.") }
         let url = try store.url(for: UUID().uuidString + ".mp4")
         let recording = ScreenVideoRecorder(url: url)
@@ -616,10 +602,27 @@ final class VisualMemoryController {
         guard !compactionRunning, Date().timeIntervalSince(lastCompaction) > 300,
               !ProcessInfo.processInfo.isLowPowerModeEnabled, let store else { return }
         lastCompaction = Date()
-        let batch = VisualMemoryCompaction.batch(from: browsableMoments)
-        guard !batch.isEmpty else { return }
         compactionRunning = true
         defer { compactionRunning = false }
+        let mayRetryInvalid = Date().timeIntervalSince(lastCompactionValidationReset) >= 3600
+        let skipped = invalidCompactionIDs
+        let batch: [VisualMemoryItem]
+        do {
+            let selection = try await Task.detached(priority: .utility) {
+                var excluded = skipped
+                // Finish progressing through later candidates before revisiting damaged ones.
+                // Otherwise a large damaged prefix could consume every hourly retry window.
+                var reset = false
+                if mayRetryInvalid && !excluded.isEmpty { reset = try store.compactionBatch(excludingIDs: excluded).isEmpty }
+                if reset { excluded.removeAll() }
+                let rows = try VisualMemoryEncoding.compactionBatch(store: store, excluding: &excluded)
+                return (rows, excluded, reset)
+            }.value
+            batch = selection.0
+            invalidCompactionIDs = selection.1
+            if selection.2 { lastCompactionValidationReset = Date() }
+        } catch { message = error.localizedDescription; return }
+        guard !batch.isEmpty else { return }
         do {
             try await Task.detached(priority: .utility) {
                 let output = try store.url(for: UUID().uuidString + ".mp4")

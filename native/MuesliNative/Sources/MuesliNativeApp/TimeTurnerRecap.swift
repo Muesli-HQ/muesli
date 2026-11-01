@@ -145,7 +145,7 @@ final class TimeTurnerRecapModel {
         if clear { insights = []; sources = []; hasGenerated = false; error = nil; generatedAt = nil; savedKey = nil }
     }
 
-    func generate(day: Date, captures: [VisualMemoryItem], root: URL?, databaseURL: URL, config: AppConfig,
+    func generate(day: Date, captures: [VisualMemoryItem]? = nil, root: URL?, databaseURL: URL, config: AppConfig,
                   generator: any MeetingTextGenerating = MeetingTextGenerationClient()) {
         cancel(clear: true)
         guard let interval = Calendar.current.dateInterval(of: .day, for: day) else { return }
@@ -159,7 +159,8 @@ final class TimeTurnerRecapModel {
                 let packet = try await Task.detached(priority: .utility) {
                     let evidence = try MeetingChatRetrieval(databaseURL: databaseURL).retrieve(question: "Daily recap",
                         scope: .init(startDate: interval.start, endDateExclusive: interval.end), broadRecap: true)
-                    return try TimeTurnerRecap.packet(captures: captures, passages: evidence.passages, interval: interval, config: config)
+                    let observations = try captures ?? root.map { try VisualMemoryStore(root: $0, readOnly: true).moments(from: interval.start, until: interval.end) } ?? []
+                    return try TimeTurnerRecap.packet(captures: observations, passages: evidence.passages, interval: interval, config: config)
                 }.value
                 try Task.checkCancellation()
                 let valid = try await Task.detached(priority: .utility) {

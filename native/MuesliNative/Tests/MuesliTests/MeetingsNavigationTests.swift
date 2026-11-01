@@ -526,6 +526,26 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.timelineScrollAnchor == "dictation:77")
     }
 
+    @Test("timeline search invalidates after deleting a match outside the visible page")
+    func timelineSearchInvalidatesHiddenDeletion() async throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        let oldID = try store.insertDictation(text: "older needle", durationSeconds: 1,
+            startedAt: base, endedAt: base.addingTimeInterval(1))
+        _ = try store.insertDictation(text: "newest unrelated", durationSeconds: 1,
+            startedAt: base.addingTimeInterval(2), endedAt: base.addingTimeInterval(3))
+        let controller = makeController(dictationStore: store)
+        controller.appState.timelinePageSize = 1
+        controller.syncAppState()
+        let firstID = controller.appState.timelineRows.first?.id
+        let revision = controller.appState.timelineHistoryRevision
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).count == 1)
+        controller.deleteDictation(id: oldID)
+        #expect(controller.appState.timelineRows.first?.id == firstID)
+        #expect(controller.appState.timelineHistoryRevision != revision)
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).isEmpty)
+    }
+
     @Test("timeline pagination and filter changes reset to the newest composite anchor")
     func timelinePaginationAndFilterReset() throws {
         let store = try makeStore()

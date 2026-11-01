@@ -80,7 +80,7 @@ struct TimeTurnerSettingsView: View {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                         SettingsNote("Screenshots expire sooner if the budget fills. Searchable text uses separate storage.")
                         SettingsNote("Retention starts at capture, even while paused or off. Shorter limits apply to existing history.")
-                        SettingsNote("Deleting history also deletes its screenshots and recaps.")
+                        SettingsNote("History expiry or deletion also removes its screenshots and recaps, even below the storage budget.")
                     }
                     .padding(.top, MuesliTheme.spacing8)
                 }
@@ -149,9 +149,7 @@ struct TimeTurnerSettingsView: View {
         saveExclusions(Array(Set(exclusions + selected)).sorted())
     }
     private var estimate: String {
-        let images = memory.items.filter { $0.kind == .moment && $0.frameIndex == nil && $0.mediaDeletedAt == nil }
-        guard !images.isEmpty else { return "Storage estimate available after capture." }
-        let average = images.reduce(Int64(0)) { $0 + $1.bytes } / Int64(images.count)
+        guard let average = memory.averageImageBytes else { return "Storage estimate available after capture." }
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
         let size = ByteCountFormatter.string(fromByteCount: average * 28_800 / interval, countStyle: .file)
         return "Estimated \(size) per 8 active hours, before compression."
@@ -168,6 +166,7 @@ struct TimeTurnerSetupView: View {
     @State private var accessibility = AXIsProcessTrusted()
     @State private var enabling = false
     @State private var error: String?
+    @State private var permissionRefresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     private var ready: Bool { screen && accessibility }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -234,9 +233,13 @@ struct TimeTurnerSetupView: View {
         }.padding(28).frame(width: 560, height: 490)
         .environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
-        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in refresh() }
+        .onReceive(permissionRefresh) { _ in refresh() }
     }
-    private func refresh() { screen = CGPreflightScreenCaptureAccess(); accessibility = AXIsProcessTrusted() }
+    private func refresh() {
+        let nextScreen = CGPreflightScreenCaptureAccess(), nextAccessibility = AXIsProcessTrusted()
+        if screen != nextScreen { screen = nextScreen }
+        if accessibility != nextAccessibility { accessibility = nextAccessibility }
+    }
     private func openPrivacy(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
     }

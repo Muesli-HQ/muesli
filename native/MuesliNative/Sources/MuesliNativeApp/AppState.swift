@@ -166,7 +166,11 @@ enum OpenRouterModelCatalogLoadState: Equatable {
 @Observable
 final class AppState {
     // Dashboard data
-    var timelineRows: [TimelineEntry] = []
+    // Also changes when a mutation affects a row outside the first visible page.
+    var timelineHistoryRevision: UInt64 = 0
+    var timelineRows: [TimelineEntry] = [] {
+        didSet { timelineHistoryRevision &+= 1 }
+    }
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0

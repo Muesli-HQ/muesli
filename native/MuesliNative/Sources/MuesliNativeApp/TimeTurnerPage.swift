@@ -47,7 +47,7 @@ struct TimeTurnerPage: View {
                         onNavigate: { day, time in
                             appState.timeTurnerDay = day
                             let moments = cachedDay.map { Calendar.current.isDate($0, inSameDayAs: day) } == true
-                                ? dayMoments : VisualMemoryDayTimeline.moments(controller.visualMemory.historyMoments, on: day)
+                                ? dayMoments : []
                             if let index = VisualMemoryDayTimeline.nearestIndex(in: moments, to: time) {
                                 appState.timeTurnerSelectedCapture = moments[index]
                             }
@@ -55,10 +55,8 @@ struct TimeTurnerPage: View {
                 }
             }.padding(MuesliTheme.pageInset)
         }.task(id: "\(appState.timeTurnerDay)|\(controller.visualMemory.catalogRevision)") {
-            let items = controller.visualMemory.historyMoments, day = appState.timeTurnerDay
-            let moments = await Task.detached(priority: .userInitiated) {
-                VisualMemoryDayTimeline.moments(items, on: day)
-            }.value
+            let day = appState.timeTurnerDay
+            let moments = (try? await controller.visualMemory.moments(on: day)) ?? []
             guard !Task.isCancelled else { return }
             dayMoments = moments
             cachedDay = day

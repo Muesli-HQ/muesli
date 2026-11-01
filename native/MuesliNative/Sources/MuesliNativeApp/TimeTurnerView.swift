@@ -169,9 +169,11 @@ struct MemoryExplorerView: View {
         self.focusedSize = focusedSize
         self.onClose = onClose
         self.onNavigate = onNavigate
-        let time = initialMoment?.capturedAt ?? externalDay?.wrappedValue ?? Date()
-        _day = State(initialValue: time); _playhead = State(initialValue: time)
-        _selectedCaptureID = State(initialValue: initialMoment?.id)
+        let selectedDay = externalDay?.wrappedValue ?? initialMoment?.capturedAt ?? Date()
+        let initial = initialMoment.flatMap { Calendar.current.isDate($0.capturedAt, inSameDayAs: selectedDay) ? $0 : nil }
+        _day = State(initialValue: selectedDay)
+        _playhead = State(initialValue: initial?.capturedAt ?? selectedDay)
+        _selectedCaptureID = State(initialValue: initial?.id)
     }
     @State private var confirmForget = false
     @State private var showsText = false
@@ -191,7 +193,7 @@ struct MemoryExplorerView: View {
     }
     private var dayInterval: DateInterval { Calendar.current.dateInterval(of: .day, for: day)! }
     private var scrubInterval: DateInterval { VisualMemoryDayTimeline.captureInterval(in: ordered) ?? DateInterval(start: dayInterval.start, duration: 1) }
-    private var scrubScale: VisualMemoryScrubScale { VisualMemoryScrubScale(dates: ordered.map(\.capturedAt)) }
+    @State private var scrubScale = VisualMemoryScrubScale(dates: [])
     private var appNames: [String] { Array(Set(ordered.map(\.bundleID))).sorted() }
     private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt }
     private func moveDay(_ amount: Int) { if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = next } }
@@ -322,7 +324,8 @@ struct MemoryExplorerView: View {
                     .popover(isPresented: $showsSearch) {
                         TimeTurnerSearchView(memory: memory, initialDay: day) { item in
                             day = item.capturedAt
-                            dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day)
+                            dayMoments = [item]
+                            scrubScale = VisualMemoryScrubScale(dates: [item.capturedAt])
                             selectedCaptureID = item.id
                             playhead = item.capturedAt
                             showsSearch = false
@@ -387,14 +390,19 @@ struct MemoryExplorerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear { dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day) }
-        .onChange(of: memory.catalogRevision) { _, _ in dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day) }
+        .task(id: "\(day)|\(memory.catalogRevision)") {
+            let moments = (try? await memory.moments(on: day)) ?? []
+            guard !Task.isCancelled else { return }
+            dayMoments = moments
+            scrubScale = VisualMemoryScrubScale(dates: moments.map(\.capturedAt))
+        }
         .onChange(of: externalDay?.wrappedValue) { _, value in
             if let value { day = value }
         }
         .onChange(of: day) { _, _ in
             externalDay?.wrappedValue = day
-            dayMoments = VisualMemoryDayTimeline.moments(memory.historyMoments, on: day)
+            dayMoments = []
+            scrubScale = VisualMemoryScrubScale(dates: [])
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start
             }
@@ -425,7 +433,7 @@ private struct TimeTurnerSearchView: View {
     @State private var generation = UUID()
 
     private var apps: [VisualMemoryController.HistoryApp] { memory.historyApps }
-    private var request: String { "\(query)|\(app)|\(restrictDate)|\(date.timeIntervalSince1970)|\(memory.catalogRevision)" }
+    private var request: String { "\(query)|\(app)|\(restrictDate)|\(restrictDate ? date.timeIntervalSince1970 : 0)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -489,10 +497,32 @@ private struct TimeTurnerSearchView: View {
             results = []; cursor = nil
             await search(append: false)
         }
+        .task(id: memory.catalogRevision) {
+            await revalidateLoadedResults()
+        }
         .task(id: page) {
             guard page > 0 else { return }
             await search(append: cursor != nil)
         }
+    }
+
+    /// Refresh only already loaded identities; new captures must not reset pagination.
+    @MainActor private func revalidateLoadedResults() async {
+        guard let store = memory.store, !results.isEmpty else { return }
+        let token = generation
+        let ids = results.map(\.id)
+        let revision = memory.catalogRevision
+        do {
+            let current = try await Task.detached(priority: .utility) {
+                try ids.compactMap { try store.moment(id: $0) }
+            }.value
+            guard !Task.isCancelled, token == generation else { return }
+            guard revision == memory.catalogRevision else { return }
+            // Preserve pages appended while this snapshot was being read.
+            let refreshed = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+            let checked = Set(ids)
+            results = results.compactMap { checked.contains($0.id) ? refreshed[$0.id] : $0 }
+        } catch { /* A transient read error must not discard loaded pages. */ }
     }
 
     @MainActor private func search(append: Bool) async {
@@ -514,9 +544,9 @@ private struct TimeTurnerSearchView: View {
             }.value
             guard !Task.isCancelled, token == generation else { return }
             let batch = Array(rows.prefix(50))
-            let available = memory.historyIDs
-            let visible = batch.filter { available.contains($0.id) }
-            if append { results += visible } else { results = visible }
+            if append { results += batch } else { results = batch }
+            await revalidateLoadedResults()
+            guard !Task.isCancelled, token == generation else { return }
             cursor = rows.count > 50 ? batch.last.map {
                 VisualMemoryCursor(capturedAtUnix: $0.capturedAt.timeIntervalSince1970, id: $0.id)
             } : nil

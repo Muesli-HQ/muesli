@@ -3,6 +3,7 @@ import AVFoundation
 import ImageIO
 import Vision
 import VideoToolbox
+import MuesliCore
 
 enum VisualMemoryEncoding {
     struct Snapshot: @unchecked Sendable { let image: CGImage }
@@ -41,6 +42,27 @@ enum VisualMemoryEncoding {
     }
 
     /// Packed archive time is one second per frame. Original timestamps remain in SQLite.
+    /// Inspect at most 800 candidates per pass. Invalid IDs are retried by the controller
+    /// later, without deleting their OCR or allowing one broken source to block others.
+    static func compactionBatch(store: VisualMemoryStore, now: Date = Date(), excluding: inout Set<String>) throws -> [VisualMemoryItem] {
+        for _ in 0..<8 {
+            let candidates = try store.compactionBatch(now: now, excludingIDs: excluding)
+            guard !candidates.isEmpty else { return [] }
+            let readable = candidates.filter { item in
+                let valid = autoreleasepool {
+                    guard let url = try? store.url(for: item.path),
+                          let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                          let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return false }
+                    return image.width == (item.pixelWidth ?? 0) && image.height == (item.pixelHeight ?? 0)
+                }
+                if !valid { excluding.insert(item.id) }
+                return valid
+            }
+            if readable.count >= 25 { return readable }
+        }
+        return []
+    }
+
     static func compact(images: [URL], destination: URL) async throws {
         guard let first = images.first, let source = CGImageSourceCreateWithURL(first as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw ScreenVideoRecorder.error("Missing snapshot.") }

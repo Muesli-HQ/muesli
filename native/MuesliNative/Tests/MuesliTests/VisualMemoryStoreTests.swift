@@ -2,10 +2,115 @@ import Foundation
 import CoreGraphics
 import Testing
 import SQLite3
+import ImageIO
+@testable import MuesliNativeApp
 @testable import MuesliCore
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    @Test func compactionSkipsMissingAndCorruptOldestGroupsWithoutDeletingHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let bitmap = try #require(CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8, bytesPerRow: 400,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try #require(bitmap.makeImage())
+        let imageURL = try store.url(for: "valid.png")
+        let destination = try #require(CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        try Data("broken".utf8).write(to: store.url(for: "broken.png"))
+        let rows = (0..<75).map { index in VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
+            capturedAt: now.addingTimeInterval(Double(index) - 2000), source: index < 50 ? "Old" : "Healthy",
+            text: "retained text", path: index < 25 ? "missing.png" : (index < 50 ? "broken.png" : "valid.png"),
+            pixelWidth: 100, pixelHeight: 100) }
+        try store.save(rows)
+        var excluded = Set<String>()
+        let batch = try VisualMemoryEncoding.compactionBatch(store: store, now: now, excluding: &excluded)
+        #expect(batch.count == 25)
+        #expect(batch.allSatisfy { $0.source == "Healthy" })
+        #expect(excluded.count == 50)
+        #expect(try store.items().count == 75)
+        #expect(try store.searchMoments(text: "retained text").count == 75)
+        #expect(FileManager.default.fileExists(atPath: imageURL.path))
+    }
+
+    @Test func emptyDeletionQueueDoesNotReadEvidenceBodies() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        try store.save([.init(id: "legacy-video", kind: .meetingVideo, source: "Screen", path: "video.mp4")])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE evidence SET body='invalid JSON' WHERE id='legacy-video'", nil, nil, nil) == SQLITE_OK)
+        // No queued deletion means no reason to inspect any active media/body.
+        try store.finishMediaDeletions()
+    }
+
+    @Test func selectedDayDoesNotDecodeUnrelatedHistoryAndHasNoSearchPageLimit() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let rows = (0..<1005).map { index in
+            VisualMemoryItem(id: "day-\(index)", kind: .moment, capturedAt: start.addingTimeInterval(Double(index)),
+                source: "Editor", text: "text \(index)", path: "\(index).heic")
+        }
+        try store.save(rows + [.init(id: "other", kind: .moment, capturedAt: start.addingTimeInterval(-1), source: "Other", path: "other.heic")])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE evidence SET body=json_set(body,'$.kind','unknown') WHERE id='other'", nil, nil, nil) == SQLITE_OK)
+        let selected = try store.moments(from: start, until: start.addingTimeInterval(1005))
+        #expect(selected.count == 1005)
+        #expect(selected.first?.id == "day-0")
+        #expect(selected.last?.id == "day-1004")
+        #expect(try store.moments(from: start.addingTimeInterval(1004), until: start.addingTimeInterval(1005)).count == 1)
+    }
+
+    @Test func summaryDeduplicatesArchiveBytesAndDetectsExternalChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let archive = (0..<2).map { index in VisualMemoryItem(id: "a\(index)", kind: .moment, capturedAt: now,
+            source: "Editor", bundleID: "editor", path: "archive.mp4", frameIndex: index, bytes: 5_000_000_000, appName: "Editor") }
+        try store.save(archive)
+        let first = try store.summary()
+        #expect(first.mediaBytes == 5_000_000_000)
+        #expect(first.averageImageBytes == nil)
+        #expect(first.apps["editor"] == "Editor")
+        #expect(try store.summary().revision == first.revision)
+        let writer = try VisualMemoryStore(root: root)
+        try writer.save([.init(id: "image", kind: .moment, capturedAt: now, source: "Browser", bundleID: "browser", path: "image.heic", bytes: 100)])
+        let second = try store.summary()
+        #expect(second.revision != first.revision)
+        #expect(second.mediaBytes == 5_000_000_100)
+        #expect(second.averageImageBytes == 100)
+        try writer.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try store.summary().mediaBytes == 0)
+        #expect(try store.moments(from: now, until: now.addingTimeInterval(1)).count == 3)
+        #expect(try store.moment(id: "image")?.mediaDeletedAt != nil)
+        try writer.delete(ids: ["image"])
+        #expect(try store.moment(id: "image") == nil)
+    }
+
+    @Test func storeCompactionBatchSkipsUndersizedGroupsAndPreservesOrdering() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let rows = (0..<130).map { index in VisualMemoryItem(id: "c\(index)", kind: .moment,
+            capturedAt: now.addingTimeInterval(Double(index) - 2000), source: index < 5 ? "Small" : "Editor",
+            path: "\(index).heic", pixelWidth: 1000, pixelHeight: 700) }
+        try store.save(rows)
+        let batch = try store.compactionBatch(now: now)
+        #expect(batch.count == 100)
+        #expect(batch.first?.id == "c5")
+        #expect(batch.last?.id == "c104")
+        #expect(batch == VisualMemoryCompaction.batch(from: rows, now: now))
+    }
+
     @Test func versionTwoFTSRebuildPreservesUpdatesAndDeletion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

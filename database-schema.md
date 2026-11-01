@@ -477,6 +477,17 @@ projection from compatibility records in `evidence`. Read-only SQL consumers can
 order by `captured_at_unix ASC, id ASC`; use half-open `[from, until)` bounds.
 Do not write these tables directly.
 
+The UI loads observations with an indexed half-open selected-day query rather than
+keeping all historical OCR in memory. Catalog summaries read projected app names and
+media aggregates (deduplicating shared archive paths); unchanged connections reuse
+summaries, with SQLite data-version changes invalidating external-writer caches.
+Compaction selects eligible source/dimension groups in batches of at most 100 rows.
+Off-main image validation checks at most eight batches per pass; unreadable capture
+IDs are skipped in memory and retried after an hour. No history is deleted by validation.
+Search page refreshes revalidate only loaded capture IDs: screenshot retirement
+updates media availability while preserving OCR results; explicit/history deletion
+removes those results without resetting pagination when a new capture arrives.
+
 `muesli-cli time-turner history` exposes the same observations chronologically,
 with stable IDs, OCR, app/window fields, optional image export through `get`, and
 bounded pagination. It does not infer activity intervals, task completion or time

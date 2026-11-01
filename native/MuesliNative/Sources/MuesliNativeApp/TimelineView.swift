@@ -12,11 +12,12 @@ struct TimelineView: View {
     @State private var searchLimit = 50
     @State private var searchHasMore = false
     @State private var searchError: String?
+    @State private var searchedHistoryRevision: UInt64?
     private var isSearching: Bool { !search.isEmpty || contentFilter != "All activity" }
     private var searchKey: String {
         [search, contentFilter, String(searchLimit), appState.timelineFromDate ?? "", appState.timelineToDate ?? "",
          String(describing: appState.timelineOriginFilter), String(describing: appState.timelineApplicationFilter),
-         appState.timelineRows.first?.id ?? ""].joined(separator: "|")
+         String(appState.timelineHistoryRevision)].joined(separator: "|")
     }
     private struct DayGroup: Identifiable {
         let id: Date
@@ -30,7 +31,7 @@ struct TimelineView: View {
         let today = calendar.startOfDay(for: now)
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
         var entriesByDay: [Date: [TimelineEntry]] = [:]
-        for entry in (isSearching ? searchRows : appState.timelineRows) {
+        for entry in (isSearching ? (searchedHistoryRevision == appState.timelineHistoryRevision ? searchRows : []) : appState.timelineRows) {
             let date = MeetingBrowserLogic.parseDate(entry.timestamp) ?? .distantPast
             entriesByDay[calendar.startOfDay(for: date), default: []].append(entry)
         }
@@ -99,10 +100,13 @@ struct TimelineView: View {
         .task(id: searchKey) {
             guard isSearching else { searchRows = []; searchError = nil; return }
             let query = search, activity = contentFilter, limit = searchLimit
+            let revision = appState.timelineHistoryRevision
             do {
                 try await Task.sleep(for: .milliseconds(150))
                 let rows = try await controller.searchTimeline(text: query, activity: activity, limit: limit + 1)
                 try Task.checkCancellation()
+                guard revision == appState.timelineHistoryRevision else { return }
+                searchedHistoryRevision = revision
                 searchRows = Array(rows.prefix(limit)); searchHasMore = rows.count > limit; searchError = nil
             } catch is CancellationError { }
             catch { searchError = "Search unavailable. Try again." }

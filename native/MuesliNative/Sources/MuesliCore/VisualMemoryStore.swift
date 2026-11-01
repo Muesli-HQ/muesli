@@ -85,7 +85,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw failure() }
-        return Int(sqlite3_column_int(statement, 0))
+        return Int(sqlite3_column_int64(statement, 0))
     }
 
     /// Versioned, transactional projection for SQL consumers. Evidence remains the
@@ -236,12 +236,14 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
     public func finishMediaDeletions() throws {
         lock.lock(); defer { lock.unlock() }
+        let pending = try strings("SELECT path FROM pending_media_deletions")
+        guard !pending.isEmpty else { return }
         let active = Set(try strings("""
             SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
             UNION SELECT json_extract(body,'$.path') FROM evidence
                 WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
             """))
-        for path in try strings("SELECT path FROM pending_media_deletions") {
+        for path in pending {
             guard !active.contains(path) else { continue }
             let file = try url(for: path)
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
@@ -377,6 +379,96 @@ public final class VisualMemoryStore: @unchecked Sendable {
         guard status == SQLITE_DONE else { throw failure() }
         return result
     }
+    /// Only decodes observations in the requested half-open day/range, including OCR-only history.
+    public func moments(from: Date, until: Date) throws -> [VisualMemoryItem] {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<? ORDER BY captured,id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, from.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, until.timeIntervalSince1970)
+        return try decodeItems(statement)
+    }
+
+    public struct Summary: Sendable {
+        public let revision: String
+        public let apps: [String: String]
+        public let mediaBytes: Int64
+        public let averageImageBytes: Int64?
+    }
+
+    /// No OCR decoding or file I/O. Unchanged maintenance passes reuse the prior aggregates.
+    private var cachedSummary: Summary?
+    public func summary() throws -> Summary {
+        lock.lock(); defer { lock.unlock() }
+        let revision = "\(sqlite3_total_changes64(db)):\(try scalar("PRAGMA data_version"))"
+        if let cachedSummary, cachedSummary.revision == revision { return cachedSummary }
+        var apps: [String: String] = [:]
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT bundle_id,MAX(COALESCE(app_name,bundle_id)) FROM time_turner_captures WHERE bundle_id!='' GROUP BY bundle_id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            apps[String(cString: sqlite3_column_text(statement, 0))] = String(cString: sqlite3_column_text(statement, 1))
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        let bytes = try scalar("SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(media_bytes) bytes FROM time_turner_captures WHERE media_deleted_at_unix IS NULL GROUP BY media_relative_path)")
+        let average = try scalar("SELECT COALESCE(AVG(media_bytes),-1) FROM time_turner_captures WHERE media_deleted_at_unix IS NULL AND archive_frame_index IS NULL")
+        let value = Summary(revision: revision, apps: apps, mediaBytes: Int64(bytes), averageImageBytes: average < 0 ? nil : Int64(average))
+        cachedSummary = value
+        return value
+    }
+
+    /// Decode only one eligible archive batch, never the entire OCR history.
+    public func compactionBatch(now: Date = Date(), excludingIDs: Set<String> = []) throws -> [VisualMemoryItem] {
+        lock.lock(); defer { lock.unlock() }
+        let sql = """
+        WITH eligible AS (
+            SELECT * FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
+              AND archive_frame_index IS NULL AND captured_at_unix<? AND pixel_width>0 AND pixel_height>0
+              AND id NOT IN (SELECT value FROM json_each(?))
+        ), chosen AS (
+            SELECT source,pixel_width,pixel_height FROM eligible
+            GROUP BY source,pixel_width,pixel_height HAVING COUNT(*)>=25
+            ORDER BY MIN(captured_at_unix),MIN(id) LIMIT 1
+        )
+        SELECT e.body FROM eligible c JOIN chosen g USING(source,pixel_width,pixel_height)
+        JOIN evidence e ON e.id=c.id ORDER BY c.captured_at_unix,c.id LIMIT 100
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, now.addingTimeInterval(-600).timeIntervalSince1970)
+        let excluded = String(decoding: try JSONEncoder().encode(Array(excludingIDs)), as: UTF8.self)
+        sqlite3_bind_text(statement, 2, excluded, -1, transient)
+        return try decodeItems(statement)
+    }
+
+    public func momentIDs(mediaPath: String) throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id FROM time_turner_captures WHERE media_relative_path=?", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, mediaPath, -1, transient)
+        var ids = Set<String>()
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW { ids.insert(String(cString: sqlite3_column_text(statement, 0))); status = sqlite3_step(statement) }
+        guard status == SQLITE_DONE else { throw failure() }
+        return ids
+    }
+
+    private func decodeItems(_ statement: OpaquePointer?) throws -> [VisualMemoryItem] {
+        var result: [VisualMemoryItem] = []
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            result.append(try JSONDecoder().decode(VisualMemoryItem.self, from: Data(String(cString: sqlite3_column_text(statement, 0)).utf8)))
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return result
+    }
+
     public func moment(id: String) throws -> VisualMemoryItem? {
         lock.lock(); defer { lock.unlock() }
         var stmt: OpaquePointer?
