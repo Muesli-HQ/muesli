@@ -211,6 +211,9 @@ final class AppState {
     var meetingStartStatus: String?
     var liveMeetingTranscript: String = ""
     var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
+    /// Meetings with a re-summarize in flight. Owned by the controller so the Summary chip
+    /// stays "working" when the user leaves the meeting and comes back.
+    var summarizingMeetingIDs: Set<Int64> = []
     var modelFileMutationCount = 0
     /// Model IDs with a delete or update in flight. Their cards stay inert until it settles;
     /// this outlives the Models view so returning to it cannot start a conflicting action.

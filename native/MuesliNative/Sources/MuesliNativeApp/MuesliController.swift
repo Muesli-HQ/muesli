@@ -186,6 +186,14 @@ enum MeetingResummarizationPolicy {
     }
 }
 
+enum MeetingResummaryError: Error, LocalizedError {
+    case alreadyRunning
+
+    var errorDescription: String? {
+        "Notes are already being generated for this meeting. Try again when that finishes."
+    }
+}
+
 enum MeetingSummaryPersistenceError: Error, LocalizedError {
     case failedToSaveSummary(underlying: Error)
 
@@ -6237,9 +6245,15 @@ public final class MuesliController: NSObject {
             completion(.failure(MeetingSummaryError.notConfigured(backend: provider.label)))
             return
         }
+        // One run per meeting: the run that inserted the mark is the one that removes it.
+        guard !appState.summarizingMeetingIDs.contains(meeting.id) else {
+            completion(.failure(MeetingResummaryError.alreadyRunning))
+            return
+        }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
         Task { [weak self] in
             guard let self else { return }
+            defer { self.appState.summarizingMeetingIDs.remove(meeting.id) }
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
             do {
@@ -6279,6 +6293,7 @@ public final class MuesliController: NSObject {
                 }
             }
         }
+        appState.summarizingMeetingIDs.insert(meeting.id)
     }
 
     func cancelMeetingRetranscription(id: Int64) {
