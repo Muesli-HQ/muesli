@@ -21,10 +21,21 @@ struct VisualMemoryStoreTests {
         CGImageDestinationAddImage(destination, image, nil)
         #expect(CGImageDestinationFinalize(destination))
         try Data("broken".utf8).write(to: store.url(for: "broken.png"))
-        let rows = (0..<75).map { index in VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
-            capturedAt: now.addingTimeInterval(Double(index) - 2000), source: index < 50 ? "Old" : "Healthy",
-            text: "retained text", path: index < 25 ? "missing.png" : (index < 50 ? "broken.png" : "valid.png"),
-            pixelWidth: 100, pixelHeight: 100) }
+        let rows: [VisualMemoryItem] = (0..<75).map { index -> VisualMemoryItem in
+            let capturedAt = now.addingTimeInterval(Double(index) - 2000)
+            let source = index < 50 ? "Old" : "Healthy"
+            let path: String
+            if index < 25 {
+                path = "missing.png"
+            } else if index < 50 {
+                path = "broken.png"
+            } else {
+                path = "valid.png"
+            }
+            return VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
+                capturedAt: capturedAt, source: source, text: "retained text", path: path,
+                pixelWidth: 100, pixelHeight: 100)
+        }
         try store.save(rows)
         var excluded = Set<String>()
         let batch = try VisualMemoryEncoding.compactionBatch(store: store, now: now, excluding: &excluded)
