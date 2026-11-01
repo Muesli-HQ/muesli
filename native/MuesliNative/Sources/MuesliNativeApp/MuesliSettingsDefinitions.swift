@@ -190,7 +190,7 @@ extension MuesliController {
                     guard current != value, value != "forever", let next = Int(value),
                           current == "forever" || next < (Int(current) ?? 0) else { return nil }
                     let choice = choices.first { $0.id == value }?.label ?? value
-                    return "Change \(label.lowercased()) to \(choice)? \(deletionWarning) This cannot be undone."
+                    return "Set “\(label)” to \(choice)? \(deletionWarning) This cannot be undone."
                 }
             }
         }
