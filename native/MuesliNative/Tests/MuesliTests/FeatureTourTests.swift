@@ -127,6 +127,28 @@ struct FeatureTourTests {
         #expect(immediateActions == ["future tour"])
     }
 
+    @Test("dashboard activation counts each window open and close once")
+    func dashboardWindowActivationLatch() {
+        var latch = DashboardWindowActivationLatch()
+
+        let closeBeforeOpen = latch.markClosed()
+        let firstOpen = latch.markOpened()
+        let reshowWhileHidden = latch.markOpened()
+        #expect(!closeBeforeOpen)
+        #expect(firstOpen)
+        #expect(!reshowWhileHidden)
+
+        let firstClose = latch.markClosed()
+        let duplicateClose = latch.markClosed()
+        #expect(firstClose)
+        #expect(!duplicateClose)
+
+        let reopenAfterClose = latch.markOpened()
+        let secondClose = latch.markClosed()
+        #expect(reopenAfterClose)
+        #expect(secondClose)
+    }
+
     @Test("existing users without legacy version markers see the first feature tour")
     func legacyUpgrade() {
         #expect(FeatureTourPresentationPolicy.shouldPresentAutomatically(
