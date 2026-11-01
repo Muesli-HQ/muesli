@@ -100,8 +100,8 @@ final class VisualMemoryController {
             let stores = await Task.detached(priority: .utility) {
                 let videos = Result { try MeetingVideoStore(databaseURL: databaseURL,
                     root: supportDirectory.appendingPathComponent("meeting-recordings/videos")) }
-                let legacy = Result { try VisualMemoryStore(root: supportDirectory.appendingPathComponent("visual-memory")) }
-                return (videos, legacy)
+                let history = Result { try VisualMemoryStore(root: supportDirectory.appendingPathComponent("visual-memory")) }
+                return (videos, history)
             }.value
             guard let self else { return }
             do { self.meetingStore = try stores.0.get() } catch { self.message = error.localizedDescription }
@@ -110,11 +110,10 @@ final class VisualMemoryController {
         }
         maintenanceTask = Task { [weak self] in
             await self?.initializationTask?.value
-            let videos = self?.meetingStore, legacy = self?.store
+            let videos = self?.meetingStore
             await Task.detached(priority: .utility) {
                 do {
                     try videos?.maintain(recoverRecording: Self.recoverableDuration)
-                    if let legacy { try videos?.migrateLegacyVideos(from: legacy) }
                 } catch { NSLog("Meeting video recovery: %@", error.localizedDescription) }
             }.value
             await self?.maintainAmbientHistory()
@@ -195,7 +194,7 @@ final class VisualMemoryController {
 
     func mediaURL(_ item: VisualMemoryItem) -> URL? {
         guard item.mediaDeletedAt == nil else { return nil }
-        if item.kind == .meetingVideo, let url = try? meetingStore?.url(for: item.path), FileManager.default.fileExists(atPath: url.path) { return url }
+        if item.kind == .meetingVideo { return try? meetingStore?.url(for: item.path) }
         return try? store?.url(for: item.path)
     }
     func updateSpace() {
@@ -227,7 +226,6 @@ final class VisualMemoryController {
                 try await Task.detached(priority: .utility) {
                     if item.kind == .meetingVideo {
                         try videos?.delete(ids: [item.id])
-                        try store?.delete(ids: [item.id])
                     } else if let store {
                         // Shared archives are forgotten as a unit, including their OCR and recaps.
                         let ids = try store.momentIDs(mediaPath: item.path)
@@ -242,13 +240,11 @@ final class VisualMemoryController {
     func deleteMeeting(_ id: Int64) throws {
         let ids = Set(items.filter { $0.meetingID == id }.map(\.id))
         try meetingStore?.delete(ids: ids)
-        try store?.delete(ids: ids)
         reload()
     }
     func deleteAllMeetings() throws {
         let ids = Set(items.filter { $0.kind == .meetingVideo }.map(\.id))
         try meetingStore?.delete(ids: ids)
-        try store?.delete(ids: ids)
         reload()
     }
 
