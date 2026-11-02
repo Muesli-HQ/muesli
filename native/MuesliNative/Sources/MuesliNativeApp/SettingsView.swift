@@ -2576,7 +2576,7 @@ struct SettingsView: View {
                 .padding(.bottom, MuesliTheme.spacing8)
                 settingsCompactRow(
                     "Hide completely",
-                    description: "Never shows the indicator, even while recording or processing. Useful when sharing your screen. Stop meetings from the menu bar."
+                    description: "Hides the indicator, even while recording or processing. Useful when sharing your screen. Errors, Quill answers and Computer Use questions still appear. Stop meetings from the menu bar."
                 ) {
                     settingsControl("hide_recording_indicator")
                 }

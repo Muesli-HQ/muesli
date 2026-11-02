@@ -875,7 +875,8 @@ final class FloatingIndicatorController: NSObject {
         }
         preservesCollapsedLeftEdge = state == .idle && isHovered
         // Fully hidden (e.g. for screen sharing): track state, but never present.
-        // Computer Use questions still surface because the run waits on them.
+        // Computer Use questions, Quill answers and failure notices still surface:
+        // the user asked for them, or they have no other surface.
         if config.hideRecordingIndicator, question == nil {
             if state == .idle {
                 close()
@@ -1258,7 +1259,8 @@ final class FloatingIndicatorController: NSObject {
         hideShortcutPillChrome()
         guard state == .idle else { return }
         let config = feedbackConfiguration()
-        guard !config.hideRecordingIndicator else { return }
+        // Failures ("!") have no other surface, so they still flash while hidden.
+        guard !config.hideRecordingIndicator || icon == "!" else { return }
         // A notice takes ownership from loading before either presentation is chosen.
         isShowingLoading = false
         deferredLoadingMessage = nil
@@ -1542,7 +1544,9 @@ final class FloatingIndicatorController: NSObject {
         state == .idle && isHovered && !isShowingLoading && pointerIsInsidePanel()
     }
 
-    func closeIfIdle() {
+    func closeIfIdle(config: AppConfig? = nil) {
+        // Notices read the cached config; a settings change must not leave it stale.
+        if let config { lastLoadedConfig = config }
         if state == .idle, !isShowingLoading { close() }
     }
 

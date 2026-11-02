@@ -1591,7 +1591,7 @@ public final class MuesliController: NSObject {
         if config.showFloatingIndicator || config.hideRecordingIndicator || indicator.isActive {
             indicator.ensureVisible(config: config)
         } else {
-            indicator.closeIfIdle()
+            indicator.closeIfIdle(config: config)
         }
         indicator.refreshMeetingTranscriptPreference(config: config)
     }

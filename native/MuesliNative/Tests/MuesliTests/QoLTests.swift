@@ -118,6 +118,11 @@ struct FloatingIndicatorVisibilityTests {
             indicator.showLoading("Loading model")
             #expect(!indicator.isPresenting)
             indicator.hideLoading()
+            // Failures have no other surface, so they still show while hidden.
+            indicator.showWarning("Dictation wasn't pasted", icon: "!")
+            #expect(indicator.isPresenting)
+            indicator.setState(.idle, config: config)
+            #expect(!indicator.isPresenting)
             #expect(!indicator.showInstructionOutcome(.quillFailure(QuillError()), mode: .quill,
                                                       instruction: "Rewrite", message: "Failed", config: config))
             #expect(!indicator.isPresenting)
@@ -136,6 +141,17 @@ struct FloatingIndicatorVisibilityTests {
         indicator.ensureVisible(config: config)
         #expect(indicator.isPresenting)
         indicator.setState(.idle, config: config)
+
+        // Turning it off while idle (via closeIfIdle) must not leave notices suppressed.
+        config.showFloatingIndicator = false
+        config.hideRecordingIndicator = true
+        store.save(config)
+        indicator.ensureVisible(config: config)
+        config.hideRecordingIndicator = false
+        store.save(config)
+        indicator.closeIfIdle(config: config)
+        indicator.showWarning("Heads up")
+        #expect(indicator.isPresenting)
     }
 
     @Test("floating hotkey defaults off while menu bar hotkey defaults on")
