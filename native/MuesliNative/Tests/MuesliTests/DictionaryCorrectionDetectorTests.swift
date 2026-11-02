@@ -585,3 +585,25 @@ struct DictionarySuggestionConfigTests {
         #expect(suggestion.appDisplayName == "Codex")
     }
 }
+
+@Suite("Dictionary correction substitution guard")
+struct DictionaryCorrectionSubstitutionTests {
+    @Test("re-rendered or reordered text produces no suggestion")
+    func reorderedTextIsNotACorrection() {
+        let pasted = "For the trip I need three things:\n1. The passport\n2. The charger\n3. The tickets"
+        // What devB saw in cmux on 2026-11-02: neighbouring words realigned, nothing replaced.
+        #expect(!DictionaryCorrectionDetector.isSubstitution(observed: "things", replacement: "three", before: pasted, after: pasted.replacingOccurrences(of: "\n", with: " ")))
+        #expect(!DictionaryCorrectionDetector.isSubstitution(observed: "three", replacement: "trip", before: pasted, after: "for the trip I need three things first the passport"))
+        let reordered = "For the trip I need things three: 1. The passport 2. The charger 3. The tickets"
+        #expect(DictionaryCorrectionDetector.suggestions(originalText: pasted, editedText: reordered).isEmpty)
+    }
+
+    @Test("real corrections still count as substitutions")
+    func realCorrectionsAreSubstitutions() {
+        #expect(DictionaryCorrectionDetector.isSubstitution(observed: "musley", replacement: "muesli", before: "please write musley today", after: "please write muesli today"))
+        #expect(DictionaryCorrectionDetector.isSubstitution(observed: "api", replacement: "API", before: "call the api now", after: "call the API now"))
+        #expect(DictionaryCorrectionDetector.isSubstitution(observed: "sc domain", replacement: "sc-domain", before: "open sc domain settings", after: "open sc-domain settings"))
+        // Only one of two occurrences corrected still counts.
+        #expect(DictionaryCorrectionDetector.isSubstitution(observed: "musley", replacement: "muesli", before: "musley and musley", after: "muesli and musley"))
+    }
+}

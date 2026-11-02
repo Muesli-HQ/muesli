@@ -115,7 +115,9 @@ struct DictionaryCorrectionDetector {
         var seenKeys = Set<String>()
 
         func append(_ candidate: CorrectionCandidate) {
-            guard results.count < maxSuggestions else { return }
+            guard results.count < maxSuggestions,
+                  isSubstitution(observed: candidate.observed, replacement: candidate.replacement,
+                                 before: baselineText, after: currentText) else { return }
             let suggestion = DictionarySuggestion(
                 observed: candidate.observed,
                 replacement: candidate.replacement,
@@ -137,6 +139,34 @@ struct DictionaryCorrectionDetector {
         }
 
         return results
+    }
+
+    /// A correction replaces text: the observed form loses an occurrence and the
+    /// replacement gains one. Text an app merely re-renders or reorders, such as a
+    /// terminal echoing a submitted multi-line paste, changes neither count, so word
+    /// alignment across it must not become a suggestion.
+    static func isSubstitution(observed: String, replacement: String, before: String, after: String) -> Bool {
+        let observedTokens = substitutionTokens(observed)
+        let replacementTokens = substitutionTokens(replacement)
+        guard !observedTokens.isEmpty, !replacementTokens.isEmpty else { return false }
+        let beforeTokens = substitutionTokens(before)
+        let afterTokens = substitutionTokens(after)
+        return occurrences(of: observedTokens, in: afterTokens) < occurrences(of: observedTokens, in: beforeTokens)
+            && occurrences(of: replacementTokens, in: afterTokens) > occurrences(of: replacementTokens, in: beforeTokens)
+    }
+
+    /// Case-sensitive so acronym fixes ("api" → "API") still count as substitutions.
+    private static func substitutionTokens(_ text: String) -> [String] {
+        // Same word edges as `normalizedCandidate`, so candidates match their source tokens.
+        let edges = CharacterSet.punctuationCharacters.subtracting(CharacterSet(charactersIn: "_-+/"))
+        return text.split(whereSeparator: \.isWhitespace)
+            .map { $0.trimmingCharacters(in: edges) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func occurrences(of phrase: [String], in tokens: [String]) -> Int {
+        guard !phrase.isEmpty, tokens.count >= phrase.count else { return 0 }
+        return (0...(tokens.count - phrase.count)).filter { Array(tokens[$0..<($0 + phrase.count)]) == phrase }.count
     }
 
     private static func isDetectionRequestValid(
@@ -1140,15 +1170,13 @@ final class DictationCorrectionMonitor {
         return snapshots
     }
 
-    nonisolated private static func normalizedSnapshot(_ value: String?, originalText: String) -> String? {
+    nonisolated static func normalizedSnapshot(_ value: String?, originalText: String) -> String? {
         guard let value else { return nil }
-        let normalized = value
-            .replacingOccurrences(of: "\u{00a0}", with: " ")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = collapsedWhitespace(value)
         guard !normalized.isEmpty, normalized.count <= maxCandidateCharacters else { return nil }
-        guard normalized != originalText else { return nil }
+        // Compare like with like: a multi-line paste (such as a cleaned-up list) read
+        // back unchanged must not look edited just because its line breaks collapsed.
+        guard normalized != collapsedWhitespace(originalText) else { return nil }
 
         let originalLength = originalText.count
         let lengthDelta = abs(normalized.count - originalLength)
@@ -1226,6 +1254,14 @@ final class DictationCorrectionMonitor {
                 if remainingNodes <= 0 { return }
             }
         }
+    }
+
+    nonisolated private static func collapsedWhitespace(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\u{00a0}", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     nonisolated private static func systemFocusedTextSnapshot(

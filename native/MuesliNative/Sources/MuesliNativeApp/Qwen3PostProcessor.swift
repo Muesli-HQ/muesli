@@ -301,8 +301,13 @@ private actor Qwen3PostProcessorManager {
             if mlx == nil {
                 let start = Date()
                 let small = inputFormat == .muesliTrainedV12Qwen08
-                mlx = try await CleanupMLXEvaluation(directory: modelURL.deletingLastPathComponent(),
-                    descriptor: small ? .qwen08MLX : .qwenMLX, model: small ? .qwen08 : .qwen)
+                let directory = modelURL.deletingLastPathComponent()
+                // Validate against whichever build is installed; models update without an app release.
+                let slot = CleanupModelSlot.slot(id: small ? CleanupModelSlot.liteID : CleanupModelSlot.proQwenID)!
+                let release = CleanupModelInstallation.installedRelease(for: slot, in: directory) ?? slot.bundled
+                mlx = try await CleanupMLXEvaluation(directory: directory,
+                    descriptor: release.artifact, model: small ? .qwen08 : .qwen)
+                Qwen3PostProcessorLogging.logVerbose("cleanup release=\(release.repo)@\(release.revision) version=\(release.version)")
                 Qwen3PostProcessorLogging.logVerbose("cleanup runtime=mlx model=\(inputFormat) load_seconds=\(Date().timeIntervalSince(start))")
             }
         } else {
@@ -424,8 +429,10 @@ private actor Qwen3PostProcessorManager {
 
     private func loadBot() throws -> LLM {
         if let bot { return bot }
+        let lfmSlot = CleanupModelSlot.slot(id: CleanupModelSlot.proLFMID)!
         let descriptor: ManagedCleanupModel? = switch inputFormat {
-        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12LFM: (CleanupModelInstallation.installedRelease(
+            for: lfmSlot, in: modelURL.deletingLastPathComponent()) ?? lfmSlot.bundled).artifact
         case .muesliTrainedV12Qwen: .qwen
         case .muesliTrainedV12Qwen08: .qwen08
         default: nil

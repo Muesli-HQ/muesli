@@ -1567,16 +1567,15 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     var isDownloaded: Bool {
-        managedModel?.isPresent(at: cacheDirectory) ?? FileManager.default.fileExists(atPath: modelURL.path)
+        cleanupSlot == nil ? FileManager.default.fileExists(atPath: modelURL.path) : installedRelease != nil
     }
 
-    var managedModel: ManagedCleanupModel? {
-        switch inputFormat {
-        case .muesliTrainedV12LFM: .lfm
-        case .muesliTrainedV12Qwen: .qwenMLX
-        case .muesliTrainedV12Qwen08: .qwen08MLX
-        default: nil
-        }
+    /// Muesli-published models update independently of the app; see `CleanupModelCatalog`.
+    var cleanupSlot: CleanupModelSlot? { CleanupModelSlot.slot(id: id) }
+
+    /// The complete, identified build in `cacheDirectory`. Reads a small marker file.
+    var installedRelease: CleanupModelRelease? {
+        cleanupSlot.flatMap { CleanupModelInstallation.installedRelease(for: $0, in: cacheDirectory) }
     }
 
     var logoResourceName: String {
@@ -1636,10 +1635,10 @@ struct PostProcessorOption: Identifiable, Equatable {
     static let finetunedV4 = PostProcessorOption(
         id: "qwen35-postproc-v4",
         label: "muesli Cleanup Lite",
-        sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
+        sizeLabel: CleanupModelRelease.qwen08V14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
-        downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwen08MLX.modelFilename,
+        downloadURL: CleanupModelRelease.qwen08V14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen08V14.artifact.modelFilename,
         inputFormat: .muesliTrainedV12Qwen08
     )
 
@@ -1659,10 +1658,10 @@ struct PostProcessorOption: Identifiable, Equatable {
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
         filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
+        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: CleanupModelRelease.qwen2BV14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
-        downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+        downloadURL: CleanupModelRelease.qwen2BV14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen2BV14.artifact.modelFilename, inputFormat: .muesliTrainedV12Qwen)
     static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
     static let defaultOption: PostProcessorOption = .finetunedV4

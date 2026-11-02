@@ -657,8 +657,8 @@ struct PostProcessorOptionTests {
         for option in PostProcessorOption.all {
             #expect(option.downloadURL.scheme == "https", "Non-HTTPS download URL for \(option.id)")
             if option.modelURL.pathExtension == "safetensors" {
-                #expect(option.managedModel != nil)
-                #expect(option.managedModel?.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
+                #expect(option.cleanupSlot != nil)
+                #expect(option.cleanupSlot?.bundled.artifact.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
             } else {
                 #expect(option.modelURL.pathExtension == "gguf")
             }

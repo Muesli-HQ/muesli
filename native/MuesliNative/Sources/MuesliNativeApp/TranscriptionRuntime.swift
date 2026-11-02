@@ -378,6 +378,14 @@ actor TranscriptionCoordinator {
         }
     }
 
+    /// Drops loaded cleanup engines so the next request loads freshly installed weights.
+    /// In-flight requests keep the manager they already hold.
+    func unloadLocalPostProcessor() async {
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.shutdown()
+        }
+    }
+
     func unloadNemotron35Transcriber() async {
         if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
             await transcriber.shutdown()

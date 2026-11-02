@@ -561,6 +561,23 @@ public final class MuesliController: NSObject {
     private var cleanupAvailabilityIDs: Set<String> = []
     private var cleanupDownloadNoticeIDs: Set<String> = []
 
+    /// Refreshes the signed cleanup model catalog at most every six hours unless forced.
+    /// Never downloads weights: the Models page and sidebar offer each update.
+    func checkCleanupModelUpdates(force: Bool = false) {
+        let library = appState.modelLibrary
+        guard library.cleanupCatalogTask == nil else { return }
+        if !force, let checkedAt = library.cleanupCatalogCheckedAt, Date().timeIntervalSince(checkedAt) < 6 * 3600 { return }
+        library.cleanupCatalogTask = Task { [weak self] in
+            let latest = await CleanupModelCatalog.fetchLatest()
+            guard let self else { return }
+            let library = self.appState.modelLibrary
+            library.cleanupCatalogTask = nil
+            guard let latest else { return }
+            library.cleanupCatalogCheckedAt = Date()
+            if library.latestCleanupReleases != latest { library.latestCleanupReleases = latest }
+        }
+    }
+
     func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
         let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
         guard available != cleanupAvailabilityIDs else { return }
@@ -1017,6 +1034,7 @@ public final class MuesliController: NSObject {
         }
         installICloudPersistentSyncObservers()
         refreshSettingsModelAvailability()
+        checkCleanupModelUpdates()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
