@@ -224,33 +224,3 @@ public final class MeetingVideoStore: @unchecked Sendable {
         try maintain()
     }
 }
-
-public extension MeetingVideoStore {
-    /// Copy, commit, retire. One invalid legacy owner must not block later clips.
-    func migrateLegacyVideos(from legacy: VisualMemoryStore) throws {
-        var firstError: Error?
-        for item in try legacy.items() where item.kind == .meetingVideo {
-            var copied: URL?
-            var committed = false
-            do {
-                let source = try legacy.url(for: item.path)
-                let destination = try url(for: item.path)
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    guard FileManager.default.contentsEqual(atPath: source.path, andPath: destination.path) else {
-                        throw NSError(domain: "MeetingVideoStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "Existing video differs; original retained."])
-                    }
-                } else {
-                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-                    try FileManager.default.copyItem(at: source, to: destination)
-                    copied = destination
-                }
-                try save([item]); committed = true
-                try legacy.delete(ids: [item.id])
-            } catch {
-                if !committed, let copied { try? FileManager.default.removeItem(at: copied) }
-                if firstError == nil { firstError = error }
-            }
-        }
-        if let firstError { throw firstError }
-    }
-}

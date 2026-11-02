@@ -8,7 +8,7 @@ Time Turner is off by default. It is an experimental feature, available in Setti
 
 Old matching-source images are compacted with hardware HEVC into chunks of up to 100 images, starting after ten minutes, with a 25-frame keyframe interval. Archive time uses one second per image; original wall-clock timestamps remain authoritative. Compaction runs at most every five minutes and retains stills if video is larger or encoding fails. It is skipped in Low Power Mode. This architecture was informed by Screenpipe; the implementation is independent Swift.
 
-Screenshots default to seven days; searchable OCR and app/window history default to 30 days. Both periods are configurable in Time Turner settings. “Until storage budget fills” disables screenshot age expiry; searchable history can be kept until explicitly deleted. A finite searchable-history limit still removes its associated screenshots. The media budget evicts screenshots only. Retention uses original capture timestamps and runs independently of capture, including while paused or off (overdue cleanup runs when the app resumes). Shortening retention applies to existing data. Shared archive screenshots may expire together when the oldest frame expires; their OCR keeps its own retention. Meeting videos are not subject to ambient retention. They live in `meeting-recordings/videos/`, with records in the `meeting_video_clips` table of `muesli.db` linked to `meetings.id`; they do not count toward the Time Turner media budget. Older videos migrate safely out of the visual-memory catalog on launch. Both capture paths stop or pause near a 2 GB free-space reserve. The displayed daily estimate is based on recent image sizes and eight active hours before compaction, not a promised total including SQLite overhead. Media usage excludes the catalog and its journal.
+Screenshots default to seven days; searchable OCR and app/window history default to 30 days. Both periods are configurable in Time Turner settings. “Until storage budget fills” disables screenshot age expiry; searchable history can be kept until explicitly deleted. A finite searchable-history limit still removes its associated screenshots. The media budget evicts screenshots only. Retention uses original capture timestamps and runs independently of capture, including while paused or off (overdue cleanup runs when the app resumes). Shortening retention applies to existing data. Shared archive screenshots may expire together when the oldest frame expires; their OCR keeps its own retention. Meeting videos are not subject to ambient retention. They live in `meeting-recordings/videos/`, with records in the `meeting_video_clips` table of `muesli.db` linked to `meetings.id`; they do not count toward the Time Turner media budget. Both capture paths stop or pause near a 2 GB free-space reserve. The displayed daily estimate is based on recent image sizes and eight active hours before compaction, not a promised total including SQLite overhead. Media usage excludes the catalog and its journal.
 
 Screen history stays under the lane's Application Support `visual-memory` directory and is not part of meeting CloudKit records. Screen history automatically resumes after wake/unlock once both sleep and lock have cleared, subject to the existing inactivity check. An explicit manual pause remains paused. Meeting video still requires manual resumption. Sensitive app exclusions, custom bundle-ID exclusions, accessible secure fields, and recognizable private browser titles are checked. These checks cannot identify all sensitive content; use Pause or app exclusions before opening private material. Ambient capture pauses while meeting video runs, or while the legacy ScreenCaptureKit meeting-audio path is active.
 
@@ -55,7 +55,7 @@ The Time Turner header collapses the inline viewer into one row without pausing 
 
 ## Agent CLI
 
-The bundled `muesli-cli time-turner` commands open the visual catalog read-only, without migration or creating a missing catalog. Select the lane explicitly with `--support-dir` (or `MUESLI_SUPPORT_DIR`). Results use the CLI JSON envelope and original UTC capture timestamps with fractional seconds.
+The bundled `muesli-cli time-turner` commands open the visual catalog read-only, without migration or creating a missing catalog. Older catalogs without an FTS table build a temporary search index per CLI invocation; opening the catalog in the updated app creates the persistent index and avoids that repeated cost. Select the lane explicitly with `--support-dir` (or `MUESLI_SUPPORT_DIR`). Results use the CLI JSON envelope and original UTC capture timestamps with fractional seconds.
 
 ```bash
 CLI=/Applications/MuesliDevB.app/Contents/MacOS/muesli-cli
@@ -152,6 +152,9 @@ Source buttons select an exact capture or open the original meeting passage.
 Recaps are saved locally in `muesli.db` by day start and time zone, with model,
 provider, generation time, insights and every supplied evidence dependency.
 Switching tabs or restarting reloads the saved recap without a provider call.
+**Copy summary** copies section headings and insight text only, without source
+references or model metadata, and shows a brief copied confirmation. Evidence is
+revalidated before copying, as it is before opening a source.
 Changing the selected meeting model affects the next explicit generation; it
 does not relabel or discard an existing recap. Leaving the view cancels pending
 work. See [database-schema.md](../database-schema.md#time-turner-daily-recaps)

@@ -144,9 +144,16 @@ struct TimeTurnerSettingsView: View {
         panel.allowedContentTypes = [.application]; panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true; panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.prompt = "Exclude"
-        guard panel.runModal() == .OK else { return }
-        let selected = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }
-        saveExclusions(Array(Set(exclusions + selected)).sorted())
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK else { return }
+            let selected = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }
+            saveExclusions(Array(Set(exclusions + selected)).sorted())
+        }
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
     }
     private var estimate: String {
         guard let average = memory.averageImageBytes else { return "Storage estimate available after capture." }

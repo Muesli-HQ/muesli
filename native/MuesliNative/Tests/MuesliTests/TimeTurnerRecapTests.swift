@@ -5,6 +5,16 @@ import MuesliCore
 
 @Suite("Time Turner daily recap")
 struct TimeTurnerRecapTests {
+    @Test func clipboardContainsOnlySectionHeadingsAndProse() {
+        let insights: [TimeTurnerRecapInsight] = [
+            .init(section: .followUps, text: "Review the release checklist.", sources: ["C2"]),
+            .init(section: .work, text: "Updated onboarding.", sources: ["C1", "M1"]),
+            .init(section: .work, text: "Reviewed accessibility.", sources: ["C3"])
+        ]
+        #expect(TimeTurnerRecap.plainText(insights) == "Work covered\n\nUpdated onboarding.\n\nReviewed accessibility.\n\nPossible follow-ups\n\nReview the release checklist.")
+        #expect(TimeTurnerRecap.plainText([]).isEmpty)
+    }
+
     let day = Date(timeIntervalSince1970: 1_700_000_000)
     func capture(_ id: String, offset: Double = 0, text: String = "Working on the release checklist") -> VisualMemoryItem {
         .init(id: id, kind: .moment, capturedAt: day.addingTimeInterval(offset), source: "Editor", bundleID: "test.editor", text: text, path: "\(id).png")
@@ -75,6 +85,33 @@ struct TimeTurnerRecapTests {
         // A cleanup for a different generation cannot remove this record.
         try TimeTurnerRecapStore(databaseURL: db).delete(key: saved.key, generatedAt: day.addingTimeInterval(1))
         #expect(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key) != nil)
+    }
+
+    @Test func bulkCaptureDeletionPreservesUnrelatedRecaps() throws {
+        let (root, db, _, item) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try TimeTurnerRecapStore(databaseURL: db)
+        let quoted = capture("quoted'\"id")
+        let untouched = capture("untouched")
+        var keys: [String] = []
+        for (index, source) in [item, quoted, untouched].enumerated() {
+            let start = day.addingTimeInterval(Double(index) * 86400)
+            let recap = SavedTimeTurnerRecap(version: 1, dayStart: start, dayEnd: start.addingTimeInterval(86400),
+                timeZone: "UTC", generatedAt: day, provider: "test", model: "test", insights: [], sources: try packet([source]).sources)
+            try store.save(recap)
+            keys.append(recap.key)
+        }
+        try store.delete(captureIDs: [])
+        #expect(try store.load(key: keys[0]) != nil)
+        var ids = Set((0..<5000).map { "absent-\($0)" })
+        ids.insert(item.id)
+        ids.insert(quoted.id)
+        try store.delete(captureIDs: ids)
+        #expect(try store.load(key: keys[0]) == nil)
+        #expect(try store.load(key: keys[1]) == nil)
+        #expect(try store.load(key: keys[2]) != nil)
+        try store.delete(captureIDs: ids)
+        #expect(try store.load(key: keys[2]) != nil)
     }
 
     @MainActor @Test func loadingExpiredEvidencePurgesSavedRecap() async throws {

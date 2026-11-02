@@ -286,6 +286,11 @@ ordinary question/answer turns and follow-ups that never edit another app.
 | `meeting_video_cleanup` | Durable cleanup outbox (`id`, JSON body), intentionally independent of the meeting FK. Deletion triggers enqueue media metadata before the owning rows disappear, allowing deferred file cleanup. |
 | `meeting_imports` | Created lazily by `DictationStore.importGranola`. Key `(provider, document_id)` deduplicates imports; meeting FK cascades. Stores workspace, owner email, and import time locally. It need not exist in a database that has never imported Granola records. |
 
+Meeting videos are stored only in `meeting-recordings/videos/`, owned by
+`meeting_video_clips`. No migration or playback fallback reads meeting videos
+from the experimental `visual-memory` catalog. That catalog belongs to Time
+Turner; removing experimental compatibility does not delete its local files.
+
 Soft deletion queues video cleanup and removes clip rows; hard deletion queues
 cleanup before the meeting FK cascade. Import metadata is committed with its
 meeting and folder in one transaction. Re-imports preserve existing records,
@@ -570,7 +575,9 @@ Source validation runs on load, before navigation and every five seconds while
 visible. Removed/missing captures or revised/deleted meetings invalidate the
 whole recap, remove its saved record and require explicit regeneration. Capture
 deletion and history expiry additionally purge affected recaps without opening
-them, using the durable cleanup queue above. Meeting revision changes still use
+them, using the durable cleanup queue above. Cleanup binds capture IDs as one JSON
+array and deletes matching recaps in a single statement per batch, avoiding a
+full recap-source scan for each expired capture. Meeting revision changes still use
 read-time revalidation. Screenshot expiry alone does not invalidate OCR evidence.
 Temporary storage errors hide unverified content but preserve the saved record
 for retry; only confirmed stale evidence removes it. Media

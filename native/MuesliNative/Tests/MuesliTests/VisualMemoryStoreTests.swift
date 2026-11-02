@@ -8,6 +8,28 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_700_000_000))
+        let rows = (0..<3).map { index in
+            VisualMemoryItem(id: "hit-\(index)", kind: .moment,
+                capturedAt: start.addingTimeInterval(Double(index + 1) * 60),
+                source: "Editor", text: "Work", path: "\(index).heic")
+        }
+        var snapshot = TimeTurnerDaySnapshot()
+        snapshot.load(rows, on: rows[1].capturedAt)
+        // Reopening the exact selected search hit must not reduce the scrubber to 1/1.
+        snapshot.prepare(for: rows[1].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        snapshot.prepare(for: rows[2].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        let nextDay = start.addingTimeInterval(86400)
+        snapshot.prepare(for: nextDay, calendar: calendar)
+        #expect(snapshot.moments.isEmpty)
+        #expect(snapshot.day == nextDay)
+    }
+
     @Test func compactionSkipsMissingAndCorruptOldestGroupsWithoutDeletingHistory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -21,10 +43,21 @@ struct VisualMemoryStoreTests {
         CGImageDestinationAddImage(destination, image, nil)
         #expect(CGImageDestinationFinalize(destination))
         try Data("broken".utf8).write(to: store.url(for: "broken.png"))
-        let rows = (0..<75).map { index in VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
-            capturedAt: now.addingTimeInterval(Double(index) - 2000), source: index < 50 ? "Old" : "Healthy",
-            text: "retained text", path: index < 25 ? "missing.png" : (index < 50 ? "broken.png" : "valid.png"),
-            pixelWidth: 100, pixelHeight: 100) }
+        let rows: [VisualMemoryItem] = (0..<75).map { index -> VisualMemoryItem in
+            let capturedAt = now.addingTimeInterval(Double(index) - 2000)
+            let source = index < 50 ? "Old" : "Healthy"
+            let path: String
+            if index < 25 {
+                path = "missing.png"
+            } else if index < 50 {
+                path = "broken.png"
+            } else {
+                path = "valid.png"
+            }
+            return VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
+                capturedAt: capturedAt, source: source, text: "retained text", path: path,
+                pixelWidth: 100, pixelHeight: 100)
+        }
         try store.save(rows)
         var excluded = Set<String>()
         let batch = try VisualMemoryEncoding.compactionBatch(store: store, now: now, excluding: &excluded)
@@ -534,6 +567,22 @@ struct VisualMemoryStoreTests {
         #expect(VisualMemoryScrubScale(dates: []).date(at: 0.5) == nil)
         #expect(VisualMemoryScrubScale(dates: [start]).date(at: 0.5) == start)
         #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
+    }
+
+    @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }
+        let scale = VisualMemoryScrubScale(dates: dates)
+        for index in stride(from: 0, to: dates.count, by: 37) {
+            let expected = Double(index) / Double(dates.count - 1)
+            #expect(abs(scale.fraction(for: dates[index]) - expected) < 0.000001)
+            #expect(abs(scale.date(at: expected)!.timeIntervalSince(dates[index])) < 0.000001)
+        }
+        #expect(scale.fraction(for: start.addingTimeInterval(-1)) == 0)
+        #expect(scale.fraction(for: dates.last!.addingTimeInterval(1)) == 1)
+        let duplicates = VisualMemoryScrubScale(dates: [start, start, start.addingTimeInterval(10), start.addingTimeInterval(10), start.addingTimeInterval(20)])
+        #expect(duplicates.fraction(for: start.addingTimeInterval(10)) == 0.5)
+        #expect(duplicates.date(at: 0.5) == start.addingTimeInterval(10))
     }
 
     @Test func meetingResumeDoesNotOverrideExplicitVideoPause() {

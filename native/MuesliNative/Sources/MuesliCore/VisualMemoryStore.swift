@@ -602,6 +602,7 @@ public enum VisualMemoryDayTimeline {
 public struct VisualMemoryScrubScale {
     private let dates: [Date]
     private let positions: [Double]
+    public let compressesGaps: Bool
     public init(dates: [Date]) {
         self.dates = dates.sorted()
         var offsets = [Double]()
@@ -609,14 +610,20 @@ public struct VisualMemoryScrubScale {
             offsets.append(index == 0 ? 0 : offsets[index - 1] + min(120, max(1, date.timeIntervalSince(self.dates[index - 1]))))
         }
         positions = offsets
+        compressesGaps = zip(self.dates, self.dates.dropFirst()).contains { $1.timeIntervalSince($0) > 120 }
     }
-    public var compressesGaps: Bool {
-        zip(dates, dates.dropFirst()).contains { $1.timeIntervalSince($0) > 120 }
+    private func lowerBound<T: Comparable>(_ values: [T], _ target: T) -> Int {
+        var low = 0, high = values.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if values[middle] < target { low = middle + 1 } else { high = middle }
+        }
+        return low
     }
     public func fraction(for date: Date) -> Double {
         guard let first = dates.first, let last = dates.last, let total = positions.last, total > 0 else { return 0 }
         if date <= first { return 0 }; if date >= last { return 1 }
-        let upper = dates.firstIndex { $0 >= date }!
+        let upper = lowerBound(dates, date)
         let lower = upper - 1
         let interval = dates[upper].timeIntervalSince(dates[lower])
         let local = interval > 0 ? date.timeIntervalSince(dates[lower]) / interval : 0
@@ -625,7 +632,8 @@ public struct VisualMemoryScrubScale {
     public func date(at fraction: Double) -> Date? {
         guard let first = dates.first, let total = positions.last, total > 0 else { return dates.first }
         let position = min(1, max(0, fraction)) * total
-        guard let upper = positions.firstIndex(where: { $0 >= position }), upper > 0 else { return first }
+        let upper = lowerBound(positions, position)
+        guard upper > 0 else { return first }
         let lower = upper - 1
         let local = (position - positions[lower]) / (positions[upper] - positions[lower])
         return dates[lower].addingTimeInterval(local * dates[upper].timeIntervalSince(dates[lower]))

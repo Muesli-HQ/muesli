@@ -7,23 +7,24 @@ struct TimeTurnerPage: View {
     let controller: MuesliController
     @State private var dayMoments: [VisualMemoryItem] = []
     @State private var cachedDay: Date?
+    @State private var showsCalendar = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 20) {
-                        pageTitle
-                        Spacer(minLength: 20)
+                    ZStack {
+                        HStack {
+                            pageTitle
+                            Spacer(minLength: 20)
+                            captureControls.fixedSize()
+                        }
                         dayControls.fixedSize()
-                        captureControls.fixedSize()
-                    }
+                    }.frame(minWidth: 1050)
                     VStack(alignment: .leading, spacing: 12) {
                         pageTitle
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 20) { dayControls.fixedSize(); captureControls.fixedSize() }
-                            VStack(alignment: .leading, spacing: 10) { dayControls; captureControls }
-                        }
+                        captureControls
+                        dayControls.frame(maxWidth: .infinity)
                     }
                 }
                 VStack(alignment: .leading, spacing: 0) {
@@ -91,12 +92,22 @@ struct TimeTurnerPage: View {
     private var dayControls: some View {
         HStack(spacing: 10) {
             Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day")
-            DatePicker("Day", selection: $appState.timeTurnerDay, in: ...Date(), displayedComponents: .date)
-                .labelsHidden().fixedSize()
+            Button { showsCalendar.toggle() } label: {
+                HStack(spacing: 8) {
+                    Text(appState.timeTurnerDay.formatted(.dateTime.day().month(.abbreviated).year()))
+                    Image(systemName: "calendar")
+                }.font(MuesliTheme.body()).frame(width: 160, alignment: .center)
+            }
+            .accessibilityLabel("Choose history date")
+            .popover(isPresented: $showsCalendar) {
+                DatePicker("Day", selection: $appState.timeTurnerDay, in: ...Date(), displayedComponents: .date)
+                    .datePickerStyle(.graphical).labelsHidden().padding()
+            }
             Button { moveDay(1) } label: { Image(systemName: "chevron.right") }
                 .accessibilityLabel("Next day").disabled(Calendar.current.isDateInToday(appState.timeTurnerDay))
         }
         .onChange(of: appState.timeTurnerDay) { _, day in
+            showsCalendar = false
             if let capture = appState.timeTurnerSelectedCapture, !Calendar.current.isDate(capture.capturedAt, inSameDayAs: day) {
                 appState.timeTurnerSelectedCapture = nil
             }

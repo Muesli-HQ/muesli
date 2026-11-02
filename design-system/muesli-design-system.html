@@ -1137,6 +1137,15 @@
   <h3>Provider Logos &amp; Sharing</h3>
   <p class="pattern-note">Provider marks occupy a consistent 32×32pt slot. Apple and the existing OpenAI vector use a 23pt primary-color mark; other provider assets use a 24pt image on a white 32pt badge with 8pt corners. Preserve original brand colors. Social sharing moves from the sidebar to About, retaining the existing word-milestone eligibility.</p>
 
+  <h3>Time Turner History &amp; Recap</h3>
+  <p class="pattern-note">Center the formatted day between the title and capture controls in wide windows. At narrow widths the day moves to its own centered row. Selecting the date opens a calendar. Use the meeting pause/resume control, including its icon and selected style.</p>
+  <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;padding:20px;border:1px solid var(--border);border-radius:12px">
+    <strong style="font-size:26px">Time Turner</strong>
+    <span style="font-size:14px;text-align:center">‹ &nbsp; 1 Nov 2026 &nbsp; ▦ &nbsp; ›</span>
+    <span style="font-size:12px;text-align:right">Ⅱ Pause &nbsp; ⚙</span>
+  </div>
+  <p class="pattern-note">Recap screenshot citations show actual 144×90pt image previews above their timestamp, with 6pt padding and 10pt corners. They open the matching History capture. Previews resolve the current media location after compaction; expired screenshots show a compact explicit state while retained text stays accessible. Meeting citations remain text links. Search shows progress while results load, rather than an empty-history message.</p>
+
   <h3>Insights Session Vocabulary</h3>
   <p class="pattern-note">App/model rankings count one saved, non-deleted dictation record as one session within the selected date range, including synced dictations. Duration and streaming chunks do not multiply the count. Meetings, Quill, and computer-use records are excluded from these rankings. Rank by session count, then word count.</p>
   <p class="pattern-note">Known counting inconsistency: the overview's Dictation sessions total uses the broader history cache, which still includes saved Quill/computer-use records. This reference documents current behavior; this PR does not change the aggregation policy.</p>

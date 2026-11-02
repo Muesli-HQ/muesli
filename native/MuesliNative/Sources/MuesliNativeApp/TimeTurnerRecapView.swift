@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import MuesliCore
 
 struct TimeTurnerRecapView: View {
@@ -7,6 +8,7 @@ struct TimeTurnerRecapView: View {
     let onCapture: (VisualMemoryItem) -> Void
     @State private var model = TimeTurnerRecapModel()
     @State private var expanded = true
+    @State private var copied = false
     private var memory: VisualMemoryController { controller.visualMemory }
     private var provider: MeetingSummaryBackendOption { .resolved(controller.config.meetingSummaryBackend) }
     private var selectedModel: String { MeetingTextGenerationClient.model(controller.config) }
@@ -66,6 +68,12 @@ struct TimeTurnerRecapView: View {
                 await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
             }
         }
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
+        }
+        .onChange(of: selectionID) { _, _ in copied = false }
         .onDisappear { model.cancel(clear: true) }
     }
     private var heading: some View {
@@ -83,6 +91,25 @@ struct TimeTurnerRecapView: View {
     }
     private var actions: some View {
         HStack(spacing: 10) {
+            if model.hasGenerated {
+                Button {
+                    let requestID = model.requestID
+                    let selectedDay = selectionID
+                    Task {
+                        await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
+                        guard selectedDay == selectionID, requestID == model.requestID,
+                              model.hasGenerated, !model.isGenerating else { return }
+                        let text = TimeTurnerRecap.plainText(model.insights)
+                        guard !text.isEmpty else { return }
+                        NSPasteboard.general.clearContents()
+                        copied = NSPasteboard.general.setString(text, forType: .string)
+                    }
+                } label: {
+                    Label(copied ? "Copied" : "Copy summary", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+                .disabled(model.isGenerating || model.isLoading || model.insights.isEmpty)
+                .help("Copy summary text without screenshot references or model details")
+            }
             if model.isGenerating {
                 Button("Cancel") { model.cancel() }
             } else {
@@ -122,11 +149,61 @@ struct TimeTurnerRecapView: View {
                         }
                     }
                 } label: {
-                    Label(source.capture != nil ? "Screenshot · \(source.date.formatted(date: .omitted, time: .shortened))" : source.title,
-                          systemImage: source.capture != nil ? "photo" : "text.bubble")
-                        .font(MuesliTheme.caption()).lineLimit(1)
-                }.buttonStyle(.bordered).help(source.excerpt)
+                    if let capture = source.capture {
+                        RecapCaptureThumbnail(captureID: capture.id, date: source.date, memory: memory)
+                    } else {
+                        Label(source.title, systemImage: "text.bubble")
+                            .font(MuesliTheme.caption()).lineLimit(1).padding(8)
+                            .background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(source.capture != nil ? "Open screenshot at \(source.date.formatted(date: .omitted, time: .shortened))" : source.title)
+                    .help(source.excerpt)
             }
+        }
+    }
+}
+
+
+/// Resolve the current media location: saved recap snapshots can predate compaction.
+private struct RecapCaptureThumbnail: View {
+    let captureID: String
+    let date: Date
+    let memory: VisualMemoryController
+    @State private var capture: VisualMemoryItem?
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Group {
+                if let capture {
+                    MemoryImageView(item: capture, memory: memory, maximumSize: 320, compact: true)
+                } else if loaded {
+                    Label("Preview unavailable", systemImage: "photo")
+                        .font(MuesliTheme.caption()).foregroundStyle(.secondary)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .frame(width: 144, height: 90)
+            .background(MuesliTheme.backgroundDeep)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            Text(date.formatted(date: .omitted, time: .shortened))
+                .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(6)
+        .background(MuesliTheme.backgroundDeep, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(MuesliTheme.surfaceBorder).allowsHitTesting(false))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .task(id: "\(captureID)|\(memory.catalogRevision)") {
+            guard let root = memory.store?.root else { loaded = true; return }
+            let id = captureID
+            let current = try? await Task.detached(priority: .utility) {
+                try VisualMemoryStore(root: root, readOnly: true).moment(id: id)
+            }.value
+            guard !Task.isCancelled else { return }
+            capture = current
+            loaded = true
         }
     }
 }

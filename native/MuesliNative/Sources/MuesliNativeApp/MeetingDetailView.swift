@@ -1515,19 +1515,9 @@ struct MeetingDetailView: View {
 
     private var pauseResumeRecordingButton: some View {
         let isPaused = appState.isMeetingRecordingPaused
-        return Button {
+        return RecordingPauseButton(isPaused: isPaused) {
             controller.toggleMeetingRecordingPause()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(isPaused ? "Resume" : "Pause")
-                    .font(MuesliTheme.font(size: 12, weight: .semibold))
-            }
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 7)
         }
-        .buttonStyle(.muesli(isPaused ? .primary : .secondary))
         .disabled(!appState.isMeetingRecording)
         .help(isPaused ? "Resume recording" : "Pause recording")
     }

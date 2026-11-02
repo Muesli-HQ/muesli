@@ -73,19 +73,19 @@ final class TimeTurnerRecapStore {
     }
     /// Delete derived text, including stored OCR snapshots, without needing to open its day.
     func delete(captureIDs: Set<String>) throws {
+        guard !captureIDs.isEmpty else { return }
+        let ids = String(decoding: try JSONEncoder().encode(captureIDs.sorted()), as: UTF8.self)
         try execute("BEGIN IMMEDIATE")
         do {
             let s = try statement("""
                 DELETE FROM time_turner_recaps WHERE EXISTS (
                     SELECT 1 FROM json_each(time_turner_recaps.body, '$.sources')
-                    WHERE json_extract(value, '$.capture.id') = ?
+                    WHERE json_extract(value, '$.capture.id') IN (SELECT value FROM json_each(?))
                 )
                 """)
             defer { sqlite3_finalize(s) }
-            for id in captureIDs {
-                sqlite3_reset(s); sqlite3_clear_bindings(s); bind(id, to: s, at: 1)
-                guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
-            }
+            bind(ids, to: s, at: 1)
+            guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
