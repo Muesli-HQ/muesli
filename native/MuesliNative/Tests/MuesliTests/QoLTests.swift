@@ -617,6 +617,29 @@ struct FloatingMeetingTranscriptTests {
 @Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
     @MainActor
+    @Test("connecting pill cancels pending startup instead of acting like an active recording")
+    func connectingPillCancels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var cancels = 0, stops = 0
+        indicator.onCancelDictation = { cancels += 1 }
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.microphoneStartupPending = true
+        indicator.setPreparingWaveformWaiting(config: config)
+        indicator.handleClick(atX: 60)
+        #expect(cancels == 1)
+        #expect(stops == 0)
+        indicator.microphoneStartupPending = false
+        indicator.setState(.recording, config: config)
+        indicator.handleClick(atX: 60)
+        #expect(stops == 1)
+    }
+
+    @MainActor
     @Test("closing and reopening an expanded idle pill clears its hover state")
     func idleHoverCloseReopen() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

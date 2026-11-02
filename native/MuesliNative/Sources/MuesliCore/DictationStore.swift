@@ -868,6 +868,69 @@ public final class DictationStore {
         return id
     }
 
+    /// Recovery-only persistence: commit the history row and its local retry key
+    /// together. A retry after archive cleanup fails returns the saved text,
+    /// including after relaunch, instead of inserting another history row.
+    public func insertRecoveredDictation(
+        recoveryID: UUID,
+        text: String,
+        durationSeconds: Double,
+        startedAt: Date,
+        endedAt: Date,
+        transcriptionModel: DictationModelIdentity? = nil
+    ) throws -> String {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        // Lazy creation keeps normal dictation persistence/migrations unchanged.
+        try exec("""
+        CREATE TABLE IF NOT EXISTS dictation_recovery_history (
+            recovery_id TEXT PRIMARY KEY,
+            dictation_id INTEGER NOT NULL UNIQUE REFERENCES dictations(id) ON DELETE CASCADE
+        )
+        """, db: db)
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var existing: OpaquePointer?
+            let lookup = """
+            SELECT d.raw_text FROM dictation_recovery_history r
+            JOIN dictations d ON d.id = r.dictation_id
+            WHERE r.recovery_id = ? AND d.deleted_at IS NULL
+            """
+            guard sqlite3_prepare_v2(db, lookup, -1, &existing, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(existing) }
+            sqlite3_bind_text(existing, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            let status = sqlite3_step(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+            if status == SQLITE_ROW {
+                let savedText = stringColumn(existing, index: 0)
+                if !savedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try exec("COMMIT", db: db)
+                    return savedText
+                }
+            }
+            let id = try insertDictation(text: text, durationSeconds: durationSeconds,
+                source: "dictation", targetAppName: nil, targetAppBundleID: nil,
+                startedAt: startedAt, endedAt: endedAt,
+                transcriptionModel: transcriptionModel, db: db)
+            var link: OpaquePointer?
+            guard sqlite3_prepare_v2(db,
+                """
+                INSERT INTO dictation_recovery_history (recovery_id, dictation_id) VALUES (?, ?)
+                ON CONFLICT(recovery_id) DO UPDATE SET dictation_id = excluded.dictation_id
+                """,
+                -1, &link, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(link) }
+            sqlite3_bind_text(link, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(link, 2, id)
+            guard sqlite3_step(link) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+            return text
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
     private func insertBodhanWBCSMeasurement(
         _ measurement: BodhanWBCSMeasurement,
         dictationID: Int64,

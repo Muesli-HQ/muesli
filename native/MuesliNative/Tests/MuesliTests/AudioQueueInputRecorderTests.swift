@@ -5,6 +5,63 @@ import Testing
 
 @Suite("AudioQueue callback lifetime")
 struct AudioQueueInputRecorderTests {
+    @Test("queue notifications ignore initial stopped/unknown and explicit stop, but report unexpected stop once")
+    func runningNotifications() throws {
+        let driver = CallbackQueueDriver()
+        let recorder = AudioQueueInputRecorder(native: driver.operations)
+        let failure = DispatchSemaphore(value: 0)
+        recorder.onRecordingFailed = { error in
+            #expect((error as? DictationMicrophoneStartupError) == .queueStoppedUnexpectedly)
+            failure.signal()
+        }
+        try recorder.start()
+        driver.running = false
+        driver.notifyRunning()
+        driver.running = nil
+        driver.notifyRunning()
+        #expect(failure.wait(timeout: .now() + 0.05) == .timedOut)
+        driver.running = true
+        driver.notifyRunning()
+        driver.running = false
+        driver.notifyRunning()
+        #expect(failure.wait(timeout: .now() + 1) == .success)
+        driver.notifyRunning()
+        #expect(failure.wait(timeout: .now() + 0.05) == .timedOut)
+        if let url = recorder.stop() { try? FileManager.default.removeItem(at: url) }
+        driver.notifyRunning()
+        #expect(failure.wait(timeout: .now() + 0.05) == .timedOut)
+        recorder.cancel()
+    }
+
+    @Test("a delayed property read cannot fail a replacement capture on the same warm queue")
+    func staleRunningRead() throws {
+        let driver = CallbackQueueDriver()
+        let recorder = AudioQueueInputRecorder(native: driver.operations)
+        let failure = DispatchSemaphore(value: 0)
+        recorder.onRecordingFailed = { _ in failure.signal() }
+        try recorder.start()
+        driver.running = true
+        driver.notifyRunning()
+        let entered = DispatchSemaphore(value: 0), gate = DispatchSemaphore(value: 0)
+        let returned = DispatchSemaphore(value: 0)
+        driver.running = false
+        driver.onReadRunning = { entered.signal(); gate.wait() }
+        Thread.detachNewThread { driver.notifyRunning(); returned.signal() }
+        defer { gate.signal(); recorder.cancel() }
+        #expect(entered.wait(timeout: .now() + 1) == .success)
+        if let url = recorder.stop() { try? FileManager.default.removeItem(at: url) }
+        driver.onReadRunning = nil
+        driver.running = true
+        try recorder.start()
+        driver.notifyRunning()
+        gate.signal()
+        #expect(returned.wait(timeout: .now() + 1) == .success)
+        #expect(failure.wait(timeout: .now() + 0.05) == .timedOut)
+        driver.running = false
+        driver.notifyRunning()
+        #expect(failure.wait(timeout: .now() + 1) == .success)
+    }
+
     @Test("startup failure or invalidation disposes without blocking native callbacks", arguments: [false, true])
     func startupCleanup(invalidate: Bool) throws {
         let driver = CallbackQueueDriver()
@@ -83,9 +140,23 @@ private final class CallbackQueueDriver: @unchecked Sendable {
     var disposals = 0
     var creations = 0
     var rejectDisposal = false
+    var running: Bool? = false
+    var onReadRunning: (() -> Void)?
+    var runningCallback: AudioQueuePropertyListenerProc?
+    var runningUserData: UnsafeMutableRawPointer?
+    func notifyRunning() { runningCallback?(runningUserData, queue, kAudioQueueProperty_IsRunning) }
 
     var operations: AudioQueueInputRecorder.NativeOperations {
         var result = AudioQueueInputRecorder.NativeOperations()
+        result.addRunningListener = { [self] _, callback, data in
+            runningCallback = callback; runningUserData = data; return noErr
+        }
+        result.removeRunningListener = { [self] _, _, _ in runningCallback = nil }
+        result.runningState = { [self] _ in
+            let value = running
+            onReadRunning?()
+            return value
+        }
         result.create = { [self] _, callback, userData, output in
             creations += 1
             self.callback = callback
