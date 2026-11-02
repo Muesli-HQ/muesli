@@ -314,7 +314,7 @@ struct MeetingChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let error = coordinator.errorMessage {
-                Text(error).foregroundStyle(.orange).font(MuesliTheme.font(.callout)).textSelection(.enabled)
+                Text(error).foregroundStyle(MuesliTheme.warningText).font(MuesliTheme.font(.callout)).textSelection(.enabled)
             }
             if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
