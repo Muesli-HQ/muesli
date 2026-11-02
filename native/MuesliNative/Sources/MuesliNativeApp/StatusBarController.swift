@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import Foundation
 import MuesliCore
 
@@ -18,6 +19,19 @@ final class CalendarMenuMeetingPayload: NSObject {
     }
 }
 
+/// Stable setting IDs are revalidated by the shared settings executor on selection.
+final class CleanupMenuSelection: NSObject {
+    let setting: String
+    let value: String
+    let backend: TranscriptCleanupBackendOption?
+
+    init(setting: String, value: String, backend: TranscriptCleanupBackendOption? = nil) {
+        self.setting = setting
+        self.value = value
+        self.backend = backend
+    }
+}
+
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let controller: MuesliController
@@ -25,6 +39,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var countdownOverride: String?
+    private let captureDot = NSView(frame: .zero)
+    private var captureIndicatorTimer: Timer?
+
+    deinit { captureIndicatorTimer?.invalidate() }
 
     init(controller: MuesliController, runtime: RuntimePaths) {
         self.controller = controller
@@ -33,6 +51,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         super.init()
         menu.delegate = self
         build()
+        installCaptureIndicator()
     }
 
     func setStatus(_ text: String) {}
@@ -62,10 +81,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             detail = countdownOverride
         } else if controller.config.showNextMeetingInMenuBar {
             let now = Date()
-            let hidden = controller.appState.hiddenCalendarEventIDs
             let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
-            let nextEvent = controller.appState.upcomingCalendarEvents
-                .filter { !$0.isAllDay && $0.startDate > now && $0.startDate < endOfToday && !hidden.contains($0.id) }
+            let nextEvent = controller.appState.visibleUpcomingCalendarEvents
+                .filter { $0.startDate > now && $0.startDate < endOfToday }
                 .sorted { $0.startDate < $1.startDate }
                 .first
 
@@ -101,12 +119,52 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         statusItem.menu = menu
     }
 
+    private func installCaptureIndicator() {
+        guard let button = statusItem.button else { return }
+        captureDot.wantsLayer = true
+        captureDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        captureDot.layer?.cornerRadius = 4
+        captureDot.layer?.borderWidth = 1
+        captureDot.layer?.borderColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        captureDot.translatesAutoresizingMaskIntoConstraints = false
+        captureDot.isHidden = true
+        button.addSubview(captureDot)
+        NSLayoutConstraint.activate([
+            captureDot.widthAnchor.constraint(equalToConstant: 8),
+            captureDot.heightAnchor.constraint(equalToConstant: 8),
+            captureDot.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 24),
+            captureDot.topAnchor.constraint(equalTo: button.topAnchor, constant: 2)
+        ])
+        controller.visualMemory.onAmbientCaptureActivity = { [weak self] captured in
+            guard let self else { return }
+            self.updateCaptureIndicator()
+            guard captured, !self.captureDot.isHidden,
+                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 0.3
+            pulse.toValue = 1
+            pulse.duration = 0.7
+            self.captureDot.layer?.add(pulse, forKey: "capturePulse")
+        }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateCaptureIndicator() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        captureIndicatorTimer = timer
+        updateCaptureIndicator()
+    }
+
+    private func updateCaptureIndicator() {
+        let active = controller.visualMemory.ambientIndicatorActive
+        captureDot.isHidden = !active
+        if !active { captureDot.layer?.removeAnimation(forKey: "capturePulse") }
+    }
+
     private func rebuildMenu() {
         menu.removeAllItems()
 
         // Upcoming calendar events
-        let hidden = controller.appState.hiddenCalendarEventIDs
-        let upcomingEvents = controller.appState.upcomingCalendarEvents.filter { !$0.isAllDay && !hidden.contains($0.id) }
+        let upcomingEvents = controller.appState.visibleUpcomingCalendarEvents
         if !upcomingEvents.isEmpty {
             addUpcomingEventsSection(upcomingEvents)
             menu.addItem(.separator())
@@ -117,6 +175,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let pauseTitle = controller.isMeetingRecordingPaused() ? "Resume Meeting Recording" : "Pause Meeting Recording"
             menu.addItem(actionItem(title: pauseTitle, action: #selector(MuesliController.toggleMeetingRecordingPause)))
             menu.addItem(actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
+            if controller.visualMemory.recordingMeetingID != nil {
+                menu.addItem(actionItem(title: controller.visualMemory.pauseState.userPaused ? "Resume Screen Recording" : "Pause Screen Recording", action: #selector(MuesliController.toggleMeetingScreenPause)))
+                menu.addItem(actionItem(title: "Stop Screen Recording", action: #selector(MuesliController.stopMeetingScreenRecording)))
+            } else {
+                let screen = actionItem(title: controller.visualMemory.isPreparing ? "Preparing Screen Recording…" : "Record Screen…", action: #selector(MuesliController.startMeetingScreenRecording))
+                screen.isEnabled = !controller.isMeetingRecordingPaused() && !controller.visualMemory.isPreparing && !controller.visualMemory.isFinalizing
+                menu.addItem(screen)
+            }
             menu.addItem(actionItem(title: "Discard Meeting Recording...", action: #selector(MuesliController.discardMeetingWithConfirmation)))
         } else {
             menu.addItem(actionItem(
@@ -216,6 +282,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.setSubmenu(dictationModelMenu, for: dictationModelItem)
         menu.addItem(dictationModelItem)
 
+        menu.addItem(cleanupModelMenuItem())
+
         let meetingBackendItem = NSMenuItem(title: "Meetings Backend", action: nil, keyEquivalent: "")
         let meetingBackendMenu = NSMenu()
         for option in MeetingSummaryBackendOption.selectable(
@@ -236,11 +304,115 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(meetingBackendItem)
 
         menu.addItem(.separator())
+        menu.addItem(timeTurnerMenuItem())
         menu.addItem(actionItem(title: "Settings…", action: #selector(MuesliController.openSettingsTab)))
-        menu.addItem(actionItem(title: "What's New in Muesli", action: #selector(MuesliController.showWhatsNew)))
+        menu.addItem(actionItem(title: "What's New in muesli", action: #selector(MuesliController.showWhatsNew)))
         menu.addItem(checkForUpdatesItem())
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Quit", action: #selector(MuesliController.quitApp)))
+    }
+
+    private func cleanupModelMenuItem() -> NSMenuItem {
+        let root = NSMenuItem(title: controller.config.enablePostProcessor ? "Cleanup Model" : "Cleanup: Off", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let config = controller.config
+
+        func item(_ title: String, selection: CleanupMenuSelection, selected: Bool = false, reason: String? = nil) -> NSMenuItem {
+            let result = NSMenuItem(title: title, action: #selector(MuesliController.selectCleanupModelFromMenu(_:)), keyEquivalent: "")
+            result.target = controller
+            result.representedObject = selection
+            result.state = selected ? .on : .off
+            result.isEnabled = reason == nil
+            result.toolTip = reason
+            return result
+        }
+        let toggle = item(config.enablePostProcessor ? "Turn Off Cleanup" : "Turn On Cleanup",
+            selection: .init(setting: "transcript_cleanup", value: config.enablePostProcessor ? "off" : "on"))
+        toggle.target = self
+        toggle.action = #selector(toggleCleanupFromMenu(_:))
+        submenu.addItem(toggle)
+        submenu.addItem(.separator())
+        guard config.enablePostProcessor else {
+            submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
+            root.submenu = submenu
+            return root
+        }
+        let definitions = controller.cleanupModelDefinitions()
+        let selectedBackend = TranscriptCleanupBackendOption.resolved(config.postProcessorBackend)
+        let downloadedLocalIDs = PostProcessorOption.downloadedIDs.union(
+            Gemma4LiteRTModel.allCases.filter { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }.map(\.repoID)
+        )
+        if let local = definitions.first(where: { $0.id == "cleanup_on_device_model" }) {
+            let choices = local.choices.filter { downloadedLocalIDs.contains($0.id) }
+            if !choices.isEmpty { submenu.addItem(.sectionHeader(title: "Local Models")) }
+            for choice in choices {
+                submenu.addItem(item(choice.label,
+                    selection: .init(setting: local.id, value: choice.id),
+                    selected: selectedBackend.isOnDevice && local.read(config) == choice.id,
+                    reason: local.availability(choice.id, source: .manualUI)))
+            }
+            if !choices.isEmpty { submenu.addItem(.separator()) }
+        }
+        submenu.addItem(.sectionHeader(title: "Hosted & Server Models"))
+        for backend in TranscriptCleanupBackendOption.all where !backend.isOnDevice {
+            let provider = NSMenuItem(title: backend.label, action: nil, keyEquivalent: "")
+            let models = NSMenu()
+            models.autoenablesItems = false
+            let settingID = "cleanup_\(backend.backend)_model"
+            let definition = definitions.first { $0.id == settingID }
+            let configured = TranscriptCleanupClient.configuredModel(for: backend, config: config)
+            let current = definition?.read(config) ?? configured
+            var choices = definition?.choices ?? []
+            // Custom/server model IDs remain editable in Settings. Here, selecting
+            // their saved value only switches the source, without creating a new value.
+            if !current.isEmpty && !choices.contains(where: { $0.id == current }) {
+                choices.append(.init(id: current, label: current))
+            }
+            for choice in choices {
+                let isPreset = definition?.choices.contains(where: { $0.id == choice.id }) == true
+                let ready = TranscriptCleanupClient.hasRequiredSettings(for: backend, config: config,
+                    isChatGPTAuthenticated: controller.appState.isChatGPTAuthenticated, modelOverride: choice.id)
+                models.addItem(item(choice.label,
+                    selection: .init(setting: isPreset ? settingID : "cleanup_source", value: isPreset ? choice.id : backend.backend, backend: backend),
+                    selected: selectedBackend == backend && current == choice.id,
+                    reason: ready ? definition?.availability(choice.id, source: .manualUI) : "Configure \(backend.label) in Settings first."))
+            }
+            if choices.isEmpty {
+                let empty = NSMenuItem(title: "Choose a model in Settings…", action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                models.addItem(empty)
+            }
+            models.addItem(.separator())
+            models.addItem(actionItem(title: "Configure in Settings…", action: #selector(MuesliController.openSettingsTab)))
+            provider.state = selectedBackend == backend ? .on : .off
+            provider.submenu = models
+            submenu.addItem(provider)
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(actionItem(title: "Cleanup Settings…", action: #selector(MuesliController.openSettingsTab)))
+        root.submenu = submenu
+        return root
+    }
+
+    @objc private func toggleCleanupFromMenu(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? CleanupMenuSelection else { return }
+        Task { @MainActor in
+            do {
+                try await controller.applySetting(selection.setting, value: selection.value)
+                // AppKit dismisses action menus. After enabling succeeds, open the
+                // model picker directly so choosing a model needs no second trip.
+                guard selection.value == "on", controller.config.enablePostProcessor,
+                      let button = statusItem.button,
+                      let picker = cleanupModelMenuItem().submenu else { return }
+                picker.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Cleanup could not be changed"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
     }
 
     private func addUpcomingEventsSection(_ events: [UnifiedCalendarEvent]) {
@@ -307,7 +479,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let record = actionItem(title: "Record Meeting", action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)))
             record.representedObject = payload
             actions.addItem(record)
-            let hide = actionItem(title: "Hide from Muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
+            let hide = actionItem(title: "Hide from muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
             hide.representedObject = payload
             hide.toolTip = "Hide this occurrence from Coming Up and reminders. The calendar event is not deleted."
             actions.addItem(hide)
@@ -350,6 +522,55 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             return "\(hours)h"
         }
         return "\(hours)h \(remainingMinutes)m"
+    }
+
+    private func timeTurnerMenuItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Time Turner", action: nil, keyEquivalent: "")
+        parent.image = TimeTurnerIcon.image()
+        let submenu = NSMenu(title: "Time Turner")
+        @discardableResult func add(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            submenu.addItem(item)
+            return item
+        }
+        if controller.config.timeTurnerEnabled {
+            add(controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture", #selector(toggleTimeTurnerPause))
+            add("Turn Off Time Turner", #selector(disableTimeTurner))
+            if let app = NSWorkspace.shared.frontmostApplication,
+               let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier {
+                let excluded = controller.config.timeTurnerExcludedApps.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == bundle }
+                if !excluded {
+                    let item = add("Exclude “\(app.localizedName ?? bundle)”", #selector(excludeTimeTurnerApp(_:)))
+                    item.representedObject = bundle
+                }
+            }
+        } else {
+            add("Enable Time Turner…", #selector(setupTimeTurner))
+        }
+        submenu.addItem(.separator())
+        add("Time Turner Settings…", #selector(openTimeTurnerSettings))
+        parent.submenu = submenu
+        return parent
+    }
+
+    @objc private func toggleTimeTurnerPause() { controller.visualMemory.toggleAmbientPause(); refresh() }
+    @objc private func disableTimeTurner() { controller.setSettingFromUI("time_turner_enabled", value: "off") }
+    @objc private func setupTimeTurner() {
+        controller.appState.requestsTimeTurnerSetup = true
+        openTimeTurnerSettings()
+    }
+    @objc private func openTimeTurnerSettings() {
+        controller.appState.selectedSettingsPane = .experimental
+        controller.openSettingsTab()
+    }
+    @objc private func excludeTimeTurnerApp(_ sender: NSMenuItem) {
+        guard let bundle = sender.representedObject as? String else { return }
+        controller.updateConfig { config in
+            var bundles = Set(config.timeTurnerExcludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            bundles.insert(bundle)
+            config.timeTurnerExcludedApps = bundles.sorted().joined(separator: ",")
+        }
     }
 
     private func actionItem(title: String, action: Selector) -> NSMenuItem {

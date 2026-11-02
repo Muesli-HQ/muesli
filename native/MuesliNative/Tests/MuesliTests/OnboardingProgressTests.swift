@@ -22,6 +22,8 @@ struct OnboardingProgressTests {
 
         let progress = try JSONDecoder().decode(OnboardingProgress.self, from: Data(json.utf8))
 
+        #expect(progress.selectedBackendKey == BackendOption.cohereTranscribe.backend)
+        #expect(progress.selectedModelKey == BackendOption.cohereTranscribe.model)
         #expect(progress.selectedCohereLanguageCode == CohereTranscribeLanguage.english.rawValue)
     }
 

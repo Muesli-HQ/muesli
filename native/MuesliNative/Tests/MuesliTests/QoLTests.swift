@@ -212,20 +212,20 @@ struct FloatingIndicatorVisibilityTests {
         #expect(decoded.activePostProcessorId == PostProcessorOption.qwen35_0_8b.id)
     }
 
-    @Test("cached legacy post processor persists through JSON round-trip")
+    @Test("retired post processor migrates through JSON round-trip")
     func cachedLegacyPostProcessorRoundTrip() throws {
         let json = #"{"active_post_processor_id":"qwen3-postproc-v2"}"#
         let decoded = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
-        #expect(decoded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+        #expect(decoded.activePostProcessorId == PostProcessorOption.finetunedV4.id)
 
         let data = try JSONEncoder().encode(decoded)
         let reloaded = try JSONDecoder().decode(AppConfig.self, from: data)
-        #expect(reloaded.activePostProcessorId == PostProcessorOption.legacyV2.id)
+        #expect(reloaded.activePostProcessorId == PostProcessorOption.finetunedV4.id)
         #expect(PostProcessorOption.runtimeOption(
             id: reloaded.activePostProcessorId,
             downloadedIDs: [PostProcessorOption.legacyV2.id],
             hasDevOverride: false
-        ) == .legacyV2)
+        ) == nil)
     }
 
     @Test("post processor decodes from snake_case JSON")
@@ -550,6 +550,21 @@ struct FloatingMeetingTranscriptTests {
         #expect(receivedMouseDown == NSPoint(x: 20, y: 20))
     }
 
+    @Test("Only the black notch transcript forces dark appearance", arguments: [false, true])
+    @MainActor
+    func transcriptAppearance(usesNotchBackground: Bool) throws {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 320))
+        container.appearance = NSAppearance(named: .aqua)
+        let controller = FloatingMeetingTranscriptPanelController(
+            usesNotchBackground: usesNotchBackground,
+            onHoverChanged: { _ in }, onOpenNotes: {}, onDismiss: {}, onTogglePause: {})
+        controller.show(in: container, frame: container.bounds)
+        let hosting = try #require(container.subviews.first)
+        #expect(hosting.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ==
+            (usesNotchBackground ? .darkAqua : .aqua))
+        controller.hide()
+    }
+
     @Test("shown overlay retains its hosting view and routes dismissal")
     @MainActor
     func shownOverlayRoutesDismissal() {
@@ -659,6 +674,29 @@ struct FloatingMeetingTranscriptTests {
 
 @Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
+    @MainActor
+    @Test("connecting pill cancels pending startup instead of acting like an active recording")
+    func connectingPillCancels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var cancels = 0, stops = 0
+        indicator.onCancelDictation = { cancels += 1 }
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.microphoneStartupPending = true
+        indicator.setPreparingWaveformWaiting(config: config)
+        indicator.handleClick(atX: 60)
+        #expect(cancels == 1)
+        #expect(stops == 0)
+        indicator.microphoneStartupPending = false
+        indicator.setState(.recording, config: config)
+        indicator.handleClick(atX: 60)
+        #expect(stops == 1)
+    }
+
     @MainActor
     @Test("closing and reopening an expanded idle pill clears its hover state")
     func idleHoverCloseReopen() async throws {
@@ -1001,6 +1039,25 @@ struct FloatingIndicatorPointerInteractionTests {
         #expect(pauseCount == 1)
         #expect(stopCount == 1)
         #expect(discardCount == 1)
+    }
+
+    @MainActor
+    @Test("a new meeting pill has matching window and content geometry before animation")
+    func newMeetingPillGeometryIsSynchronous() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.setMeetingRecording(true, config: config)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let window = try #require(pill.window)
+        #expect(window.frame.size == NSSize(width: 76, height: 22))
+        #expect(indicator.currentFrame == window.frame)
     }
 
     @MainActor

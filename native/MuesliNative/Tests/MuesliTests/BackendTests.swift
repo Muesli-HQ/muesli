@@ -29,8 +29,14 @@ struct WhisperKitTranscriberTests {
 @Suite("FluidAudioTranscriber")
 struct FluidAudioTranscriberTests {
 
-    @Test("Only Redux bypasses ANE encoder compilation")
+    @Test("Phonon uses the GPU encoder while existing models retain their policy")
     func reduxEncoderComputePolicy() {
+        let phonon = ManagedASRModelPlans.phonon25()
+        #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: phonon.modelID) == .cpuAndGPU)
+        #expect(ParakeetRuntimePolicy.usesLocalComponents(for: phonon.modelID))
+        #expect(ParakeetRuntimePolicy.requiresMacOS15(for: phonon.modelID))
+        #expect(ParakeetRuntimePolicy.preparingMessage(for: phonon.modelID) == "Preparing Phonon-2.5...")
+        #expect(!ParakeetRuntimePolicy.usesLocalComponents(for: ManagedASRModelPlans.parakeetV3().modelID))
         let redux = ManagedASRModelPlans.parakeetRedux()
         #expect(ParakeetRuntimePolicy.encoderComputeUnits(for: redux.modelID) == .cpuOnly)
         for modelID in [
@@ -104,6 +110,11 @@ struct SenseVoiceTranscriberTests {
 
 @Suite("Gemma4LiteRTTranscriber")
 struct Gemma4LiteRTTranscriberTests {
+    private final class IsolatedModelFileManager: FileManager, @unchecked Sendable {
+        let isolatedHome: URL
+        init(home: URL) { isolatedHome = home; super.init() }
+        override var homeDirectoryForCurrentUser: URL { isolatedHome }
+    }
 
     @Test("gemma4 model uses managed download metadata")
     func gemma4Model() {
@@ -147,7 +158,7 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(Gemma4LiteRTTranscriber.maxCleanupOutputTokens == 1024)
     }
 
-    @Test("gemma4 model store uses env override and detects local file")
+    @Test("legacy LiteRT overrides are not accepted as native MLX models")
     func gemma4ModelStoreEnvOverride() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-gemma4-store-test-\(UUID().uuidString)", isDirectory: true)
@@ -159,7 +170,7 @@ struct Gemma4LiteRTTranscriberTests {
 
         let environment = [Gemma4LiteRTModelStore.modelPathEnvVar: modelURL.path]
         #expect(Gemma4LiteRTModelStore.resolvedModelURL(environment: environment) == modelURL)
-        #expect(Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+        #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
     }
 
     @Test("gemma4 override directory is not treated as a model file")
@@ -175,13 +186,14 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
         #expect(!Gemma4LiteRTModelStore.isValidLiteRTLMFile(at: dir, minimumSizeBytes: 1))
 
-        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment)
+        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment,
+            fileManager: IsolatedModelFileManager(home: dir.appendingPathComponent("home")))
 
         #expect(FileManager.default.fileExists(atPath: dir.path))
         #expect(FileManager.default.fileExists(atPath: sentinelURL.path))
     }
 
-    @Test("gemma4 delete removes only explicit model override file")
+    @Test("native model deletion preserves legacy override files")
     func gemma4DeleteRespectsModelOverride() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-gemma4-delete-test-\(UUID().uuidString)", isDirectory: true)
@@ -194,11 +206,39 @@ struct Gemma4LiteRTTranscriberTests {
         try Data("keep".utf8).write(to: siblingURL)
 
         let environment = [Gemma4LiteRTModelStore.modelPathEnvVar: modelURL.path]
-        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment)
+        try Gemma4LiteRTModelStore.deleteModelFiles(environment: environment,
+            fileManager: IsolatedModelFileManager(home: dir.appendingPathComponent("home")))
 
-        #expect(!FileManager.default.fileExists(atPath: modelURL.path))
+        #expect(FileManager.default.fileExists(atPath: modelURL.path))
         #expect(FileManager.default.fileExists(atPath: siblingURL.path))
         #expect(!Gemma4LiteRTModelStore.isAvailableLocally(environment: environment))
+    }
+
+    @Test("legacy overrides preserve external files without blocking managed deletion")
+    func unrelatedOverridesDoNotBlockManagedDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let fm = IsolatedModelFileManager(home: root.appendingPathComponent("home"))
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let external = root.appendingPathComponent("external.litertlm")
+        try Data("external".utf8).write(to: external)
+        for model in Gemma4LiteRTModel.allCases {
+            let managed = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.descriptor(for: model), fileManager: fm)
+            let legacy = Gemma4LiteRTModelStore.cacheDirectory(for: model, fileManager: fm)
+            let drafter = GemmaNativeAudioModels.artifactDirectory(GemmaNativeAudioModels.drafter(for: model), fileManager: fm)
+            for directory in [managed, legacy, drafter] {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                try Data("keep-or-delete".utf8).write(to: directory.appendingPathComponent("sentinel"))
+            }
+            try Gemma4LiteRTModelStore.deleteModelFiles(model: model, environment: [
+                Gemma4LiteRTModelStore.modelPathEnvVar: external.path,
+                "MUESLI_CLEANUP_V2_MODEL_PATH": external.path,
+            ], fileManager: fm)
+            #expect(!fm.fileExists(atPath: managed.path))
+            #expect(!fm.fileExists(atPath: legacy.path))
+            #expect(fm.fileExists(atPath: drafter.appendingPathComponent("sentinel").path))
+            #expect(try Data(contentsOf: external) == Data("external".utf8))
+        }
     }
 
     @Test("gemma4 default paths use managed model cache")
@@ -263,16 +303,6 @@ struct Gemma4LiteRTTranscriberTests {
         #expect(prompt.contains("when transcribing numbers, write the digits"))
         #expect(prompt.contains("write 1.7 and not one point seven"))
         #expect(Gemma4LiteRTTranscriber.maxOutputTokens == 128)
-    }
-
-    @Test("gemma4 enables MTP only for supported models unless disabled")
-    func gemma4MTPSelection() {
-        #expect(Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: true, environment: [:]))
-        #expect(!Gemma4LiteRTModelStore.shouldEnableMTP(modelSupportsMTP: false, environment: [:]))
-        #expect(!Gemma4LiteRTModelStore.shouldEnableMTP(
-            modelSupportsMTP: true,
-            environment: [Gemma4LiteRTModelStore.mtpEnvVar: "0"]
-        ))
     }
 
     @available(macOS 15, *)
@@ -478,8 +508,8 @@ struct BackendCoverageTests {
         #expect(backendCounts["whisper"]! >= 1, "Whisper should have at least 1 model")
         #expect(backendCounts["sensevoice"]! >= 1, "SenseVoice should have at least 1 model")
         #expect(backendCounts["nemotron35"]! == 1, "Nemotron 3.5 should be the only Nemotron backend")
-        #expect(backendCounts["gemma4-litert"]! == Gemma4LiteRTModel.allCases.count,
-                "Gemma 4 LiteRT should expose every managed model variant")
+        #expect(backendCounts["gemma4-litert"]! == Gemma4LiteRTModel.generalPurpose.count,
+                "Gemma ASR should expose only general-purpose model variants")
     }
 
     @Test("size labels are human-readable")

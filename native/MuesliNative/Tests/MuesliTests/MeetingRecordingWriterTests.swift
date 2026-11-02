@@ -20,7 +20,7 @@ struct MeetingRecordingWriterTests {
         #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
         for (start, finish) in [
             ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),
-            ("func stop(onRecordingReady:", "retainedRecordingWriter?.stop()")
+            ("func stop(template:", "retainedRecordingWriter?.stop()")
         ] {
             let startRange = try #require(source.range(of: start))
             let body = source[startRange.upperBound...]

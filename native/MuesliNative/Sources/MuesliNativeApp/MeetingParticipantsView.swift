@@ -244,9 +244,9 @@ struct MeetingParticipantsView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .help("Remove \(displayName)")
         }
     }

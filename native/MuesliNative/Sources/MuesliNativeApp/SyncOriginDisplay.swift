@@ -4,7 +4,7 @@ import MuesliCore
 enum SyncOriginDisplay {
     static let iOSSource = "ios"
     static let iOSBadgeLabel = "iOS"
-    static let iOSBadgeHelp = "Synced from Muesli for iOS"
+    static let iOSBadgeHelp = "Synced from muesli for iOS"
 
     static func badgeLabel(forDictationSource source: String) -> String? {
         source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == iOSSource
@@ -13,7 +13,11 @@ enum SyncOriginDisplay {
     }
 
     static func badgeLabel(forMeetingSource source: MeetingSource) -> String? {
-        source == .iOS ? iOSBadgeLabel : nil
+        source == .granolaImport ? "Imported from Granola" : (source == .iOS ? iOSBadgeLabel : nil)
+    }
+
+    static func help(forMeetingSource source: MeetingSource) -> String {
+        source == .granolaImport ? "Imported from a Granola CSV. Date is document creation time; duration and audio are unavailable." : iOSBadgeHelp
     }
 }
 
@@ -53,7 +57,7 @@ struct SyncOriginBadge: View {
     var body: some View {
         Text(label)
             .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .foregroundStyle(MuesliTheme.accent)
+            .foregroundStyle(MuesliTheme.accentText)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(MuesliTheme.accentSubtle)

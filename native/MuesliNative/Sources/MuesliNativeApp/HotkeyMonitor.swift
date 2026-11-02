@@ -82,6 +82,10 @@ final class HotkeyMonitor {
     /// Meeting shortcuts retain their hold guard; dictation opts into press-to-toggle.
     var combinationToggleRequiresHold = true
     var registersCombinationGlobally = false
+    /// Escape discards a dictation take. Meeting recordings are long-running and
+    /// costly to lose, so the meeting monitor opts out: Escape leaves an established
+    /// toggle session running and passes through to other apps and Muesli's windows.
+    var escapeCancelsToggleSession = true
     /// Dictation must work in our own editors, just as it does in other apps.
     /// Other command monitors retain their text-editing shortcut protection.
     var allowsStartsWhileEditingText = false
@@ -288,6 +292,15 @@ final class HotkeyMonitor {
         }
     }
 
+    /// UI and keyboard starts share ownership so the next shortcut submits either.
+    func startToggleMode() {
+        guard !hasPendingOrActiveSession else { return }
+        toggleActive = true
+        lastTapWasShort = false
+        lastTapUpTime = nil
+        onToggleStart?()
+    }
+
     /// Call externally to stop toggle mode (e.g., from floating indicator click)
     func stopToggleMode() {
         if toggleActive {
@@ -392,6 +405,14 @@ final class HotkeyMonitor {
                 return true
             }
             if toggleActive {
+                guard escapeCancelsToggleSession else {
+                    // Back out of a pending second press so its hold timer cannot stop
+                    // the session, but keep the established toggle.
+                    if combinationKeyDown && !combinationTriggered {
+                        cancelCombinationPending(notify: false)
+                    }
+                    return false
+                }
                 cancelCurrentSession()
                 fputs("[hotkey] escape → cancel combination toggle\n", stderr)
                 onCancel?()
@@ -471,7 +492,11 @@ final class HotkeyMonitor {
         prepared = false
         active = false
         cancelTimers()
-        scheduleTimers()
+        if toggleActive {
+            fireCombinationToggle()
+        } else {
+            scheduleTimers()
+        }
     }
 
     private func finishCombinationPushToTalk(cancelled: Bool) {

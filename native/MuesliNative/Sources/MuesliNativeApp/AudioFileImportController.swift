@@ -141,6 +141,7 @@ enum AudioFileImportController {
     static func importAudioFile(
         sourceURL: URL,
         title: String,
+        folderID: Int64?,
         controller: MuesliController,
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> ImportResult {
@@ -270,7 +271,8 @@ enum AudioFileImportController {
             selectedTemplateID: templateSnapshot.id,
             selectedTemplateName: templateSnapshot.name,
             selectedTemplateKind: templateSnapshot.kind,
-            selectedTemplatePrompt: templateSnapshot.prompt
+            selectedTemplatePrompt: templateSnapshot.prompt,
+            folderID: folderID
         )
 
         return ImportResult(

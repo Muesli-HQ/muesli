@@ -205,7 +205,7 @@ enum CohereTranscribeLanguage: String, CaseIterable, Codable, Sendable {
 }
 
 private enum CohereTranscribeConfig {
-    static let repoId = "phequals/cohere-transcribe-coreml-mixed-precision"
+    static let repoId = "Muesli-HQ/cohere-transcribe-coreml-mixed-precision"
     static let envOverride = "MUESLI_COHERE_MODEL_DIR"
 
     static let dynamicEncoderPackage = "cohere_encoder_dynamic.mlpackage"

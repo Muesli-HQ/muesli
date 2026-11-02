@@ -8,6 +8,50 @@ struct BodhanTranscription: Sendable {
     let languageSamples: [BodhanLanguageSample]
 }
 
+/// Session-owned metadata; disjoint preview samples advance one shared audio clock.
+final class BodhanPreviewMetadata: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [BodhanLanguageSample] = []
+    private var endSeconds = 0.0
+
+    func advanceSilentAudio(samples count: Int) {
+        lock.lock(); defer { lock.unlock() }
+        endSeconds += Double(count) / 16000
+    }
+
+    func append(_ sample: BodhanLanguageSample) {
+        lock.lock(); defer { lock.unlock() }
+        let end = endSeconds + sample.endSeconds - sample.startSeconds
+        samples.append(.init(startSeconds: endSeconds, endSeconds: end,
+            languageCode: sample.languageCode, wasAutoDetected: sample.wasAutoDetected))
+        endSeconds = end
+    }
+
+    func measurement(text: String, modelID: String, outputMode: BodhanOutputMode) -> BodhanWBCSMeasurement {
+        lock.lock(); defer { lock.unlock() }
+        return .init(languageSamples: samples,
+            runLengths: outputMode.supportsWordsBeforeCodeSwitch(modelID: modelID)
+                ? WordsBeforeCodeSwitch.bodhanMixedRunLengths(in: text) : nil)
+    }
+}
+
+/// Batch recognition requires EOS. A short live chunk instead returns its bounded
+/// best effort, so a decoder repetition loop cannot terminate the entire session.
+enum BodhanDecodingPolicy {
+    case batch, preview
+
+    func tokenLimit(outputMode: BodhanOutputMode) -> Int {
+        self == .preview ? min(64, outputMode.maximumGeneratedTokens) : outputMode.maximumGeneratedTokens
+    }
+
+    func validateCompletion(endedWithEOS: Bool) throws {
+        if self == .batch && !endedWithEOS {
+            throw NSError(domain: "BodhanASR", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "Bodhan reached its token limit. Try a shorter recording."])
+        }
+    }
+}
+
 enum BodhanOutputMode: String, CaseIterable, Codable, Sendable {
     case native, mixed, romanized
     var label: String { rawValue.capitalized }
@@ -165,6 +209,14 @@ enum BodhanTranscriptMerger {
 protocol BodhanRuntime: AnyObject {
     func warmup(outputMode: BodhanOutputMode) async throws
     func transcribe(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> BodhanCoreML.Result
+    func transcribePreview(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> BodhanCoreML.Result
+}
+
+@available(macOS 15, *)
+extension BodhanRuntime {
+    func transcribePreview(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> BodhanCoreML.Result {
+        try transcribe(samples: samples, language: language, outputMode: outputMode)
+    }
 }
 
 @available(macOS 15, *)
@@ -189,14 +241,22 @@ actor BodhanTranscriber {
 
     typealias RuntimeLoader = (BodhanModel, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> any BodhanRuntime
     private let runtimeLoader: RuntimeLoader
+    private let cachedRuntimeLoader: RuntimeLoader
 
-    init(runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
+    init(cachedRuntimeLoader: @escaping RuntimeLoader = { selected, _, _ in
+        try await selected.validateCachedArtifacts()
+        try Task.checkCancellation()
+        return try BodhanCoreML(root: selected.directory, model: selected)
+    }, runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
         try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
         try Task.checkCancellation()
-        progress?(0.9, "Preparing " + selected.name + "...")
+        let loading = ModelDownloadProgress.preparing(modelID: selected.rawValue, message: "Loading " + selected.name + "…")
+        progress?(0.9, loading.message)
+        progressSnapshot?(loading)
         return try BodhanCoreML(root: selected.directory, model: selected)
     }) {
         self.runtimeLoader = runtimeLoader
+        self.cachedRuntimeLoader = cachedRuntimeLoader
     }
 
     struct LifecycleState: Equatable {
@@ -211,7 +271,7 @@ actor BodhanTranscriber {
                        hasRuntime: runtime != nil, hasCompletedWarmup: hasCompletedWarmup)
     }
 
-    private func load(modelID: String, progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?) async throws {
+    private func load(modelID: String, progress: ((Double, String?) -> Void)?, progressSnapshot: ModelDownloadProgressHandler?, allowDownload: Bool) async throws {
         guard let selected = BodhanModel(rawValue: modelID) else {
             throw NSError(domain: "BodhanASR", code: 15, userInfo: [NSLocalizedDescriptionKey: "Unknown Bodhan model."])
         }
@@ -219,8 +279,9 @@ actor BodhanTranscriber {
         if loadingModel != selected || loadTask == nil {
             shutdown()
             loadingModel = selected
+            let loader = allowDownload ? runtimeLoader : cachedRuntimeLoader
             loadTask = Task {
-                try await runtimeLoader(selected, progress, progressSnapshot)
+                try await loader(selected, progress, progressSnapshot)
             }
         }
         let expectedGeneration = generation
@@ -241,8 +302,9 @@ actor BodhanTranscriber {
 
     func prepare(modelID: String = BodhanModel.flex.rawValue,
                  progress: ((Double, String?) -> Void)? = nil,
-                 progressSnapshot: ModelDownloadProgressHandler? = nil) async throws {
-        try await load(modelID: modelID, progress: progress, progressSnapshot: progressSnapshot)
+                 progressSnapshot: ModelDownloadProgressHandler? = nil,
+                 allowDownload: Bool = true) async throws {
+        try await load(modelID: modelID, progress: progress, progressSnapshot: progressSnapshot, allowDownload: allowDownload)
         guard let runtime, let model else { throw CancellationError() }
         let expectedGeneration = generation
         let warming = ModelDownloadProgress.preparing(modelID: modelID, message: "Warming up " + model.name + "...")
@@ -271,6 +333,25 @@ actor BodhanTranscriber {
         }
         progress?(1.0, model.name + " ready")
         progressSnapshot?(warming.replacing(phase: .ready, message: model.name + " ready"))
+    }
+
+    /// Live inference reuses the prepared runtime or reloads validated cached files; it never downloads.
+    func transcribePreview(samples: [Float], modelID: String,
+                           language: BodhanLanguage, outputMode: BodhanOutputMode,
+                           onLanguageSample: @Sendable (BodhanLanguageSample) -> Void = { _ in }) async throws -> String {
+        try Task.checkCancellation()
+        try await prepare(modelID: modelID, allowDownload: false)
+        try Task.checkCancellation()
+        guard model?.rawValue == modelID, let runtime else { throw CancellationError() }
+        let language = language.supported(for: modelID)
+        let result = try runtime.transcribePreview(samples: samples,
+            language: language == .automatic ? nil : language.rawValue,
+            outputMode: outputMode.supported(for: modelID))
+        try Task.checkCancellation()
+        recordBodhanTiming(result, modelID: modelID, audioSeconds: Double(samples.count) / 16000)
+        onLanguageSample(.init(startSeconds: 0, endSeconds: Double(samples.count) / 16000,
+            languageCode: result.language, wasAutoDetected: language == .automatic))
+        return result.text
     }
 
     func transcribe(wavURL: URL, modelID: String = BodhanModel.flex.rawValue,
@@ -327,6 +408,7 @@ actor BodhanTranscriber {
         let row: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: Date()), "model": modelID,
             "audioSeconds": audioSeconds, "tokens": result.tokens, "language": result.language,
+            "endedWithEOS": result.endedWithEOS,
             "decoderRuntime": result.decoderRuntime,
             "encoderAsset": result.encoderAsset, "decoderWeightPrecision": result.decoderWeightPrecision,
             "encoderPolicy": result.encoderPolicy, "decoderAsset": result.decoderRuntime == "mlx" ? "decoder.safetensors" : (ProcessInfo.processInfo.environment["MUESLI_BODHAN_DECODER_ASSET"] ?? "decoder"),

@@ -301,7 +301,7 @@ struct InsightsTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
-        let model = DictationModelIdentity(backend: "bodhan", model: "flex-int8", name: "Bodhan Flex INT8")
+        let model = DictationModelIdentity(backend: "bodhan", model: "flex-int8", name: "Bodhan Flex Lite")
         let first = try store.insertDictation(text: "one two", durationSeconds: 2,
             targetAppName: "Notes", targetAppBundleID: "com.apple.Notes",
             startedAt: now, endedAt: now, transcriptionModel: model)

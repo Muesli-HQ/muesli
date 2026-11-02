@@ -197,6 +197,16 @@ final class MeetingSession {
     private var micDiarizationRecorder: PCMChunkRecorder?
     /// Why the opt-in mic track was never recorded, for diagnostics.
     private var micDiarizationSetupError: Error?
+    let screenRecordingSessionID = UUID()
+    private var screenMicSpans = MeetingVideoAudioSpans()
+    private var screenAudioSink: (@Sendable ([Int16], Bool, Int64) -> Void)?
+    func flushScreenRecordingAudio() {
+        chunkRotationQueue.sync { appendFlushedStreamingMicOnQueue() }
+    }
+    func setScreenAudioSink(_ sink: @escaping @Sendable ([Int16], Bool, Int64) -> Void) {
+        chunkRotationQueue.sync { screenAudioSink = sink }
+    }
+
     private var retainedRecordingWriter: MeetingRecordingWriter?
     private var retainedRecordingWriterError: Error?
     /// VAD controller for speech-boundary chunk rotation
@@ -449,13 +459,36 @@ final class MeetingSession {
             fputs("[meeting-partials] \(backend.label) not downloaded; using committed live captions only\n", stderr)
             return
         }
+        let selectedBackend = currentBackend()
+        if backend == .selectedModelBuffered,
+           (!selectedBackend.supportsBufferedLiveTranscription || !selectedBackend.isDownloaded) {
+            fputs("[meeting-partials] Selected meeting model unavailable for buffered captions; using committed live captions only\n", stderr)
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
                     nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
-                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                    bufferedSessionFactory: { [transcriptionCoordinator = self.transcriptionCoordinator,
+                        whisperLanguage = self.config.resolvedWhisperLanguage,
+                        parakeetLanguage = self.config.resolvedParakeetLanguage,
+                        bodhanLanguage = self.config.resolvedBodhanLanguage,
+                        bodhanOutputMode = self.config.resolvedBodhanOutputMode] onUpdate, onFailure in
+                        try transcriptionCoordinator.makeBufferedTranscriptionSession(
+                            backend: selectedBackend,
+                            whisperLanguage: whisperLanguage,
+                            parakeetLanguage: parakeetLanguage,
+                            bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                            onUpdate: onUpdate,
+                            onFailure: onFailure,
+                            onDiagnostic: { event in
+                                fputs("[meeting-partials] buffered_\(event)\n", stderr)
+                            }
+                        )
+                    }
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
                       self.partialSessionsStorage.withLock({ !$0.isShutDown }) else {
@@ -527,7 +560,8 @@ final class MeetingSession {
         end: TimeInterval
     ) async -> [SpeechSegment] {
         // Apple chunks already chose their authoritative result before any batch work.
-        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech else { return segments }
+        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech,
+              config.resolvedMeetingLiveCaptionBackend != .selectedModelBuffered else { return segments }
         let prefersStreamingTranscript = config.enableLiveStreamingPartials
             && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
         guard (segments.isEmpty || prefersStreamingTranscript),
@@ -646,6 +680,7 @@ final class MeetingSession {
                 self.rotateSystemChunkOnQueue(atPauseBoundary: true)
                 self.retainedRecordingWriter?.markPauseBoundary()
                 self.neuralAec.resetForStreaming()
+                self.screenMicSpans = .init()
                 self.suspendPartialSessions()
             }
         }
@@ -724,7 +759,8 @@ final class MeetingSession {
         fputs("[meeting] recording discarded\n", stderr)
     }
 
-    func stop(onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+    func stop(template: MeetingTemplateSnapshot? = nil, onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        let templateSnapshot = template ?? self.templateSnapshot
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
         let endTime = Date()
@@ -985,8 +1021,10 @@ final class MeetingSession {
         Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
         fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
-        let manualNotes = await manualNotesProvider?()
         let participantNames = await participantNamesProvider?() ?? []
+        // Read notes last: edits made during title generation or screen-context drain
+        // must participate in this request, not the earlier title snapshot.
+        let manualNotes = await manualNotesProvider?()
         let formattedNotes: String
         do {
             formattedNotes = try await MeetingSummaryClient.summarize(
@@ -1306,6 +1344,7 @@ final class MeetingSession {
             systemVadController = nil
         }
         neuralAec.resetForStreaming()
+        screenMicSpans = .init()
         meetingMicRecorder.onRawPCMSamples = { [weak self] samples in
             self?.enqueueRealtimeMicSamples(samples)
         }
@@ -1330,6 +1369,7 @@ final class MeetingSession {
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
             // AEC: clean mic using position-aligned system reference
+            self.screenMicSpans.append(start: audio.startFrame, count: rawSamples.count)
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
             self.appendCleanedMicSamplesOnQueue(cleanedFloat)
 
@@ -1345,12 +1385,14 @@ final class MeetingSession {
     private func enqueueRealtimeSystemSamples(_ samples: [Int16]) {
         guard !samples.isEmpty else { return }
 
+        let screenStart = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(samples.count)
         captureLifecycle.enqueueSystemSamples(on: chunkRotationQueue) { [weak self] in
             guard let self else { return }
 
             let healthSnapshot = self.micHealthTracker.noteSystemSamples(samples)
             self.onMicHealthChanged?(healthSnapshot)
             self.micRecoveryCoordinator.process(healthSnapshot)
+            self.screenAudioSink?(samples, false, screenStart)
             self.retainedRecordingWriter?.appendSystem(samples)
             self.systemChunkRecorder?.append(samples)
             self.systemChunkTimingTracker.append(sampleCount: samples.count)
@@ -1382,6 +1424,9 @@ final class MeetingSession {
         // Retain the same mic stream as transcription, including delayed AEC
         // output and pause/stop flushes. Mixing raw mic here would duplicate
         // speaker playback already present in the system track.
+        for block in screenMicSpans.consume(cleanedInt16) {
+            screenAudioSink?(block.samples, true, block.start)
+        }
         retainedRecordingWriter?.appendMic(cleanedInt16)
         rawMicChunkRecorder?.append(cleanedInt16)
         micDiarizationRecorder?.append(cleanedInt16)

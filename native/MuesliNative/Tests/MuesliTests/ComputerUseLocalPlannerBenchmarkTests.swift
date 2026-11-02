@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MLX
 @testable import MuesliNativeApp
 
 /// Opt-in inference benchmark. Never executes generated OS actions or writes settings.
@@ -7,6 +8,9 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct ComputerUseLocalPlannerBenchmarkTests {
+    init() {
+        if let path = ProcessInfo.processInfo.environment["MUESLI_MLX_EVAL_METALLIB"] { GPU.metallib = URL(fileURLWithPath: path) }
+    }
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK"] == "1"))
     func settingsRoundTripWithoutChatGPT() async throws {
         let selected = ProcessInfo.processInfo.environment["MUESLI_CUA_BENCHMARK_MODEL"]
@@ -39,10 +43,10 @@ struct ComputerUseLocalPlannerBenchmarkTests {
             let cases: [(String, String, String, [[String: Any]], String)] = [
                 ("settings-discovery", ComputerUseSettings.instructions,
                  #"{"command":"Turn sound effects off","availableSettings":[{"id":"sound","label":"Sound effects"}],"settings":[],"answers":[]}"#,
-                 ComputerUseSettings.tools, "inspect_muesli_setting"),
+                 ComputerUseSettings.plannerTools(inspectedIDs: []), "inspect_muesli_setting"),
                 ("settings-mutation", ComputerUseSettings.instructions,
                  #"{"command":"Turn sound effects off","availableSettings":[{"id":"sound","label":"Sound effects"}],"settings":[{"id":"sound","label":"Sound effects","current":"on","choices":[{"id":"on","label":"On"},{"id":"off","label":"Off"}],"unavailable":{}}],"answers":[]}"#,
-                 ComputerUseSettings.tools, "set_muesli_setting"),
+                 ComputerUseSettings.plannerTools(inspectedIDs: ["sound"]), "set_muesli_setting"),
                 ("launch-app", ComputerUsePlannerClient.instructions,
                  #"{"command":"Open Calculator","latest_window_state":{"app_name":"Finder","elements":[]},"prior_steps":[]}"#,
                  ComputerUseToolRegistry.nativeToolDefinitions(), "launch_app"),
@@ -51,23 +55,28 @@ struct ComputerUseLocalPlannerBenchmarkTests {
                  ComputerUseToolRegistry.nativeToolDefinitions(), "move_cursor")
             ]
             for (name, system, prompt, tools, expected) in cases {
-                let start = Date()
-                do {
-                    let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: system, userPrompt: prompt, model: model.id, tools: tools)
-                    print("CUA_BENCHMARK model=\(model.id) case=\(name) seconds=\(Date().timeIntervalSince(start)) tool=\(call.name) arguments=\(call.arguments)")
-                    #expect(call.name == expected)
-                    let args = try #require(try JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any])
-                    if name.hasPrefix("settings-") { #expect(args["setting"] as? String == "sound") }
-                    if name == "settings-mutation" { #expect(args["value"] as? String == "off") }
-                    if name == "launch-app" { #expect(args["app_name"] as? String == "Calculator") }
-                    if name == "move-cursor" {
-                        #expect(args["screenshot_id"] as? String == "bench-screen")
-                        #expect(args["x"] as? Int == 120)
-                        #expect(args["y"] as? Int == 80)
+                // Compare defaults against MUESLI_GEMMA_MLX_MTP=0 in separate processes:
+                // shared resident engines intentionally snapshot policy at initialization.
+                let mode = GemmaMTPPolicy.isEnabled() ? "hybrid" : "off"
+                for _ in 0..<2 {
+                    let start = Date()
+                    do {
+                        let call = try await ComputerUseLocalPlanner.callTool(systemPrompt: system, userPrompt: prompt, model: model.id, tools: tools)
+                        print("CUA_BENCHMARK model=\(model.id) case=\(name) mtp=\(mode) seconds=\(Date().timeIntervalSince(start)) tool=\(call.name) arguments=\(call.arguments)")
+                        #expect(call.name == expected)
+                        let args = try #require(try JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any])
+                        if name.hasPrefix("settings-") { #expect(args["setting"] as? String == "sound") }
+                        if name == "settings-mutation" { #expect(args["value"] as? String == "off") }
+                        if name == "launch-app" { #expect(args["app_name"] as? String == "Calculator") }
+                        if name == "move-cursor" {
+                            #expect(args["screenshot_id"] as? String == "bench-screen")
+                            #expect(args["x"] as? Int == 120)
+                            #expect(args["y"] as? Int == 80)
+                        }
+                    } catch {
+                        print("CUA_BENCHMARK model=\(model.id) case=\(name) mtp=\(mode) seconds=\(Date().timeIntervalSince(start)) error=\(error)")
+                        Issue.record(error)
                     }
-                } catch {
-                    print("CUA_BENCHMARK model=\(model.id) case=\(name) seconds=\(Date().timeIntervalSince(start)) error=\(error)")
-                    Issue.record(error)
                 }
             }
             if #available(macOS 15, *) { await Gemma4LiteRTTranscriber.shared.shutdown() }

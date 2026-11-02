@@ -1,0 +1,86 @@
+--- a/Sources/LLM/LLM.swift
++++ b/Sources/LLM/LLM.swift
+@@ -3,0 +4,9 @@
++
++public enum CompletionStopReason: Sendable {
++    case endOfSequence, tokenLimit, contextLimit, interrupted, inputRejected, busy
++}
++
++public struct CompletionResult: Sendable {
++    public let text: String
++    public let stopReason: CompletionStopReason
++}
+@@ -5,0 +15 @@
++
+@@ -70,0 +81,3 @@
++    private(set) var lastCompletionTokenCount = 0
++    private(set) var lastCompletionStopReason: CompletionStopReason = .inputRejected
++    private var predictionFailed = false
+@@ -252 +265,4 @@
+-        guard let sampler = sampler else { return endToken }
++        guard let sampler = sampler else {
++            predictionFailed = true
++            return endToken
++        }
+@@ -285,0 +302 @@
++            predictionFailed = true
+@@ -325,2 +342,2 @@
+-    func generateResponseStream(from input: String, thinking: ThinkingMode = .none) -> AsyncStream<String> {
+-        generateResponseStreamWithThinking(from: input, thinking: thinking).response
++    func generateResponseStream(from input: String, thinking: ThinkingMode = .none, maxNewTokens: Int? = nil) -> AsyncStream<String> {
++        generateResponseStreamWithThinking(from: input, thinking: thinking, maxNewTokens: maxNewTokens).response
+@@ -333 +350 @@
+-    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
++    func generateResponseStreamWithThinking(from input: String, thinking thinkingMode: ThinkingMode = .none, maxNewTokens: Int? = nil) -> (thinking: AsyncStream<String>, response: AsyncStream<String>) {
+@@ -340,0 +358,3 @@
++            lastCompletionTokenCount = 0
++            lastCompletionStopReason = .inputRejected
++            predictionFailed = false
+@@ -405 +425,6 @@
+-            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount) {
++            var generatedTokenCount = 0
++            lastCompletionTokenCount = 0
++            defer { lastCompletionTokenCount = generatedTokenCount }
++            let generationBudget = maxNewTokens.map { max(0, $0) } ?? Int.max
++            while shouldContinuePredicting && currentTokenCount < Int32(maxTokenCount)
++                && generatedTokenCount < generationBudget {
+@@ -407,0 +433 @@
++                generatedTokenCount += 1
+@@ -412,0 +439,6 @@
++                    if predictionFailed {
++                        lastCompletionStopReason = .interrupted
++                        streamPendingText()
++                        finishAllStreams()
++                        return
++                    }
+@@ -424,0 +457 @@
++                    lastCompletionStopReason = .endOfSequence
+@@ -441,0 +475,2 @@
++            lastCompletionStopReason = generatedTokenCount >= generationBudget ? .tokenLimit
++                : currentTokenCount >= Int32(maxTokenCount) ? .contextLimit : .interrupted
+@@ -1379 +1414 @@
+-                Task {
++                initializationTask = Task {
+@@ -1571,0 +1607,2 @@
++
++    private var initializationTask: Task<Void, Never>?
+@@ -1573,0 +1611,2 @@
++        await initializationTask?.value
++        initializationTask = nil
+@@ -1582,2 +1621,8 @@
+-    public func getCompletion(from input: borrowing String) async -> String {
+-        guard isAvailable else { return "LLM is being used" }
++    public func getCompletion(from input: borrowing String, maxNewTokens: Int? = nil) async -> String {
++        await getCompletionResult(from: input, maxNewTokens: maxNewTokens).text
++    }
++
++    /// Returns the stop reason while still holding the request's availability gate.
++    public func getCompletionResult(from input: borrowing String, maxNewTokens: Int? = nil) async -> CompletionResult {
++
++        guard isAvailable else { return CompletionResult(text: "LLM is being used", stopReason: .busy) }
+@@ -1590 +1635 @@
+-        let response = await core.generateResponseStream(from: input)
++        let response = await core.generateResponseStream(from: input, maxNewTokens: maxNewTokens)
+@@ -1597 +1642 @@
+-        return output
++        return CompletionResult(text: output, stopReason: await core.lastCompletionStopReason)

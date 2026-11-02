@@ -8,7 +8,7 @@ This is an initial SwiftUI adaptation, not full behavioral or API parity.
 | Upstream area | SwiftUI implementation | Remaining work |
 | --- | --- | --- |
 | Message | AIMessage: role-aware layout | Reusable action bar and branching; AIResponse now handles native Markdown |
-| Prompt input | AIPromptInput: header/editor/footer surface | Bundled editor, submission state machine, uploads and drag/drop |
+| Prompt input | AIPromptInput: header/editor/footer surface, compact density preserving editor identity | Bundled editor, submission state machine, uploads and drag/drop |
 | Attachments | AIAttachment: removable document/context chip | Image/audio/video previews, grid and list variants, metadata |
 | Sources / inline citations | AISourcePassage + AIDisclosure | Citation parsing, inline badges/popovers and grouped source container |
 | Tool / task activity | AIActivityRow + AIDisclosure | AITool now provides stateful input/output/error cards; typed rich results remain |
@@ -55,3 +55,12 @@ reasoning request states, and shimmer are now available. This remains partial
 upstream parity: Markdown does not yet offer syntax highlighting, math layout,
 or a full CommonMark parser. Tool details are supplied text, not a JSON inspector.
 Shimmer respects Reduce Motion and does not convey fabricated progress.
+
+### Host typography
+
+`AIElementsTheme.textFont` lets the host supply its bundled typeface for labels,
+metadata, tables and headings. The default remains the system font for standalone
+clients. Code blocks, verbatim tool payloads and source-number gutters retain
+monospaced fonts. Font loading and licensing stay in the host app.
+
+The prompt input accepts a host-provided `focus` color (defaulting to the accent) and draws a non-hit-testing 2pt focused border. This keeps focus readable independently of action fill colors.

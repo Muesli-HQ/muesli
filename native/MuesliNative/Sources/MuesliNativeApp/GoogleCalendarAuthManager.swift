@@ -236,7 +236,7 @@ final class GoogleCalendarAuthManager {
                         Content-Type: text/html\r
                         Connection: close\r
                         \r
-                        <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Google Calendar connected</h2><p>You can close this window and return to Muesli.</p></div></body></html>
+                        <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Google Calendar connected</h2><p>You can close this window and return to muesli.</p></div></body></html>
                         """
                         connection.send(
                             content: successHtml.data(using: .utf8),

@@ -1,7 +1,24 @@
 import Foundation
+import MuesliCore
 
 /// Shared, compact formatting for model download status shown in the native UI.
 enum ModelDownloadDisplayFormatting {
+    /// Download ETA covers the transfer only; model compilation/warmup is indeterminate.
+    static func indicatorMessage(_ progress: ModelDownloadProgress, modelName: String) -> String {
+        guard progress.phase == .downloading else {
+            return progress.message ?? "Preparing \(modelName)…"
+        }
+        var parts = ["Downloading \(modelName)"]
+        // Per-file percentages must not masquerade as whole-model progress.
+        if let total = progress.totalBytes, total > 0, let fraction = progress.fractionCompleted {
+            parts.append("\(Int(fraction * 100))%")
+            if let seconds = progress.estimatedSecondsRemaining, let remaining = eta(seconds) {
+                parts.append("~\(remaining) left")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
     static func bytes(_ bytes: Int64) -> String {
         let value = Double(max(0, bytes))
         if value >= 1_000_000_000 { return String(format: "%.1f GB", value / 1_000_000_000) }

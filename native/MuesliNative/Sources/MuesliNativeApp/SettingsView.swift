@@ -3,6 +3,7 @@ import AVFoundation
 import SwiftUI
 import MuesliCore
 import TelemetryDeck
+import UniformTypeIdentifiers
 
 private struct MicrophoneOption: Identifiable {
     let uid: String?
@@ -59,7 +60,7 @@ private struct ICloudLinkedDeviceRow: View {
         HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: device.systemImage)
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .frame(width: 30, height: 30)
                 .background(MuesliTheme.accentSubtle)
                 .clipShape(Circle())
@@ -70,7 +71,7 @@ private struct ICloudLinkedDeviceRow: View {
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .lineLimit(1)
                 Text("\(device.platformLabel) · Linked")
-                    .font(.system(size: 11, weight: .regular))
+                    .font(MuesliTheme.metadata())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
 
@@ -109,7 +110,7 @@ struct SettingsView: View {
         var message: String {
             switch self {
             case .dictations:
-                return "This will permanently remove all saved dictations. This cannot be undone."
+                return "This will permanently remove all saved dictations and failed dictation recordings. This cannot be undone."
             case .meetings:
                 return "This will permanently remove all saved meetings, notes, transcripts, and retained audio recordings. This cannot be undone."
             }
@@ -127,6 +128,7 @@ struct SettingsView: View {
 
     let appState: AppState
     let controller: MuesliController
+    @ObservedObject private var cotypist = CotypistSetup.shared
 
     private enum OpenAIConnectionTestState: Equatable {
         case idle
@@ -151,9 +153,9 @@ struct SettingsView: View {
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
     @State private var selectedPane: SettingsPane
-    @State private var downloadedBackendOptions: [BackendOption] = []
-    @State private var downloadedPostProcOptions: [PostProcessorOption] = []
-    @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
+    private var downloadedBackendOptions: [BackendOption] { BackendOption.compatibleOptions().filter { appState.settingsModelAvailability.contains($0) } }
+    private var downloadedPostProcOptions: [PostProcessorOption] { PostProcessorOption.all.filter { appState.settingsModelAvailability.postProcessorIDs.contains($0.id) } }
+    private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] { MeetingLiveCaptionBackend.allCases.filter { appState.settingsModelAvailability.liveCaptionIDs.contains($0.rawValue) } }
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
     @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
     @State private var permissionMonitoringClientID = UUID()
@@ -169,6 +171,7 @@ struct SettingsView: View {
     @State private var isShowingIPhoneBridgeQRCode = false
     @State private var openAIDictationAPIKey: String = ""
     @State private var openAITestState: OpenAIConnectionTestState = .idle
+    @State private var stacksSettingsControls = false
 
     init(appState: AppState, controller: MuesliController) {
         self.appState = appState
@@ -192,8 +195,8 @@ struct SettingsView: View {
         appState.interactionPermissionSnapshot?.screenRecording ?? false
     }
 
-    // Uniform width for standard right-side controls.
-    private let controlWidth: CGFloat = 275
+    // Uniform width for menus and fields; switches use `settingsCompactRow`.
+    private let controlWidth = SettingsLayout.controlWidth
     // Model/provider rows use the same default as every other settings control.
     private var meetingControlWidth: CGFloat { controlWidth }
 
@@ -246,6 +249,12 @@ struct SettingsView: View {
         if usesUnifiedMeetingTranscript {
             return "Creates the live and final transcript."
         }
+        if selected == .selectedModelBuffered {
+            guard appState.selectedMeetingTranscriptionBackend.supportsBufferedLiveTranscription else {
+                return "Choose Parakeet or Whisper as the final model to enable this preview."
+            }
+            return "Previews the selected Parakeet or Whisper model while recording. Completed segments remain authoritative."
+        }
         return "Adds a low-latency preview."
     }
 
@@ -273,10 +282,8 @@ struct SettingsView: View {
     }
 
     private var quilLocalModels: [OnDeviceCleanupModel] {
-        var models = downloadedPostProcOptions
-            .filter(\.supportsQuil)
-            .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        var models: [OnDeviceCleanupModel] = []
+        for model in Gemma4LiteRTModel.generalPurpose where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
             models.append(.gemma4(model))
         }
         return models
@@ -302,7 +309,7 @@ struct SettingsView: View {
             .filter { $0.isCompatible(with: appState.selectedBackend) }
             .map(OnDeviceCleanupModel.gguf)
         if TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
-            for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+            for model in Gemma4LiteRTModel.allCases where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
                 models.append(.gemma4(model))
             }
         }
@@ -325,12 +332,14 @@ struct SettingsView: View {
     }
 
     private var cleanupModelUsesFixedPrompt: Bool {
-        appState.selectedPostProcessorBackend == .local
-            && appState.activePostProcessor.inputFormat == .s1Mini
+        (appState.selectedPostProcessorBackend == .local
+            && appState.activePostProcessor.inputFormat != .configurable)
+            || (appState.selectedPostProcessorBackend == .gemma4LiteRT
+                && Gemma4LiteRTModel.resolved(appState.config.postProcessorGemmaModel).isCleanupOnly)
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
-        Gemma4LiteRTModel.allCases.contains { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }
+        !appState.settingsModelAvailability.gemmaIDs.isEmpty
             && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
     }
 
@@ -389,14 +398,15 @@ struct SettingsView: View {
         return options
     }
 
+    @State private var presentationCatalog = SettingsPresentationCatalog()
+
     private var activeFeatureTourTarget: FeatureTourTarget? {
         appState.activeFeatureTourTarget
     }
 
     var body: some View {
-        // Build once for this surface; Observation refreshes dynamic choices.
-        let _ = appState.config
-        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        // Geometry, hover and permission updates reuse the same catalog.
+        settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
     }
 
     private var settingsContent: some View {
@@ -410,13 +420,24 @@ struct SettingsView: View {
                     settingsPanePicker
                     paneContent
                 }
+                .background {
+                    // One page-level breakpoint; individual rows do not measure themselves.
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { updateSettingsControlStacking(contentWidth: proxy.size.width) }
+                            .onChange(of: proxy.size.width) { _, width in
+                                updateSettingsControlStacking(contentWidth: width)
+                            }
+                    }
+                }
+                .environment(\.settingsStacksControls, stacksSettingsControls)
                 .padding(.horizontal, MuesliTheme.spacing32)
             .padding(.top, MuesliTheme.pageTop)
             .padding(.bottom, MuesliTheme.spacing32)
             }
             .background(MuesliTheme.backgroundBase)
             .onAppear {
-                refreshDownloadedModelOptions()
+                refreshDownloadedModelOptions(force: true)
                 refreshAudioInputDevices()
                 startPermissionMonitoring()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
@@ -426,7 +447,6 @@ struct SettingsView: View {
                    controller.hostedDictationModelVisibility.shows(.openRouter) {
                     loadOpenRouterTranscriptionModelsIfNeeded()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
             .onDisappear {
                 SoundController.stopMaraudersMapClip()
@@ -438,7 +458,7 @@ struct SettingsView: View {
             .onChange(of: appState.selectedTab) { _, tab in
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
-                    refreshDownloadedModelOptions()
+                    refreshDownloadedModelOptions(force: true)
                     refreshAudioInputDevices()
                     refreshPermissionStatuses(for: .settingsSelected)
                 }
@@ -452,10 +472,18 @@ struct SettingsView: View {
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
-            .onChange(of: activeFeatureTourTarget) { _, target in
-                scrollToFeatureTourTarget(target, using: scrollProxy)
+            .task(id: SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)) {
+                let request = SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)
+                // Give the destination pane one layout pass. Cancellation prevents an old
+                // step from scrolling a newer pane after rapid Next/Back navigation.
+                await Task.yield()
+                guard !Task.isCancelled, let target = request.scrollTarget else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    scrollProxy.scrollTo(target.rawValue, anchor: .center)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
@@ -518,7 +546,7 @@ struct SettingsView: View {
                     controller.requestDictionaryCorrectionAccessibilityEnable()
                 }
             } message: {
-                Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch Muesli to turn suggestions on.")
+                Text("Dictionary suggestions briefly read focused app text via Accessibility after dictation. Grant access, then relaunch muesli to turn suggestions on.")
             }
             .alert("Reconnect iCloud sync?", isPresented: $isShowingICloudSyncReconnectConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -561,33 +589,13 @@ struct SettingsView: View {
 
     }
 
-    private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
-        guard let target,
-              target == .liveCaptionsSetting
-                || target == .cloudCleanupSetting
-                || target == .dictationProviderSetting
-                || target == .recordingIndicatorStyle
-                || target == .meetingSummaryProvider
-                || target == .quillSettings else { return }
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(target.rawValue, anchor: .center)
-            }
-        }
+    private func updateSettingsControlStacking(contentWidth: CGFloat) {
+        let stacks = contentWidth < SettingsLayout.stackedContentWidth
+        if stacksSettingsControls != stacks { stacksSettingsControls = stacks }
     }
 
-    private func refreshDownloadedModelOptions() {
-        controller.refreshMeetingTranscriptionSelectionForAvailability()
-        // Only write changed values. Unconditional writes from onAppear re-render Settings
-        // and can feed a SwiftUI update loop (#632).
-        let backends = BackendOption.downloaded
-        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
-        let postProcessors = PostProcessorOption.downloaded
-        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
-        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
-        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
-            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
-        }
+    private func refreshDownloadedModelOptions(force: Bool = false) {
+        controller.refreshSettingsModelAvailability(force: force)
     }
 
     private func refreshAudioInputDevices() {
@@ -635,76 +643,42 @@ struct SettingsView: View {
         return "Adds frontmost-window OCR text. Cloud cleanup may send this text to the selected provider."
     }
 
-    @ViewBuilder
-    private func screenContextRow(
-        _ title: String,
-        includesScreenOCR: Bool = false,
-        controlWidth rowControlWidth: CGFloat? = nil
-    ) -> some View {
-        let width = rowControlWidth ?? controlWidth
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                Text(screenContextDescription(includesScreenOCR: includesScreenOCR))
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 20)
-
-            ZStack(alignment: .trailing) {
-                Color.clear.frame(width: width, height: 1)
-                screenContextControl(width: width)
-            }
+    private func screenContextRow(_ title: String, includesScreenOCR: Bool = false) -> some View {
+        settingsCompactRow(title, description: screenContextDescription(includesScreenOCR: includesScreenOCR)) {
+            screenContextControl()
         }
-        .frame(minHeight: 52)
     }
 
-    @ViewBuilder
     private var dictationOCRContextRow: some View {
-        let width = controlWidth
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Screen OCR context")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                Text(dictationOCRContextDescription)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 20)
-
-            ZStack(alignment: .trailing) {
-                Color.clear.frame(width: width, height: 1)
-                dictationOCRContextControl(width: width)
-            }
+        settingsCompactRow("Screen OCR context", description: dictationOCRContextDescription) {
+            dictationOCRContextControl()
         }
-        .frame(minHeight: 52)
     }
 
     private let customIndicatorPositionLabel = "Custom (drag to reposition)"
 
     private var settingsPanePicker: some View {
         HStack {
-            Spacer()
-            Picker("", selection: $selectedPane) {
-                ForEach(SettingsPane.allCases) { pane in
-                    Text(pane.title).tag(pane)
+            Spacer(minLength: 0)
+            ViewThatFits(in: .horizontal) {
+                Picker("Settings section", selection: $selectedPane) {
+                    ForEach(SettingsPane.allCases) { pane in
+                        Text(pane.title).tag(pane)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize(horizontal: true, vertical: false)
+
+                Picker("Settings section", selection: $selectedPane) {
+                    ForEach(SettingsPane.allCases) { pane in
+                        Text(pane.title).tag(pane)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: SettingsLayout.controlWidth)
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 760)
-            Spacer()
+            Spacer(minLength: 0)
         }
     }
 
@@ -713,37 +687,39 @@ struct SettingsView: View {
         switch selectedPane {
         case .general:
             generalSettingsPane
-        case .sync:
-            syncSettingsPane
         case .dictation:
             dictationSettingsPane
-        case .computerUse:
-            computerUseSettingsPane
         case .meetings:
             meetingsSettingsPane
         case .appearance:
             appearanceSettingsPane
+        case .experimental:
+            experimentalSettingsPane
         }
     }
 
     private var generalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("General") {
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                    settingsRow("Launch at login") {
-                        settingsControl("launch_at_login")
-                    }
-                    if appState.launchAtLoginRegistrationState == .requiresApproval {
-                        launchAtLoginApprovalPrompt
-                    }
+                settingsCompactRow("Launch at login") {
+                    settingsControl("launch_at_login")
+                }
+                if appState.launchAtLoginRegistrationState == .requiresApproval {
+                    launchAtLoginApprovalPrompt
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Open dashboard on launch") {
+                settingsCompactRow("Open dashboard on launch") {
                     settingsControl("open_dashboard")
                 }
             }
 
+            syncSettingsPane
+
             permissionsSection
+
+            settingsSection("Local storage") {
+                LocalStorageUsageView()
+            }
 
             settingsSection("Data") {
                 HStack(spacing: MuesliTheme.spacing12) {
@@ -765,65 +741,51 @@ struct SettingsView: View {
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.recording)
-            Text("Requires approval in System Settings")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
+            SettingsNote("Requires approval in System Settings")
             Spacer(minLength: MuesliTheme.spacing12)
-            Button {
+            accentActionButton("Open", systemImage: "arrow.up.forward.square") {
                 controller.openLaunchAtLoginSettings()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.up.forward.square")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Open")
-                }
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(MuesliTheme.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(MuesliTheme.accentSubtle)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             .help("Open Login Items in System Settings")
         }
-        .padding(.leading, MuesliTheme.spacing16)
-        .padding(.trailing, MuesliTheme.spacing16)
         .padding(.bottom, MuesliTheme.spacing8)
     }
 
     private var syncSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("iCloud Sync") {
-                HStack(spacing: MuesliTheme.spacing12) {
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        Text("Sync with iPhone or iPad")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                        Text(syncStatusText)
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let lastSyncedText = syncLastSyncedText {
-                            Text("Last synced: \(lastSyncedText)")
-                                .font(MuesliTheme.caption())
-                                .foregroundStyle(MuesliTheme.textTertiary)
-                        }
-                        if let linkedDevice = syncLinkedDevice {
-                            ICloudLinkedDeviceRow(device: linkedDevice)
-                                .padding(.top, MuesliTheme.spacing4)
-                        } else if let unlinkedDeviceText = syncUnlinkedDeviceText {
-                            Text(unlinkedDeviceText)
-                                .font(MuesliTheme.caption())
-                                .foregroundStyle(MuesliTheme.textTertiary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                if stacksSettingsControls {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                        syncStatusDetails
+                        syncFlowControls
+                            .frame(maxWidth: controlWidth)
                     }
-                    Spacer(minLength: MuesliTheme.spacing16)
-                    syncFlowControls
-                        .frame(width: controlWidth)
+                } else {
+                    HStack(alignment: .top, spacing: SettingsLayout.columnSpacing) {
+                        syncStatusDetails
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        syncFlowControls
+                            .frame(width: controlWidth)
+                    }
                 }
+            }
+        }
+    }
 
+    private var syncStatusDetails: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+            Text("Sync with iPhone or iPad")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            SettingsNote(syncStatusText)
+            if let lastSyncedText = syncLastSyncedText {
+                SettingsNote("Last synced: \(lastSyncedText)")
+            }
+            if let linkedDevice = syncLinkedDevice {
+                ICloudLinkedDeviceRow(device: linkedDevice)
+                    .padding(.top, MuesliTheme.spacing4)
+            } else if let unlinkedDeviceText = syncUnlinkedDeviceText {
+                SettingsNote(unlinkedDeviceText)
             }
         }
     }
@@ -937,7 +899,7 @@ struct SettingsView: View {
             case .waiting:
                 return "Finishing device setup…"
             case .timedOut:
-                return "Couldn't find your device. Open Muesli there, then try again."
+                return "Couldn't find your device. Open muesli there, then try again."
             case .idle:
                 return "Ready to connect. Audio stays on this Mac."
             }
@@ -960,7 +922,8 @@ struct SettingsView: View {
     }
 
     private var syncUnlinkedDeviceText: String? {
-        guard appState.config.iCloudSyncEnabled else { return nil }
+        // While active, `syncStatusText` already describes device discovery.
+        guard appState.config.iCloudSyncEnabled, displayedICloudBridgeState != .active else { return nil }
         switch appState.iCloudBridgeCompanionDiscoveryState {
         case .waiting:
             return "Waiting for iPhone or iPad…"
@@ -992,23 +955,28 @@ struct SettingsView: View {
                 openRouterDictationSettingsRows
                 Divider().background(MuesliTheme.surfaceBorder)
             }
-            settingsRow(appState.dictationProvider.isHosted ? "Fallback model" : "Dictation model", controlWidth: meetingControlWidth) {
+            settingsRow(
+                appState.dictationProvider.isHosted ? "Fallback model" : "Dictation model",
+                description: dictationModelDescription,
+                controlWidth: meetingControlWidth
+            ) {
                 if displayedDictationBackend != nil {
                     settingsControl(appState.dictationProvider.isHosted ? "dictation_fallback_model" : "dictation_model")
                 } else {
                     Text("No compatible model installed")
-                        .foregroundStyle(.secondary)
+                        .font(MuesliTheme.callout())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
-            if appState.dictationProvider.isHosted {
-                settingsDescription(
-                    displayedDictationBackend == nil
-                        ? "Download a non-streaming local model to enable automatic fallback."
-                        : "Used automatically if \(appState.dictationProvider.label) transcription fails."
-                )
-            }
-            if !disabledDictationBackendLabels.isEmpty {
-                settingsDescription("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
+            if appState.dictationProvider == .local,
+               displayedDictationBackend?.supportsBufferedLiveTranscription == true {
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow(
+                    "Watch text appear during hands-free mode",
+                    description: "Preview as you speak; apply enabled cleanup when you stop."
+                ) {
+                    settingsControl("buffered_live_dictation")
+                }
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1032,6 +1000,19 @@ struct SettingsView: View {
         }
     }
 
+    private var dictationModelDescription: String? {
+        var notes: [String] = []
+        if appState.dictationProvider.isHosted {
+            notes.append(displayedDictationBackend == nil
+                ? "Download a non-streaming local model to enable automatic fallback."
+                : "Used automatically if \(appState.dictationProvider.label) transcription fails.")
+        }
+        if !disabledDictationBackendLabels.isEmpty {
+            notes.append("Gemma 4 dictation is unavailable while Gemma 4 is the cleanup backend.")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+
     @ViewBuilder
     private var openAIDictationSettingsRows: some View {
         settingsRow("API Key", controlWidth: meetingControlWidth) {
@@ -1053,6 +1034,10 @@ struct SettingsView: View {
             Divider().background(MuesliTheme.surfaceBorder)
             settingsRow("Connection", controlWidth: meetingControlWidth) {
                 openAITestControl
+            }
+            if case .failed(let message) = openAITestState {
+                SettingsNote(message, tone: .error)
+                    .padding(.bottom, MuesliTheme.spacing4)
             }
         }
     }
@@ -1097,8 +1082,8 @@ struct SettingsView: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("Testing…")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textSecondary)
             }
         case .success:
             HStack(spacing: 6) {
@@ -1107,19 +1092,19 @@ struct SettingsView: View {
                     .fill(MuesliTheme.success)
                     .frame(width: 6, height: 6)
                 Text("Connected")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.success)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.successText)
                 compactActionButton("Test again") {
                     testOpenAIConnection()
                 }
             }
-        case .failed(let message):
+        case .failed:
+            // The failure message is shown in full beneath the row.
             HStack(spacing: 6) {
                 Spacer()
                 Text("Failed")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(MuesliTheme.recording)
-                    .help(message)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.destructiveText)
                 compactActionButton("Retry") {
                     testOpenAIConnection()
                 }
@@ -1143,17 +1128,16 @@ struct SettingsView: View {
         settingsSection("Transcription") {
             settingsRow(
                 "Microphone",
-                description: "Only affects Muesli. Changes apply immediately.",
+                description: "Only affects muesli. Changes apply immediately.",
                 controlWidth: meetingControlWidth
             ) {
                 settingsControl("meeting_microphone")
                 .frame(height: 24)
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow(
+            settingsCompactRow(
                 "Show transcript on hover",
-                description: "Show recent transcript beside the waveform.",
-                controlWidth: meetingControlWidth
+                description: "Over the recording pill or notch."
             ) {
                 settingsControl("meeting_hover_transcript")
             }
@@ -1167,19 +1151,16 @@ struct SettingsView: View {
                     settingsControl("live_transcript")
                 } else {
                     Text("Download from Models")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: meetingControlWidth, alignment: .trailing)
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
             }
             .id(FeatureTourTarget.liveCaptionsSetting.rawValue)
             .featureTourTarget(.liveCaptionsSetting)
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow(
+            settingsCompactRow(
                 "Identify in-room speakers",
-                description: "Speaker playback may cause duplicate labels; headphones help.",
-                controlWidth: meetingControlWidth
+                description: "Speaker playback may cause duplicate labels; headphones help."
             ) {
                 settingsControl("diarize_microphone")
             }
@@ -1187,14 +1168,12 @@ struct SettingsView: View {
             settingsRow("Final transcript", controlWidth: meetingControlWidth) {
                 if usesUnifiedMeetingTranscript {
                     Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
-                        .font(MuesliTheme.body())
+                        .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textSecondary)
-                        .frame(width: meetingControlWidth, alignment: .trailing)
                 } else if meetingBackendOptions.isEmpty {
                     Text("No downloaded models")
-                        .font(MuesliTheme.body())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .font(MuesliTheme.callout())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 } else {
                     settingsControl("meeting_model")
                 }
@@ -1206,7 +1185,7 @@ struct SettingsView: View {
                         nemotron35LanguageMenu
                     } else {
                         Text("Set in Models → Apple Speech")
-                            .font(MuesliTheme.body())
+                            .font(MuesliTheme.callout())
                             .foregroundStyle(MuesliTheme.textSecondary)
                     }
                 }
@@ -1232,7 +1211,7 @@ struct SettingsView: View {
 
     private var dictationCleanupSettingsSection: some View {
         settingsSection("Dictation Cleanup") {
-            settingsRow("AI transcript cleanup") {
+            settingsCompactRow("AI transcript cleanup") {
                 settingsControl("transcript_cleanup")
             }
             if appState.config.enablePostProcessor {
@@ -1254,22 +1233,21 @@ struct SettingsView: View {
                 .featureTourTarget(.cloudCleanupSetting)
                 if appState.selectedPostProcessorBackend.isOnDevice {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Cleanup model", controlWidth: meetingControlWidth) {
+                    settingsRow(
+                        "Cleanup model",
+                        description: gemmaCleanupIsUnavailable
+                            ? "Gemma 4 is unavailable for cleanup while a Gemma 4 model is selected for dictation."
+                            : nil,
+                        controlWidth: meetingControlWidth
+                    ) {
                         if onDeviceCleanupModels.isEmpty {
                             compactActionButton("View cleanup models", systemImage: "arrow.right") {
                                 controller.showModels(category: .postProcessing)
                             }
-                            .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {
                             settingsControl("cleanup_on_device_model")
                             .frame(height: 24)
                         }
-                    }
-                    if gemmaCleanupIsUnavailable {
-                        Text("Gemma 4 is unavailable for cleanup while a Gemma 4 model is selected for dictation.")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
                     hostedCleanupSettings(for: appState.selectedPostProcessorBackend)
@@ -1280,7 +1258,7 @@ struct SettingsView: View {
 
     private var quilSettingsSection: some View {
         settingsSection("Quill", icon: QuillIcon.image()) {
-            settingsRow(
+            settingsCompactRow(
                 "Rewrite selected text",
                 description: "Highlight text to transform it. With no selection, Quill generates and pastes at the cursor."
             ) {
@@ -1289,17 +1267,12 @@ struct SettingsView: View {
             if let quilPermissionMessage = controller.independentShortcutPermissionMessageIfNeeded(
                 isEnabled: appState.config.enableQuilMode
             ) {
-                Text(quilPermissionMessage)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.transcribing)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                SettingsNote(quilPermissionMessage, tone: .warning)
+                    .padding(.bottom, MuesliTheme.spacing4)
             }
             Group {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow(
-                    "Play Quill sounds",
-                    description: "Play the activation and release cues for Quill mode."
-                ) {
+                settingsCompactRow("Play Quill sounds") {
                     settingsControl("quill_sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1313,7 +1286,6 @@ struct SettingsView: View {
                             compactActionButton("View local models", systemImage: "arrow.right") {
                                 controller.showModels(category: .quill)
                             }
-                            .frame(width: meetingControlWidth, alignment: .trailing)
                         } else {
                             settingsControl("quill_local_model")
                             .frame(height: 24)
@@ -1354,7 +1326,7 @@ struct SettingsView: View {
                 ).frame(height: 22)
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+            settingsRow("Workspace ID", description: anthropicWorkspaceIDDescription, controlWidth: meetingControlWidth) {
                 PastableTextField(
                     text: appState.config.anthropicWorkspaceID,
                     placeholder: "Optional workspace ID",
@@ -1399,6 +1371,8 @@ struct SettingsView: View {
             }
         }
     }
+
+    private let anthropicWorkspaceIDDescription = "For keys not scoped to one workspace."
 
     private var cohereLanguageMenu: some View {
         settingsControl("cohere_language")
@@ -1491,7 +1465,7 @@ struct SettingsView: View {
                 ) { controller.updatePostProcessorModel($0, for: backend) }
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Workspace ID", description: "For keys not scoped to one workspace.", controlWidth: meetingControlWidth) {
+            settingsRow("Workspace ID", description: anthropicWorkspaceIDDescription, controlWidth: meetingControlWidth) {
                 PastableTextField(
                     text: appState.config.anthropicWorkspaceID,
                     placeholder: "Optional workspace ID",
@@ -1591,13 +1565,14 @@ struct SettingsView: View {
     private var fixedCleanupPromptNotice: some View {
         settingsRow(
             "Cleanup prompt",
-            description: "S1-mini uses Superwhisper’s built-in normalization instructions.",
+            description: appState.selectedPostProcessorBackend == .gemma4LiteRT
+                ? "muesli Pro Cleanup uses its trained cleanup instructions. Custom presets do not apply."
+                : (appState.activePostProcessor.inputFormat.isTrainedV12 ? "This model uses its trained cleanup instructions. Custom presets do not apply." : "S1-mini uses Superwhisper’s built-in normalization instructions."),
             controlWidth: meetingControlWidth
         ) {
             Text("Built in")
-                .font(MuesliTheme.body())
+                .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
-                .frame(width: meetingControlWidth, alignment: .trailing)
         }
     }
 
@@ -1605,15 +1580,15 @@ struct SettingsView: View {
         settingsSection("Meeting Summaries") {
             settingsRow(
                 "Summary backend",
-                description: "Remote backends may receive meeting data.",
+                // Ollama, LM Studio and custom endpoints can be on another machine; don't imply local.
+                description: "Summaries may send transcripts, notes, screen context, and participant names to the selected backend.",
                 controlWidth: meetingControlWidth
             ) {
                 VStack(alignment: .trailing, spacing: 4) {
                     settingsControl("summary_source")
                         .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
                         .featureTourTarget(.meetingSummaryProvider)
-                        .help("Remote summaries may send transcripts, notes, screen context, and participant names.")
-                    if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
+                    if !appState.settingsModelAvailability.claudeCodeAvailable,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
                             .font(MuesliTheme.caption())
@@ -1682,14 +1657,14 @@ struct SettingsView: View {
                     settingsControl("summary_anthropic_model")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Custom model ID", description: "Use a Claude API model ID that is not in the list.", controlWidth: meetingControlWidth) {
+                settingsRow("Custom model ID", description: "For Claude API models not in the list.", controlWidth: meetingControlWidth) {
                     settingsModelTextField(
                         currentModel: appState.config.anthropicModel,
                         placeholder: "Optional model ID"
                     ) { val in controller.updateConfig { $0.anthropicModel = val } }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Workspace ID", description: "Only needed for API keys that are not scoped to one workspace.", controlWidth: meetingControlWidth) {
+                settingsRow("Workspace ID", description: anthropicWorkspaceIDDescription, controlWidth: meetingControlWidth) {
                     PastableTextField(
                         text: appState.config.anthropicWorkspaceID,
                         placeholder: "Optional workspace ID",
@@ -1709,7 +1684,7 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 DisclosureGroup(isExpanded: $isShowingClaudeCodeAdvanced) {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                        settingsRow("Custom executable path", description: "Override the Claude Code CLI Muesli detected.", controlWidth: meetingControlWidth) {
+                        settingsRow("Custom executable path", description: "Override the Claude Code CLI muesli detected.", controlWidth: meetingControlWidth) {
                             PastableTextField(
                                 text: appState.config.claudeCodeExecutablePath,
                                 placeholder: "Optional path",
@@ -1785,11 +1760,14 @@ struct SettingsView: View {
             if ![MeetingSummaryBackendOption.chatGPT, .claudeCode].contains(appState.selectedMeetingSummaryBackend) {
                 Divider().background(MuesliTheme.surfaceBorder)
                 DisclosureGroup(isExpanded: $isShowingSummaryOutputAdvanced) {
-                    settingsRow("Output token limit", controlWidth: meetingControlWidth) {
+                    settingsRow(
+                        "Output token limit",
+                        description: "No added limit lets the model finish naturally. Provider and model limits still apply.",
+                        controlWidth: meetingControlWidth
+                    ) {
                         settingsControl("summary_output_limit")
                     }
-                    .padding(.top, MuesliTheme.spacing12)
-                    settingsDescription("No added limit lets the model finish naturally. Provider and model limits still apply.")
+                    .padding(.top, MuesliTheme.spacing8)
                 } label: {
                     Text("Advanced")
                         .font(MuesliTheme.captionMedium())
@@ -1806,7 +1784,7 @@ struct SettingsView: View {
             settingsControl("custom_llm_format")
         }
         Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("Endpoint", controlWidth: meetingControlWidth) {
+        settingsRow("Endpoint", description: CustomLLMConnectionGuidance.endpointHelp, controlWidth: meetingControlWidth) {
             PastableTextField(
                 text: appState.config.customLLMURL,
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
@@ -1816,9 +1794,9 @@ struct SettingsView: View {
             )
             .frame(height: 22)
         }
-        settingsDescription(CustomLLMConnectionGuidance.endpointHelp)
-            .lineLimit(1)
-            .help("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
+        settingsDetails("HTTPS setup") {
+            SettingsNote("Use HTTPS with a certificate trusted by your Mac. Enable TLS on the server or use a reverse proxy such as Caddy. Localhost means a server running on this Mac.")
+        }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("API Key", controlWidth: meetingControlWidth) {
             PastableSecureField(
@@ -1831,7 +1809,11 @@ struct SettingsView: View {
             .frame(height: 22)
         }
         Divider().background(MuesliTheme.surfaceBorder)
-        settingsRow("API Key Command", controlWidth: meetingControlWidth) {
+        settingsRow(
+            "API Key Command",
+            description: "Runs shell code with your permissions before each request. Failures use the saved API key.",
+            controlWidth: meetingControlWidth
+        ) {
             PastableTextField(
                 text: appState.config.customLLMAPIKeyCommand,
                 placeholder: "e.g. /opt/homebrew/bin/vault print token",
@@ -1839,10 +1821,10 @@ struct SettingsView: View {
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKeyCommand = val } }
             )
             .frame(height: 22)
-            .help("Runs shell code via /bin/sh with your user permissions before each request. Use an absolute executable path. Non-empty output replaces the saved API key; failures fall back to it.")
         }
-        settingsDescription("Optional shell command for an API key; falls back to the saved key.")
-            .lineLimit(1)
+        settingsDetails("API key command setup") {
+            SettingsNote("Use an absolute executable path. Commands run via /bin/sh; non-empty output replaces the saved API key.")
+        }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow(
             "Headers",
@@ -1872,7 +1854,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MuesliTheme.textSecondary)
                                 .frame(width: 20, height: 22)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
                         .help("Remove header")
                     }
                 }
@@ -1881,16 +1863,15 @@ struct SettingsView: View {
                         $0.customLLMHeaders.append(CustomLLMRequestHeader())
                     }
                 }
+                .help("Stored in the owner-only config file and never logged. muesli-managed HTTP headers cannot be overridden.")
                 .disabled(appState.config.customLLMHeaders.count >= CustomLLMRequestHeaders.maximumCount)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
-            .frame(width: meetingControlWidth, alignment: .trailing)
-            .padding(.vertical, 5)
+            .padding(.vertical, 2)
         }
-        .help("Values are stored in the owner-only config file and never logged. Muesli-managed HTTP headers cannot be overridden.")
         if let message = customLLMHeadersValidationMessage {
-            settingsDescription(message)
-                .foregroundStyle(MuesliTheme.recording)
+            SettingsNote(message, tone: .error)
+                .padding(.bottom, MuesliTheme.spacing4)
         }
         Divider().background(MuesliTheme.surfaceBorder)
         settingsRow("Model", controlWidth: meetingControlWidth) {
@@ -1939,32 +1920,35 @@ struct SettingsView: View {
                     .frame(height: 24)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow(
+                settingsCompactRow(
                     "Dictionary suggestions",
-                    description: "Suggest words after corrections by briefly reading focused app text via Accessibility."
+                    description: "Suggests words from your corrections. Briefly reads focused app text via Accessibility after dictation."
                 ) {
                     settingsControl("dictionary_suggestions")
-                    .help("Briefly reads focused app text after dictation to detect corrections.")
                 }
             }
 
             dictationCleanupSettingsSection
 
-            quilSettingsSection
+            settingsSection("App Formatting") {
+                DictationFormattingSettingsView(appState: appState, controller: controller)
+            }
 
             settingsSection("Advanced") {
-                settingsRow("Paste shortcut", controlWidth: meetingControlWidth) {
+                settingsRow(
+                    "Paste shortcut",
+                    description: "Uses your keyboard layout. Re-record a custom shortcut after changing layouts.",
+                    controlWidth: meetingControlWidth
+                ) {
                     PasteShortcutControl(controller: controller, appState: appState)
                         .help("Custom applies to keyboard paste in Dictation, Quill, and Computer Use. Browser Paste commands and live streaming are unchanged. Re-record custom shortcuts after changing keyboard layouts.")
                 }
-                settingsDescription("Uses your keyboard layout, or a custom paste shortcut.")
-                    .lineLimit(1)
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Pause media during dictation") {
+                settingsCompactRow("Pause media during dictation") {
                     settingsControl("pause_media")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Mute system audio during dictation") {
+                settingsCompactRow("Mute system audio during dictation") {
                     settingsControl("mute_audio")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1975,10 +1959,358 @@ struct SettingsView: View {
         }
     }
 
+    /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
+    /// selects it, or opens Keyboard settings with a guide until the user has added it.
+    private var cotypistSettingsSection: some View {
+        settingsSection("Cotypist") {
+            settingsCompactRow("Typeahead suggestions", description: cotypistStatus) {
+                settingsControl("cotypist_enabled")
+            }
+            if cotypist.state == .addingInputSource {
+                compactActionButton("Show setup guide", systemImage: "keyboard") {
+                    cotypist.showGuide()
+                }
+                .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.modelState != .ready {
+                cotypistModelRow
+                    .padding(.bottom, MuesliTheme.spacing12)
+            }
+            if cotypist.state == .on {
+                cotypistKeyHints
+                    .padding(.bottom, MuesliTheme.spacing12)
+                cotypistOptions
+            }
+        }
+    }
+
+    /// Shown only while Cotypist is on: off, none of them do anything.
+    @ViewBuilder
+    private var cotypistOptions: some View {
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistModelLine
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("Suggestion length") {
+            settingsControl("cotypist_length")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsRow("How often to suggest", description: "Fewer shows only suggestions the model is sure of.") {
+            settingsControl("cotypist_frequency")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsCompactRow("Finish half-typed words", description: appState.config.cotypistCompleteWords
+            ? "Pause inside a word to see the rest of it."
+            : "Off: suggestions appear only after a space or punctuation.") {
+            settingsControl("cotypist_complete_words")
+        }
+        if appState.config.cotypistCompleteWords {
+            cotypistSubRow("Pause before completing") {
+                settingsControl("cotypist_word_pause")
+            }
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        settingsCompactRow("Use on-screen text", description: "Reads the window around the text field. Off while a meeting records.") {
+            settingsControl("cotypist_screen_context")
+        }
+        Divider().background(MuesliTheme.surfaceBorder)
+        cotypistQuietApps
+            .padding(.top, MuesliTheme.spacing4)
+    }
+
+    private var cotypistStatus: String {
+        switch cotypist.state {
+        case .on:
+            "Suggests the next words as you type, in any app."
+        case .addingInputSource:
+            cotypist.suggestsRelogin
+                ? "\(CotypistSetup.displayName) isn't listed yet. Log out and back in, then turn this on again."
+                : "Add \(CotypistSetup.displayName) in Keyboard settings. It turns on as soon as it's added."
+        case .off:
+            "Local typeahead in every app, running on this Mac."
+        }
+    }
+
+    /// The selected typeahead model, until it's on this Mac: its size, download progress, or what
+    /// went wrong. Models › Cotypist has the full choice.
+    private var cotypistModelRow: some View {
+        let model = appState.config.cotypistModel
+        return HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "cpu")
+                .font(.system(size: 14))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Typeahead model: \(model.label)")
+                    .font(MuesliTheme.font(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                switch cotypist.modelState {
+                case .downloading(let fraction):
+                    ProgressView(value: fraction).tint(MuesliTheme.accent)
+                    SettingsNote("Downloading… \(Int(fraction * 100))% of \(model.sizeLabel)")
+                case .failed(let message):
+                    SettingsNote("Download failed: \(message)", tone: .error)
+                case .unavailable:
+                    SettingsNote("Coming soon. Choose another model in Models.")
+                default:
+                    SettingsNote("\(model.sizeLabel). Runs on this Mac; downloaded when you turn Cotypist on.")
+                }
+            }
+            Spacer(minLength: 0)
+            switch cotypist.modelState {
+            case .missing, .failed:
+                compactActionButton("Download", systemImage: "arrow.down.circle") { cotypist.downloadModelIfNeeded() }
+            default:
+                compactActionButton("Models", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+    }
+
+    /// The model in use, with a way to change it, once Cotypist is set up.
+    private var cotypistModelLine: some View {
+        settingsCompactRow("Model") {
+            HStack(spacing: MuesliTheme.spacing8) {
+                Text(appState.config.cotypistModel.label)
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                compactActionButton("Change", systemImage: "square.stack.3d.up") { controller.showModels(category: .cotypist) }
+            }
+        }
+    }
+
+    /// The keys, shown once Cotypist is on.
+    private var cotypistKeyHints: some View {
+        HStack(spacing: MuesliTheme.spacing16) {
+            cotypistKeyHint(["Tab"], "Accept")
+            cotypistKeyHint(["⌥", "→"], "Accept one word")
+            Text("Keep typing to ignore")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func cotypistKeyHint(_ keys: [String], _ action: String) -> some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(MuesliTheme.metadata())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(MuesliTheme.surfacePrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+                }
+            }
+            Text(action)
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A setting that refines the row above it: indented, without its own divider.
+    private func cotypistSubRow(_ label: String, @ViewBuilder control: () -> some View) -> some View {
+        settingsRow(label, control: control)
+            .padding(.leading, MuesliTheme.spacing16)
+            .padding(.bottom, MuesliTheme.spacing4)
+    }
+
+    // MARK: Cotypist quiet apps
+
+    private var cotypistQuietApps: some View {
+        let quiet = appState.config.cotypistDisabledApps
+        let recommended = CotypistQuietApps.recommended(excluding: quiet)
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            settingsCompactRow("Quiet in these apps", description: "Cotypist won't suggest anything in apps you add here.") {
+                cotypistAddAppMenu(excluding: quiet)
+            }
+            if quiet.isEmpty {
+                cotypistQuietAppsEmptyState
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: MuesliTheme.spacing8)],
+                          alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(quiet, id: \.self) { bundleID in
+                        cotypistQuietAppChip(bundleID)
+                    }
+                }
+            }
+            if !recommended.isEmpty {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Text("Suggested")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    ForEach(recommended, id: \.self) { bundleID in
+                        cotypistRecommendedAppButton(bundleID)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.bottom, MuesliTheme.spacing4)
+    }
+
+    private var cotypistQuietAppsEmptyState: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(MuesliTheme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("On in every app")
+                    .font(MuesliTheme.font(size: 13, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                SettingsNote("Add password managers, or apps with their own autocomplete like code editors.")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.surfacePrimary.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(
+            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        )
+    }
+
+    private func cotypistQuietAppChip(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return HStack(spacing: MuesliTheme.spacing8) {
+            cotypistAppIcon(bundleID, size: 20)
+            Text(name)
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button {
+                controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "off")
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .background(MuesliTheme.surfaceBorder.opacity(0.6))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Turn Cotypist back on in \(name)")
+            .accessibilityLabel("Remove \(name)")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .background(MuesliTheme.surfacePrimary)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+    }
+
+    private func cotypistRecommendedAppButton(_ bundleID: String) -> some View {
+        let name = CotypistQuietApps.name(of: bundleID)
+        return Button {
+            controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on")
+        } label: {
+            HStack(spacing: 5) {
+                cotypistAppIcon(bundleID, size: 14)
+                Text(name).lineLimit(1)
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+            }
+            .font(MuesliTheme.font(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .overlay(
+                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                    .strokeBorder(MuesliTheme.surfaceBorder, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Keep Cotypist quiet in \(name)")
+    }
+
+    /// Open apps first, then any app from the Applications folder.
+    private func cotypistAddAppMenu(excluding quiet: [String]) -> some View {
+        Menu {
+            let running = CotypistQuietApps.running(excluding: quiet)
+            if !running.isEmpty {
+                Section("Open apps") {
+                    ForEach(running, id: \.bundleID) { app in
+                        Button {
+                            controller.setSettingFromUI(CotypistQuietApps.settingID(app.bundleID), value: "on")
+                        } label: {
+                            Label {
+                                Text(app.name)
+                            } icon: {
+                                if let icon = CotypistQuietApps.menuIcon(of: app.bundleID) { Image(nsImage: icon) }
+                            }
+                        }
+                    }
+                }
+            }
+            Button("Choose from Applications…") { chooseCotypistQuietApp(excluding: quiet) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
+                Text("Add app")
+            }
+            .font(MuesliTheme.font(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(MuesliTheme.surfacePrimary)
+            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private func chooseCotypistQuietApp(excluding quiet: [String]) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Cotypist won't suggest anything in the apps you choose."
+        panel.begin { response in
+            guard response == .OK else { return }
+            let chosen = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }.filter { !quiet.contains($0) }
+            CotypistQuietApps.chosen.append(contentsOf: chosen)
+            for bundleID in chosen { controller.setSettingFromUI(CotypistQuietApps.settingID(bundleID), value: "on") }
+        }
+    }
+
+    @ViewBuilder
+    private func cotypistAppIcon(_ bundleID: String, size: CGFloat) -> some View {
+        if let icon = CotypistQuietApps.icon(of: bundleID) {
+            Image(nsImage: icon).resizable().scaledToFit().frame(width: size, height: size)
+        } else {
+            Image(systemName: "app.dashed")
+                .resizable().scaledToFit().frame(width: size, height: size)
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+    }
+
+
+    private var experimentalSettingsPane: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            TimeTurnerSettingsView(controller: controller, appState: appState)
+            computerUseSettingsPane
+            quilSettingsSection
+            if appState.settingsModelAvailability.cotypistAvailable {
+                cotypistSettingsSection
+            }
+        }
+    }
+
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
-                settingsRow("Enable planner", controlWidth: meetingControlWidth) {
+                settingsCompactRow("Enable planner") {
                     settingsControl("cua_planner")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1994,20 +2326,19 @@ struct SettingsView: View {
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                 }
-                settingsRow("Planner model", controlWidth: meetingControlWidth) {
+                settingsRow(
+                    "Planner model",
+                    description: isLocalPlanner
+                        ? "Planning runs on this Mac. No ChatGPT sign-in is needed."
+                        : (!appState.settingsModelAvailability.localPlannerIDs.isEmpty
+                            ? nil
+                            : "Download Gemma in Models to enable the On-device backend."),
+                    controlWidth: meetingControlWidth
+                ) {
                     MuesliSettingControl(controller: controller, id: "cua_model",
                         allowedChoiceIDs: isLocalPlanner
-                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            ? appState.settingsModelAvailability.localPlannerIDs
                             : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
-                }
-                if isLocalPlanner {
-                    Text("Planning runs on this Mac. No ChatGPT sign-in is needed.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                } else if !ComputerUseLocalPlanner.models.contains(where: \.available) {
-                    Text("Download Gemma in Models to enable the On-device backend.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -2016,7 +2347,11 @@ struct SettingsView: View {
                     }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Execution timeout", controlWidth: meetingControlWidth) {
+                settingsRow(
+                    "Execution timeout",
+                    description: "Limits desktop observation and actions. Model thinking and time spent answering questions are excluded.",
+                    controlWidth: meetingControlWidth
+                ) {
                     integerInput(
                         label: "Computer use execution timeout",
                         value: Binding(
@@ -2028,7 +2363,7 @@ struct SettingsView: View {
                         range: 1...600,
                         step: 15,
                         unit: { $0 == 1 ? "second" : "seconds" }
-                    ).help("Limits desktop observation and actions. Model thinking and time spent answering questions are excluded.")
+                    )
                 }
             }
         }
@@ -2049,7 +2384,11 @@ struct SettingsView: View {
                     settingsControl("meeting_template")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Summary retries", controlWidth: meetingControlWidth) {
+                settingsRow(
+                    "Summary retries",
+                    description: "Retries transient AI failures before saving failed notes.",
+                    controlWidth: meetingControlWidth
+                ) {
                     integerInput(
                         label: "Summary retries",
                         value: Binding(
@@ -2066,7 +2405,6 @@ struct SettingsView: View {
                         unit: { $0 == 1 ? "retry" : "retries" }
                     )
                 }
-                settingsDescription("Retry transient AI summary failures before saving failed notes.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Templates", controlWidth: meetingControlWidth) {
                     actionButton("Manage Templates…") {
@@ -2076,7 +2414,7 @@ struct SettingsView: View {
             }
 
             settingsSection("Recording") {
-                settingsRow("Auto-record calendar meetings") {
+                settingsCompactRow("Auto-record calendar meetings") {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -2085,15 +2423,17 @@ struct SettingsView: View {
                 }
                 if appState.config.meetingRecordingSavePolicy != .never {
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Recording format") {
+                    settingsRow(
+                        "Recording format",
+                        description: "M4A is recommended for smaller files. WAV is lossless and uses more storage."
+                    ) {
                         settingsControl("recording_format")
                     }
-                    settingsDescription("M4A is recommended for smaller files. WAV is lossless and uses more storage.")
                 }
             }
 
             settingsSection("Auto Export") {
-                settingsRow("Auto-export meetings") {
+                settingsCompactRow("Auto-export meetings") {
                     settingsControl("auto_export_meetings")
                 }
                 if appState.config.autoExportMarkdownEnabled {
@@ -2110,17 +2450,12 @@ struct SettingsView: View {
                         settingsControl("export_format")
                     }
                 }
-                Text("Automatically saves each completed meeting to the chosen folder in the selected format.")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .padding(.horizontal, MuesliTheme.spacing16)
             }
 
             settingsSection("Meeting Notifications") {
-                settingsRow("Scheduled meetings") {
+                settingsCompactRow("Scheduled meetings", description: "For calendar events with a join link.") {
                     settingsControl("meeting_reminders")
                 }
-                settingsDescription("Show notifications for calendar meetings with a join link.")
 
                 if appState.config.showScheduledMeetingNotifications {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -2128,22 +2463,22 @@ struct SettingsView: View {
                     settingsRow("Reminder timing") {
                         settingsControl("meeting_reminder_time")
                     }
-                    settingsDescription("At start time avoids early calendar-only prompts before you join.")
                 }
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
-                settingsRow("Default action") {
+                settingsRow("Default action", description: meetingJoinActionDescription) {
                     settingsControl("meeting_join_action")
                 }
-                settingsDescription("Primary button for notifications and Coming Up. Pick “Transcribe Only” if you join in another browser.")
 
                 Divider().background(MuesliTheme.surfaceBorder)
 
-                settingsRow("Auto-detected meetings") {
+                settingsCompactRow(
+                    "Auto-detected meetings",
+                    description: "Detects calls from browser, camera, microphone, or app audio activity."
+                ) {
                     settingsControl("meeting_detection")
                 }
-                settingsDescription("Show notifications when a call is detected from browser, camera, microphone, or app audio activity.")
 
                 if appState.config.showMeetingDetectionNotification {
                     Divider().background(MuesliTheme.surfaceBorder)
@@ -2152,42 +2487,52 @@ struct SettingsView: View {
             }
 
             settingsSection("Calendars") {
-                settingsRow("Calendar access", controlWidth: meetingControlWidth) {
-                    HStack {
-                        Spacer(minLength: 0)
-                        if calendarPermission.granted {
-                            Text("Granted")
-                                .font(MuesliTheme.caption())
-                                .foregroundStyle(MuesliTheme.success)
-                        } else {
-                            Button(calendarPermission.requesting ? "Requesting…" : (calendarPermission.canRequest ? "Allow Access" : "Open Settings"), action: requestCalendarPermission)
-                                .buttonStyle(.borderedProminent)
-                                .disabled(calendarPermission.requesting)
-                        }
-                    }
-                }
-                if !calendarPermission.granted {
-                    settingsDescription(calendarPermission.canRequest
-                        ? "Show meetings from calendars on your Mac."
-                        : "Allow full Calendar access in System Settings.")
+                settingsCompactRow(
+                    "Calendar access",
+                    description: calendarPermission.granted
+                        ? nil
+                        : (calendarPermission.canRequest
+                            ? "Show meetings from calendars on your Mac."
+                            : "Allow full Calendar access in System Settings.")
+                ) {
+                    calendarPermissionControl
                 }
                 if let errorMessage = calendarPermission.errorMessage {
-                    Text(errorMessage)
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.recording)
+                    SettingsNote(errorMessage, tone: .error)
+                        .padding(.bottom, MuesliTheme.spacing4)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Upcoming meetings", controlWidth: meetingControlWidth) {
+                settingsRow(
+                    "Upcoming meetings",
+                    description: "How far ahead to show meetings and check reminders.",
+                    controlWidth: meetingControlWidth
+                ) {
                     settingsControl("upcoming_meetings")
                 }
-                .help("How far ahead to show scheduled meetings and check meeting reminders.")
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow("Only show events with a meeting link") {
+                    settingsControl("calendar_meeting_links_only")
+                }
                 Divider().background(MuesliTheme.surfaceBorder)
                 calendarSourcesControl
             }
 
             settingsSection("Advanced") {
-                settingsRow("Enable post-meeting hook", controlWidth: meetingControlWidth) {
+                settingsCompactRow(
+                    "Enable post-meeting hook",
+                    description: "Runs your chosen executable with your user permissions after each completed meeting. It receives the meeting ID and completion time as JSON on stdin."
+                ) {
                     settingsControl("meeting_hook")
+                }
+                settingsDetails("Hook details") {
+                    VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        SettingsNote("muesli runs the file directly, not through a shell, so it must already be runnable on its own. Runs, failures and their stderr are logged to meeting-hook.log in muesli's support folder. The hook is stopped after the timeout.")
+                        Text(verbatim: #"{"schemaVersion":1,"event":"meeting.completed","kind":"meeting","id":42,"completedAt":"2026-01-01T12:00:00Z"}"#)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Hook script", controlWidth: meetingControlWidth) {
@@ -2197,13 +2542,27 @@ struct SettingsView: View {
                 settingsRow("Timeout", controlWidth: meetingControlWidth) {
                     meetingHookTimeoutControl
                 }
-                settingsDescription("Runs a user-supplied executable after each completed meeting. The executable receives JSON on stdin and must already be runnable on its own.")
             }
             .padding(.top, MuesliTheme.spacing8)
         }
         .onAppear {
             refreshMeetingCalendarSourcesIfNeeded()
         }
+    }
+
+    private var meetingJoinActionDescription: String {
+        appState.config.meetingJoinDefaultAction == .recordOnly
+            ? "Used in notifications and Coming Up."
+            : "Used in notifications and Coming Up. Joining in another browser? Choose Transcribe Only."
+    }
+
+    private var calendarPermissionControl: some View {
+        permissionStatusControl(
+            granted: calendarPermission.granted,
+            actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings",
+            isBusy: calendarPermission.requesting,
+            action: requestCalendarPermission
+        )
     }
 
     private var appearanceSettingsPane: some View {
@@ -2214,30 +2573,29 @@ struct SettingsView: View {
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
                 .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
-                .padding(.bottom, 12)
-                settingsRow("Hide completely") {
+                .padding(.bottom, MuesliTheme.spacing8)
+                settingsCompactRow(
+                    "Hide completely",
+                    description: "Never shows the indicator, even while recording or processing. Useful when sharing your screen. Stop meetings from the menu bar."
+                ) {
                     settingsControl("hide_recording_indicator")
                 }
-                settingsDescription("Never shows the indicator, even while recording or processing — useful when sharing your screen. Stop meetings from the menu bar.")
                 Divider().background(MuesliTheme.surfaceBorder)
                 if appState.config.recordingIndicatorStyle == .notch {
-                    settingsDescription("Appears during recording and processing, then disappears after completion. Click the logo or status to open Muesli.")
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                    settingsDescription("On displays without a notch, Muesli uses a temporary Classic indicator at the top center.")
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+                    SettingsNote("Shows during recording and processing. Click the logo or status to open muesli. On external displays, it appears at the top center.")
                 } else {
-                    settingsRow("Keep visible when idle") {
+                    settingsCompactRow(
+                        "Keep visible when idle",
+                        description: "When off, appears only during recording and processing."
+                    ) {
                         settingsControl("show_floating_indicator")
                     }
-                    settingsDescription("When off, appears only during recording and processing.")
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("Position") {
                         settingsControl("indicator_position")
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Show keyboard shortcut on hover") {
+                    settingsCompactRow("Show keyboard shortcut on hover") {
                         settingsControl("show_hotkey_hover")
                         .disabled(!appState.config.showFloatingIndicator)
                     }
@@ -2245,27 +2603,27 @@ struct SettingsView: View {
             }
 
             settingsSection("Appearance") {
-                settingsRow("Dark mode") {
-                    settingsControl("dark_mode")
+                settingsRow("Theme") {
+                    settingsControl("appearance")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Menu bar icon") {
                     menuBarIconPicker
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Show hotkey in menu bar") {
+                settingsCompactRow("Show hotkey in menu bar") {
                     settingsControl("show_hotkey_menu")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Accent color") {
+                settingsRow("Accent color", description: appState.config.appearanceMode == .ultraDark ? "Used for toggles in Ultra Dark." : nil) {
                     glassTintPicker
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Play sound effects") {
+                settingsCompactRow("Play sound effects") {
                     settingsControl("sound")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Show next meeting in menu bar") {
+                settingsCompactRow("Show next meeting in menu bar") {
                     settingsControl("show_next_meeting")
                 }
             }
@@ -2277,16 +2635,11 @@ struct SettingsView: View {
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("") {
-                        Button {
+                        MuesliTextButton("Mischief Managed") {
                             SoundController.stopMaraudersMapClip()
                             isPreviewingClip = false
                             controller.resetMaraudersMap()
-                        } label: {
-                            Text("Mischief Managed")
-                                .font(.system(size: 11))
-                                .foregroundColor(MuesliTheme.textSecondary)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -2297,14 +2650,17 @@ struct SettingsView: View {
         HStack(spacing: 6) {
             ForEach(MuesliSettings.accentPresets, id: \.hex) { preset in
                 let isSelected = appState.config.recordingColorHex.lowercased() == preset.hex
+                // Swatches preview the saved accent as switches show it, in every theme
+                // (Ultra Dark primary actions stay white); the mark contrasts with that fill.
+                let palette = MuesliAccentPalette.palette(forHex: preset.hex)
                 Button {
                     controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
-                        .fill(preset.hex == "1e1e2e" ? MuesliTheme.defaultAccent : Color(hex: preset.hex))
+                        .fill(palette.fill)
                         .frame(width: 22, height: 22)
                         .overlay(
-                            Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
+                            Circle().strokeBorder(palette.onFill.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
                         )
                         .overlay(
                             Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
@@ -2313,7 +2669,7 @@ struct SettingsView: View {
                             if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(palette.onFill)
                             }
                         }
                 }
@@ -2345,19 +2701,20 @@ struct SettingsView: View {
                                     .font(.system(size: 12))
                             }
                         }
-                        .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                        .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                         .frame(width: 26, height: 26)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
-                        )
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(Color.white.opacity(isSelected ? 0.3 : 0.08), lineWidth: 1)
+                                .strokeBorder(
+                                    isSelected ? MuesliTheme.accentText.opacity(0.6) : MuesliTheme.surfaceBorder,
+                                    lineWidth: 1
+                                )
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(isSelected ? .tinted : .quiet, shape: .rounded(5)))
                     .help(option.label)
+                    .accessibilityLabel(option.label)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
         }
@@ -2368,7 +2725,7 @@ struct SettingsView: View {
             switch claudeCodeAuthStatus {
             case .signedIn:
                 Label("Connected to Claude Code", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
             case .unavailable:
                 Label("Claude Code unavailable", systemImage: "exclamationmark.circle")
                     .foregroundStyle(MuesliTheme.textSecondary)
@@ -2382,9 +2739,7 @@ struct SettingsView: View {
                 } else {
                     ClaudeCodeSignInButton(compact: true) { beginClaudeCodeSignIn() }
                 }
-                Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
-                    .font(MuesliTheme.caption())
-                    .buttonStyle(.plain)
+                MuesliTextButton("Check again", color: MuesliTheme.textPrimary) { Task { await refreshClaudeCodeAuthStatus() } }
             case nil:
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -2393,10 +2748,7 @@ struct SettingsView: View {
                 .foregroundStyle(MuesliTheme.textSecondary)
             }
             if let claudeCodeSignInError {
-                Text(claudeCodeSignInError)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                SettingsNote(claudeCodeSignInError, tone: .error)
             }
         }
         .font(MuesliTheme.caption())
@@ -2447,12 +2799,10 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Label("Signed in", systemImage: "checkmark.circle.fill")
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
                 Spacer(minLength: 8)
-                Button("Sign Out") { controller.signOutChatGPT() }
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .buttonStyle(.plain)
+                MuesliTextButton("Sign Out") { controller.signOutChatGPT() }
+                    .padding(.trailing, -6)
                     .help("Sign out of ChatGPT")
             }
             .frame(minHeight: 28)
@@ -2461,9 +2811,12 @@ struct SettingsView: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("Signing in...")
-                    .font(.system(size: 11))
+                    .font(MuesliTheme.captionMedium())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
+            // Occupies the sign-in button's frame so the row does not jump.
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Button {
@@ -2477,26 +2830,20 @@ struct SettingsView: View {
                 } label: {
                     HStack(spacing: 5) {
                         OpenAILogoShape()
-                            .fill(.white)
+                            .fill(.foreground)
                             .frame(width: 10, height: 10)
                         Text("Sign in with ChatGPT")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
+                            .font(MuesliTheme.captionMedium())
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .frame(height: 26)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.primary))
 
                 if let chatGPTSignInError {
-                    Text(chatGPTSignInError)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                    SettingsNote(chatGPTSignInError, tone: .error)
                 }
             }
         }
@@ -2507,74 +2854,36 @@ struct SettingsView: View {
         selectMeetingSummaryBackend: Bool = true
     ) -> some View {
         if appState.isOpenRouterAuthenticated {
+            // Same shape as the ChatGPT account control: status, then compact actions.
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 0) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(MuesliTheme.success)
-                        Text(appState.isOpenRouterEnvironmentManaged ? "Environment key" : "Connected")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(MuesliTheme.textSecondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    Divider()
-                        .background(MuesliTheme.surfaceBorder)
-                        .padding(.vertical, 5)
-
-                    Button {
-                        controller.manageOpenRouterKey()
-                    } label: {
-                        Text("Manage key")
-                            .font(.system(size: 10))
-                            .foregroundStyle(MuesliTheme.textSecondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .help("Manage this key at OpenRouter")
-
-                    Divider()
-                        .background(MuesliTheme.surfaceBorder)
-                        .padding(.vertical, 5)
-
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Label(
+                        appState.isOpenRouterEnvironmentManaged ? "Environment key" : "Connected",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.successText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: MuesliTheme.spacing8)
+                    MuesliTextButton("Manage key") { controller.manageOpenRouterKey() }
+                        .help("Manage this key at OpenRouter")
                     if appState.hasStoredOpenRouterCredential {
-                        Button {
+                        MuesliTextButton(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect") {
                             openRouterSignInError = controller.signOutOpenRouter()
-                        } label: {
-                            Text(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect")
-                                .font(.system(size: 10))
-                                .foregroundStyle(MuesliTheme.textSecondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .help("Remove Muesli's local copy of this OpenRouter key")
+                        .padding(.trailing, -6)
+                        .help("Remove muesli's local copy of this OpenRouter key")
                     } else {
                         Text("Managed externally")
-                            .font(.system(size: 10))
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .lineLimit(1)
+                            .font(MuesliTheme.caption())
+                            .foregroundStyle(MuesliTheme.textSecondary)
+                            .fixedSize()
                     }
                 }
-                .frame(height: 24)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
+                .frame(minHeight: 28)
 
                 if let openRouterSignInError {
-                    Text(openRouterSignInError)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                    SettingsNote(openRouterSignInError, tone: .error)
                 }
             }
         } else if isSigningInOpenRouter {
@@ -2582,9 +2891,11 @@ struct SettingsView: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("Connecting...")
-                    .font(.system(size: 11))
+                    .font(MuesliTheme.captionMedium())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
         } else {
             VStack(alignment: .leading, spacing: 5) {
                 Button {
@@ -2604,19 +2915,15 @@ struct SettingsView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "network")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
                         Text("Connect OpenRouter")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
+                            .font(MuesliTheme.captionMedium())
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                    .frame(height: 26)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.primary))
 
                 Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
                     isEnteringOpenRouterAPIKey.toggle()
@@ -2624,7 +2931,7 @@ struct SettingsView: View {
                     openRouterSignInError = nil
                 }
                 .buttonStyle(.link)
-                .font(.system(size: 10))
+                .font(MuesliTheme.caption())
 
                 if isEnteringOpenRouterAPIKey {
                     HStack(spacing: 6) {
@@ -2653,10 +2960,7 @@ struct SettingsView: View {
                 }
 
                 if let openRouterSignInError {
-                    Text(openRouterSignInError)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                    SettingsNote(openRouterSignInError, tone: .error)
                 }
             }
         }
@@ -2684,10 +2988,11 @@ struct SettingsView: View {
                 Image(systemName: isPreviewingClip ? "stop.fill" : "play.fill")
                     .font(.system(size: 11))
                     .foregroundColor(MuesliTheme.textSecondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
+            .buttonStyle(.muesli(.quiet))
+            .help(isPreviewingClip ? "Stop preview" : "Preview sound")
+            .accessibilityLabel(isPreviewingClip ? "Stop preview" : "Preview sound")
         }
     }
 
@@ -2876,9 +3181,8 @@ struct SettingsView: View {
                 actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
             )
             if let errorMessage = calendarPermission.errorMessage {
-                Text(errorMessage)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.recording)
+                SettingsNote(errorMessage, tone: .error)
+                    .padding(.bottom, MuesliTheme.spacing4)
             }
         }
     }
@@ -2892,44 +3196,62 @@ struct SettingsView: View {
         isBusy: Bool = false,
         actionTitle: String = "Grant"
     ) -> some View {
-        HStack {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
-                    .frame(width: 8, height: 8)
-                Text(name)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-            }
-            Spacer()
-            if granted {
-                Text("Granted")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.success)
-            } else {
-                Button(isBusy ? "Checking…" : actionTitle) {
-                    action()
+        settingsCompactRow(name) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                permissionStatusControl(granted: granted, actionTitle: actionTitle, isBusy: isBusy, action: action)
+                Button {
+                    openPrivacyPane(pane)
+                } label: {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
                 }
-                .disabled(isBusy)
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(MuesliTheme.accentSubtle)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .help("Open in System Settings")
+                .accessibilityLabel("Open \(name) in System Settings")
             }
-            Button {
-                openPrivacyPane(pane)
-            } label: {
-                Image(systemName: "arrow.up.forward.square")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help("Open in System Settings")
         }
-        .frame(minHeight: 32)
+    }
+
+    /// Shared by Permissions and Calendars so the same permission reads the same way in both places.
+    @ViewBuilder
+    private func permissionStatusControl(
+        granted: Bool,
+        actionTitle: String,
+        isBusy: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        if granted {
+            Label("Granted", systemImage: "checkmark.circle.fill")
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(MuesliTheme.successText)
+        } else {
+            accentActionButton(isBusy ? "Checking…" : actionTitle, action: action)
+                .disabled(isBusy)
+        }
+    }
+
+    private func accentActionButton(
+        _ title: String,
+        systemImage: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(title)
+                    .lineLimit(1)
+            }
+            .font(MuesliTheme.captionMedium())
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+        }
+        .buttonStyle(.muesli(.tinted))
     }
 
     private func openPrivacyPane(_ pane: String) {
@@ -2953,49 +3275,28 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func screenContextControl(width: CGFloat? = nil) -> some View {
+    private func screenContextControl() -> some View {
         if accessibilityGranted {
             settingsControl("app_context")
-            .frame(width: width, alignment: .trailing)
         } else {
-            Button {
+            accentActionButton("Grant") {
                 handleScreenContextToggle(true)
-            } label: {
-                Text("Grant")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .frame(width: width)
-                    .frame(minHeight: 32)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
         }
     }
 
     @ViewBuilder
-    private func dictationOCRContextControl(width: CGFloat? = nil) -> some View {
+    private func dictationOCRContextControl() -> some View {
         if !appState.config.enableScreenContext {
             settingsControl("ocr_context")
-                .frame(width: width, alignment: .trailing)
                 .disabled(true)
         } else if screenRecordingGranted {
             settingsControl("ocr_context")
-            .frame(width: width, alignment: .trailing)
         } else {
-            Button {
+            accentActionButton("Grant") {
                 _ = CGRequestScreenCaptureAccess()
                 refreshPermissionStatuses(for: .permissionRequested)
-            } label: {
-                Text("Grant")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MuesliTheme.accent)
-                    .frame(width: width)
-                    .frame(minHeight: 32)
-                    .background(MuesliTheme.accentSubtle)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
         }
     }
 
@@ -3074,20 +3375,7 @@ struct SettingsView: View {
         @ViewBuilder content: () -> some View
     ) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            HStack(spacing: 5) {
-                if let icon {
-                    Image(nsImage: icon)
-                        .renderingMode(.template)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 12, height: 12)
-                }
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .textCase(.uppercase)
-            }
-            .foregroundStyle(MuesliTheme.textTertiary)
-            .padding(.leading, 2)
+            SettingsSectionHeading(title: title, icon: icon)
 
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -3102,62 +3390,36 @@ struct SettingsView: View {
         }
     }
 
-    /// Standardized row: label on left, control on right.
-    /// Controls share a fixed-width column so they all right-align consistently.
-    @ViewBuilder
-    private func settingsRow(_ label: String, controlWidth rowControlWidth: CGFloat? = nil, @ViewBuilder control: () -> some View) -> some View {
-        let width = rowControlWidth ?? controlWidth
-        HStack(alignment: .center) {
-            Text(label)
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .layoutPriority(1)
-            Spacer(minLength: 20)
-            ZStack(alignment: .trailing) {
-                // Invisible spacer forces the ZStack to exactly controlWidth
-                Color.clear.frame(width: width, height: 1)
-                control()
-                    .frame(maxWidth: width)
-            }
-        }
-        .frame(minHeight: 32)
-    }
-
-    @ViewBuilder
+    /// Menus, fields and compound controls: a bounded trailing column that stacks in narrow windows.
     private func settingsRow(
         _ label: String,
-        description: String,
+        description: String? = nil,
         controlWidth rowControlWidth: CGFloat? = nil,
         @ViewBuilder control: () -> some View
     ) -> some View {
-        let width = rowControlWidth ?? controlWidth
-        HStack(alignment: .center, spacing: 20) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                Text(description)
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 0)
-
-            control()
-                .frame(width: width, alignment: .trailing)
-        }
-        .frame(minHeight: 44)
+        SettingsRow(label: label, description: description, controlWidth: rowControlWidth ?? controlWidth, control: control)
     }
 
-    private func settingsDescription(_ text: String) -> some View {
-        Text(text)
-            .font(MuesliTheme.caption())
-            .foregroundStyle(MuesliTheme.textTertiary)
-            .padding(.horizontal, MuesliTheme.spacing16)
-            .padding(.top, -4)
-            .padding(.bottom, MuesliTheme.spacing8)
+    /// Switches and small buttons: intrinsic width, so the label keeps the remaining space.
+    private func settingsCompactRow(
+        _ label: String,
+        description: String? = nil,
+        @ViewBuilder control: () -> some View
+    ) -> some View {
+        SettingsRow(label: label, description: description, controlWidth: nil, control: control)
+    }
+
+    /// Optional setup reference, kept out of the way but available without hovering.
+    private func settingsDetails(_ title: String, @ViewBuilder content: @escaping () -> some View) -> some View {
+        DisclosureGroup {
+            content()
+                .padding(.top, MuesliTheme.spacing4)
+        } label: {
+            Text(title)
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .padding(.bottom, MuesliTheme.spacing8)
     }
 
     // MARK: - Controls
@@ -3183,18 +3445,11 @@ struct SettingsView: View {
                 Text(title)
                     .lineLimit(1)
             }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
+            .font(MuesliTheme.font(size: 12, weight: .medium))
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructive : .secondary))
     }
 
     private var mutedMeetingDetectionAppsControl: some View {
@@ -3228,28 +3483,29 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: isMuted ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isMuted ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(isMuted ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .frame(width: 16)
                 Image(systemName: app.icon)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 14)
                 Text(app.name)
-                    .font(.system(size: 12))
+                    .font(MuesliTheme.callout())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(isMuted ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isMuted ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
+            .overlay {
+                if isMuted {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.accent.opacity(0.35), lineWidth: 1)
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isMuted ? .tinted : .secondary, bordered: !isMuted))
+        .accessibilityAddTraits(isMuted ? .isSelected : [])
     }
 
     private func updateMutedMeetingDetectionApp(_ bundleID: String, isMuted: Bool) {
@@ -3304,13 +3560,9 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             if calendarPermission.granted {
                 if sourceGroups.isEmpty {
-                    Text(calendarSourcesRefresh.isLoading ? "Loading calendars…" : "No calendars on this Mac.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                    SettingsNote(calendarSourcesRefresh.isLoading ? "Loading calendars…" : "No calendars on this Mac.")
                 } else {
-                    Text("Choose calendars to show meetings from.")
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                    SettingsNote("Choose calendars to show meetings from.")
                     ForEach(sourceGroups) { group in
                         calendarSourceGroupView(group)
                     }
@@ -3340,13 +3592,13 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .lineLimit(1)
 
                     Text("\(group.subtitle) • \(group.items.count) \(group.items.count == 1 ? "calendar" : "calendars")")
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
+                        .font(MuesliTheme.metadata())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                         .lineLimit(1)
                 }
 
@@ -3390,13 +3642,13 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: item.isEnabled ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(item.isEnabled ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(item.isEnabled ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .frame(width: 16)
                 Circle()
                     .fill(item.colorHex.map { Color(hex: $0) } ?? MuesliTheme.textTertiary)
                     .frame(width: 8, height: 8)
                 Text(item.title)
-                    .font(.system(size: 12))
+                    .font(MuesliTheme.callout())
                     .foregroundStyle(item.isEnabled ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
@@ -3446,12 +3698,12 @@ struct SettingsView: View {
 
                 if appState.config.autoExportMarkdownFolderPath.isEmpty {
                     Text("Choose a folder…")
-                        .font(.system(size: 12))
+                        .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .lineLimit(1)
                 } else {
                     Text(appState.config.autoExportMarkdownFolderPath)
-                        .font(.system(size: 12))
+                        .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -3519,12 +3771,12 @@ struct SettingsView: View {
 
                 if appState.config.meetingHookPath.isEmpty {
                     Text("Choose a script…")
-                        .font(.system(size: 12))
+                        .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .lineLimit(1)
                 } else {
                     Text(appState.config.meetingHookPath)
-                        .font(.system(size: 12))
+                        .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -3618,7 +3870,7 @@ struct SettingsView: View {
                 .accessibilityLabel(label)
 
             Text(unit(clampedValue))
-                .font(MuesliTheme.body())
+                .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 58, alignment: .leading)
 
@@ -3652,8 +3904,8 @@ struct SettingsView: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("Loading models")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else if !appState.openRouterSummaryModels.isEmpty {
@@ -3664,21 +3916,21 @@ struct SettingsView: View {
                     Button("Retry") {
                         controller.loadOpenRouterModels(.text, force: true)
                     }
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.captionMedium())
                 }
             }
         } else {
             HStack(spacing: 8) {
                 if case .failed(let message) = appState.openRouterSummaryCatalogState {
                     Text(message)
-                        .font(.system(size: 11))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .lineLimit(1)
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.destructiveText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Button(appState.openRouterSummaryCatalogState == .idle ? "Load" : "Retry") {
                     controller.loadOpenRouterModels(.text, force: true)
                 }
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.captionMedium())
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -3702,7 +3954,7 @@ struct SettingsView: View {
                 Button("Retry") {
                     controller.loadOpenRouterModels(.transcription, force: true)
                 }
-                .font(.system(size: 11, weight: .medium))
+                .font(MuesliTheme.captionMedium())
             }
         }
     }
@@ -3719,8 +3971,8 @@ struct SettingsView: View {
                 .fill(key.isEmpty ? MuesliTheme.textTertiary : MuesliTheme.success)
                 .frame(width: 6, height: 6)
             Text(key.isEmpty ? "No API key configured" : "Key configured")
-                .font(.system(size: 11))
-                .foregroundStyle(key.isEmpty ? MuesliTheme.textTertiary : MuesliTheme.success)
+                .font(MuesliTheme.captionMedium())
+                .foregroundStyle(key.isEmpty ? MuesliTheme.textSecondary : MuesliTheme.successText)
         }
         .frame(minHeight: 20)
     }
@@ -3742,22 +3994,12 @@ struct SettingsView: View {
                         .symbolRenderingMode(.hierarchical)
                 }
             }
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
+                .font(MuesliTheme.font(size: 13, weight: .medium))
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(
-                            MuesliTheme.surfaceBorder,
-                            lineWidth: 1
-                        )
-                )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructive : .secondary))
     }
 
 }
@@ -3882,7 +4124,7 @@ struct PastableSecureField: NSViewRepresentable {
     func makeNSView(context: Context) -> EditableNSSecureTextField {
         let field = EditableNSSecureTextField()
         field.placeholderString = placeholder
-        field.font = .systemFont(ofSize: 13)
+        field.font = AppFonts.font(size: 13)
         field.isBordered = true
         field.isBezeled = true
         field.bezelStyle = .roundedBezel
@@ -3931,7 +4173,7 @@ struct SettingsModelTextField: View {
             showsFullValueOnHover: true,
             onChange: { onChange($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         )
-        .frame(height: 22)
+        .frame(minHeight: 26)
     }
 }
 
@@ -3963,7 +4205,7 @@ struct PastableTextField: NSViewRepresentable {
     func makeNSView(context: Context) -> EditableNSTextField {
         let field = EditableNSTextField()
         field.placeholderString = placeholder
-        field.font = .systemFont(ofSize: 13)
+        field.font = AppFonts.font(size: 13)
         field.isBordered = true
         field.isBezeled = true
         field.bezelStyle = .roundedBezel

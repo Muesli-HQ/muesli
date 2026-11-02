@@ -3,17 +3,18 @@ import CryptoKit
 import MuesliCore
 
 enum BodhanModel: String, CaseIterable, Sendable {
-    case core = "phequals/indic-transcribe-core-coreml"
-    case flex = "phequals/indic-transcribe-flex-coreml"
+    case core = "Muesli-HQ/indic-transcribe-core-coreml"
+    case flex = "Muesli-HQ/indic-transcribe-flex-coreml"
 
-    case coreInt8 = "phequals/indic-transcribe-core-coreml-int8"
-    case flexInt8 = "phequals/indic-transcribe-flex-coreml-int8"
+    case coreInt8 = "Muesli-HQ/indic-transcribe-core-coreml-int8"
+    case flexInt8 = "Muesli-HQ/indic-transcribe-flex-coreml-int8"
 
     var isInt8: Bool { self == .coreInt8 || self == .flexInt8 }
     var isCore: Bool { self == .core || self == .coreInt8 }
     var repository: String { isCore ? Self.core.rawValue : Self.flex.rawValue }
     var revision: String { isCore ? "65a3980ce14b240c3de15ce50c3d12986c413a33" : "226cf58626c3718fd9c2849e7ad6f522ecc432d6" }
-    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + (isInt8 ? " INT8" : " FP16") }
+    var tierName: String { isInt8 ? "Lite" : "Pro" }
+    var name: String { (isCore ? "Bodhan Core" : "Bodhan Flex") + " " + tierName }
     var mixedScript: Bool { !isCore }
     var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/muesli/models/\(rawValue.split(separator: "/").last!)")
@@ -99,6 +100,23 @@ enum BodhanModel: String, CaseIterable, Sendable {
             return invalid
         } onCancel: {
             verification.cancel()
+        }
+    }
+
+    /// Preview reloads must fail without repairing or downloading missing assets.
+    func validateCachedArtifacts() async throws {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("artifacts.json")),
+              let manifest = try? JSONDecoder().decode(Artifacts.self, from: data) else {
+            throw NSError(domain: "BodhanASR", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "The selected Bodhan model is not cached."])
+        }
+        let entries = Dictionary((manifest.files + nativeAssetSupplement).map { ($0.path, $0) },
+                                 uniquingKeysWith: { first, _ in first })
+        let missing = requiredFiles.filter { entries[$0] == nil }
+        let invalid = try await Self.invalidCachedArtifacts(requiredFiles.compactMap { entries[$0] }, at: directory)
+        guard missing.isEmpty, invalid.isEmpty else {
+            throw NSError(domain: "BodhanASR", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "The cached Bodhan model is incomplete or failed its integrity check."])
         }
     }
 

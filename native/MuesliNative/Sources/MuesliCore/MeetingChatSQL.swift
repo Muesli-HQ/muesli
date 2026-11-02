@@ -23,7 +23,7 @@ enum MeetingChatSQL {
         }
         var result: [T] = []
         while true {
-            let status = sqlite3_step(statement)
+            let status = try GlobalSearchIndex.stepSourceWrite(statement)
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else { throw error(db) }
             result.append(try map(statement))

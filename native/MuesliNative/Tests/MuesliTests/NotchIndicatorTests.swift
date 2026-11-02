@@ -7,11 +7,470 @@ import MuesliCore
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
     @MainActor
-    private func makeNotch() -> NotchIndicatorController {
+    private func makeNotch(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) -> NotchIndicatorController {
         NotchIndicatorController(resolveGeometry: { screen in
             NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+        }, pointerLocation: pointerLocation)
+    }
+
+    @Test("Quill processing labels the assistant, not the foreground app")
+    @MainActor
+    func quillHeaderDoesNotImpersonateProvider() throws {
+        _ = NSApplication.shared
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.updateInstructionApp(name: "ChatGPT", bundleID: "com.apple.finder")
+        indicator.instructionMode = .quill
+        indicator.isToggleDictation = true
+        var stops = 0
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.setState(.recording, config: config)
+        #expect(indicator.notchInstruction == nil)
+        notch.onStopRecording?()
+        #expect(stops == 1)
+        indicator.showQuilInstruction("A question", config: config)
+        #expect(indicator.notchInstruction == "A question")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+        indicator.updateInstructionApp(name: "Another app", bundleID: "com.apple.TextEdit")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+    }
+
+    @Test("Quill answers persist across idle callbacks and collapse, then yield to recording")
+    @MainActor
+    func quillResponseLifecycle() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.showQuilInstruction("A question", config: config)
+        let processingFrame = try #require(notch.screenFrame)
+        #expect(notch.expandedPanelFrame != nil)
+        // Complete directly from processing, before the controller's idle callback.
+        indicator.showQuillAnswer("An answer", question: "A question", config: config, onDismiss: {}, onFollowUp: {})
+        #expect(notch.screenFrame == processingFrame)
+        indicator.setState(.idle, config: config)
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.quillQuestion == "A question")
+        #expect(try #require(notch.expandedPanelFrame).height < 180)
+        #expect(notch.expandedPanelFrame != nil)
+        #expect(notch.expandedPanelFrame?.width == notch.screenFrame?.width)
+        #expect(notch.expandedPanelFrame?.minX == notch.screenFrame?.minX)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame == nil)
+        indicator.setState(.idle, config: config)
+        indicator.showLoading("Late model preparation")
+        indicator.hideLoading()
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.expandedPanelFrame == nil)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame != nil)
+        indicator.instructionMode = .quill
+        indicator.setState(.recording, config: config)
+        #expect(notch.quillAnswer == nil)
+        #expect(notch.isVisible)
+    }
+
+    @Test("Short Quill answers fit their content and long answers have a bounded viewport")
+    @MainActor
+    func answerSizing() {
+        let short = QuillAssistantLayout.contentHeight(answer: "The capital of Azerbaijan is Baku.", question: nil, width: 420)
+        let long = QuillAssistantLayout.contentHeight(answer: String(repeating: "A longer explanation with multiple paragraphs.\n\n", count: 40), question: nil, width: 420)
+        if let path = ProcessInfo.processInfo.environment["MUESLI_QUILL_SNAPSHOT"] {
+            let height = QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420)
+            let view = NSHostingView(rootView: QuillAssistantView(
+                answer: "The capital of Azerbaijan is Baku.", question: nil,
+                contentHeight: height - QuillAssistantLayout.chromeHeight, onFollowUp: {}, onDismiss: {}))
+            view.frame = CGRect(x: 0, y: 0, width: 420, height: height)
+            view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+        }
+        #expect(short > 0)
+        #expect(QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420) < 150)
+        #expect(long > 420)
+        #expect(QuillAssistantLayout.height(contentHeight: long, maximumHeight: 420) == 420)
+    }
+
+    @Test("Insertion-stop notice persists during recording and resets before the next session", arguments: [false, true], [false, true])
+    @MainActor
+    func cursorStopNoticeLifecycle(useNotch: Bool, decoderFailed: Bool) throws {
+        _ = NSApplication.shared
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        if useNotch { config.indicatorAnchor = .notch }
+        store.save(config)
+        indicator.setToggleDictation(true, config: config)
+        indicator.setCursorInsertionStopped(true, config: config)
+        if decoderFailed {
+            indicator.setLiveTranscriptionFailed(config: config)
+            // Late cursor loss cannot hide the failure or promise a full result.
+            indicator.setCursorInsertionStopped(true, config: config)
+            #expect(indicator.insertionStopReason == .transcriptionFailed)
+            #expect(indicator.insertionStoppedDetail.contains("available transcript"))
+            #expect(indicator.insertionStoppedDetail.contains("recovery when you stop"))
+            #expect(!indicator.insertionStoppedDetail.contains("final dictation"))
+        } else {
+            #expect(indicator.insertionStopReason == .cursorOwnershipLost)
+        }
+        indicator.setState(.recording, config: config)
+        #expect(indicator.cursorInsertionStopped)
+        #expect(notch.cursorInsertionStopped == useNotch)
+        var stops = 0
+        indicator.onStopToggleDictation = { stops += 1 }
+        // The warning must not take ownership away from recording controls.
+        indicator.handleClick()
+        #expect(stops == 1)
+        indicator.setState(.transcribing, config: config)
+        #expect(!indicator.cursorInsertionStopped)
+        #expect(!notch.cursorInsertionStopped)
+        indicator.setState(.idle, config: config)
+        indicator.setToggleDictation(true, config: config)
+        #expect(!indicator.cursorInsertionStopped)
+    }
+
+    @Test("Idle feedback uses the selected notch and retains its message",
+          arguments: [NotchStatus.loading, .warning, .success, .cursor])
+    @MainActor
+    func statusRouting(kind: NotchStatus) throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        let message = "Preparing the selected model"
+        switch kind {
+        case .loading: indicator.showLoading(message)
+        case .warning: indicator.showWarning(message)
+        case .success: indicator.showSuccess(message)
+        case .cursor: indicator.showComputerUseCursor(at: .zero, label: message)
+        }
+        #expect(notch.isVisible)
+        #expect(notch.status == kind)
+        #expect(notch.statusMessage == message)
+        #expect(notch.expandedPanelFrame != nil)
+        indicator.setState(.recording, config: config)
+        #expect(notch.status == nil)
+        indicator.hideLoading()
+        indicator.hideComputerUseCursor()
+        #expect(notch.isVisible)
+    }
+
+    @Test("Quill warmup and ready feedback stay in the notch with a floating dictation preference")
+    @MainActor
+    func quillPreparationFeedbackUsesNotch() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        store.save(config)
+        indicator.showLoading("Preparing models… Mic off", preferNotch: true)
+        #expect(notch.status == .loading)
+        #expect(notch.isVisible)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(!indicator.isShowingLoading)
+        indicator.showSuccess("Ready — start recording", preferNotch: true)
+        #expect(notch.status == .success)
+        #expect(notch.isVisible)
+        indicator.showWarning("Model preparation failed", preferNotch: true)
+        #expect(notch.status == .warning)
+        indicator.instructionMode = .quill
+        indicator.setState(.preparing, config: config)
+        #expect(notch.status == nil)
+        #expect(notch.isVisible)
+        indicator.setState(.recording, config: config)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(notch.isVisible)
+        #expect(store.load().indicatorAnchor == .custom)
+    }
+
+    @Test("Changing progress preserves collapsed disclosure", arguments: [NotchStatus.loading, .cursor])
+    @MainActor
+    func progressPreservesDisclosure(kind: NotchStatus) throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: kind, message: "10%"))
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame == nil)
+        #expect(notch.showStatus(on: screen, kind: kind, message: "20%"))
+        #expect(notch.expandedPanelFrame == nil)
+        #expect(notch.statusMessage == "20%")
+        #expect(notch.showStatus(on: screen, kind: .success, message: "Done", duration: 1))
+        #expect(notch.expandedPanelFrame != nil)
+    }
+
+    @Test("Existing statuses transfer to the pill when notch geometry disappears",
+          arguments: [NotchStatus.loading, .cursor, .warning, .success])
+    @MainActor
+    func statusDisplayFallback(kind: NotchStatus) throws {
+        _ = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
         })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        switch kind {
+        case .loading: indicator.showLoading("Preparing")
+        case .cursor: indicator.showComputerUseCursor(at: .zero, label: "Click")
+        case .warning: indicator.showWarning("Notice")
+        case .success: indicator.showSuccess("Done")
+        }
+        #expect(notch.isVisible)
+        supported = false
+        #expect(indicator.refreshNotchFeedbackPlacement())
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+    }
+
+    @Test("Identical loading update rejects unsupported notch geometry")
+    @MainActor
+    func repeatedProgressFallback() throws {
+        let screen = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        supported = false
+        #expect(!notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        #expect(!notch.isVisible)
+    }
+
+    @Test("Progress reuses config and follows settings changes while idle UI is hidden")
+    @MainActor
+    func progressConfigurationCache() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        config.showFloatingIndicator = false
+        var loads = 0
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch,
+            loadFeedbackConfiguration: { loads += 1; return config })
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.showLoading("Preparing")
+        for _ in 0..<10 { indicator.showLoading("Preparing") }
+        indicator.showLoading("Downloading 50%")
+        #expect(loads == 1)
+        #expect(notch.isVisible)
+        config.indicatorAnchor = .bottomCenter
+        // This is the settings refresh entry point even when showFloatingIndicator is off.
+        indicator.refreshMeetingTranscriptPreference(config: config)
+        indicator.showLoading("Downloading 50%")
+        #expect(!notch.isVisible)
+        for _ in 0..<10 { indicator.showLoading("Downloading 50%") }
+        #expect(loads == 1)
+        config.indicatorAnchor = .notch
+        indicator.refreshMeetingTranscriptPreference(config: config)
+        indicator.showLoading("Downloading 50%")
+        #expect(notch.isVisible)
+        #expect(loads == 1)
+    }
+
+    @Test("Notices release loading ownership before external-display fallback", arguments: [true, false])
+    @MainActor
+    func noticeReleasesLoading(success: Bool) throws {
+        _ = try #require(NSScreen.main)
+        var supported = true
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            supported ? NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
+        })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        #expect(indicator.isShowingLoading)
+        if success { indicator.showSuccess("Done") } else { indicator.showWarning("Failed") }
+        #expect(!indicator.isShowingLoading)
+        supported = false
+        #expect(indicator.refreshNotchFeedbackPlacement())
+        let frame = indicator.currentFrame
+        indicator.hideLoading()
+        #expect(!indicator.isShowingLoading)
+        #expect(indicator.currentFrame == frame)
+        #expect(!notch.isVisible)
+    }
+
+    @Test("Late loading completion cannot hide a success notice")
+    @MainActor
+    func loadingCompletionPreservesNotice() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        indicator.showSuccess("Ready")
+        indicator.hideLoading()
+        indicator.refreshIcon()
+        #expect(notch.status == .success)
+        #expect(notch.statusMessage == "Ready")
+    }
+
+    @Test("Feedback falls back to the pill on displays without a notch")
+    @MainActor
+    func statusFallback() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let notch = NotchIndicatorController(resolveGeometry: { _ in nil })
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        store.save(config)
+        indicator.showLoading("Preparing")
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+        indicator.hideLoading()
+        indicator.showSuccess("Done")
+        #expect(!notch.isVisible)
+        #expect(indicator.currentFrame != nil)
+    }
+
+    @Test("Notice dismissal cannot hide a newer recording")
+    @MainActor
+    func statusDeadline() async throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .warning, message: "Notice", duration: 0.05))
+        #expect(notch.show(on: screen, title: "Recording", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: false, active: true, icon: NSImage(), accent: .red))
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(notch.isVisible)
+        #expect(notch.status == nil)
+    }
+
+    @Test("Dismissing transcript restores instructions and preference changes allow reopening")
+    @MainActor
+    func transcriptRestoresInstruction() throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        _ = notch.show(on: screen, title: "Meeting", detail: "", recording: true,
+            paused: false, meeting: true, handsFree: true, active: true, icon: NSImage(),
+            accent: .red, instruction: "Review the current action")
+        let instructionFrame = try #require(notch.expandedPanelFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.dismissMeetingTranscript()
+        #expect(notch.meetingTranscriptFrame == nil)
+        #expect(notch.expandedPanelFrame == instructionFrame)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.meetingTranscriptEnabled = false
+        notch.meetingTranscriptEnabled = true
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.hide()
+        #expect(notch.expandedPanelFrame == nil)
+    }
+
+    @Test("Moving into the transcript retains it; leaving both surfaces collapses it")
+    @MainActor
+    func meetingTranscriptPointerTransition() async throws {
+        let screen = try #require(NSScreen.main)
+        var pointer = NSPoint(x: -10000, y: -10000)
+        let notch = makeNotch(pointerLocation: { pointer })
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        _ = notch.show(on: screen, title: "Meeting", detail: "", recording: true,
+            paused: false, meeting: true, handsFree: true, active: true, icon: NSImage(), accent: .red)
+        notch.setMeetingTranscriptHovered(true)
+        let frame = try #require(notch.meetingTranscriptFrame)
+        pointer = NSPoint(x: frame.midX, y: frame.midY)
+        notch.setMeetingTranscriptHovered(false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(notch.meetingTranscriptFrame == frame)
+        pointer = NSPoint(x: -10000, y: -10000)
+        notch.setMeetingTranscriptHovered(false)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+    }
+
+    @Test("Meeting transcript expands beneath the notch and survives pause", arguments: [false, true])
+    @MainActor
+    func meetingTranscriptExpansion(paused: Bool) throws {
+        let screen = try #require(NSScreen.main)
+        let notch = makeNotch()
+        defer { notch.hide() }
+        notch.meetingTranscriptEnabled = true
+        notch.updateMeetingTranscript(transcript: "You: A meeting row", partialYou: "Next", partialOthers: "")
+        func show(_ paused: Bool) {
+            _ = notch.show(on: screen, title: "Meeting", detail: "Meeting", recording: true,
+                paused: paused, meeting: true, handsFree: true, active: true,
+                icon: NSImage(), accent: .red)
+        }
+        show(paused)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        let frame = try #require(notch.meetingTranscriptFrame)
+        #expect(frame.size == FloatingMeetingTranscriptPlacement.panelSize)
+        #expect(frame.maxY == screen.frame.maxY - 32)
+        show(!paused)
+        #expect(notch.meetingTranscriptFrame == frame)
+        notch.meetingTranscriptEnabled = false
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame == nil)
+        notch.meetingTranscriptEnabled = true
+        notch.setMeetingTranscriptHovered(true)
+        #expect(notch.meetingTranscriptFrame != nil)
+        notch.hide()
+        #expect(notch.meetingTranscriptFrame == nil)
     }
 
     @Test("Cursor feedback must not hide the active computer-use notch")
@@ -136,7 +595,13 @@ struct NotchIndicatorTests {
         #expect(NotchOutcome.quillFailure(QuilTransformationError.emptyResponse) == .failure)
         #expect(NotchOutcome.success.color == .systemGreen)
         #expect(NotchOutcome.needsInput.color == .systemYellow)
-        #expect(NotchOutcome.failure.color == .systemRed)
+        let failureColor = NotchOutcome.failure.color.usingColorSpace(.sRGB)!
+        #expect(failureColor.redComponent > failureColor.greenComponent)
+        #expect(failureColor.redComponent > failureColor.blueComponent)
+        let failureHex = (Int((failureColor.redComponent * 255).rounded()) << 16)
+            | (Int((failureColor.greenComponent * 255).rounded()) << 8)
+            | Int((failureColor.blueComponent * 255).rounded())
+        #expect(MuesliContrast.ratio(0xFFFFFF, failureHex) >= 4.5)
         #expect(NotchOutcome.success.duration == 2)
         #expect(NotchOutcome.needsInput.duration == nil)
         #expect(NotchOutcome.failure.duration == 5)
@@ -152,7 +617,7 @@ struct NotchIndicatorTests {
         #expect(frame.width == 440)
         #expect(frame.height == 100)
         let progress = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), resultCount: 99)
-        #expect(progress.height == 190)
+        #expect(progress.height == 202)
         #expect(progress.maxY == geometry.cutout.minY)
         let narrow = CGRect(x: 1500, y: 0, width: 300, height: 900)
         #expect(geometry.instructionFrame(in: narrow).minX == narrow.minX)
@@ -450,6 +915,48 @@ struct NotchIndicatorTests {
         config.indicatorAnchor = .notch
         let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
         #expect(decoded.indicatorAnchor == .notch)
+    }
+
+    @Test("External presentation is centered without a camera gap", arguments: [CGPoint.zero, CGPoint(x: -1920, y: 450)], [0.0, 24.0, 32.0])
+    func externalGeometry(origin: CGPoint, menuHeight: Double) {
+        let screen = CGRect(origin: origin, size: CGSize(width: 1920, height: 1080))
+        let visible = CGRect(x: screen.minX, y: screen.minY, width: screen.width, height: screen.height - menuHeight)
+        let geometry = NotchIndicatorGeometry.presentation(screen: screen, visibleFrame: visible,
+            topInset: 0, left: nil, right: nil)
+        #expect(geometry.cutout.width == 0)
+        #expect(geometry.frame().midX == screen.midX)
+        #expect(geometry.frame().maxY == screen.maxY)
+        #expect(geometry.frame().width == 220)
+        #expect(geometry.frame().height >= 28)
+        #expect(screen.contains(geometry.frame()))
+        #expect(geometry.instructionFrame(in: visible).maxY == geometry.frame().minY)
+    }
+
+    @Test("Loading follows built-in and external displays without another progress callback")
+    @MainActor
+    func externalLoadingRoundTrip() throws {
+        let screen = try #require(NSScreen.main)
+        var physical = true
+        let notch = NotchIndicatorController(resolveGeometry: { target in
+            physical ? NotchIndicatorGeometry(cutout: CGRect(x: target.frame.midX - 90,
+                y: target.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
+                : NotchIndicatorGeometry.presentation(screen: target.frame, visibleFrame: target.visibleFrame,
+                    topInset: 0, left: nil, right: nil)
+        })
+        defer { notch.hide() }
+        #expect(notch.showStatus(on: screen, kind: .loading, message: "Preparing"))
+        notch.toggleInstructionExpansion()
+        physical = false
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.screenFrame?.width == 220)
+        #expect(notch.screenFrame?.maxY == screen.frame.maxY)
+        #expect(notch.expandedPanelFrame == nil)
+        physical = true
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.screenFrame?.width == 368)
+        #expect(notch.status == .loading)
+        #expect(notch.statusMessage == "Preparing")
+        #expect(notch.expandedPanelFrame == nil)
     }
 
     @Test("No notch is inferred from processor or menu bar height")

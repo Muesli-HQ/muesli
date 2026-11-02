@@ -9,7 +9,7 @@ import Testing
 @MainActor
 struct PasteShortcutTests {
     @Test("settings dropdowns keep the model width regardless of label or enabled state",
-          arguments: ["Romanized", "Automatic", "Automatic (⌘V)", "Bodhan Flex INT8"], [true, false])
+          arguments: ["Romanized", "Automatic", "Automatic (⌘V)", "Bodhan Flex Lite"], [true, false])
     func dropdownWidth(label: String, enabled: Bool) throws {
         _ = NSApplication.shared
         let host = NSHostingView(rootView:
@@ -266,7 +266,7 @@ struct PasteShortcutTests {
         _ = handler?(try keyEvent(.keyDown, key: 9, flags: .command))
         _ = handler?(try keyEvent(.keyUp, key: 9))
         #expect(!conflicting.isRecording)
-        #expect(conflicting.message?.contains("another Muesli feature") == true)
+        #expect(conflicting.message?.contains("another muesli feature") == true)
         #expect(released == 2)
     }
 

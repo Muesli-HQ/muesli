@@ -66,6 +66,31 @@ class CleanupTests(unittest.TestCase):
                     cleanup.cleanup(context(**fields), delete=True)
                 api.assert_not_called()
 
+    def test_only_explicit_maintainer_main_warming_can_maintain_blacksmith_cache(self):
+        env = context(GITHUB_EVENT_NAME="workflow_dispatch", CACHE_WARM_BLACKSMITH="true",
+                      GITHUB_ACTOR="pHequals7", CACHE_BACKEND="blacksmith")
+        self.assertEqual(cleanup.trusted_context(env), ("Muesli-HQ/muesli", entry(8)["key"]))
+        for changes in ({"CACHE_WARM_BLACKSMITH": "false"}, {"GITHUB_ACTOR": "contributor"},
+                        {"GITHUB_REF": "refs/heads/feature"}, {"GITHUB_REPOSITORY": "contributor/muesli"},
+                        {"CACHE_BACKEND": "github"}, {"CACHE_DISABLED": "true"},
+                        {"CACHE_SAVE_OUTCOME": "failure"}):
+            with self.subTest(changes=changes), patch.object(cleanup, "list_caches") as api:
+                with self.assertRaises(ValueError):
+                    cleanup.cleanup({**env, **changes}, delete=True)
+                api.assert_not_called()
+        retry = {**env, "CACHE_SAVE_OUTCOME": "skipped", "CACHE_LOOKUP_OUTCOME": "success",
+                 "CACHE_LOOKUP_HIT": "true", "CACHE_EXISTING_KEY": env["CACHE_KEY"]}
+        self.assertEqual(cleanup.trusted_context(retry), ("Muesli-HQ/muesli", entry(8)["key"]))
+
+    def test_retry_after_exact_cache_hit_can_finish_retention(self):
+        env = context(CACHE_SAVE_OUTCOME="skipped", CACHE_LOOKUP_OUTCOME="success",
+                      CACHE_LOOKUP_HIT="true", CACHE_EXISTING_KEY=entry(8)["key"])
+        self.assertEqual(cleanup.trusted_context(env), ("Muesli-HQ/muesli", entry(8)["key"]))
+        for changed in ({"CACHE_LOOKUP_OUTCOME": "failure"}, {"CACHE_LOOKUP_HIT": "false"},
+                        {"CACHE_EXISTING_KEY": entry(7)["key"]}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                cleanup.trusted_context({**env, **changed})
+
     def test_dry_run_never_deletes(self):
         with patch.object(cleanup, "list_caches", return_value=[entry(n) for n in range(1, 9)]), \
                 patch.object(cleanup, "delete_cache") as delete, patch("builtins.print"):

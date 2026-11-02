@@ -24,7 +24,7 @@ struct MeetingChatModelPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Model").font(.system(size: 13, weight: .semibold))
+                Text("Model").font(MuesliTheme.font(size: 13, weight: .semibold))
                 Spacer()
                 if let providers = snapshot("summary_source") {
                     Menu {
@@ -42,7 +42,7 @@ struct MeetingChatModelPicker: View {
                         HStack(spacing: 4) {
                             Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend).label)
                             AIIcon(.chevronDown, size: 10)
-                        }.font(.caption)
+                        }.font(MuesliTheme.font(.caption))
                     }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Meeting AI provider")
                 }
             }.padding(12)
@@ -53,7 +53,7 @@ struct MeetingChatModelPicker: View {
                     currentTitle: state.current.isEmpty ? MeetingTextGenerationClient.model(appState.config) : state.current
                 ) { value in apply(id, value: value) }
             } else {
-                Text(MeetingTextGenerationClient.model(appState.config)).font(.callout).padding(.horizontal, 16).padding(.bottom, 12)
+                Text(MeetingTextGenerationClient.model(appState.config)).font(MuesliTheme.font(.callout)).padding(.horizontal, 16).padding(.bottom, 12)
             }
             if let thinking = snapshot("summary_thinking"), !thinking.choices.isEmpty {
                 Divider()
@@ -67,10 +67,10 @@ struct MeetingChatModelPicker: View {
             Divider()
             VStack(alignment: .leading, spacing: 7) {
                 Text("Shared with meeting summaries")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(MuesliTheme.font(size: 10)).foregroundStyle(.secondary)
                 Button {
                     openSettings()
-                } label: { Label { Text("AI Settings…") } icon: { AIIcon(.slidersHorizontal) } }.buttonStyle(.borderless).font(.caption)
+                } label: { Label { Text("AI Settings…") } icon: { AIIcon(.slidersHorizontal) } }.buttonStyle(.borderless).font(MuesliTheme.font(.caption))
             }.padding(12)
         }.frame(width: 280)
     }

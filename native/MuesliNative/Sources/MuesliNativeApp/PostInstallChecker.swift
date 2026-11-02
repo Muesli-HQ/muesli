@@ -267,7 +267,7 @@ enum PostInstallChecker {
                 try? FileManager.default.trashItem(
                     at: URL(fileURLWithPath: dmgPath), resultingItemURL: nil)
             }
-            NSApp.terminate(nil)
+            ApplicationTermination.request()
         }
 
         let safetyTimer = PostInstallSafetyTimer()
@@ -307,7 +307,7 @@ enum PostInstallChecker {
         let label = NSTextField(labelWithString: String(format: NSLocalizedString(
             "Copying %@ to Applications...",
             comment: "Install progress label"), appName))
-        label.font = .systemFont(ofSize: 13)
+        label.font = AppFonts.font(size: 13)
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
 

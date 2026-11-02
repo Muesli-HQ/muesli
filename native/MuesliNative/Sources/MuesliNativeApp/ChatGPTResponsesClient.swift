@@ -251,7 +251,7 @@ enum ChatGPTResponsesClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw MeetingTextGenerationError.failed(status) }
         var summary = ChatGPTReasoningSummaryAccumulator()
-        var output = MeetingNativeResponseAccumulator()
+        var output = MeetingNativeResponseAccumulator(maximumArgumentBytes: input.maximumArgumentBytes)
         var received = 0
         for try await line in bytes.lines {
             try Task.checkCancellation()

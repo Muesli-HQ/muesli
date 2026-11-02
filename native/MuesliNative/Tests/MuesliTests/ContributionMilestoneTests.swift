@@ -301,7 +301,7 @@ struct ContributionMilestoneTests {
     @Test("share message and URLs include encoded milestone content")
     func shareMessageAndURLs() throws {
         let message = ContributionSocialShare.message(wordCount: 31_000)
-        #expect(message == "I've dictated 31,000 words with Muesli. It's fast, open source, on-device, and free to use. Try it: https://muesli.works")
+        #expect(message == "I've dictated 31,000 words with muesli. It's fast, open source, on-device, and free to use. Try it: https://muesli.works")
 
         let tweetURL = ContributionSocialShare.tweetURL(wordCount: 31_000)
         #expect(tweetURL.absoluteString.starts(with: "https://x.com/intent/tweet?text="))

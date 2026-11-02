@@ -6,6 +6,11 @@ enum MeetingDocumentMode: Hashable {
     case transcript
 }
 
+enum MeetingNotesSource {
+    case summary
+    case manual
+}
+
 private enum RecordingContentMode: Hashable {
     case notes
     case live
@@ -86,6 +91,9 @@ struct MeetingDetailView: View {
     let onBack: (() -> Void)?
     let backLabel: String
     @Environment(\.usesCompactQuickNotes) private var usesCompactQuickNotes
+    @State private var showRecordingDetails = false
+    @State private var hasNotesSelection = false
+    private var isInProgress: Bool { meeting?.status == .recording || meeting?.status == .processing }
     @State private var isSummarizing = false
     private var isRetranscribing: Bool {
         guard let id = meeting?.id else { return false }
@@ -96,6 +104,7 @@ struct MeetingDetailView: View {
     @State private var editableTitle: String
     @State private var editableNotes: String
     @State private var editingNotesCitation: MeetingChatCitation?
+    @State private var editingNotesSource: MeetingNotesSource?
     @State private var editableTranscript: String
     @State private var editableManualNotes: String
     @State private var loadedMeetingID: Int64?
@@ -155,16 +164,12 @@ struct MeetingDetailView: View {
 
                     retranscriptionStatus(for: meeting)
 
-                    if meeting.status != .recording && meeting.status != .processing {
-                        HStack { Spacer(); Button("Ask about this meeting", systemImage: "bubble.left") { controller.showMeetingChat(meetingID: meeting.id) } }
-                            .padding(.horizontal, 40).padding(.bottom, 8)
-                    }
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                            Text("Referenced passage · \(target.citation.kind.label)").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                             Text(target.citation.excerpt).textSelection(.enabled)
                             if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
-                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
+                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(MuesliTheme.font(.caption)).foregroundStyle(.orange)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(16).background(MuesliTheme.surfaceSelected)
                     }
@@ -173,6 +178,8 @@ struct MeetingDetailView: View {
                         .background(MuesliTheme.surfaceBorder)
 
                     content(for: meeting)
+                        .contentShape(Rectangle())
+                        .clipped()
                 }
                 .background(MuesliTheme.backgroundBase)
                 .onAppear {
@@ -232,7 +239,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
         } message: {
-            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting muesli.")
         }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {
@@ -278,6 +285,8 @@ struct MeetingDetailView: View {
     private func header(_ meeting: MeetingRecord) -> some View {
         if usesCompactQuickNotes {
             compactQuickNotesHeader(meeting)
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState, showsStartControl: !isInProgress)
+                .padding(.horizontal, 20)
         } else {
             standardHeader(meeting)
         }
@@ -295,27 +304,31 @@ struct MeetingDetailView: View {
                             .font(MuesliTheme.callout())
                     }
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
             }
 
             responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
-
-            responsiveContextControls(for: meeting)
-            .padding(MuesliTheme.spacing8)
-            .background(MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-            .overlay {
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+            if isInProgress {
+                recordingContextRow(for: meeting)
+                detailModePicker(for: meeting)
+            } else {
+                responsiveContextControls(for: meeting)
+                    .padding(MuesliTheme.spacing8)
+                    .background(MuesliTheme.surfacePrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    }
             }
 
             threadBreadcrumb
 
-            if let savedRecordingPath = meeting.savedRecordingPath,
-               FileManager.default.fileExists(atPath: savedRecordingPath) {
-                MeetingRecordingPlayerView(recordingPath: savedRecordingPath)
-            }
+            MeetingMediaView(meeting: meeting, controller: controller, appState: appState, showsStartControl: !isInProgress)
 
             activeMeetingAudioWarningBanner(for: meeting)
 
@@ -367,10 +380,12 @@ struct MeetingDetailView: View {
                     HStack(spacing: 6) {
                         metadataItem(
                             systemImage: "calendar",
-                            text: MeetingBrowserLogic.formatStartTime(meeting.startTime)
+                            text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime)
                         )
-                        metadataDivider
-                        metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        if meeting.source != .granolaImport && !isInProgress {
+                            metadataDivider
+                            metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                        }
                     }
                     .lineLimit(1)
                 }
@@ -384,21 +399,26 @@ struct MeetingDetailView: View {
                 }
             }
 
-            HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
-                folderPill(for: meeting)
-                    .frame(maxWidth: 150)
-                if CompactMeetingFormattingPolicy.showsFormattingControls(
-                    for: meeting.status,
-                    isPreparing: isPreparingThisMeeting(meeting)
-                ) {
-                    compactFormattingToolbar
-                        .disabled(!canEditManualNotes(for: meeting))
-                } else {
-                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
-                        .frame(maxWidth: 150)
-                }
-                Spacer(minLength: 0)
+            if isInProgress {
+                recordingContextRow(for: meeting)
                 detailModePicker(for: meeting)
+            } else {
+                HStack(alignment: .center, spacing: MuesliTheme.spacing8) {
+                    folderPill(for: meeting)
+                        .frame(maxWidth: 150)
+                    if CompactMeetingFormattingPolicy.showsFormattingControls(
+                        for: meeting.status,
+                        isPreparing: isPreparingThisMeeting(meeting)
+                    ) {
+                        compactFormattingToolbar
+                            .disabled(!canEditManualNotes(for: meeting))
+                    } else {
+                        MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                            .frame(maxWidth: 150)
+                    }
+                    Spacer(minLength: 0)
+                    detailModePicker(for: meeting)
+                }
             }
 
             threadBreadcrumb
@@ -414,27 +434,7 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func compactRecordingControls(for meeting: MeetingRecord) -> some View {
-        if meeting.status == .recording, !isPreparingThisMeeting(meeting) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(appState.isMeetingRecordingPaused ? MuesliTheme.transcribing : MuesliTheme.recording)
-                    .frame(width: 7, height: 7)
-                    .help(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
-                pauseResumeRecordingButton
-                    .fixedSize()
-                stopRecordingButton
-                    .fixedSize()
-                MeetingParticipantsView(
-                    meetingID: meeting.id,
-                    controller: controller,
-                    compactDiscardAction: {
-                        controller.discardMeetingWithConfirmation()
-                    }
-                )
-            }
-        } else {
-            recordingControlGroup(for: meeting)
-        }
+        recordingControlGroup(for: meeting)
     }
 
     private var compactFormattingToolbar: some View {
@@ -468,13 +468,17 @@ struct MeetingDetailView: View {
             )
 
             HStack(spacing: MuesliTheme.spacing8) {
-                metadataItem(systemImage: "calendar", text: MeetingBrowserLogic.formatStartTime(meeting.startTime))
-                metadataDivider
-                metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
-                metadataDivider
-                metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
+                metadataItem(systemImage: "calendar", text: (meeting.source == .granolaImport ? "Created " : "") + MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                if meeting.source != .granolaImport && !isInProgress {
+                    metadataDivider
+                    metadataItem(systemImage: "clock", text: formatDuration(meeting.durationSeconds))
+                }
+                if !isInProgress {
+                    metadataDivider
+                    metadataItem(systemImage: "doc.text", text: "\(meeting.wordCount) words")
+                }
                 if let label = SyncOriginDisplay.badgeLabel(forMeetingSource: meeting.source) {
-                    SyncOriginBadge(label: label)
+                    SyncOriginBadge(label: label, help: SyncOriginDisplay.help(forMeetingSource: meeting.source))
                 }
             }
         }
@@ -609,10 +613,6 @@ struct MeetingDetailView: View {
                         }
 
                         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-                            if !usesCompactQuickNotes {
-                                manualNotesToolbar(for: meeting)
-                                    .disabled(!isManualNotesEditable)
-                            }
                             MarkdownRichTextEditor(
                                 text: $editableManualNotes,
                                 command: $manualEditorCommand,
@@ -621,11 +621,43 @@ struct MeetingDetailView: View {
                                 onTextChange: { notes in
                                     guard isManualNotesEditable else { return }
                                     saveManualNotes(meetingID: meeting.id, notes: notes)
-                                }
+                                },
+                                onSelectionChange: { hasNotesSelection = $0 }
                             )
                             .background(MuesliTheme.backgroundBase)
-                            .manualNotesEditorChrome(compact: usesCompactQuickNotes)
                             .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
+                            .manualNotesEditorChrome(compact: false)
+                            .overlay(alignment: .bottomLeading) {
+                                if manualNotesSaveStatus == .saving {
+                                    Text(manualNotesSaveStatus.label)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
+                                }
+                            }
+                            .overlay(alignment: .topTrailing) {
+                                if isManualNotesEditable {
+                                    Group {
+                                        if hasNotesSelection {
+                                            compactFormattingToolbar
+                                        } else {
+                                            Menu {
+                                                Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
+                                                Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
+                                                Button("Bullet") { manualEditorCommand = MarkdownEditorCommand(kind: .bullet) }
+                                                Button("Checkbox") { manualEditorCommand = MarkdownEditorCommand(kind: .checkbox) }
+                                            } label: {
+                                                Image(systemName: "textformat")
+                                            }
+                                            .menuStyle(.borderlessButton)
+                                            .fixedSize()
+                                            .help("Format notes")
+                                            .accessibilityLabel("Format notes")
+                                        }
+                                    }
+                                    .padding(6)
+                                    .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
+                                    .padding(6)
+                                }
+                            }
                         }
                         .frame(maxWidth: 980, maxHeight: hasPersistedNotes ? nil : .infinity, alignment: .topLeading)
                     }
@@ -714,6 +746,21 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
+                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
+                    DisclosureGroup("Original manual notes from Granola") {
+                        MeetingNotesView(markdown: meeting.manualNotes)
+                            .frame(height: 200)
+                    }
+                }
+                if meeting.source == .granolaImport, documentMode == .notes, meeting.formattedNotes.isEmpty {
+                    Text("No summary was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+                if meeting.source == .granolaImport, documentMode == .transcript, meeting.rawTranscript.isEmpty {
+                    Text("No transcript was included in this export.")
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                }
+
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
                         highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
@@ -757,13 +804,23 @@ struct MeetingDetailView: View {
     }
 
     private var recordingModePicker: some View {
-        Picker("", selection: $recordingMode) {
-            Text("Notes").tag(RecordingContentMode.notes)
-            Text("Live").tag(RecordingContentMode.live)
+        HStack(spacing: 24) {
+            ForEach([RecordingContentMode.notes, .live], id: \.self) { mode in
+                Button { recordingMode = mode } label: {
+                    Text(mode == .notes ? "Notes" : "Live")
+                        .foregroundStyle(recordingMode == mode ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
+                        .padding(.vertical, 8)
+                        .overlay(alignment: .bottom) {
+                            if recordingMode == mode { Rectangle().fill(MuesliTheme.accent).frame(height: 2) }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(recordingMode == mode ? .isSelected : [])
+            }
+            Spacer()
         }
-        .pickerStyle(.segmented)
-        .tint(MuesliTheme.accent)
-        .frame(width: usesCompactQuickNotes ? 124 : 180)
+        .overlay(alignment: .bottom) { Divider().offset(y: 1) }
     }
 
     private func showsManualNotesEditor(for meeting: MeetingRecord) -> Bool {
@@ -845,9 +902,10 @@ struct MeetingDetailView: View {
         if isEditingNotes {
             notesSaveTask?.cancel()
             notesSaveTask = nil
-            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, controller: controller)
+            Self.saveNotes(for: meeting, notes: editableNotes, citation: editingNotesCitation, source: editingNotesSource, controller: controller)
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
         } else if isEditingTranscript {
             guard !isRetranscribing else { return }
             transcriptSaveTask?.cancel()
@@ -872,6 +930,7 @@ struct MeetingDetailView: View {
         } else {
             documentMode = .notes
             editingNotesCitation = citationTarget(for: meeting)?.citation
+            editingNotesSource = Self.notesSource(for: meeting, citation: editingNotesCitation)
             editableNotes = Self.notesContent(for: meeting, citation: editingNotesCitation)
             isEditingNotes = true
         }
@@ -910,7 +969,7 @@ struct MeetingDetailView: View {
                 HStack {
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
-                        Text(job.message).font(.callout)
+                        Text(job.message).font(MuesliTheme.font(.callout))
                         Spacer()
                         if job.isRunning {
                             Button("Cancel") { controller.cancelMeetingRetranscription(id: meeting.id) }
@@ -922,12 +981,12 @@ struct MeetingDetailView: View {
                 if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
                     if job.phase == .transcribing || job.phase == .diarizing { ProgressView(value: job.fraction) }
                     if !job.preview.isEmpty {
-                        Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
+                        Text(job.preview).font(MuesliTheme.font(.callout)).lineLimit(3).foregroundStyle(.secondary)
                     }
                 }
                 if let warning = appState.meetingRetranscriptions[meeting.id]?.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("meeting.retranscription.diarizationWarning")
                 }
@@ -942,10 +1001,95 @@ struct MeetingDetailView: View {
         meeting.status == .failed && meeting.savedRecordingPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
+    private func recordingStatus(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(appState.isMeetingRecordingPaused ? MuesliTheme.transcribing : MuesliTheme.recording)
+                .frame(width: 7, height: 7)
+            if appState.isMeetingRecordingPaused {
+                Text("Paused")
+            } else if let startedAt = controller.activeMeetingStartedAt {
+                Text(startedAt, style: .timer).monospacedDigit()
+            } else {
+                Text("Recording")
+            }
+        }
+        .font(MuesliTheme.font(size: 12))
+        .foregroundStyle(MuesliTheme.textSecondary)
+        .accessibilityLabel(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
+    }
+
+    private func recordingContextRow(for meeting: MeetingRecord) -> some View {
+        HStack(spacing: 16) {
+            recordingTemplatePicker(for: meeting)
+            Button { showRecordingDetails.toggle() } label: {
+                HStack(spacing: 5) {
+                    Text("Details")
+                    Image(systemName: "chevron.down").font(.system(size: 9))
+                }
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, 6)
+                .frame(minHeight: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.muesli(.quiet))
+            .popover(isPresented: $showRecordingDetails) {
+                VStack(alignment: .leading, spacing: 16) {
+                    folderPill(for: meeting)
+                    MeetingParticipantsView(meetingID: meeting.id, controller: controller)
+                    if meeting.status == .recording, controller.visualMemory.recordingMeetingID != meeting.id {
+                        Divider()
+                        Button {
+                            showRecordingDetails = false
+                            controller.startMeetingScreenRecording()
+                        } label: {
+                            Label("Record Screen…", systemImage: "record.circle")
+                        }
+                        .disabled(controller.visualMemory.isPreparing || controller.visualMemory.isFinalizing
+                                  || appState.isMeetingRecordingPaused || isPreparingThisMeeting(meeting))
+                    }
+                }
+                .padding(20)
+                .frame(width: 280)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func recordingTemplatePicker(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .recording || meeting.status == .processing {
+            let template = controller.meetingTemplateSnapshot(for: meeting)
+            Menu {
+                templateMenuItems(for: meeting, appliedTemplate: template)
+            } label: {
+                Text("Template: \(template.name)")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .disabled(meeting.status != .recording || isPreparingThisMeeting(meeting))
+            .accessibilityIdentifier("meeting.recording.template")
+        }
+    }
+
+    private func selectTemplate(_ id: String, for meeting: MeetingRecord) {
+        if meeting.status == .recording || meeting.status == .processing {
+            do {
+                try controller.selectRecordingTemplate(id: id, meetingID: meeting.id)
+                pendingTemplateID = id
+            } catch {
+                summaryErrorMessage = error.localizedDescription
+            }
+        } else {
+            pendingTemplateID = id
+        }
+    }
+
     @ViewBuilder
     private func templateMenuItems(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
             Button {
-                pendingTemplateID = MeetingTemplates.autoID
+                selectTemplate(MeetingTemplates.autoID, for: meeting)
             } label: {
                 templateMenuItem(
                     title: MeetingTemplates.auto.title,
@@ -957,7 +1101,7 @@ struct MeetingDetailView: View {
             Section("Built-in Templates") {
                 ForEach(controller.builtInMeetingTemplates()) { template in
                     Button {
-                        pendingTemplateID = template.id
+                        selectTemplate(template.id, for: meeting)
                     } label: {
                         templateMenuItem(
                             title: template.title,
@@ -972,7 +1116,7 @@ struct MeetingDetailView: View {
                 Section("Custom Templates") {
                     ForEach(controller.customMeetingTemplates()) { template in
                         Button {
-                            pendingTemplateID = template.id
+                            selectTemplate(template.id, for: meeting)
                         } label: {
                             let resolved = MeetingTemplates.customDefinition(from: template)
                             templateMenuItem(
@@ -1004,7 +1148,7 @@ struct MeetingDetailView: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                     Text(copyButtonLabel)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
@@ -1028,7 +1172,7 @@ struct MeetingDetailView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             if canEditManualNotes(for: meeting) {
                 Text(manualNotesSaveStatus.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
 
@@ -1061,7 +1205,7 @@ struct MeetingDetailView: View {
                 .fill(color)
                 .frame(width: 7, height: 7)
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
         .padding(.horizontal, MuesliTheme.spacing8)
@@ -1082,21 +1226,19 @@ struct MeetingDetailView: View {
             } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: MuesliTheme.spacing8) {
-                        statusChip(for: meeting)
+                        recordingStatus(for: meeting)
                         pauseResumeRecordingButton
                         stopRecordingButton
                         discardRecordingButton
                     }
-                    .recordingControlsBackground()
 
                     VStack(alignment: .trailing, spacing: MuesliTheme.spacing8) {
-                        statusChip(for: meeting)
+                        recordingStatus(for: meeting)
                         HStack(spacing: MuesliTheme.spacing8) {
                             pauseResumeRecordingButton
                             stopRecordingButton
                             discardRecordingButton
                         }
-                        .recordingControlsBackground()
                     }
                 }
             }
@@ -1186,7 +1328,7 @@ struct MeetingDetailView: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Export")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
@@ -1218,6 +1360,7 @@ struct MeetingDetailView: View {
                     systemImage: iconName(forSelectionOn: meeting, appliedTemplate: appliedTemplate)
                 )
             }
+            .disabled(meeting.status == .processing || isSummarizing)
 
             Menu {
                 if controller.canUseSummaryProvider(appState.selectedMeetingSummaryBackend) {
@@ -1318,7 +1461,7 @@ struct MeetingDetailView: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 10))
                 Text(label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
@@ -1349,7 +1492,7 @@ struct MeetingDetailView: View {
                 .frame(width: 14, height: 14)
                 .accessibilityLabel("Preparing transcription")
             Text(appState.meetingStartStatus ?? "Meeting transcription will start shortly.")
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .lineLimit(1)
         }
@@ -1372,26 +1515,9 @@ struct MeetingDetailView: View {
 
     private var pauseResumeRecordingButton: some View {
         let isPaused = appState.isMeetingRecordingPaused
-        return Button {
+        return RecordingPauseButton(isPaused: isPaused) {
             controller.toggleMeetingRecordingPause()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(isPaused ? "Resume" : "Pause")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(isPaused ? Color.white : MuesliTheme.textPrimary)
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 7)
-            .background(isPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isPaused ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
         .disabled(!appState.isMeetingRecording)
         .help(isPaused ? "Resume recording" : "Pause recording")
     }
@@ -1411,9 +1537,9 @@ struct MeetingDetailView: View {
                     Image(systemName: "record.circle")
                         .font(.system(size: 10, weight: .semibold))
                     Text("Resume")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(Color.white)
+                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 7)
                 .background(MuesliTheme.accent)
@@ -1435,7 +1561,7 @@ struct MeetingDetailView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 8)
                     .frame(maxHeight: .infinity)
                     .background(MuesliTheme.accent)
@@ -1444,6 +1570,7 @@ struct MeetingDetailView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
             .help("Resume recording, or start a follow-up meeting")
+            .accessibilityLabel("More resume options")
         }
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -1464,23 +1591,28 @@ struct MeetingDetailView: View {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Stop")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(.white)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, 7)
-            .background(MuesliTheme.recording)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.recording))
         .disabled(!appState.isMeetingRecording)
         .help("Stop recording")
     }
 
     private var discardRecordingButton: some View {
-        iconButton("xmark", label: "Discard") {
-            controller.discardMeetingWithConfirmation()
+        Button { controller.discardMeetingWithConfirmation() } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help("Discard recording")
+        .accessibilityLabel("Discard recording")
+        .disabled(!appState.isMeetingRecording)
     }
 
     /// Breadcrumb strip shown when this meeting is part of a follow-up thread:
@@ -1498,7 +1630,7 @@ struct MeetingDetailView: View {
                     )
                 }
                 Text("Thread \u{00B7} \(threadContext.count) meetings")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
                 switch threadContext.successors.count {
                 case 0:
@@ -1514,7 +1646,7 @@ struct MeetingDetailView: View {
                 default:
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Follow-ups (\(threadContext.successors.count))")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(MuesliTheme.font(size: 11, weight: .medium))
                             .foregroundStyle(MuesliTheme.textTertiary)
                         ForEach(threadContext.successors) { successor in
                             threadLink(
@@ -1541,10 +1673,12 @@ struct MeetingDetailView: View {
                 Image(systemName: icon)
                     .font(.system(size: 9, weight: .semibold))
                 Text(text)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(MuesliTheme.accent)
+            .foregroundStyle(MuesliTheme.accentText)
+            // Stacked links sit 3pt apart, so only close the icon/text gap rather than grow them.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Open this meeting")
@@ -1563,21 +1697,14 @@ struct MeetingDetailView: View {
                 Image(systemName: hasFolder ? "folder.fill" : "folder.badge.plus")
                     .font(.system(size: 10))
                 Text(currentFolder?.name ?? "Add to folder")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .foregroundStyle(hasFolder ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
             .frame(height: MeetingHeaderLayout.contextControlHeight)
-            .background(hasFolder ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(hasFolder ? Color.clear : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(hasFolder ? .tinted : .secondary))
         .help(hasFolder ? "Change folder" : "Add to folder")
         .popover(isPresented: $showFolderPopover, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 0) {
@@ -1626,14 +1753,14 @@ struct MeetingDetailView: View {
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     private var transcriptCTA: some View {
@@ -1654,8 +1781,8 @@ struct MeetingDetailView: View {
                 Button("Open Settings") {
                     controller.openHistoryWindow(tab: .settings)
                 }
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .font(MuesliTheme.font(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.accentText)
                 .buttonStyle(.plain)
             }
         }
@@ -1760,7 +1887,7 @@ struct MeetingDetailView: View {
     }
 
     private func isRawTranscript(_ meeting: MeetingRecord) -> Bool {
-        meeting.notesState != .structuredNotes
+        meeting.source != .granolaImport && meeting.notesState != .structuredNotes
     }
 
     private func hasPendingTemplateChange(for meeting: MeetingRecord) -> Bool {
@@ -1797,6 +1924,7 @@ struct MeetingDetailView: View {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "# \(meeting.title)\n\n## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
@@ -1807,38 +1935,51 @@ struct MeetingDetailView: View {
         for meeting: MeetingRecord,
         notes: String,
         citation: MeetingChatCitation? = nil,
+        source: MeetingNotesSource? = nil,
         controller: MuesliController
     ) {
-        if usesManualNotes(for: meeting, citation: citation) {
+        if (source ?? notesSource(for: meeting, citation: citation)) == .manual {
             controller.updateMeetingManualNotes(id: meeting.id, notes: notes)
         } else {
             controller.updateMeetingNotes(id: meeting.id, notes: notes)
         }
     }
 
+    /// Capture this on entering the editor; autosave can change the fallback predicate.
+    static func notesSource(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> MeetingNotesSource {
+        usesManualNotes(for: meeting, citation: citation) ? .manual : .summary
+    }
+
     private static func usesManualNotes(for meeting: MeetingRecord, citation: MeetingChatCitation?) -> Bool {
-        meeting.status == .noteOnly || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
+        meeting.status == .noteOnly || meeting.usesImportedManualNotes
+            || (citation?.meetingID == meeting.id && citation?.kind == .manualNotes)
     }
 
     /// The notes action exports the same source the detail view displays. Other
     /// export modes retain their normal transcript/full-meeting composition.
     static func notesExportOverride(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String? {
-        usesManualNotes(for: meeting, citation: citation) ? meeting.manualNotes : nil
+        if usesManualNotes(for: meeting, citation: citation) { return meeting.manualNotes }
+        return meeting.source == .granolaImport ? meeting.formattedNotes : nil
     }
 
     static func notesCopyContent(for meeting: MeetingRecord, citation: MeetingChatCitation? = nil) -> String {
         if usesManualNotes(for: meeting, citation: citation) {
             return meeting.manualNotes
         }
+        if meeting.source == .granolaImport { return meeting.formattedNotes }
         if meeting.notesState != .structuredNotes {
             return "## Raw Transcript\n\n\(meeting.rawTranscript)"
         }
         return meeting.formattedNotes
     }
 
-    private static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
+    static func defaultDocumentMode(for meeting: MeetingRecord) -> MeetingDocumentMode {
         if meeting.status == .noteOnly || meeting.status == .recording || meeting.status == .processing || meeting.status == .failed {
             return .notes
+        }
+        if meeting.source == .granolaImport {
+            return !meeting.manualNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !meeting.formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .notes : .transcript
         }
         return meeting.notesState == .structuredNotes
             ? MeetingDocumentMode.notes
@@ -1865,8 +2006,9 @@ struct MeetingDetailView: View {
         notesSaveTask?.cancel()
         let notes = editableNotes
         let citation = editingNotesCitation
+        let source = editingNotesSource
         let c = controller
-        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, controller: c) }
+        let item = DispatchWorkItem { Self.saveNotes(for: meeting, notes: notes, citation: citation, source: source, controller: c) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
     }
@@ -2006,9 +2148,12 @@ struct MeetingDetailView: View {
         }
         pendingTemplateID = meeting.map { controller.meetingTemplateSnapshot(for: $0).id } ?? controller.defaultMeetingTemplate().id
         if meetingChanged {
+            hasNotesSelection = false
+            showRecordingDetails = false
             documentMode = meeting.map(Self.defaultDocumentMode(for:)) ?? .notes
             isEditingNotes = false
             editingNotesCitation = nil
+            editingNotesSource = nil
             isEditingTranscript = false
             showFolderPopover = false
             showNewFolderPrompt = false
@@ -2070,6 +2215,7 @@ struct MarqueeTitleTextField: View {
     let onSubmit: () -> Void
     let onTextChange: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @State private var contentWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
@@ -2077,41 +2223,39 @@ struct MarqueeTitleTextField: View {
     @State private var marqueeRunID = UUID()
     @FocusState private var isTitleFocused: Bool
 
-    private var titleFont: Font { .system(size: titleSize, weight: .bold) }
+    private var titleFont: Font { MuesliTheme.font(size: titleSize, weight: .bold) }
 
     var body: some View {
-        // The row's size comes from the clear base. The full-width marquee text lives in an
-        // overlay: inside the row it made a title wider than the pane widen the whole page.
-        Color.clear
-            .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+        // AppKit clips the custom font in the unfocused field cell, while its
+        // focused editor renders correctly. Use SwiftUI text for presentation
+        // and keep the native field mounted for focus, selection, and undo.
+        TextField("Meeting Title", text: $text)
+            .font(titleFont)
+            .foregroundStyle(isTitleFocused ? MuesliTheme.textPrimary : Color.clear)
+            .textFieldStyle(.plain)
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+            .focused($isTitleFocused)
+            .onSubmit(onSubmit)
+            .onChange(of: text) { _, _ in
+                onTextChange()
+                restartMarqueeIfNeeded()
+            }
+            .onChange(of: isTitleFocused) { _, _ in
+                restartMarqueeIfNeeded()
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
-                ZStack(alignment: .leading) {
-                    TextField("Meeting Title", text: $text)
-                        .font(titleFont)
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1)
-                        .opacity(shouldShowMarquee ? 0 : 1)
-                        .focused($isTitleFocused)
-                        .onSubmit(onSubmit)
-                        .onChange(of: text) { _, _ in
-                            onTextChange()
-                            restartMarqueeIfNeeded()
-                        }
-                        .onChange(of: isTitleFocused) { _, _ in
-                            restartMarqueeIfNeeded()
-                        }
-
-                    Text(text.isEmpty ? "Meeting Title" : text)
-                        .font(titleFont)
-                        .fontWeight(.bold)
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .offset(x: marqueeOffset)
-                        .opacity(shouldShowMarquee ? 1 : 0)
-                        .allowsHitTesting(false)
-                }
+                Text(text.isEmpty ? "Meeting Title" : text)
+                    .font(titleFont)
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: shouldShowMarquee, vertical: true)
+                    .offset(x: marqueeOffset)
+                    .opacity(isTitleFocused ? 0 : 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
             .clipped()
         .contentShape(Rectangle())
@@ -2151,14 +2295,18 @@ struct MarqueeTitleTextField: View {
             isHovering = hovering
             restartMarqueeIfNeeded()
         }
+        .onChange(of: reduceMotion) { _, _ in
+            restartMarqueeIfNeeded()
+        }
     }
 
     private var overflowDistance: CGFloat {
         max(contentWidth - containerWidth, 0)
     }
 
+    /// Reduce Motion keeps the truncated, editable title instead of scrolling it.
     private var shouldShowMarquee: Bool {
-        containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
+        !reduceMotion && containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
     }
 
     private func restartMarqueeIfNeeded() {
@@ -2166,7 +2314,7 @@ struct MarqueeTitleTextField: View {
             if marqueeOffset != 0 {
                 let runID = UUID()
                 marqueeRunID = runID
-                withAnimation(.easeOut(duration: 0.18)) {
+                withAnimation(MuesliMotion.animation(.easeOut(duration: 0.18), reduceMotion: reduceMotion)) {
                     marqueeOffset = 0
                 }
             }
@@ -2347,7 +2495,7 @@ struct TranscriptChatBubble: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let metadata = metadata {
                     Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MuesliTheme.font(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .textSelection(.enabled)
                 }

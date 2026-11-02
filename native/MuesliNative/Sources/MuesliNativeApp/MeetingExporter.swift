@@ -85,8 +85,13 @@ struct MeetingExporter {
         var parts: [String] = []
         parts.append("# \(meeting.title)")
         parts.append("")
-        parts.append("**Date:** \(formatExportDate(meeting.startTime))")
-        parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
+        if meeting.source == .granolaImport {
+            parts.append("**Created in Granola:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Source:** Imported from Granola")
+        } else {
+            parts.append("**Date:** \(formatExportDate(meeting.startTime))")
+            parts.append("**Duration:** \(formatExportDuration(meeting.durationSeconds))")
+        }
         parts.append("**Words:** \(wordCount ?? meeting.wordCount)")
         if let name = meeting.selectedTemplateName, !name.isEmpty {
             parts.append("**Template:** \(name)")
@@ -104,7 +109,9 @@ struct MeetingExporter {
         case .notes:
             if let notesOverride {
                 parts.append(notesOverride)
-            } else if meeting.notesState == .structuredNotes {
+            } else if meeting.usesImportedManualNotes {
+                parts.append(meeting.manualNotes)
+            } else if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available. Raw transcript included below.*")
@@ -118,7 +125,12 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
-            if meeting.notesState == .structuredNotes {
+            if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
+                parts.append("## Original manual notes from Granola")
+                parts.append(meeting.manualNotes)
+                parts.append("")
+            }
+            if meeting.source == .granolaImport || meeting.notesState == .structuredNotes {
                 parts.append(meeting.formattedNotes)
             } else {
                 parts.append("*No structured notes available.*")
@@ -345,7 +357,7 @@ struct MeetingExporter {
         }
 
         if hasBranding {
-            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"Muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with Muesli</a></p>")
+            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with muesli</a></p>")
         }
 
         return """
@@ -464,7 +476,7 @@ class ExportFormatAccessory: NSObject {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 32))
 
         let label = NSTextField(labelWithString: "Format:")
-        label.font = .systemFont(ofSize: 13)
+        label.font = AppFonts.font(size: 13)
         label.frame = NSRect(x: 0, y: 6, width: 55, height: 20)
 
         let button = NSPopUpButton(frame: NSRect(x: 60, y: 2, width: 190, height: 28), pullsDown: false)

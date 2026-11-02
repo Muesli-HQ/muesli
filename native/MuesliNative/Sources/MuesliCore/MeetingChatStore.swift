@@ -5,9 +5,12 @@ import CryptoKit
 /// Opens the explicitly supplied app database per operation; no shared mutable connection.
 public struct MeetingChatStore: Sendable {
     public let databaseURL: URL
-    public init(databaseURL: URL) { self.databaseURL = databaseURL }
+    private let readOnly: Bool
+    public init(databaseURL: URL, readOnly: Bool = false) {
+        self.databaseURL = databaseURL; self.readOnly = readOnly
+    }
     private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
-        try DictationStore(databaseURL: databaseURL).withChatDatabase(operation)
+        try DictationStore(databaseURL: databaseURL, readOnly: readOnly).withChatDatabase(operation)
     }
     public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession {
         let now = Date()

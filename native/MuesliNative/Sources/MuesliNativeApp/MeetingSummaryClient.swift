@@ -221,6 +221,9 @@ enum MeetingSummaryClient {
         previousMeetingNotes: String? = nil,
         openRouterAPIKeyOverride: String? = nil
     ) async throws -> String {
+        guard !hasNothingToSummarize(transcript: transcript, manualNotes: manualNotesToRetain,
+            visualContext: visualContext, existingNotes: existingNotes, previousMeetingNotes: previousMeetingNotes)
+        else { return emptyRecordingNotes }
         let isClaudeCode = config.meetingSummaryBackend.lowercased() == MeetingSummaryBackendOption.claudeCode.backend
         return try await withSummaryRetries(
             maxRetries: config.meetingSummaryRetryCount,
@@ -423,6 +426,20 @@ enum MeetingSummaryClient {
         return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
     }
 
+    static let emptyRecordingNotes = "No transcript available"
+
+    /// Metadata alone is not meeting content. Check every substantive prompt input
+    /// before selecting a backend, resolving credentials, or starting model work.
+    /// Earlier notes that only hold the empty-recording result count as empty.
+    static func hasNothingToSummarize(
+        transcript: String, manualNotes: String?, visualContext: String? = nil,
+        existingNotes: String? = nil, previousMeetingNotes: String? = nil
+    ) -> Bool {
+        let trimmed = { (text: String?) in (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+        return [transcript, manualNotes, visualContext].allSatisfy { trimmed($0).isEmpty }
+            && [existingNotes, previousMeetingNotes].allSatisfy { ["", emptyRecordingNotes].contains(trimmed($0)) }
+    }
+
     static func summaryFailureNotes(transcript: String, meetingTitle: String, error: Error, manualNotes: String? = nil) -> String {
         let trimmedTitle = meetingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedManualNotes = manualNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -430,7 +447,7 @@ enum MeetingSummaryClient {
         if !trimmedTitle.isEmpty {
             sections.append("Meeting: \(trimmedTitle)")
         }
-        sections.append("Muesli could not generate structured meeting notes.\n\n\(error.localizedDescription)")
+        sections.append("muesli could not generate structured meeting notes.\n\n\(error.localizedDescription)")
         if !trimmedManualNotes.isEmpty {
             sections.append("### Written notes\n\n\(trimmedManualNotes)")
         }
@@ -1543,6 +1560,7 @@ enum MeetingSummaryClient {
         config: AppConfig,
         openRouterAPIKeyOverride: String? = nil
     ) async -> String? {
+        guard !hasNothingToSummarize(transcript: transcript, manualNotes: manualNotes) else { return nil }
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
 
         let excerpt = titlePrompt(transcript: transcript, manualNotes: manualNotes)

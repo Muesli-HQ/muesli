@@ -11,7 +11,7 @@ enum ComputerUseLocalPlanner {
         var available: Bool { backend.available }
     }
     static var models: [Model] {
-        Gemma4LiteRTModel.allCases.map {
+        Gemma4LiteRTModel.generalPurpose.map {
             Model(id: "local:gemma4-litert:" + $0.repoID, label: $0.label + " (on device)",
                   backend: GemmaComputerUseInference(model: $0))
         }
@@ -151,7 +151,7 @@ struct GemmaComputerUseInference: ComputerUseLocalInferenceBackend {
         guard #available(macOS 15, *) else {
             throw ComputerUsePlannerError.invalidResponse("On-device planning requires macOS 15 or later.")
         }
-        return try await Gemma4LiteRTTranscriber.shared.generateToolResponse(systemPrompt: systemPrompt,
+        return try await GemmaNativeAudioTranscriber.shared(for: model).generateToolResponse(systemPrompt: systemPrompt,
             userPrompt: userPrompt, model: model, toolsJSON: toolsJSON)
     }
 }

@@ -255,6 +255,107 @@ struct GoogleCalendarTests {
         #expect(event.meetingURL == nil)
     }
 
+    @Test("CalendarMonitor extracts short-form Teams join URL from invite notes")
+    func extractsShortFormTeamsURL() {
+        let notes = """
+        Microsoft Teams meeting
+        Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+        Meeting ID: 246 801 357 9
+        Passcode: AbCdEfGh
+        """
+        let url = CalendarMonitor.findMeetingURL(in: notes)
+        #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("CalendarMonitor prefers the Teams Join link over the legacy footer link")
+    func prefersShortFormTeamsJoinLinkOverLegacyFooter() {
+        let notes = """
+        Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+        ________________________________
+        Need help?<https://aka.ms/JoinTeamsMeeting?omkt=en-US> | System reference<https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0>
+        """
+        let url = CalendarMonitor.findMeetingURL(in: notes)
+        #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("CalendarMonitor extracts Teams free (teams.live.com) join URL")
+    func extractsTeamsLiveURL() {
+        let url = CalendarMonitor.findMeetingURL(in: "Join: https://teams.live.com/meet/9312345678901?p=XyZ123")
+        #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
+    }
+
+    @Test("CalendarMonitor ignores the Teams meeting options link")
+    func teamsMeetingOptionsURLNotMatched() {
+        let url = CalendarMonitor.findMeetingURL(
+            in: "For organizers: Meeting options<https://teams.microsoft.com/meetingOptions/?organizerId=abc>"
+        )
+        #expect(url == nil)
+    }
+
+    @Test("CalendarMonitor skips short-form Teams links without a meeting ID")
+    func shortFormTeamsLinkRequiresMeetingID() {
+        for host in ["teams.microsoft.com", "teams.live.com"] {
+            for suffix in ["", "?p=Stale", "#fragment", "/?p=Stale"] {
+                let invalidLink = "https://\(host)/meet/\(suffix)"
+                #expect(CalendarMonitor.findMeetingURL(in: invalidLink) == nil)
+                let notes = """
+                Old link: \(invalidLink)
+                Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh
+                """
+                let url = CalendarMonitor.findMeetingURL(in: notes)
+                #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+            }
+        }
+    }
+
+    @Test("Google event picks up short-form Teams URL from description")
+    func googleEventShortFormTeamsFromDescription() throws {
+        let item: [String: Any] = [
+            "id": "teams1",
+            "summary": "Weekly sync",
+            "start": ["dateTime": "2026-04-10T14:00:00Z"],
+            "end": ["dateTime": "2026-04-10T15:00:00Z"],
+            "description": "Microsoft Teams meeting\nJoin: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh",
+        ]
+        let event = try #require(GoogleCalendarClient().parseEvent(item, calendarID: "primary"))
+        #expect(event.meetingURL?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+    }
+
+    @Test("MeetingPlatform.detect recognizes Teams free URL")
+    func detectTeamsLive() {
+        let url = URL(string: "https://teams.live.com/meet/9312345678901?p=XyZ123")!
+        #expect(MeetingPlatform.detect(from: url) == .teams)
+    }
+
+    @Test("EventKit event URL accepts a Teams free meeting link")
+    func eventKitURLAcceptsTeamsLiveMeeting() {
+        let event = EKEvent(eventStore: EKEventStore())
+        event.url = URL(string: "https://teams.live.com/meet/9312345678901?p=XyZ123")
+        event.notes = "Join: https://meet.google.com/abc-defg-hij"
+
+        let url = CalendarMonitor.extractMeetingURL(from: event)
+        #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
+    }
+
+    @Test("EventKit event URL ignores non-meeting Teams free pages and lookalike hosts")
+    func eventKitURLRejectsNonMeetingTeamsLivePages() {
+        for nonMeetingURL in [
+            "https://teams.live.com/v2/",
+            "https://teams.live.com/meet/",
+            "https://teams.live.com/meet/?p=Stale",
+            "https://teams.live.com/meet/#fragment",
+            "https://teams.live.com/meet//?p=Stale",
+            "https://notteams.live.com/meet/9312345678901",
+        ] {
+            let event = EKEvent(eventStore: EKEventStore())
+            event.url = URL(string: nonMeetingURL)
+            event.notes = "Join: https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh"
+
+            let url = CalendarMonitor.extractMeetingURL(from: event)
+            #expect(url?.absoluteString == "https://teams.microsoft.com/meet/2468013579?p=AbCdEfGh")
+        }
+    }
+
     @Test("CalendarMonitor returns nil for text without meeting URLs")
     func returnsNilForNonMeetingText() {
         let url = CalendarMonitor.findMeetingURL(in: "Conference room 3B on the second floor")
@@ -373,6 +474,40 @@ struct GoogleCalendarTests {
     }
 
     // MARK: - Cached meeting detection event selection
+
+    @Test("Calendar link filtering shares visibility with detection and preserves the raw cache")
+    func calendarMeetingLinkVisibility() {
+        let state = AppState()
+        let now = date("2026-04-10T10:02:00Z")
+        let url = URL(string: "https://teams.microsoft.com/meet/123?p=Test")!
+        func event(_ id: String, linked: Bool, allDay: Bool = false) -> UnifiedCalendarEvent {
+            UnifiedCalendarEvent(id: id, title: id, startDate: date("2026-04-10T10:00:00Z"),
+                                 endDate: date("2026-04-10T10:30:00Z"), isAllDay: allDay,
+                                 source: .eventKit, meetingURL: linked ? url : nil)
+        }
+        state.upcomingCalendarEvents = [event("focus", linked: false), event("call", linked: true),
+                                        event("hidden", linked: true), event("all-day", linked: true, allDay: true)]
+        state.hiddenCalendarEventIDs = ["hidden"]
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["call"])
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: state.visibleUpcomingCalendarEvents, now: now)?.id == "call")
+
+        state.config.calendarMeetingLinksOnly = false
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["focus", "call"])
+        #expect(selectCurrentOrNearbyCachedCalendarEvent(from: state.visibleUpcomingCalendarEvents, now: now)?.id == "focus")
+        // Opting out of display filtering does not broaden scheduled prompts or auto-record.
+        let promptNow = date("2026-04-10T10:00:30Z")
+        #expect(ScheduledMeetingNotificationPolicy.upcomingCandidates(
+            from: state.visibleUpcomingCalendarEvents, now: promptNow, hiddenEventIDs: state.hiddenCalendarEventIDs
+        ).map(\.id) == ["call"])
+        #expect(ScheduledMeetingNotificationPolicy.autoRecordCandidates(
+            from: state.visibleUpcomingCalendarEvents, now: promptNow, hiddenEventIDs: state.hiddenCalendarEventIDs
+        ).map(\.id) == ["call"])
+
+        state.config.calendarMeetingLinksOnly = true
+        #expect(state.visibleUpcomingCalendarEvents.map(\.id) == ["call"])
+        #expect(state.upcomingCalendarEvents.count == 4)
+        #expect(state.hiddenCalendarEventIDs == ["hidden"])
+    }
 
     @Test("cached meeting detection ignores recently ended events")
     func cachedDetectionIgnoresRecentlyEndedEvents() {

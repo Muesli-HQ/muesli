@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Benchmarks may narrow the test target locally, but CI shards must see every test.
+unset MUESLI_CLEANUP_EVALUATION_ONLY
+
 list_filters=false
 if [[ "${1:-}" == "--list-filters" ]]; then
   list_filters=true
@@ -18,8 +21,15 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
+      VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
+      GlobalSearchTests
+      GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
+      GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
       ComputerUseLocalPlannerBenchmarkTests
@@ -51,27 +61,75 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      LocalStorageUsageTests
+      MeetingVideoStoreTests
+      MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
       BodhanArtifactValidationTests
       BodhanLifecycleTests
       DictationBackendPreparationTests
+      BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
+      CotypistShaperTests
+      CotypistHistoryTests
+      CotypistSetupGuideLayoutTests
+      CotypistModelComparisonTests
     )
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
+      AppScopedDictationRecorderTests
+      DictationDevFaultTests
+      DictationCaptureHealthTests
+      DictationStartupWatchdogTests
+      DictationAudioSessionManagerTests
+      RouteAwareDictationRecorderTests
+      DictationStreamingRecoveryIntegrationTests
+      DictationRecoveryTests
       FluidAudioTranscriberTests
+      BufferedTranscriptionSessionTests
+      BufferedTranscriptionContinuityTests
+      BufferedAdapterConfidenceTests
+      BufferedDictationFinalizerTests
+      BufferedDictationRecoveryTests
+      BufferedDictationPreviewDeliveryTests
+      LiveDictationTextTargetTests
+      LiveDictationKeyboardInputTests
+      LiveDictationFinalPasteTests
+      WhisperPreviewSegmentSeekerTests
+      WhisperPreviewPresentationTests
+      BufferedLiveTranscriptionPolicyTests
+      FluidAudioModelLoadTests
+      ModelLibraryPreparationTests
+      ParakeetModelPreparationTests
+      Phonon25IntegrationTests
       AppleSpeechAnalyzerBackendTests
       BackendCoverageTests
+      CleanupFormattingTests
+      CleanupFormattingReplayTests
+      MuesliCleanupV2Tests
+      ManagedCleanupV12Tests
+      CleanupMLXEvaluationTests
+      QwenMLXDownloadTests
+      GemmaAudioEvaluationTests
+      GemmaAudioEndToEndTests
+      GemmaMTPEvaluationTests
+      GemmaNativeAudioTests
+      LLMGenerationLimitTests
       FillerWordFilterTests
       JaroWinklerTests
       CustomWordMatcherApplyTests
@@ -96,6 +154,8 @@ case "${shard}" in
       PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
+      DictationAppFormattingTests
+      QuillAssistantTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests
@@ -117,16 +177,20 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
+      AudioFileImportControllerTests
+      MeetingHookIntegrationTests
       MeetingCaptureLifecycleTests
       AudioQueueInputRecorderTests
       FallbackStreamingDictationRecorderTests
       MeetingCaptureShutdownTests
+      ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
@@ -164,7 +228,9 @@ case "${shard}" in
       MeetingChatExporterTests
       MeetingChatNotesActionTests
       MeetingChatReviewTests
+      MeetingChatHistoryLoadingTests
       MeetingChatPresentationTests
+      MuesliTypographyTests
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
@@ -198,19 +264,39 @@ if [[ "${list_filters}" == true ]]; then
   exit 0
 fi
 
-args=(--package-path native/MuesliNative)
-if [[ "${shard}" == meetings ]]; then
-  # Concurrent suites can starve the utility-priority caption tasks on small
-  # runners. Serialize test cases, preserving concurrency exercised inside each
-  # test, rather than weakening their deadlines or changing production QoS.
-  args+=(--no-parallel)
-fi
+build_args=(--package-path native/MuesliNative --build-system native)
 if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
-  args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
+  build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
+fi
+args=("${build_args[@]}")
+if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
+  # Hundreds of concurrent cases can starve caption tasks and diarizer preload
+  # coordination, including their setup handshakes, on small runners. Serialize
+  # cases while preserving concurrency exercised inside each test, rather than
+  # weakening their deadlines or changing production QoS.
+  args+=(--no-parallel)
 fi
 for filter in "${filters[@]}"; do
   args+=(--filter "${filter}")
 done
 
 echo "Running ${shard} shard with ${#filters[@]} filters"
-swift test "${args[@]}"
+# Nested Swift Testing bundles do not consistently discover MLX's resource
+# bundle. Build first, then supply the actual compiled library to GPU tests.
+swift build "${build_args[@]}" --build-tests
+bin_path="$(swift build "${build_args[@]}" --show-bin-path)"
+metallib="$(find "${bin_path}" -path '*mlx-swift_Cmlx.bundle/*' -name default.metallib -print -quit)"
+if [[ -z "${metallib}" || ! -f "${metallib}" ]]; then
+  scratch="${MUESLI_SWIFTPM_SCRATCH_PATH:-.build}"
+  if [[ "$scratch" != /* ]]; then
+    scratch="$PWD/native/MuesliNative/$scratch"
+  fi
+  metallib="$bin_path/muesli-test.metallib"
+  bash scripts/build_mlx_test_metallib.sh "$scratch/checkouts/mlx-swift" "$metallib"
+fi
+export MUESLI_MLX_EVAL_METALLIB="${metallib}"
+swift test "${args[@]}" --skip-build
+
+if [[ "${shard}" == meetings ]]; then
+  python3 scripts/test_meeting_video_encoding.py
+fi

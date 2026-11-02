@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
@@ -285,4 +286,24 @@ struct OnboardingFlowTests {
         #expect(ModelDownloadDisplayFormatting.eta(.infinity) == nil)
         #expect(ModelDownloadDisplayFormatting.eta(3_600) == "1h 00m")
     }
+    @Test("Indicator reports whole-download percentage and transfer ETA only")
+    func indicatorDownloadProgress() {
+        let progress = ModelDownloadProgress(modelID: "test", phase: .downloading,
+            currentFile: "weights", completedBytes: 42, totalBytes: 100,
+            currentFileCompletedBytes: 42, currentFileTotalBytes: 50,
+            bytesPerSecond: 2, estimatedSecondsRemaining: 29, retryCount: 0,
+            completedFileCount: 0, totalFileCount: 2, message: nil)
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(progress, modelName: "Bodhan Core Lite")
+            == "Downloading Bodhan Core Lite · 42% · ~29s left")
+        let preparing = progress.replacing(phase: .preparing, message: "Warming up Bodhan Core Lite…")
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(preparing, modelName: "Bodhan Core Lite")
+            == "Warming up Bodhan Core Lite…")
+        let unknown = ModelDownloadProgress(modelID: "test", phase: .downloading,
+            currentFile: "weights", completedBytes: 42, totalBytes: nil,
+            currentFileCompletedBytes: 42, currentFileTotalBytes: 50,
+            bytesPerSecond: 2, estimatedSecondsRemaining: 4, retryCount: 0,
+            completedFileCount: 0, totalFileCount: 2, message: nil)
+        #expect(ModelDownloadDisplayFormatting.indicatorMessage(unknown, modelName: "Model") == "Downloading Model")
+    }
+
 }

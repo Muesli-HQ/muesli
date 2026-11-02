@@ -9,12 +9,19 @@ struct MeetingChatNotesActionTests {
     private let generated = "## Decision\nLaunch Friday."
     private let manual = "# Launch\n\nMy written reminder."
 
-    private func fixture() throws -> (MuesliController, DictationStore, MeetingRecord) {
+    private func fixture(granola: Bool = false) throws -> (MuesliController, DictationStore, MeetingRecord) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("chat-notes-actions-\(UUID())")
         let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
         try store.migrateIfNeeded()
-        let id = try store.insertMeeting(title: "Launch", calendarEventID: nil, startTime: Date(), endTime: Date(),
-            rawTranscript: "Launch Friday.", formattedNotes: generated, micAudioPath: nil, systemAudioPath: nil)
+        let id: Int64
+        if granola {
+            _ = try store.importGranola([GranolaImportRecord(id: UUID().uuidString.lowercased(), title: "Launch", createdAt: Date(),
+                summary: generated, notes: manual, transcript: "Launch Friday.", workspace: "", ownerEmail: "")])
+            id = try #require(store.recentMeetings(limit: 1).first?.id)
+        } else {
+            id = try store.insertMeeting(title: "Launch", calendarEventID: nil, startTime: Date(), endTime: Date(),
+                rawTranscript: "Launch Friday.", formattedNotes: generated, micAudioPath: nil, systemAudioPath: nil)
+        }
         try store.updateMeetingManualNotes(id: id, manualNotes: manual)
         let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
@@ -24,6 +31,37 @@ struct MeetingChatNotesActionTests {
     private func citation(for meeting: MeetingRecord, kind: MeetingChatSourceKind, meetingID: Int64? = nil) -> MeetingChatCitation {
         MeetingChatCitation(sourceKey: "S1", meetingID: meetingID ?? meeting.id, title: meeting.title, startDate: Date(),
             kind: kind, excerpt: "My written reminder.", range: .init(location: 10, length: 20), revision: "fixture")
+    }
+
+    @Test func granolaSummaryEditorRetainsDestinationAfterEmptyAutosave() throws {
+        let (controller, _, meeting) = try fixture(granola: true)
+        let source = MeetingDetailView.notesSource(for: meeting)
+        #expect(source == .summary)
+        MeetingDetailView.saveNotes(for: meeting, notes: "", source: source, controller: controller)
+        let cleared = try #require(controller.meeting(id: meeting.id))
+        #expect(MeetingDetailView.notesSource(for: cleared) == .manual)
+        // Done after the empty autosave must not erase the imported manual notes.
+        MeetingDetailView.saveNotes(for: cleared, notes: "", source: source, controller: controller)
+        #expect(controller.meeting(id: meeting.id)?.manualNotes == manual)
+        // Continuing to type in the same session must still replace the summary.
+        MeetingDetailView.saveNotes(for: cleared, notes: "Replacement summary", source: source, controller: controller)
+        let saved = try #require(controller.meeting(id: meeting.id))
+        #expect(saved.formattedNotes == "Replacement summary")
+        #expect(saved.manualNotes == manual)
+    }
+
+    @Test func granolaManualEditorRetainsDestinationAfterSummaryRefresh() throws {
+        let (controller, store, meeting) = try fixture(granola: true)
+        try store.updateMeetingNotes(id: meeting.id, formattedNotes: "")
+        let manualMeeting = try #require(try store.meeting(id: meeting.id))
+        let source = MeetingDetailView.notesSource(for: manualMeeting)
+        #expect(source == .manual)
+        try store.updateMeetingNotes(id: meeting.id, formattedNotes: "Refreshed summary")
+        let refreshed = try #require(try store.meeting(id: meeting.id))
+        MeetingDetailView.saveNotes(for: refreshed, notes: "Edited manual notes", source: source, controller: controller)
+        let saved = try #require(try store.meeting(id: meeting.id))
+        #expect(saved.manualNotes == "Edited manual notes")
+        #expect(saved.formattedNotes == "Refreshed summary")
     }
 
     @Test func manualCitationEditsAndCopiesTheDisplayedNotes() throws {

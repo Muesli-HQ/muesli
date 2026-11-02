@@ -102,15 +102,25 @@ struct MeetingHookIntegrationTests {
         #expect(spy.invocations.count == 1)
     }
 
-    @Test("imported audio meeting dispatches one hook event after persistence succeeds")
-    func importedMeetingDispatchesHook() throws {
+    @Test("audio import persists its captured destination before dispatching hooks", arguments: ["all", "folder", "nested", "deleted"])
+    func importedMeetingDispatchesHook(destination: String) throws {
         let store = try makeStore()
         let spy = MeetingHookDispatcherSpy()
         let controller = makeController(store: store, dispatcher: spy)
+        let parentID = try store.createFolder(name: "Project")
+        let nestedID = try store.createFolder(name: "Subproject", parentID: parentID)
+        let capturedFolderID: Int64? = destination == "all" ? nil : (destination == "nested" ? nestedID : parentID)
+        if destination == "deleted" { try store.deleteFolder(id: parentID) }
+        let expectedFolderID = destination == "deleted" ? nil : capturedFolderID
+        // Browsing elsewhere while transcription runs must not redirect the result.
+        controller.appState.selectedFolderID = try store.createFolder(name: "Other project")
         let endTime = Date(timeIntervalSince1970: 1_713_961_500)
         var meetingExistedAtDispatch = false
+        var folderAtDispatch: Int64?
         spy.onDispatch = { invocation in
-            meetingExistedAtDispatch = (try? store.meeting(id: invocation.meetingID)) != nil
+            let persisted = try? store.meeting(id: invocation.meetingID)
+            meetingExistedAtDispatch = persisted != nil
+            folderAtDispatch = persisted?.folderID
         }
 
         let meetingID = try controller.persistImportedAudioMeeting(
@@ -126,13 +136,15 @@ struct MeetingHookIntegrationTests {
             selectedTemplateID: nil,
             selectedTemplateName: nil,
             selectedTemplateKind: nil,
-            selectedTemplatePrompt: nil
+            selectedTemplatePrompt: nil,
+            folderID: capturedFolderID
         )
 
         #expect(spy.invocations.count == 1)
         #expect(spy.invocations.first?.meetingID == meetingID)
         #expect(spy.invocations.first?.completedAt == endTime)
         #expect(meetingExistedAtDispatch)
+        #expect(folderAtDispatch == expectedFolderID)
 
         let record = try #require(try store.meeting(id: meetingID))
         #expect(record.title == "Imported Call Recording")
@@ -141,6 +153,10 @@ struct MeetingHookIntegrationTests {
         #expect(record.rawTranscript == "Speaker 1: Discussed the imported call.")
         #expect(record.formattedNotes == "## Summary\nImported recording.")
         #expect(record.source == .audioImport)
+        #expect(record.folderID == expectedFolderID)
+        if let expectedFolderID {
+            #expect(try store.recentMeetings(folderID: expectedFolderID).contains { $0.id == meetingID })
+        }
     }
 
     private func makeController(store: DictationStore, dispatcher: MeetingHookDispatching) -> MuesliController {

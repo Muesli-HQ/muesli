@@ -210,7 +210,7 @@ final class ChatGPTAuthManager {
                     Content-Type: text/html\r
                     Connection: close\r
                     \r
-                    <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Signed in to Muesli</h2><p>You can close this window.</p></div></body></html>
+                    <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Signed in to muesli</h2><p>You can close this window.</p></div></body></html>
                     """
                     connection.send(
                         content: html.data(using: .utf8),

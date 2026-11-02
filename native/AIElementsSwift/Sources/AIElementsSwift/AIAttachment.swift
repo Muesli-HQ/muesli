@@ -14,7 +14,7 @@ public struct AIAttachment: View {
     public var body: some View {
         HStack(spacing: 6) {
             AIIcon(.fileText, size: 12).foregroundStyle(theme.muted).accessibilityHidden(true)
-            Text(title).font(.system(size: 12)).lineLimit(1)
+            Text(title).font(theme.font(size: 12)).lineLimit(1)
             Button(action: onRemove) {
                 AIIcon(.x, size: 11).foregroundStyle(theme.muted).frame(width: 18, height: 18)
             }
