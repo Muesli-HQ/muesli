@@ -6,6 +6,29 @@ import MuesliCore
 @Suite("Dictation test lifecycle")
 @MainActor
 struct DictationTestLifecycleTests {
+    @Test("a delayed microphone failure cannot reset a newer take after its microphone has stopped")
+    func staleFailureCannotResetFinalizingTake() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory,
+            menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store,
+            configStore: ConfigStore(supportDirectory: directory))
+        let old = UUID(), newer = UUID()
+        controller.setDictationAudioSessionForTesting(newer)
+        controller.appState.dictationState = .transcribing
+        controller.receiveDictationAudioEventForTesting(.failed(old,
+            error: NSError(domain: "SyntheticStartup", code: 1)))
+        #expect(controller.appState.dictationState == .transcribing)
+        // Explicit cancellation retires ownership even before queued callbacks arrive.
+        controller.setDictationAudioSessionForTesting(nil)
+        controller.receiveDictationAudioEventForTesting(.failed(newer,
+            error: NSError(domain: "SyntheticStartup", code: 1)))
+        #expect(controller.appState.dictationState == .transcribing)
+    }
+
     @Test("hotkey release transitions test feedback and cleanup clears every callback")
     func stopAndCleanupLifecycle() throws {
         let supportDirectory = FileManager.default.temporaryDirectory

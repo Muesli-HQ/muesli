@@ -53,6 +53,24 @@ History only after the insert succeeds. If persistence fails, it reports that
 History could not be saved and distinguishes whether the paste succeeded.
 Dictionary correction monitoring starts only after a successful paste.
 
+### Failed dictation recordings outside SQLite
+
+Failure-only recovery uses private `Dictation Recovery/<UUID>/` folders inside
+Application Support. Each contains `audio.wav` and `failure.json` with the ID,
+start time, duration, model label, and failure message. Streaming failures also
+save the available text in `transcript.txt` and the optional `partialTranscript`
+metadata field; records written without that field continue to decode. A recovery
+folder is published only after all its files are written, and a failed copy keeps
+the original WAV. Successful dictation and explicit cancellation create no backup.
+Older buffered-streaming recovery folders without `failure.json` are left intact.
+
+Recovery metadata and audio stay local and add no SQLite, CloudKit, telemetry,
+export, or CLI fields. Explicit local retry saves the resulting text through the
+normal history store before deleting recovery files; that text then follows the
+existing history sync policy. Discard removes one recovery, and confirmed history
+clearing also removes the recovery directory. Audio is retained until recovery,
+discard, or history clearing; no automatic expiry is implied.
+
 ### Appearance preferences outside SQLite
 
 Ultra Dark is stored as local AppConfig JSON key `ultra_dark_appearance`, defaulting
