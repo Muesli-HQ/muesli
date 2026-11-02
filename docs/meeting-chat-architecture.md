@@ -11,11 +11,11 @@ Meeting chat uses a bounded inference → retrieval → inference loop. For an i
 
 The application validates tool names and arguments, dispatches local operations, accumulates source dependencies before subsequent provider calls, and bounds execution by provider mode. Native call IDs cannot be reused; the compatibility loop also rejects repeated tool signatures. Source markers are not recycled when context is evicted. Empty lexical searches can be retried with different terms and preserve previously gathered evidence; the tool transcript explicitly records the zero-match result. An explicit empty meeting selection with no conversation or files still rejects Send/Retry without reserving busy state. With usable conversation, follow-ups begin with history only and no fresh source packet. The model can transform or explain existing content without retrieval; new meeting-based facts require read-only retrieval inside the current scope and current citations. Empty-scope follow-ups can return conversational answers or explain that new research needs a meeting. Cancellation and request-attempt checks prevent stopped or superseded work from publishing an answer.
 
-Each inference includes the user question, bounded prior conversation, the current evidence packet, and the tool transcript. Historical answers are labeled as untrusted conversation, never evidence for new meeting claims. Old citation markers are removed before sending history so they cannot collide with fresh source IDs. Responses distinguish conversation, answered (new cited meeting facts), and insufficient_evidence; conversation mode requires usable supplied history or file context. The compatibility loop is capped at five inference calls; both transports enforce a selected-model context budget. Native requests replay API output items (including encrypted reasoning) and `function_call_output` items with matching call IDs, with a 512 KB serialized-input ceiling and 200 KB cumulative citation evidence ceiling. Native full reads never silently evict earlier pages. Both paths allow at most one final-answer validation repair; native finalization uses `tool_choice: none`. Repair progress distinguishes formatting, citation checks, context checks, and answer length. Returned citations must resolve to the current evidence packet; citations are never invented or attached automatically to repair a response. Citation validation establishes source identity, not factual entailment.
+Each inference includes the user question, bounded prior conversation, the current evidence packet, and the tool transcript. Historical answers are labeled as untrusted conversation, never evidence for new meeting claims. Old citation markers are removed before sending history so they cannot collide with fresh source IDs. Responses distinguish conversation, answered (new cited meeting facts), and insufficient_evidence; conversation mode requires usable supplied history or file context. The compatibility loop is capped at five inference calls; both transports enforce a selected-model context budget. Native requests replay API output items (including encrypted reasoning) and `function_call_output` items with matching call IDs, with the shared 12 MiB request-size guard, a separate 512 KB provider-output/replay-item limit, and a 200 KB cumulative citation evidence ceiling. Native full reads never silently evict earlier pages. Both paths allow at most one final-answer validation repair; native finalization uses `tool_choice: none`. Repair progress distinguishes formatting, citation checks, context checks, and answer length. Returned citations must resolve to the current evidence packet; citations are never invented or attached automatically to repair a response. Citation validation establishes source identity, not factual entailment.
 
 Conversation memory retains complete raw exchanges locally. A contiguous suffix of recent exchanges is supplied verbatim; older exchanges are compacted by the selected provider/model into a rolling summary stored on the session. The summary has exact covered-turn fingerprints and inherited source revisions; pending-attempt checks protect saves. Source edits, soft/hard deletion, participant changes, and covered-turn changes scrub the summary. Every compaction call revalidates source dependencies before and after inference. Failed compaction preserves existing history and reports a recoverable error instead of silently omitting it.
 
-Budgeting uses selected OpenRouter catalog context sizes and verified direct-model presets where available, with conservative operational defaults for unknown models (64K for native transports, 32K other cloud transports, 8K local/custom). These defaults are not claims about advertised model capacity. Input is capped at 32K estimated tokens, recent history at 8K, and rolling memory at 2K; output/reasoning space is reserved separately. Token estimates use ASCII bytes/3 plus non-ASCII UTF-8 bytes and envelope overhead, not an exact provider tokenizer. Small local/custom windows can return a bounded context error for large evidence packets. Compaction is bounded to 16 batches and one size-repair per batch. Provider switches rebuild context from this portable memory and current exchanges; opaque provider state is not treated as portable memory.
+Budgeting uses selected OpenRouter catalog context sizes and verified direct-model presets where available, with conservative operational defaults for unknown models (64K for native transports, 32K other cloud transports, 8K local/custom). These defaults are not claims about advertised model capacity. Input uses the selected model context minus output/reasoning reservation and any provider-specific input ceiling. Recent history remains bounded at 8K and rolling memory at 2K; history-compaction batches remain bounded separately at 32K. Token estimates use ASCII bytes/3 plus non-ASCII UTF-8 bytes and envelope overhead, not an exact provider tokenizer. Small local/custom windows can return a bounded context error for large evidence packets. Compaction is bounded to 16 batches and one size-repair per batch. Provider switches rebuild context from this portable memory and current exchanges; opaque provider state is not treated as portable memory.
 
 The persistent “Partial recap” footer is removed. Source disclosures remain; coverage limitations belong in the answer only when material to the question, such as unfinished reads or incomplete requested comparisons.
 
@@ -144,9 +144,13 @@ originals fall back to the file label; invalidated turns suppress content previe
 
 File preparation happens before a new turn is accepted, with request ownership
 and cancellation. Local validation failure preserves draft text, scope, undo
-identity and selected files without a provider request. Large-PDF preparation can
-make AI requests before accepting the turn; failure or Stop still preserves the
-draft. Accepted turns reuse prepared content, avoiding repeated OCR. Retrying
+identity and selected files without a provider request. The composer hides submitted attachment previews immediately on Send, retaining
+private recovery references during preparation. Failure or Stop restores them;
+accepted sends consume the matching persisted composer selection. Immutable turn
+references and valid conversation history remain available, but subsequent sends
+do not automatically reattach or reprocess the file. Large-PDF preparation can
+make AI requests before accepting the turn. Accepted turns reuse prepared content,
+avoiding repeated OCR. Retrying
 reprocesses the original under the currently selected model's budget.
 
 ### Incremental PDF context
@@ -155,22 +159,26 @@ PDFs have no page-count or total extracted-text cutoff. The reader walks every
 page in order, using selectable text or bounded OCR, and splits even an oversized
 single page at Unicode scalar boundaries. It holds a PDF handle and one extracted
 page; the processor pulls bounded fragments rather than buffering the whole
-extraction. A small first fragment avoids preprocessing calls when the whole PDF
-fits the final attachment allowance. Larger documents use chronological rolling
-notes through the selected model, consuming every fragment. One initial fragment,
-one bounded batch, the current page and rolling notes bound transient memory;
+extraction. An ordered stream shares the available input allowance across all PDFs rather
+than dividing it equally per file. If their combined text fits, it goes directly
+to the final answer without a condensation request. Only an actual overflow of
+that allowance starts chronological rolling notes through the selected model,
+consuming every fragment. One initial fragment, one bounded batch, the current
+page and rolling notes bound transient memory;
 PDFKit may maintain its own document caches. Model responses are bounded and have
 one shorter-output retry; oversized responses are never silently truncated.
 
 Batches use the selected model's catalog context minus its output reserve and
 input ceiling. OpenRouter supplies live context metadata; known direct models
 use verified presets. Unknown/custom models keep conservative transport defaults,
-not a claimed backend limit. The existing final chat/tool input envelope remains
-at most 32K tokens; document notes share its remaining room with the question,
-system/tool overhead, history, images and non-PDF attachments. Multiple PDFs split
-the remaining allowance. Requests leave 25% estimation headroom. The estimator
-is approximate, so backend context rejections still fail visibly; this is not a
-provider tokenizer or unlimited context. Large PDFs can incur several AI requests.
+not a claimed backend limit. Final chat and PDF preprocessing use the same model
+input allowance, accounting for question/system text, JSON escaping, tool/repair
+space, history, images, non-PDF context and small metadata wrappers. There is no
+32K final-input cap, equal per-PDF split or percentage reduction that triggers
+condensation. If combined PDF text exceeds the remaining allowance, rolling notes
+are bounded separately by the model's output allowance. The estimator remains
+approximate; backend context rejections fail visibly. This is not a provider
+tokenizer or unlimited context. Over-budget PDFs can incur several AI requests.
 
 Verified catalog sources: [OpenAI GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra),

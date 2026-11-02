@@ -33,12 +33,12 @@ struct MeetingChatContextBudget {
         summaryOutputTokens = min(4_096, outputReserve)
         let remaining = max(1, context - outputReserve)
         documentRequestInputTokens = min(remaining, preset?.maximumInputTokens ?? remaining)
-        // Keep the existing final chat/tool envelope bounded. Long document passes
-        // use the selected model's larger request budget and return bounded notes.
-        maximumInputTokens = min(32_768, remaining)
+        // Final answers and document preparation share the actual selected-model
+        // input allowance, including any separate provider input ceiling.
+        maximumInputTokens = documentRequestInputTokens
         historyTokens = max(1, min(8_192, maximumInputTokens / 4))
         summaryTokens = max(1, min(2_048, maximumInputTokens / 8))
-        summaryBatchTokens = max(1, maximumInputTokens - summaryTokens - 1_024)
+        summaryBatchTokens = max(1, min(32_768, maximumInputTokens) - summaryTokens - 1_024)
     }
 
     func reservingImageTokens(_ count: Int) -> Self {
@@ -52,10 +52,11 @@ struct MeetingChatContextBudget {
             coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
         let base = try MeetingChatClient.makePrompt(question: question, evidence: evidence, history: [],
             budget: self, validateBudget: false, attachmentContext: baseContext)
-        let remaining = maximumInputTokens - Self.estimateTokens(base.system + base.user)
+        let remaining = maximumInputTokens - Self.estimateJSONTextTokens(base.system + base.user)
             - 2_048 - historyReserve - imageCount * 4_096
-        // Leave room for native envelopes, validation repair and future scoped retrieval.
-        let result = max(0, remaining * 3 / 4)
+        // Reserve explicit protocol/repair space above; no percentage or fixed
+        // final-chat cap may force an otherwise fitting document into notes.
+        let result = max(0, remaining)
         guard result >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
         return result
     }
@@ -65,6 +66,20 @@ struct MeetingChatContextBudget {
         var nonASCII = 0
         for byte in text.utf8 {
             if byte < 128 { ascii += 1 } else { nonASCII += 1 }
+        }
+        return (ascii + 2) / 3 + nonASCII + 32
+    }
+
+    /// Count JSON string escaping as it will appear in native request input.
+    static func estimateJSONTextTokens(_ text: String) -> Int {
+        var ascii = 0; var nonASCII = 0
+        for byte in text.utf8 {
+            if byte >= 128 { nonASCII += 1; continue }
+            switch byte {
+            case 8, 9, 10, 12, 13, 34, 47, 92: ascii += 2
+            case 0..<32: ascii += 6
+            default: ascii += 1
+            }
         }
         return (ascii + 2) / 3 + nonASCII + 32
     }

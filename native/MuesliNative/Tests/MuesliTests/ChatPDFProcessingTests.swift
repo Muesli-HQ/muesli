@@ -65,7 +65,8 @@ struct ChatPDFProcessingTests {
         let expectedText = try (0..<95).map { page in
             "\n[Page \(page + 1)]\n" + (try #require(pdf.page(at: page)?.string)).trimmingCharacters(in: .whitespacesAndNewlines)
         }.joined()
-        let allTextDeliveredInOrder = allFragments == expectedText
+        let pageStart = try #require(allFragments.range(of: "\n[Page 1]\n"))
+        let allTextDeliveredInOrder = String(allFragments[pageStart.lowerBound...]) == expectedText
         #expect(allTextDeliveredInOrder)
         #expect(inputs.allSatisfy { MeetingChatContextBudget.estimateTokens($0.system) + MeetingChatContextBudget.estimateTokens($0.user) <= smallBudget.documentRequestInputTokens })
         #expect(inputs.allSatisfy { $0.model == "gpt-6.1-sol" })
@@ -102,7 +103,7 @@ struct ChatPDFProcessingTests {
         let files = try ChatFileReader.references(urls: [url], existing: [])
         let probe = PDFNotesProbe(onGenerate: { var data = try Data(contentsOf: url); data.append(0); try data.write(to: url) })
         await #expect(throws: ChatFileError.changed) {
-            try await ChatPDFProcessing.prepare(files, config: config, question: "Summarize", budget: .init(config: config), generator: probe)
+            try await ChatPDFProcessing.prepare(files, config: config, question: "Summarize", budget: .init(config: config, contextWindowTokens: 32_768), generator: probe)
         }
     }
 
@@ -112,7 +113,7 @@ struct ChatPDFProcessingTests {
         let files = try ChatFileReader.references(urls: [url], existing: [])
         let probe = PDFNotesProbe(reply: String(repeating: "x", count: 100_000))
         await #expect(throws: ChatPDFProcessingError.self) {
-            try await ChatPDFProcessing.prepare(files, config: config, question: "Summarize", budget: .init(config: config), generator: probe)
+            try await ChatPDFProcessing.prepare(files, config: config, question: "Summarize", budget: .init(config: config, contextWindowTokens: 32_768), generator: probe)
         }
         #expect(await probe.inputs.count == 2)
     }
@@ -153,10 +154,12 @@ struct ChatPDFProcessingTests {
         await chat.waitForIdle(); chat.startDraft(scope: .init(selection: .meetings([])))
         await chat.attachFiles([url]); chat.composerDraft = "Summarize the PDF"
         let undo = chat.composerUndoIdentity; let config = config
-        let send = Task { await chat.send(question: chat.composerDraft, config: config) }
+        let send = Task { await chat.send(question: chat.composerDraft, config: config, contextWindowTokens: 32_768) }
         await probe.waitForRequest()
         #expect(chat.isBusy)
+        #expect(chat.composerFiles.isEmpty)
         chat.stop()
+        #expect(chat.composerFiles.count == 1)
         await probe.finish()
         await send.value
         #expect(!chat.isBusy && chat.selectedSessionID == nil)
@@ -166,8 +169,48 @@ struct ChatPDFProcessingTests {
         #expect(await probe.calls == 1)
     }
 
+    @Test @MainActor func largePDFUsesFullSelectedModelContextWithoutNotesOrLegacyByteLimit() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("full-context.pdf"); try Self.pdf(at: url, pages: 289, linesPerPage: 35)
+        let files = try ChatFileReader.references(urls: [url], existing: [])
+        var config = config; config.meetingSummaryBackend = "chatgpt"
+        let budget = MeetingChatContextBudget(config: config)
+        let notes = PDFNotesProbe()
+        let prepared = try await ChatPDFProcessing.prepare(files, config: config, question: "Describe the final page",
+            budget: budget, generator: notes)
+        #expect(await notes.inputs.isEmpty)
+        #expect(prepared.documentCoverage.first?.wasCondensed == false)
+        #expect(MeetingChatContextBudget.estimateTokens(prepared.context) > 32_768)
+        let evidence = MeetingChatEvidence(scope: .init(selection: .meetings([])), passages: [], dependencies: [],
+            coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
+        let probe = FullContextNativeProbe()
+        let (answer, _) = try await MeetingChatNativeHarness.run(question: "Describe the final page", evidence: evidence,
+            history: [], config: config, sessionID: UUID(), generator: probe,
+            execute: { _, _ in throw MeetingChatError.invalidResponse }, activity: { _, _ in }, progress: { _ in },
+            reasoningSummary: { _, _ in }, budget: budget, attachments: prepared)
+        #expect(answer.markdown == "Synthetic answer")
+        let request = try #require(await probe.request)
+        #expect(request.inputItems.count > 512_000)
+        #expect(MeetingChatContextBudget.estimateTokens(request.base.system + String(decoding: request.inputItems, as: UTF8.self) + String(decoding: request.tools, as: UTF8.self)) <= budget.maximumInputTokens)
+    }
+
+    @Test func multiplePDFsShareTheirActualAllowanceWithoutEqualPerFileCaps() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let large = root.appendingPathComponent("large.pdf"); try Self.pdf(at: large, pages: 95, linesPerPage: 30)
+        let small = root.appendingPathComponent("small.pdf"); try Self.pdf(at: small, pages: 1)
+        let files = try ChatFileReader.references(urls: [large, small], existing: [])
+        let probe = PDFNotesProbe()
+        let budget = MeetingChatContextBudget(config: config, contextWindowTokens: 150_000)
+        let prepared = try await ChatPDFProcessing.prepare(files, config: config, question: "Compare",
+            budget: budget, generator: probe)
+        #expect(await probe.inputs.isEmpty)
+        #expect(prepared.documentCoverage.count == 2)
+        #expect(prepared.documentCoverage.allSatisfy { !$0.wasCondensed })
+    }
+
     @Test func catalogUsesTransportSpecificMetadataAndUnknownModelsRemainConservative() {
         #expect(MeetingChatContextBudget(config: config).documentRequestInputTokens == 922_000)
+        #expect(MeetingChatContextBudget(config: config).maximumInputTokens == 922_000)
         var chatGPT = config; chatGPT.meetingSummaryBackend = "chatgpt"
         #expect(MeetingChatContextBudget(config: chatGPT).documentRequestInputTokens == 500_000 - 32_768)
         var unknown = config; unknown.meetingSummaryBackend = "custom_llm"; unknown.customLLMModel = "unknown"
@@ -204,4 +247,14 @@ private actor PausedPDFNotesProbe: MeetingTextGenerating {
         if output == nil { await withCheckedContinuation { waiter = $0 } }
     }
     func finish() { output?.resume(returning: "Late notes"); output = nil }
+}
+
+private actor FullContextNativeProbe: MeetingTextGenerating {
+    var request: MeetingNativeToolRequest?
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String { throw MeetingChatError.invalidResponse }
+    func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
+        self.request = request
+        _ = try ChatFileReader.requestData(MeetingNativeToolTransport.requestBody(request, stream: false))
+        return .init(outputItems: Data("[]".utf8), calls: [], text: #"{"status":"conversation","markdown":"Synthetic answer"}"#)
+    }
 }

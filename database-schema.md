@@ -288,7 +288,12 @@ Both forms decode without a record migration. Existing image/PDF records decode 
 The bookmark contains original-location metadata; it is private local state.
 There are no attachment blobs, copied originals, thumbnails, extracted text or
 base64 payloads in SQLite, exports, sync or telemetry. Session references describe
-composer selection; immutable turn references describe that request. Inherited
+unsent composer selection; immutable turn references describe that request. An
+accepted send consumes only the matching session selection through the store API;
+a later selection cannot be erased by a delayed earlier send. The composer hides
+submitted references during preparation and restores them if preparation is stopped
+or fails. Successfully sent files remain on their original turn when reopening
+a chat, without repopulating the composer. Inherited
 file dependencies survive removing a composer attachment. The worker validates
 originals before context reuse and completion; missing/changed originals invalidate
 dependent answers, drafts, rolling memory and generated titles through store APIs.

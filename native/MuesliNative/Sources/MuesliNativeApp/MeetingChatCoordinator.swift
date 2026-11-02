@@ -22,6 +22,9 @@ actor MeetingChatWorker {
     func setFiles(sessionID: UUID, files: [ChatFileReference]) throws {
         try store.setFileAttachments(sessionID: sessionID, files: files)
     }
+    func consumeFiles(sessionID: UUID, matching files: [ChatFileReference]) throws {
+        try store.consumeFileAttachments(sessionID: sessionID, matching: files)
+    }
     func prepareFiles(_ files: [ChatFileReference], config: AppConfig, question: String,
         budget: MeetingChatContextBudget, sessionID: UUID?, beforeOrdinal: Int? = nil,
         generator: any MeetingTextGenerating, progress: @Sendable (String) async -> Void
@@ -34,7 +37,7 @@ actor MeetingChatWorker {
                 $0.ordinal >= start && (beforeOrdinal == nil || $0.ordinal < beforeOrdinal!) && $0.state == .completed
             }
             let plan = budget.plan(history: history)
-            historyReserve = plan.recentTurns.reduce(0) { $0 + MeetingChatContextBudget.estimateTokens(MeetingChatHistory.promptBlock($1)) }
+            historyReserve = plan.recentTurns.reduce(0) { $0 + MeetingChatContextBudget.estimateJSONTextTokens(MeetingChatHistory.promptBlock($1)) }
             if !plan.olderTurns.isEmpty { historyReserve += budget.summaryTokens }
         }
         return try await ChatPDFProcessing.prepare(files, config: config, question: question, budget: budget,
@@ -333,9 +336,13 @@ final class MeetingChatCoordinator {
     private(set) var reasoningSummaries: [String] = []
     private(set) var activityTurnID: UUID?
     private var fileDrafts: [UUID?: [ChatFileReference]] = [:]
+    // Keep recovery references privately while preparation is running, rather
+    // than showing a submitted attachment as an unsent composer selection.
+    private var submittedFileDraft: (requestID: UUID, sessionID: UUID?)?
     private(set) var isPreparingFiles = false
     var composerFiles: [ChatFileReference] {
-        fileDrafts[selectedSessionID] ?? sessions.first(where: { $0.id == selectedSessionID })?.fileAttachments ?? []
+        if let submittedFileDraft, submittedFileDraft.sessionID == selectedSessionID { return [] }
+        return fileDrafts[selectedSessionID] ?? sessions.first(where: { $0.id == selectedSessionID })?.fileAttachments ?? []
     }
     func fileThumbnail(_ file: ChatFileReference) async -> Data? { await worker.thumbnail(for: file) }
     func attachFiles(_ urls: [URL]) async {
@@ -649,8 +656,10 @@ final class MeetingChatCoordinator {
         activeRequestID = requestID; phase = "Saving question"
         reasoningSummaries = []; activityTurnID = nil
         let draftKey = selectedSessionID; let submittedDraft = composerDraft
+        if !files.isEmpty { submittedFileDraft = (requestID, draftKey) }
         activeSessionID = draftKey
         defer {
+            if submittedFileDraft?.requestID == requestID { submittedFileDraft = nil }
             if activeRequestID == requestID, tasks[requestID] == nil {
                 activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
             }
@@ -723,8 +732,13 @@ final class MeetingChatCoordinator {
             // An accepted send is an undo boundary even if the user started a new draft while saving.
             composerUndoIdentities[id] = UUID()
             if composerDrafts[submittedDraftKey] == submittedDraft, submittedDraft.trimmingCharacters(in: .whitespacesAndNewlines) == question { composerDrafts[submittedDraftKey] = nil }
+            fileDrafts[id] = []
             // Launch takes request ownership before the history read yields.
             errorMessage = nil; launch(turn, config: requestConfig, isDraft: isDraft, contextWindowTokens: contextWindowTokens, preparedAttachments: prepared)
+            // Persistence and immutable turn references are separate: follow-ups
+            // retain valid history without resending or reprocessing this file.
+            do { try await worker.consumeFiles(sessionID: id, matching: files) }
+            catch { if activeRequestID == requestID { errorMessage = error.localizedDescription } }
             // Publish the already-persisted turn without waiting behind retrieval.
             // launch first owns cancellation if observation triggers Stop here.
             if selectedSessionID == id, turnsSessionID == id, !turns.contains(where: { $0.id == turn.id }) {
@@ -747,6 +761,7 @@ final class MeetingChatCoordinator {
         composerDrafts[nil] = nil
         if let files = fileDrafts.removeValue(forKey: nil) { fileDrafts[sessionID] = files }
         transferUntitledComposerUndoIdentity(to: sessionID)
+        if submittedFileDraft?.requestID == activeRequestID { submittedFileDraft?.sessionID = sessionID }
     }
     func retry(turnID: UUID, config: AppConfig, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
@@ -928,6 +943,7 @@ final class MeetingChatCoordinator {
         return "Meeting AI request failed. Please retry or check your connection settings."
     }
     func stop() {
+        submittedFileDraft = nil
         filePreparation?.task.cancel(); filePreparation = nil
         reasoningIsStreaming = false
         reasoningSummaries = []; activityTurnID = nil

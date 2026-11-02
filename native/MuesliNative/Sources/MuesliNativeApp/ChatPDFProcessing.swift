@@ -84,10 +84,14 @@ actor ChatPDFPageReader {
             while let index = textIndex, index < scalars.endIndex {
                 let scalar = scalars[index]
                 let bytes = scalar.utf8.count
-                let nextASCII = ascii + (scalar.isASCII ? bytes : 0)
+                let escaped: Int
+                switch scalar.value {
+                case 8, 9, 10, 12, 13, 34, 47, 92: escaped = 2
+                case 0..<32: escaped = 6
+                default: escaped = bytes
+                }
+                let nextASCII = ascii + (scalar.isASCII ? escaped : 0)
                 let nextNonASCII = nonASCII + (scalar.isASCII ? 0 : bytes)
-                // Worst-case JSON escaping for controls/quotes/backslashes.
-                let escaped = scalar.value < 32 ? 6 : (scalar.value == 34 || scalar.value == 92 ? 2 : bytes)
                 if (nextASCII + 2) / 3 + nextNonASCII > tokens || escapedBytes + escaped > 6 * 1_024 * 1_024 {
                     guard !fragment.isEmpty else { throw ChatPDFProcessingError.contextTooSmall }
                     return (fragment, lastPage)
@@ -100,6 +104,8 @@ actor ChatPDFPageReader {
         }
         return fragment.isEmpty ? nil : (fragment, lastPage)
     }
+
+    var exhausted: Bool { pageIndex == totalPages && textIndex == nil }
 
     func finish() throws -> Int {
         try validate()
@@ -129,6 +135,51 @@ actor ChatPDFPageReader {
     }
 }
 
+/// One ordered stream shares the allowance across all PDFs. It retains only the
+/// current page reader, one caller-owned batch and coverage metadata.
+private actor ChatPDFStreamReader {
+    let files: [ChatFileReference]
+    private var index = 0
+    private var reader: ChatPDFPageReader?
+    private var needsHeader = true
+    private var coverage: [ChatDocumentCoverage] = []
+    init(files: [ChatFileReference]) { self.files = files }
+
+    func next(maximumTokens: Int, progress: @Sendable (String) async -> Void) async throws -> String? {
+        var batch = ""
+        while index < files.count {
+            try Task.checkCancellation()
+            if reader == nil { reader = try ChatPDFPageReader(file: files[index]); needsHeader = true }
+            guard let reader else { throw ChatFileError.unreadablePDF }
+            let header = needsHeader ? "\nPDF attachment: \(ChatPDFProcessing.quoted(files[index].name))\n" : ""
+            let remaining = maximumTokens - MeetingChatContextBudget.estimateJSONTextTokens(batch + header) - 32
+            guard remaining >= 128 else {
+                if batch.isEmpty { throw ChatPDFProcessingError.contextTooSmall }
+                return batch
+            }
+            if let fragment = try await reader.next(maximumTokens: remaining, progress: { page, total in
+                await progress("Reading PDF · page \(page) of \(total)")
+            }) {
+                batch += header + fragment.text; needsHeader = false
+            }
+            if await reader.exhausted {
+                let missing = try await reader.finish()
+                coverage.append(.init(fileID: files[index].id, totalPages: await reader.totalPages,
+                    pagesWithoutText: missing, wasCondensed: false))
+                await reader.close(); self.reader = nil; index += 1
+            }
+        }
+        return batch.isEmpty ? nil : batch
+    }
+
+    func validate() throws { try ChatFileReader.validate(files) }
+    func finish() throws -> [ChatDocumentCoverage] {
+        guard index == files.count, reader == nil else { throw ChatFileError.unreadablePDF }
+        try validate(); return coverage
+    }
+    func close() async { await reader?.close(); reader = nil }
+}
+
 enum ChatPDFProcessing {
     /// No page-count or total extracted-character cutoff. All batches are read in
     /// order; rolling notes bound memory and the final chat prompt. Notes are lossy,
@@ -144,64 +195,57 @@ enum ChatPDFProcessing {
         guard !pdfs.isEmpty else { return result }
         let available = try budget.documentContextTokens(question: question, baseContext: result.context,
             imageCount: result.images.count, historyReserve: historyReserve)
-        let perDocument = available / pdfs.count
-        guard perDocument >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
-        for file in pdfs {
-            try Task.checkCancellation()
-            let reader = try ChatPDFPageReader(file: file)
-            do {
-                let pages = await reader.totalPages
-                let header = "\nPDF attachment: \(quoted(file.name)) (text/OCR only; diagrams and layout are not supplied).\n"
-                let contentBudget = perDocument - MeetingChatContextBudget.estimateTokens(header) - 128
-                guard contentBudget >= 128 else { throw ChatPDFProcessingError.contextTooSmall }
-                var notes = ""; var condensed = false; var batch = 0
-                let reading: @Sendable (Int, Int) async -> Void = { page, total in
-                    await progress("Reading PDF · page \(page) of \(total)")
-                }
-                // A small first pull avoids preprocessing when everything fits. A
-                // bounded lookahead joins it into the first batch, avoiding an extra
-                // AI request just to decide whether condensation is needed.
-                if let first = try await reader.next(maximumTokens: contentBudget, progress: reading) {
-                    let batchLimit = try Self.batchTokens(budget, question: question, notesBudget: contentBudget)
-                    let lookaheadLimit = max(128, batchLimit - MeetingChatContextBudget.estimateTokens(first.text) - 64)
-                    if let more = try await reader.next(maximumTokens: lookaheadLimit, progress: reading) {
-                        condensed = true
-                        var fragment: (text: String, page: Int)? = (first.text + more.text, more.page)
-                        while let current = fragment {
-                            batch += 1
-                            await progress("Condensing PDF · batch \(batch), page \(current.page) of \(pages)")
-                            notes = try await condense(current.text, previous: notes, question: question,
-                                name: file.name, config: config, budget: budget, notesBudget: contentBudget,
-                                sessionID: sessionID, generator: generator, reader: reader)
-                            fragment = try await reader.next(maximumTokens: batchLimit, progress: reading)
-                        }
-                    } else { notes = first.text }
-                }
-                let missing = try await reader.finish()
-                await reader.close()
-                result.context += header + (condensed ? "Condensed notes from all \(pages) pages (lossy; not verbatim).\n" : "All \(pages) pages inspected.\n")
-                    + (missing > 0 ? "\(missing) pages had no recoverable text after OCR; do not infer their content.\n" : "") + notes
-                result.documentCoverage.append(.init(fileID: file.id, totalPages: pages, pagesWithoutText: missing, wasCondensed: condensed))
-            } catch {
-                await reader.close()
-                throw error
+        // Only explicit prompt/output/protocol/history costs reduce the model's
+        // allowance. Metadata wrappers below have a small fixed reservation.
+        let contentBudget = available - 256
+        guard contentBudget >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
+        let reader = ChatPDFStreamReader(files: pdfs)
+        do {
+            var notes = ""; var condensed = false; var batch = 0
+            let notesBudget = min(contentBudget, max(128, budget.maximumOutputTokens / 2))
+            if let first = try await reader.next(maximumTokens: contentBudget, progress: progress) {
+                let batchLimit = try Self.batchTokens(budget, question: question, notesBudget: notesBudget, names: pdfs.map(\.name).joined(separator: ", "))
+                let lookaheadLimit = max(1_024, batchLimit - MeetingChatContextBudget.estimateJSONTextTokens(first) - 64)
+                if let more = try await reader.next(maximumTokens: lookaheadLimit, progress: progress) {
+                    condensed = true
+                    var fragment: String? = first + more
+                    while let current = fragment {
+                        batch += 1
+                        await progress("Condensing PDF · batch \(batch)")
+                        notes = try await condense(current, previous: notes, question: question,
+                            name: pdfs.map(\.name).joined(separator: ", "), config: config, budget: budget,
+                            notesBudget: notesBudget, sessionID: sessionID, generator: generator, reader: reader)
+                        fragment = try await reader.next(maximumTokens: batchLimit, progress: progress)
+                    }
+                } else { notes = first }
             }
+            let coverage = try await reader.finish()
+            await reader.close()
+            let pages = coverage.reduce(0) { $0 + $1.totalPages }
+            let missing = coverage.reduce(0) { $0 + $1.pagesWithoutText }
+            result.context += "\nPDF attachments (text/OCR only; diagrams and layout are not supplied).\n"
+                + (condensed ? "Condensed notes from all \(pages) pages (lossy; not verbatim).\n" : "All \(pages) pages inspected.\n")
+                + (missing > 0 ? "\(missing) pages had no recoverable text after OCR; do not infer their content.\n" : "") + notes
+            result.documentCoverage = coverage.map {
+                .init(fileID: $0.fileID, totalPages: $0.totalPages, pagesWithoutText: $0.pagesWithoutText, wasCondensed: condensed)
+            }
+        } catch {
+            await reader.close(); throw error
         }
         // Original files may change while another PDF's model request is running.
         try ChatFileReader.validate(files)
         return result
     }
 
-    private static func batchTokens(_ budget: MeetingChatContextBudget, question: String, notesBudget: Int) throws -> Int {
-        let available = budget.documentRequestInputTokens - MeetingChatContextBudget.estimateTokens(question) - notesBudget - 1_024
-        // Token estimation is approximate. Leave 25% headroom rather than sending at the model's advertised edge.
+    private static func batchTokens(_ budget: MeetingChatContextBudget, question: String, notesBudget: Int, names: String) throws -> Int {
+        let available = budget.documentRequestInputTokens - MeetingChatContextBudget.estimateJSONTextTokens(question) - MeetingChatContextBudget.estimateJSONTextTokens(names) - notesBudget - 1_024
         guard available >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
-        return available * 3 / 4
+        return available
     }
 
     private static func condense(_ text: String, previous: String, question: String, name: String,
         config: AppConfig, budget: MeetingChatContextBudget, notesBudget: Int, sessionID: UUID,
-        generator: any MeetingTextGenerating, reader: ChatPDFPageReader
+        generator: any MeetingTextGenerating, reader: ChatPDFStreamReader
     ) async throws -> String {
         for attempt in 0..<2 {
             try await reader.validate()
@@ -215,19 +259,19 @@ enum ChatPDFProcessing {
             substitute for the original when exact quotation or exhaustive detail is requested.
             """
             let user = "User question:\n\(question)\n\nDocument: \(quoted(name))\nPrevious notes (quoted):\n\(previous)\n\nNext document fragment (quoted):\n\(text)"
-            guard MeetingChatContextBudget.estimateTokens(system) + MeetingChatContextBudget.estimateTokens(user) <= budget.documentRequestInputTokens else {
+            guard MeetingChatContextBudget.estimateJSONTextTokens(system) + MeetingChatContextBudget.estimateJSONTextTokens(user) <= budget.documentRequestInputTokens else {
                 throw ChatPDFProcessingError.contextTooSmall
             }
             let output = try await generator.generate(.init(system: system, user: user, config: config,
                 maxOutputTokens: budget.maximumOutputTokens, sessionID: sessionID, outputTokenLimit: budget.maximumOutputTokens))
             try await reader.validate()
             let clean = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !clean.isEmpty, clean.utf8.count <= notesBudget - 32 { return clean }
+            if !clean.isEmpty, clean.utf8.count <= notesBudget - 32, MeetingChatContextBudget.estimateJSONTextTokens(clean) <= notesBudget { return clean }
         }
         throw ChatPDFProcessingError.invalidNotes
     }
 
-    private static func quoted(_ value: String) -> String {
+    fileprivate static func quoted(_ value: String) -> String {
         String(decoding: (try? JSONEncoder().encode(value)) ?? Data(), as: UTF8.self)
     }
 }

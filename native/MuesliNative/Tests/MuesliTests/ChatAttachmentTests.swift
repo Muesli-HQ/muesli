@@ -261,8 +261,29 @@ struct ChatAttachmentTests {
         #expect(try chat.historyContext(before: second).turns.isEmpty)
         #expect(try chat.finishTurn(turnID: second.id, answer: "Late response", citations: [], dependencies: []) == false)
     }
+    @Test func delayedComposerConsumptionDoesNotEraseANewerSelection() throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("image.png"); try image(at: original)
+        let next = root.appendingPathComponent("next.md"); try "Synthetic next draft".write(to: next, atomically: true, encoding: .utf8)
+        let oldFiles = try ChatFileReader.references(urls: [original], existing: [])
+        let newFiles = try ChatFileReader.references(urls: [next], existing: [])
+        let db = root.appendingPathComponent("fixture.db")
+        let meetings = DictationStore(databaseURL: db); try meetings.migrateIfNeeded()
+        let store = MeetingChatStore(databaseURL: db)
+        let session = try store.createSession(scope: .init(), title: "Synthetic")
+        try store.setFileAttachments(sessionID: session.id, files: oldFiles)
+        let turn = try store.beginTurn(sessionID: session.id, question: "First", scope: session.scope, provider: "test", model: "test", fileAttachments: oldFiles)
+        try store.consumeFileAttachments(sessionID: session.id, matching: oldFiles)
+        #expect(try store.sessions().first?.fileAttachments == nil)
+        try store.setFileAttachments(sessionID: session.id, files: newFiles)
+        try store.consumeFileAttachments(sessionID: session.id, matching: oldFiles)
+        #expect(try store.sessions().first?.fileAttachments == newFiles)
+        #expect(try store.turns(sessionID: session.id).first?.id == turn.id)
+        #expect(try store.turns(sessionID: session.id).first?.fileAttachments == oldFiles)
+    }
+
     @Test(arguments: ["png", "md", "txt"]) @MainActor
-    func fileOnlySendReopensReferencesAndPreservesDraftAcrossNavigation(_ suffix: String) async throws {
+    func fileOnlySendConsumesComposerReferencesAndPreservesHistoryAcrossNavigation(_ suffix: String) async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("attachment." + suffix)
         if suffix == "png" { try image(at: original) }
@@ -284,17 +305,19 @@ struct ChatAttachmentTests {
         #expect(chat.turns.first?.question == "Describe the attached files.")
         #expect(chat.scope.selection == .meetings([]))
         #expect(await probe.imageCounts == [imageCount])
+        #expect(chat.composerFiles.isEmpty)
+        #expect(chat.turns.first?.fileAttachments?.count == 1)
+        #expect(try chat.store.sessions().first?.fileAttachments == nil)
         chat.composerDraft = "Keep my text"
         let undo = chat.composerUndoIdentity
         chat.showIndex(); chat.selectChat(id: sessionID); await chat.waitForIdle()
         #expect(chat.composerDraft == "Keep my text")
         #expect(chat.composerUndoIdentity == undo)
-        #expect(chat.composerFiles.count == 1)
+        #expect(chat.composerFiles.isEmpty)
         let reopened = MeetingChatCoordinator(databaseURL: database, generator: probe)
         await reopened.waitForIdle(); reopened.selectChat(id: sessionID); await reopened.waitForIdle()
-        #expect(reopened.composerFiles.count == 1)
-        await reopened.removeFile(try #require(reopened.composerFiles.first?.id))
         #expect(reopened.composerFiles.isEmpty)
+        #expect(reopened.turns.first?.fileAttachments?.count == 1)
         #expect(reopened.turns.first?.originalAnswer != nil)
         #expect(FileManager.default.fileExists(atPath: original.path))
         config.meetingSummaryBackend = "anthropic"

@@ -176,6 +176,17 @@ public struct MeetingChatStore: Sendable {
         } }
     }
 
+    /// Consume only the submitted selection. A newer composer selection must not
+    /// be cleared by a delayed completion from an earlier send.
+    public func consumeFileAttachments(sessionID: UUID, matching files: [ChatFileReference]) throws {
+        try connection { db in try MeetingChatSQL.transaction(db: db) {
+            var session = try session(sessionID, db: db)
+            guard (session.fileAttachments ?? []) == files else { return }
+            session.fileAttachments = nil; session.updatedAt = Date()
+            try saveSession(session, db: db)
+        } }
+    }
+
     /// Scrub file-derived answers and rolling memory when an original disappears
     /// or changes. Removing a selected reference alone does not delete its source.
     public func invalidateFileSources(sessionID: UUID, ids: Set<String>) throws {

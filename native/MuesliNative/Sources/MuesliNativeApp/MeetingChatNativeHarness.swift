@@ -6,7 +6,10 @@ import MuesliCore
 /// executable prose; only registered function calls reach the scoped worker.
 enum MeetingChatNativeHarness {
     static let maximumToolCalls = 12
-    static let maximumInputBytes = 512_000
+    static let maximumOutputItemBytes = 512_000
+    // Large file context uses the same wire-size guard as provider adapters.
+    // Tool output/replay validation remains independently bounded.
+    static let maximumInputBytes = ChatFileReader.maximumRequestBytes
 
     static var tools: [[String: Any]] {
         func tool(_ name: String, _ description: String, _ properties: [String: Any]) -> [String: Any] {
@@ -95,7 +98,7 @@ enum MeetingChatNativeHarness {
                     sessionID: sessionID, onReasoningSummary: { await reasoningSummary(iteration, $0) }, outputTokenLimit: budget.maximumOutputTokens, images: attachments.images),
                 inputItems: inputData, tools: registeredTools, allowTools: allowTools))
             try Task.checkCancellation()
-            guard response.outputItems.count <= maximumInputBytes,
+            guard response.outputItems.count <= maximumOutputItemBytes,
                   let output = try JSONSerialization.jsonObject(with: response.outputItems) as? [[String: Any]] else {
                 throw MeetingChatHarnessError.invalidFormat
             }
