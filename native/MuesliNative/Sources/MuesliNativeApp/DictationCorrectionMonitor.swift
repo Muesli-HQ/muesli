@@ -157,11 +157,8 @@ struct DictionaryCorrectionDetector {
 
     /// Case-sensitive so acronym fixes ("api" → "API") still count as substitutions.
     private static func substitutionTokens(_ text: String) -> [String] {
-        // Same word edges as `normalizedCandidate`, so candidates match their source tokens.
-        let edges = CharacterSet.punctuationCharacters.subtracting(CharacterSet(charactersIn: "_-+/"))
-        return text.split(whereSeparator: \.isWhitespace)
-            .map { $0.trimmingCharacters(in: edges) }
-            .filter { !$0.isEmpty }
+        // Same word boundaries as alignment, so "musley,now" yields "musley".
+        wordTokens(in: text).map(\.text)
     }
 
     private static func occurrences(of phrase: [String], in tokens: [String]) -> Int {

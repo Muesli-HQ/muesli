@@ -69,15 +69,19 @@ def validate(release: dict) -> list[str]:
     name = f"{release['slot']} {release.get('version')}"
     if release.get("runtime") != runtime:
         problems.append(f"{name}: runtime must be {runtime}")
-    if not isinstance(release.get("sequence"), int) or release["sequence"] <= 0 or not release.get("version"):
+    # type() rather than isinstance(): JSON true is a Python int, but the app rejects it.
+    if type(release.get("sequence")) is not int or release["sequence"] <= 0 \
+            or not isinstance(release.get("version"), str) or not release["version"]:
         problems.append(f"{name}: needs a version and a positive integer sequence")
+    if release.get("notes") is not None and not isinstance(release["notes"], str):
+        problems.append(f"{name}: notes must be a string")
     repo = release.get("repo", "")
     if not repo.startswith("Muesli-HQ/") or repo.count("/") != 1:
         problems.append(f"{name}: repo must be under Muesli-HQ/")
     if not re.fullmatch(r"[0-9a-f]{40}", release.get("revision", "")):
         problems.append(f"{name}: revision must be a full commit hash")
     minimum = release.get("minimum_app_version")
-    if minimum is not None and not re.fullmatch(r"\d+(\.\d+)*", minimum):
+    if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"\d+(\.\d+)*", minimum)):
         problems.append(f"{name}: minimum_app_version must be numeric, e.g. 0.9.2 (the app ignores other suffixes)")
     files = release.get("files") or []
     if not files or files[0].get("path") != model_file:
@@ -88,7 +92,7 @@ def validate(release: dict) -> list[str]:
         if not SAFE_NAME.match(path) or path in seen:
             problems.append(f"{name}: bad or duplicate file path {path!r}")
         seen.add(path)
-        if not isinstance(f.get("size"), int) or f["size"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", f.get("sha256", "")):
+        if type(f.get("size")) is not int or f["size"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", f.get("sha256", "")):
             problems.append(f"{name}: bad size or sha256 for {path}")
     return problems
 

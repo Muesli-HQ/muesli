@@ -89,15 +89,21 @@ struct CleanupModelRelease: Codable, Equatable, Sendable {
             guard file.size > 0, file.sha256.count == 64, file.sha256.allSatisfy(\.isHexDigit),
                   file.sha256 == file.sha256.lowercased() else { return "invalid digest for \(file.path)" }
         }
-        if let minimumAppVersion, Self.compareVersions(appVersion, minimumAppVersion) == .orderedAscending {
-            return "requires app \(minimumAppVersion)"
+        if let minimumAppVersion {
+            let parts = minimumAppVersion.split(separator: ".", omittingEmptySubsequences: false)
+            guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else {
+                return "invalid minimum app version \(minimumAppVersion)"
+            }
+            if Self.compareVersions(appVersion, minimumAppVersion) == .orderedAscending {
+                return "requires app \(minimumAppVersion)"
+            }
         }
         return nil
     }
 
     static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
         func parts(_ value: String) -> [Int] {
-            value.split(separator: "-")[0].split(separator: ".").map { Int($0) ?? 0 }
+            (value.split(separator: "-").first ?? "").split(separator: ".").map { Int($0) ?? 0 }
         }
         let a = parts(lhs), b = parts(rhs)
         for index in 0..<max(a.count, b.count) {

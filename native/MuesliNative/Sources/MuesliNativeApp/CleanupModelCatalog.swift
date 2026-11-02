@@ -19,6 +19,31 @@ enum CleanupModelCatalog {
     struct Document: Codable {
         let schema: Int
         let releases: [CleanupModelRelease]
+
+        init(schema: Int, releases: [CleanupModelRelease]) {
+            self.schema = schema
+            self.releases = releases
+        }
+
+        /// Entries this build cannot decode (a runtime added later, say) are skipped,
+        /// so older apps keep receiving the releases they can run.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schema = try container.decode(Int.self, forKey: .schema)
+            var list = try container.nestedUnkeyedContainer(forKey: .releases)
+            var releases: [CleanupModelRelease] = []
+            while !list.isAtEnd {
+                if let release = try? list.decode(CleanupModelRelease.self) {
+                    releases.append(release)
+                } else {
+                    // A failed decode does not advance the container.
+                    _ = try list.decode(SkippedEntry.self)
+                }
+            }
+            self.releases = releases
+        }
+
+        private struct SkippedEntry: Decodable {}
     }
 
     enum CatalogError: LocalizedError {

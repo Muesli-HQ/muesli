@@ -90,12 +90,17 @@ struct CleanupModelUpdateTests {
         ]
         var tooNew = Self.release(version: "v20", sequence: 20, contents: model)
         tooNew.minimumAppVersion = "9.0"
-        for release in unsafe + [tooNew] {
+        let badMinimums = ["", "-", "1..0", "0.9-beta"].map { minimum in
+            var release = Self.release(version: "v20", sequence: 20, contents: model)
+            release.minimumAppVersion = minimum
+            return release
+        }
+        for release in unsafe + [tooNew] + badMinimums {
             if let slot = CleanupModelSlot.slot(id: release.slot) {
                 #expect(release.validationFailure(for: slot, appVersion: "1.0.0") != nil)
             }
         }
-        let data = try JSONEncoder().encode(CleanupModelCatalog.Document(schema: 1, releases: [older] + unsafe + [tooNew]))
+        let data = try JSONEncoder().encode(CleanupModelCatalog.Document(schema: 1, releases: [older] + unsafe + [tooNew] + badMinimums))
         let latest = try CleanupModelCatalog.latestReleases(catalog: data, signature: nil, publicKey: "",
             appVersion: "1.0.0", allowUnsigned: true)
         #expect(latest == CleanupModelCatalog.bundledLatest)
@@ -195,7 +200,24 @@ struct CleanupModelUpdateTests {
         #expect(library.cleanupModelUpdates[CleanupModelSlot.liteID] == .qwen08V14)
     }
 
+    @Test func catalogSkipsEntriesThisBuildCannotDecode() throws {
+        let newer = Self.release(version: "v15", sequence: 15, contents: [("model.safetensors", "w15"), ("config.json", "{}")])
+        var document = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(CleanupModelCatalog.Document(schema: 1, releases: [newer]))) as! [String: Any]
+        let encoded = (document["releases"] as! [[String: Any]])[0]
+        var future = encoded
+        future["runtime"] = "mlx-lfm3"
+        future["sequence"] = 16
+        document["releases"] = [future, ["slot": 7], encoded]
+        let data = try JSONSerialization.data(withJSONObject: document)
+
+        let latest = try CleanupModelCatalog.latestReleases(catalog: data, signature: nil, publicKey: "",
+            appVersion: "1.0.0", allowUnsigned: true)
+        #expect(latest[CleanupModelSlot.liteID] == newer)
+    }
+
     @Test func versionComparisonIsNumeric() {
+        #expect(CleanupModelRelease.compareVersions("", "0.9") == .orderedAscending)
         #expect(CleanupModelRelease.compareVersions("0.8.10", "0.8.9") == .orderedDescending)
         #expect(CleanupModelRelease.compareVersions("0.9", "0.9.0") == .orderedSame)
         #expect(CleanupModelRelease.compareVersions("0.8.5-preprod.2", "0.8.6") == .orderedAscending)

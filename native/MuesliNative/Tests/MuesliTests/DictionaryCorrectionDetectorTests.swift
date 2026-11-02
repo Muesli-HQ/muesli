@@ -605,5 +605,8 @@ struct DictionaryCorrectionSubstitutionTests {
         #expect(DictionaryCorrectionDetector.isSubstitution(observed: "sc domain", replacement: "sc-domain", before: "open sc domain settings", after: "open sc-domain settings"))
         // Only one of two occurrences corrected still counts.
         #expect(DictionaryCorrectionDetector.isSubstitution(observed: "musley", replacement: "muesli", before: "musley and musley", after: "muesli and musley"))
+        // Punctuation without a space still separates words.
+        #expect(DictionaryCorrectionDetector.isSubstitution(observed: "musley", replacement: "muesli", before: "musley,now", after: "muesli,now"))
+        #expect(!DictionaryCorrectionDetector.isSubstitution(observed: "musley", replacement: "muesli", before: "musley,now muesli", after: "muesli,now musley"))
     }
 }

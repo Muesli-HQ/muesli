@@ -172,6 +172,8 @@ struct SidebarView: View {
                     controller.showMeetingsHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
+                } else if tab == .models, modelsUpdateCTA != nil {
+                    controller.showModels(category: .postProcessing)
                 } else {
                     appState.selectedTab = tab
                 }
