@@ -13639,14 +13639,13 @@ public final class MuesliController: NSObject {
                     )
                     return result.text
                 }, persist: { text in
-                    try self.dictationStore.insertDictation(
-                        text: text, durationSeconds: record.durationSeconds,
+                    recoveredText = try self.dictationStore.insertRecoveredDictation(
+                        recoveryID: record.id, text: text, durationSeconds: record.durationSeconds,
                         startedAt: record.startedAt,
                         endedAt: record.startedAt.addingTimeInterval(record.durationSeconds),
                         transcriptionModel: DictationModelIdentity(backend: backend.backend,
                             model: backend.model, name: backend.label)
                     )
-                    recoveredText = text
                     self.scheduleICloudSyncAfterLocalChange()
                     self.statusBarController?.refresh()
                     self.syncAppState()

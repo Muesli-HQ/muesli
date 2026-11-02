@@ -1,4 +1,6 @@
 import Foundation
+import MuesliCore
+import SQLite3
 import Testing
 @testable import MuesliNativeApp
 
@@ -203,6 +205,96 @@ struct DictationRecoveryTests {
         #expect(savedText == "Recovered தமிழ் transcript.")
         #expect(try store.recordings().isEmpty)
         #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @Test("cleanup failure and relaunch cannot insert the same recovery into history twice")
+    @MainActor
+    func cleanupFailureDoesNotDuplicateHistory() async throws {
+        let (root, source, store) = try fixture()
+        let record = try save(source, to: store)
+        let session = store.audioURL(for: record).deletingLastPathComponent()
+        defer {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: session.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let database = root.appendingPathComponent("history.db")
+        try DictationStore(databaseURL: database).migrateIfNeeded()
+        for attempt in 1...3 {
+            // A new store instance simulates retrying after app relaunch.
+            let history = DictationStore(databaseURL: database)
+            var savedText: String?
+            do {
+                try await DictationRecoveryRetry.run(record: record, store: store,
+                    transcribe: { _ in "Recovered text \(attempt)" }, persist: { text in
+                        savedText = try history.insertRecoveredDictation(recoveryID: record.id,
+                            text: text, durationSeconds: record.durationSeconds,
+                            startedAt: record.startedAt, endedAt: record.startedAt)
+                        if attempt < 3 {
+                            // Real deletion failure after a committed history save.
+                            try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: session.path)
+                        }
+                    })
+                #expect(attempt == 3)
+            } catch {
+                #expect(attempt < 3)
+                #expect((error as NSError).domain == NSCocoaErrorDomain)
+                #expect((error as NSError).code == NSFileWriteNoPermissionError)
+            }
+            #expect(savedText == "Recovered text 1")
+            #expect(try history.recentDictations().map(\.rawText) == ["Recovered text 1"])
+            if attempt < 3 {
+                #expect(try store.recordings() == [record])
+                try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: session.path)
+            }
+        }
+        #expect(try store.recordings().isEmpty)
+        let separate = try save(source, to: store)
+        let history = DictationStore(databaseURL: database)
+        _ = try history.insertRecoveredDictation(recoveryID: separate.id, text: "Recovered text 1",
+            durationSeconds: 1, startedAt: separate.startedAt, endedAt: separate.startedAt)
+        #expect(try history.recentDictations().count == 2)
+    }
+
+    @Test("a failed retry-key write rolls back history and leaves the recording retryable")
+    @MainActor
+    func retryKeyFailureRollsBackHistory() async throws {
+        let (root, source, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try save(source, to: store)
+        let history = DictationStore(databaseURL: root.appendingPathComponent("history.db"))
+        try history.migrateIfNeeded()
+        _ = try history.insertDictation(text: "Ordinary successful dictation", durationSeconds: 1,
+            startedAt: record.startedAt, endedAt: record.startedAt)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(history.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        // The normal migration/insert path never initializes recovery tracking.
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE name = 'dictation_recovery_history'", -1, &statement, nil) == SQLITE_OK)
+        #expect(sqlite3_step(statement) == SQLITE_DONE)
+        sqlite3_finalize(statement)
+        #expect(sqlite3_exec(db, """
+        CREATE TABLE dictation_recovery_history (
+            recovery_id TEXT PRIMARY KEY,
+            dictation_id INTEGER NOT NULL UNIQUE REFERENCES dictations(id) ON DELETE CASCADE
+        );
+        CREATE TRIGGER reject_recovery_key BEFORE INSERT ON dictation_recovery_history
+        BEGIN SELECT RAISE(ABORT, 'synthetic recovery-key failure'); END;
+        """, nil, nil, nil) == SQLITE_OK)
+        do {
+            try await DictationRecoveryRetry.run(record: record, store: store,
+                transcribe: { _ in "Recovered text" }, persist: { text in
+                    _ = try history.insertRecoveredDictation(recoveryID: record.id, text: text,
+                        durationSeconds: 1, startedAt: record.startedAt, endedAt: record.startedAt)
+                })
+            Issue.record("The retry-key write should fail")
+        } catch {}
+        #expect(try history.recentDictations().map(\.rawText) == ["Ordinary successful dictation"])
+        #expect(try store.recordings() == [record])
+        #expect(sqlite3_exec(db, "DROP TRIGGER reject_recovery_key", nil, nil, nil) == SQLITE_OK)
+        _ = try history.insertRecoveredDictation(recoveryID: record.id, text: "Recovered text",
+            durationSeconds: 1, startedAt: record.startedAt, endedAt: record.startedAt)
+        #expect(try history.recentDictations().count == 2)
     }
 
     @Test("inference failure, empty output, and history-save failure preserve the recovery")

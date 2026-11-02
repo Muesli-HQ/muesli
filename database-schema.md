@@ -64,11 +64,16 @@ folder is published only after all its files are written, and a failed copy keep
 the original WAV. Successful dictation and explicit cancellation create no backup.
 Older buffered-streaming recovery folders without `failure.json` are left intact.
 
-Recovery metadata and audio stay local and add no SQLite, CloudKit, telemetry,
-export, or CLI fields. Explicit local retry saves the resulting text through the
-normal history store before deleting recovery files; that text then follows the
-existing history sync policy. Discard removes one recovery, and confirmed history
-clearing also removes the recovery directory. Audio is retained until recovery,
+Recovery metadata and audio stay local and add no CloudKit, telemetry, export,
+or CLI fields. Explicit local retry lazily creates the local-only
+`dictation_recovery_history` table, mapping a recovery UUID primary key to a
+unique `dictation_id` foreign key with `ON DELETE CASCADE`. The history insert
+and retry key commit in one transaction before deleting recovery files. If
+archive deletion fails, another retry (including after relaunch) returns the
+already saved text instead of creating duplicate history. Ordinary successful
+dictations do not access this table. Recovered text follows the existing history
+sync policy; the retry key is never synced. Discard removes one recovery, and
+confirmed history clearing also removes the recovery directory. Audio is retained until recovery,
 discard, or history clearing; no automatic expiry is implied.
 
 ### Appearance preferences outside SQLite
@@ -166,6 +171,13 @@ command that becomes history.
 `app_context` remains cleanup/correction context. Destination-app fields are
 separate local presentation metadata and are deliberately absent from the sync
 record and CLI JSON contract.
+
+#### `dictation_recovery_history`
+
+Local-only retry keys, created lazily by `insertRecoveredDictation` rather than
+the normal migration or successful-dictation path. `recovery_id` is the primary
+key; unique `dictation_id` references `dictations(id)` with cascading hard
+deletion. Its transaction commits the retry key and history text together.
 
 #### `meetings`
 
