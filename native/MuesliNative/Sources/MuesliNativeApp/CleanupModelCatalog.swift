@@ -76,6 +76,8 @@ enum CleanupModelCatalog {
         let publicKey = (bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String)
             .flatMap { $0.isEmpty ? nil : $0 } ?? productionPublicKey
         do {
+            // The JSON and its signature are fetched separately. A pair caught mid-deploy
+            // fails verification and leaves the bundled releases in force, by design.
             let data = try await fetch(url, session: session)
             let signature = try? await fetch(url.appendingPathExtension("sig"), session: session)
             return try latestReleases(catalog: data, signature: signature, publicKey: publicKey,

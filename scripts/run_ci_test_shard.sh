@@ -113,6 +113,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      CleanupModelUpdateTests
       QwenMLXDownloadTests
       GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
@@ -161,6 +162,7 @@ case "${shard}" in
       HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
+      DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
     )
     ;;

@@ -54,6 +54,9 @@ are internal and never shown to users.
 5. Commit `docs/models/cleanup-models.json` and `.sig` in a PR. Users are offered the update once it merges to `main`
    and GitHub Pages deploys. Also bump the bundled release in `CleanupModelRelease.swift` in the next app release.
 
+**Rolling back a bad release.** A published release cannot be revoked, and installed copies stay. Publish a new entry
+with a higher `sequence` that pins the previous good commit; installed users are offered it as an update.
+
 Slot ids are historical (`qwen35-2b-cleanup-v12` hosts v14); never rename them, or installed users lose their
 selection.
 

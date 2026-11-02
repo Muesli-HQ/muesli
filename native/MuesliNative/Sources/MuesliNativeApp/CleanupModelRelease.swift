@@ -170,7 +170,12 @@ enum CleanupModelInstallation {
         for file in release.files where installedDigests[file.path] == file.sha256 {
             let target = staging.appendingPathComponent(file.path)
             guard !fileManager.fileExists(atPath: target.path) else { continue }
-            try? fileManager.copyItem(at: liveDirectory.appendingPathComponent(file.path), to: target)
+            do {
+                try fileManager.copyItem(at: liveDirectory.appendingPathComponent(file.path), to: target)
+            } catch {
+                // Safe to continue: the download fetches any file that is not reused.
+                fputs("[muesli-native] cleanup update could not reuse \(file.path); downloading it: \(error.localizedDescription)\n", stderr)
+            }
         }
         return staging
     }
