@@ -328,23 +328,15 @@ struct MeetingChatView: View {
                     if coordinator.isPreparingFiles { ProgressView("Checking attachments…").controlSize(.small) }
                 }
             }, editor: {
-                HStack(alignment: .bottom, spacing: 8) {
-                    ZStack(alignment: .topLeading) {
-                        if coordinator.composerDraft.isEmpty {
-                            Text("What’s on your mind?")
-                                .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
-                        }
-                        MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                                  focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
-                    }.frame(maxWidth: .infinity)
-                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
-                        .buttonStyle(.muesli(.quiet)).foregroundStyle(MuesliTheme.textSecondary)
-                        .help("Attach images, PDFs, Markdown or text without copying the originals")
-                        .accessibilityLabel("Attach files").accessibilityIdentifier("meeting-chat-attach-files")
-                        .disabled(footerControlsDisabled)
-                        .padding(.bottom, 2)
+                ZStack(alignment: .topLeading) {
+                    if coordinator.composerDraft.isEmpty {
+                        Text("What’s on your mind?")
+                            .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
+                    }
+                    MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
+                                              focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
                 }
             }, footer: {
                 // Footer actions share a 28pt hit height; padding sits inside each label so
@@ -389,6 +381,11 @@ struct MeetingChatView: View {
                             .menuStyle(.borderlessButton).fixedSize().help("Prepare a question")
                             .accessibilityLabel("Prepare a question").disabled(footerControlsDisabled)
                     }
+                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
+                        .buttonStyle(.muesli(.quiet)).foregroundStyle(MuesliTheme.textSecondary)
+                        .help("Attach images, PDFs, Markdown or text without copying the originals")
+                        .accessibilityLabel("Attach files").accessibilityIdentifier("meeting-chat-attach-files")
+                        .disabled(footerControlsDisabled)
                     // Send and Stop share one 32pt circular slot so the footer does not shift.
                     if coordinator.isBusy {
                         Button { coordinator.stop() } label: { AIIcon(.square).frame(width: 32, height: 32) }
