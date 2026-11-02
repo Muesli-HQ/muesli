@@ -64,12 +64,13 @@ final class ChatGPTAuthManager {
     }
 
     func signOut() throws {
-        try tokenStorage.delete()
+        // Clear legacy credentials first so they cannot resurrect a signed-out session.
         if ownsLegacyKeychain {
             for account in ["access_token", "refresh_token", "expires_at", "account_id"] {
-                keychainDeleteLegacy(account: account)
+                try keychainDeleteLegacy(account: account)
             }
         }
+        try tokenStorage.delete()
         fputs("[chatgpt-auth] signed out\n", stderr)
     }
 
@@ -430,7 +431,7 @@ final class ChatGPTAuthManager {
 
         // Clean up keychain entries
         for account in ["access_token", "refresh_token", "expires_at", "account_id"] {
-            keychainDeleteLegacy(account: account)
+            try? keychainDeleteLegacy(account: account)
         }
         fputs("[chatgpt-auth] migrated tokens to scoped Keychain storage\n", stderr)
     }
@@ -451,7 +452,7 @@ final class ChatGPTAuthManager {
         return String(data: data, encoding: .utf8)
     }
 
-    private func keychainDeleteLegacy(account: String) {
+    private func keychainDeleteLegacy(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
@@ -459,7 +460,8 @@ final class ChatGPTAuthManager {
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialVaultError.unavailable }
     }
 }
 
