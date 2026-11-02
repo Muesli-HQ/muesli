@@ -40,6 +40,99 @@ struct GlobalSearchTests {
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
     }
 
+    @Test("Unvalidated derived kinds cannot consume the result limit")
+    func derivedKindsBeforeLimit() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','Some longer ordinary orchid dictation with additional words','dictation','Editor','com.test.editor',NULL);
+            INSERT INTO meeting_chat_sessions VALUES('chat','{"title":"orchid"}',1793527200);
+            INSERT INTO meeting_chat_turns VALUES('turn','chat','completed','{"question":"orchid","originalAnswer":"orchid"}');
+            CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT);
+            INSERT INTO time_turner_recaps VALUES('day',1793527200,'{"version":1,"insights":[{"text":"orchid"}]}');
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        let query = GlobalSearchQuery(text: "orchid", limit: 1)
+        #expect(try index.search(query, validateDerived: { _, _ in true }).first?.kind == .chat)
+        #expect(try index.search(query).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "orchid", kinds: [.chat, .recap], limit: 1)).isEmpty)
+    }
+
+    @Test("Malformed JSON does not block backfill, trigger writes, or unrelated results")
+    func malformedBodies() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','orchid','dictation','Editor','com.test.editor',NULL);
+            INSERT INTO quill_conversations VALUES(1,'2026-11-01T10:00:00Z',NULL);
+            INSERT INTO quill_conversation_turns VALUES(1,1,'{bad');
+            INSERT INTO meeting_chat_sessions VALUES('chat','{bad',1793527200);
+            INSERT INTO meeting_chat_turns VALUES('turn','chat','completed','{bad');
+            CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT);
+            INSERT INTO time_turner_recaps VALUES('bad',1793527200,'{bad');
+            INSERT INTO time_turner_recaps VALUES('shape',1793527200,'{"version":1,"insights":["plain text",{"text":"violet"}]}');
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try index.search(.init(text: "orchid")).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "violet"), validateDerived: { _, _ in true }).count == 1)
+        // Triggers must not turn a malformed sibling into a failure of a valid write.
+        try f.sql("""
+            INSERT INTO quill_conversation_turns VALUES(2,1,'{"question":"lily","answer":"answer"}');
+            INSERT INTO meeting_chat_turns VALUES('good','chat','completed','{"question":"lily","originalAnswer":"answer"}');
+            UPDATE quill_conversation_turns SET body='{still bad' WHERE id=1;
+            UPDATE meeting_chat_sessions SET body='{still bad' WHERE id='chat';
+            UPDATE meeting_chat_turns SET body='{still bad' WHERE id='turn';
+            UPDATE time_turner_recaps SET body='{still bad' WHERE day_key='bad';
+            INSERT INTO time_turner_recaps VALUES('anotherbad',1793527200,'{bad');
+            """)
+        #expect(Set(try index.search(.init(text: "lily"), validateDerived: { _, _ in true }).map(\.kind)) == [.quill, .chat])
+        try f.sql("DELETE FROM quill_conversation_turns WHERE id=2; DELETE FROM meeting_chat_turns WHERE id='good';")
+        #expect(try index.search(.init(text: "lily"), validateDerived: { _, _ in true }).isEmpty)
+    }
+
+    @Test("Existing JSON projection triggers are replaced and their documents backfilled")
+    func upgradeJSONProjections() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO quill_conversations VALUES(1,'2026-11-01T10:00:00Z',NULL);
+            INSERT INTO quill_conversation_turns VALUES(1,1,'{"question":"orchid","answer":"answer"}');
+            CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT);
+            """)
+        _ = try GlobalSearchIndex(databaseURL: f.url)
+        let sources = [
+            ("quill", ["quill_conversations", "quill_conversation_turns"], "quill_conversation_turns"),
+            ("chat", ["meeting_chat_sessions", "meeting_chat_turns"], "meeting_chat_turns"),
+            ("recap", ["time_turner_recaps"], "time_turner_recaps")
+        ]
+        for (prefix, tables, bodyTable) in sources {
+            for table in tables {
+                for event in ["INSERT", "UPDATE", "DELETE"] {
+                    try f.sql("DROP TRIGGER global_search_\(prefix)_v2_\(table)_\(event)")
+                }
+            }
+            try f.sql("DROP VIEW global_search_\(prefix)_v2")
+            try f.sql("CREATE VIEW global_search_\(prefix)_v1 AS SELECT json_extract(body,'$.question') FROM \(bodyTable)")
+            for event in ["INSERT", "UPDATE", "DELETE"] {
+                let row = event == "DELETE" ? "OLD" : "NEW"
+                try f.sql("CREATE TRIGGER global_search_\(prefix)_v1_\(bodyTable)_\(event) AFTER \(event) ON \(bodyTable) BEGIN SELECT json_extract(\(row).body,'$.question'); END")
+            }
+        }
+        try f.sql("UPDATE global_search_documents SET text='obsolete', title='obsolete' WHERE kind='quill'")
+        let upgraded = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try upgraded.search(.init(text: "obsolete")).isEmpty)
+        #expect(try upgraded.search(.init(text: "orchid")).count == 1)
+        try f.sql("""
+            UPDATE quill_conversation_turns SET body='{bad' WHERE id=1;
+            INSERT INTO meeting_chat_sessions VALUES('chat','{bad',1793527200);
+            INSERT INTO meeting_chat_turns VALUES('turn','chat','completed','{bad');
+            INSERT INTO time_turner_recaps VALUES('bad',1793527200,'{bad');
+            """)
+        #expect(try upgraded.search(.init(text: "orchid")).isEmpty)
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_prepare_v2(f.db, "SELECT count(*) FROM sqlite_master WHERE name GLOB 'global_search_quill_v1*' OR name GLOB 'global_search_chat_v1*' OR name GLOB 'global_search_recap_v1*'", -1, &statement, nil) == SQLITE_OK)
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_int(statement, 0) == 0)
+    }
+
     @Test("Backfill and live mutation share an index; soft and hard deletion remove text")
     func deletionAndUpdates() throws {
         let f = try Fixture()

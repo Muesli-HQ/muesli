@@ -105,6 +105,7 @@ struct SidebarView: View {
             Button { appState.globalSearchPresented = true } label: {
                 Image(systemName: "magnifyingglass").frame(width: 36, height: 32)
             }.buttonStyle(.muesli(.quiet)).help("Search all history (⌘F)")
+                .accessibilityLabel("Search all history")
 
             ScrollView(.vertical) {
                 VStack(spacing: MuesliTheme.spacing8) {

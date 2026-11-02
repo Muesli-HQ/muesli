@@ -25,11 +25,17 @@ actor GlobalSearchWorker {
     }
 
     func search(_ query: GlobalSearchQuery) throws -> [GlobalSearchResult] {
-        let screenExists = screenRoot.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("catalog.sqlite").path) } ?? false
+        let screenRequested = query.kinds.contains(.screenHistory)
+        let screenExists = screenRequested && (screenRoot.map { FileManager.default.fileExists(atPath: $0.appendingPathComponent("catalog.sqlite").path) } ?? false)
         if service == nil || screenExists != attachedScreenHistory {
-            let screen = try screenRoot.flatMap { root -> VisualMemoryStore? in
-                guard FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.sqlite").path) else { return nil }
+            // Screen history is an optional source. Its catalog must not block
+            // the main index, including queries scoped to meetings or dictations.
+            let screen = try? screenRoot.flatMap { root -> VisualMemoryStore? in
+                guard screenExists, FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.sqlite").path) else { return nil }
                 return try VisualMemoryStore(root: root, readOnly: true)
+            }
+            if screenExists && screen == nil && query.kinds == [.screenHistory] {
+                throw CocoaError(.fileReadCorruptFile)
             }
             service = try GlobalSearchService(databaseURL: databaseURL, screenHistory: screen)
             attachedScreenHistory = screen != nil

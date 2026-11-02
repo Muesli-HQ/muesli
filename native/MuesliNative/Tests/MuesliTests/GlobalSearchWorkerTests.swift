@@ -5,6 +5,36 @@ import MuesliCore
 
 @Suite("Global search source validation")
 struct GlobalSearchWorkerTests {
+    @Test("An unreadable optional screen catalog does not block main content and can recover")
+    func unreadableScreenCatalog() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-corrupt-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let id = try store.insertMeeting(title: "Orchid review", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), rawTranscript: "Notes", formattedNotes: "Notes",
+            micAudioPath: nil, systemAudioPath: nil)
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: screenRoot, withIntermediateDirectories: true)
+        let catalog = screenRoot.appendingPathComponent("catalog.sqlite")
+        try Data("not a SQLite database".utf8).write(to: catalog)
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        #expect(try await worker.search(.init(text: "orchid", kinds: [.meeting])).map(\.sourceID) == [String(id)])
+        #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == [String(id)])
+        await #expect(throws: CocoaError.self) {
+            try await worker.search(.init(text: "orchid", kinds: [.screenHistory]))
+        }
+        try FileManager.default.removeItem(at: catalog)
+        let memory = try VisualMemoryStore(root: screenRoot)
+        try memory.save([.init(id: "capture", kind: .moment, source: "Editor", text: "Orchid screen", path: "screen.png")])
+        #expect(try await worker.search(.init(text: "orchid", kinds: [.screenHistory])).map(\.sourceID) == ["capture"])
+        #expect(Set(try await worker.search(.init(text: "orchid")).map(\.kind)) == [.meeting, .screenHistory])
+        let invalidMain = GlobalSearchWorker(databaseURL: root.appendingPathComponent("missing.db"), screenRoot: screenRoot)
+        await #expect(throws: (any Error).self) { try await invalidMain.search(.init(text: "orchid")) }
+    }
+
     @Test("Opening a result rechecks deletion rather than trusting its snippet")
     func deletedDestination() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-open-\(UUID())")

@@ -602,13 +602,17 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   history APIs. Source IDs are used to navigate back to the authoritative store.
 - `global_search_fts`: external-content FTS5 over title/text, maintained by
   insert/update/delete triggers on `global_search_documents`.
-- `global_search_<source>_v1`: versioned projection views and source-table
-  triggers. Each available source is backfilled transactionally once. Subsequent
+- `global_search_<source>_v1` (or `_v2` for Quill, Chat and recap): versioned
+  projection views and source-table triggers. Each available source is backfilled transactionally once. Subsequent
   writes refresh only the affected parent document. Schema-version checks discover
   Chat and Recap tables created after first search without reindexing all history.
   Installation checks every source trigger as well as its view. Missing triggers
   (including after a source or child table is recreated) rebuild that source's
   missing schema objects and documents atomically, removing obsolete indexed text.
+  The v2 projections guard JSON reads so malformed bodies cannot block index
+  backfill or source writes. Installation removes v1 JSON-source views/triggers
+  and rebuilds those projections in the same transaction; source records are
+  unchanged.
 
 Sources are dictations, CUA **input commands only**, meetings (title, transcript,
 manual/generated notes as one result), Quill conversations, accepted Cotypist
@@ -620,7 +624,9 @@ Source deletion/soft deletion updates the index in the same SQLite transaction.
 Chat `sourceDeleted` turns are excluded and invalidated answers disappear through
 existing source-owner updates. Because edited evidence can invalidate otherwise
 persisted derived text, Chat and Recap hits additionally require a current-source
-validator; the core API fails closed without one. `GlobalSearchWorker` supplies
+validator; the core API excludes these kinds before the SQL limit without one.
+With a validator, rejected stale candidates can shorten the bounded result page.
+`GlobalSearchWorker` supplies
 existing meeting dependency and recap evidence validation. Main-database mutation
 during validation retries the complete query and source validation once, so an
 unrelated concurrent save does not immediately fail search. If the second attempt
@@ -631,7 +637,10 @@ recoverable through Time Turner's existing deletion queue.
 
 `GlobalSearchService` federates the source-owned Time Turner OCR FTS rather than
 copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable text;
-observation deletion removes it. Results use a shared `GlobalSearchResult` envelope
+observation deletion removes it. An unreadable optional screen-history catalog
+is omitted from mixed-source searches; screen-history-only queries report an
+error. Queries scoped to other kinds do not open that catalog. Main-index errors
+still propagate. Results use a shared `GlobalSearchResult` envelope
 with kind, source ID, date, title, excerpt, app identity, and media availability.
 Queries apply type, exact app/bundle, and half-open date filters before limits;
 an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
@@ -652,4 +661,5 @@ bounded current query when either source database changes. Navigation resolves
 fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
 cannot open from old snippets. Short writing records open as selectable text,
 while meetings, chats, captures and recaps open their existing destinations.
-The search panel does not mutate or export source content.
+The search panel does not mutate source content. “Copy text” copies the displayed
+text preview to the system clipboard at the user's request.

@@ -112,6 +112,17 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 END;
                 """)
             for source in Self.sources {
+                // Replace the old unguarded JSON projections as well as their
+                // embedded trigger SQL on existing installations.
+                if source.version > 1 {
+                    let oldView = "global_search_\(source.prefix)_v1"
+                    for (table, _) in source.watches {
+                        for event in ["INSERT", "UPDATE", "DELETE"] {
+                            try execute("DROP TRIGGER IF EXISTS \(oldView)_\(table)_\(event)")
+                        }
+                    }
+                    try execute("DROP VIEW IF EXISTS \(oldView)")
+                }
                 guard try source.tables.allSatisfy({ try exists($0) }) else { continue }
                 let complete = try exists(source.view) && source.triggerNames.allSatisfy { try exists($0) }
                 guard !complete else { continue }
@@ -159,7 +170,8 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         try installAvailableSources()
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.utf8.count <= 4096 else { return [] }
-        let kinds = query.kinds.subtracting([.screenHistory]).map(\.rawValue).sorted()
+        let excluded: Set<GlobalSearchKind> = validateDerived == nil ? [.screenHistory, .chat, .recap] : [.screenHistory]
+        let kinds = query.kinds.subtracting(excluded).map(\.rawValue).sorted()
         guard !kinds.isEmpty else { return [] }
         let appClause = query.app == nil ? "" : " AND (d.bundle_id=? COLLATE NOCASE OR d.app_name=? COLLATE NOCASE)"
         let revision = try dataVersion()
@@ -204,7 +216,8 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         let tables: [String]
         let watches: [(String, String)]
         let select: String
-        var view: String { "global_search_\(prefix)_v1" }
+        var version: Int { ["quill", "chat", "recap"].contains(prefix) ? 2 : 1 }
+        var view: String { "global_search_\(prefix)_v\(version)" }
         var triggerNames: [String] {
             watches.flatMap { table, _ in ["INSERT", "UPDATE", "DELETE"].map { "\(view)_\(table)_\($0)" } }
         }
@@ -229,8 +242,8 @@ public final class GlobalSearchIndex: @unchecked Sendable {
               watches: [("quill_conversations","id"),("quill_conversation_turns","conversation_id")], select: """
             SELECT 'quill:' || c.id AS identity,'quill' AS kind,CAST(c.id AS TEXT) AS source_id,
                 \(unix("c.timestamp")) AS timestamp,'Quill conversation' AS title,
-                coalesce((SELECT group_concat(coalesce(json_extract(body,'$.question'),'') || char(10) ||
-                    coalesce(json_extract(body,'$.answer'),''),char(10)) FROM quill_conversation_turns WHERE conversation_id=c.id),'') AS text,
+                coalesce((SELECT group_concat(coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.question') END,'') || char(10) ||
+                    coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.answer') END,''),char(10)) FROM quill_conversation_turns WHERE conversation_id=c.id),'') AS text,
                 '' AS app_name,'' AS bundle_id FROM quill_conversations c WHERE deleted_at IS NULL
             """),
         .init(prefix: "cotypist", tables: ["cotypist_sessions","cotypist_suggestions"],
@@ -243,17 +256,17 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         .init(prefix: "chat", tables: ["meeting_chat_sessions","meeting_chat_turns"],
               watches: [("meeting_chat_sessions","id"),("meeting_chat_turns","session_id")], select: """
             SELECT 'chat:' || c.id AS identity,'chat' AS kind,c.id AS source_id,c.updated_at AS timestamp,
-                coalesce(json_extract(c.body,'$.title'),'Chat') AS title,
-                coalesce((SELECT group_concat(coalesce(json_extract(body,'$.question'),'') || char(10) ||
-                    CASE WHEN state='completed' THEN coalesce(json_extract(body,'$.originalAnswer'),'') ELSE '' END,char(10))
+                coalesce(CASE WHEN json_valid(c.body) THEN json_extract(c.body,'$.title') END,'Chat') AS title,
+                coalesce((SELECT group_concat(coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.question') END,'') || char(10) ||
+                    CASE WHEN state='completed' THEN coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.originalAnswer') END,'') ELSE '' END,char(10))
                     FROM meeting_chat_turns WHERE session_id=c.id AND state!='sourceDeleted'),'') AS text,
                 '' AS app_name,'' AS bundle_id FROM meeting_chat_sessions c WHERE 1
             """),
         .init(prefix: "recap", tables: ["time_turner_recaps"], watches: [("time_turner_recaps","day_key")], select: """
             SELECT 'recap:' || day_key AS identity,'recap' AS kind,day_key AS source_id,day_start AS timestamp,
-                'Daily recap' AS title,coalesce((SELECT group_concat(json_extract(value,'$.text'),char(10))
+                'Daily recap' AS title,coalesce((SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.text') END,char(10))
                     FROM json_each(body,'$.insights')),'') AS text,'' AS app_name,'' AS bundle_id
-            FROM time_turner_recaps WHERE json_extract(body,'$.version')=1
+            FROM time_turner_recaps WHERE CASE WHEN json_valid(body) THEN json_extract(body,'$.version') END=1
             """)
     ]
 }
