@@ -85,11 +85,11 @@ struct FeatureTourCalloutLayout {
 
     private static func preferredEdges(for target: FeatureTourTarget) -> [FeatureTourCalloutEdge] {
         switch target {
-        case .timelineSidebar, .meetingsSidebar:
+        case .timelineSidebar, .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .searchSidebar:
             return [.trailing, .leading, .below, .above]
         case .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
             return [.below, .above, .trailing, .leading]
-        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings:
+        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings, .cotypistSettings, .appFormatting, .cleanupModels, .liveDictation:
             return [.above, .below, .trailing, .leading]
         }
     }
@@ -249,7 +249,7 @@ struct FeatureTourOverlay: View {
     private var callout: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-                Image(systemName: step.systemImage)
+                FeatureTourIconView(icon: step.icon)
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(MuesliTheme.accent)
                     .frame(width: 24, height: 24)
@@ -328,6 +328,25 @@ struct FeatureTourOverlay: View {
             calloutSize: calloutSize,
             target: step.target
         )
+    }
+}
+
+private struct FeatureTourIconView: View {
+    let icon: FeatureTourIcon
+
+    // Resolve bundled artwork once, outside geometry-driven body updates.
+    private static let quill = QuillIcon.image()
+    private static let timeTurner = TimeTurnerIcon.image()
+
+    var body: some View {
+        switch icon {
+        case let .symbol(name):
+            Image(systemName: name)
+        case .quill:
+            Image(nsImage: Self.quill).resizable().scaledToFit()
+        case .timeTurner:
+            Image(nsImage: Self.timeTurner).resizable().scaledToFit()
+        }
     }
 }
 

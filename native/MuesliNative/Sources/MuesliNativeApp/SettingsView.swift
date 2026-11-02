@@ -977,6 +977,8 @@ struct SettingsView: View {
                 ) {
                     settingsControl("buffered_live_dictation")
                 }
+                .id(FeatureTourTarget.liveDictation.rawValue)
+                .featureTourTarget(.liveDictation)
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1933,6 +1935,8 @@ struct SettingsView: View {
             settingsSection("App Formatting") {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
+            .id(FeatureTourTarget.appFormatting.rawValue)
+            .featureTourTarget(.appFormatting)
 
             settingsSection("Advanced") {
                 settingsRow(
@@ -1982,6 +1986,8 @@ struct SettingsView: View {
                 cotypistOptions
             }
         }
+        .id(FeatureTourTarget.cotypistSettings.rawValue)
+        .featureTourTarget(.cotypistSettings)
     }
 
     /// Shown only while Cotypist is on: off, none of them do anything.

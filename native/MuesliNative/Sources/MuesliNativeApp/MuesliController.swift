@@ -1544,6 +1544,7 @@ public final class MuesliController: NSObject {
     }
 
     private func navigateToFeatureTourStep(_ step: FeatureTourStep) {
+        appState.globalSearchPresented = false
         if appState.isSearchActive {
             clearSearch()
         }
@@ -1553,7 +1554,11 @@ public final class MuesliController: NSObject {
             appState.selectedSettingsPane = pane
             appState.selectedTab = .settings
         case let .tab(tab):
-            appState.selectedTab = tab
+            if tab == .timeline {
+                showTimelineHome()
+            } else {
+                appState.selectedTab = tab
+            }
         case let .models(category):
             showModels(category: category)
         case .timelineApplications:

@@ -1146,6 +1146,18 @@
   </div>
   <p class="pattern-note">Recap screenshot citations show actual 144×90pt image previews above their timestamp, with 6pt padding and 10pt corners. They open the matching History capture. Previews resolve the current media location after compaction; expired screenshots show a compact explicit state while retained text stays accessible. Meeting citations remain text links. Search shows progress while results load, rather than an empty-history message.</p>
 
+  <h3>What's New in muesli 0.8.6</h3>
+  <div class="component-preview" style="max-width:380px;display:block;padding:20px;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)">
+    <div style="display:flex;align-items:center;gap:12px">
+      <img src="../assets/quill-icon.svg" alt="Quill feather" style="width:24px;height:24px">
+      <span style="font-size:11px">QUILL · 4 OF 10</span>
+    </div>
+    <p style="font-size:20px;font-weight:600;margin:16px 0">Your spoken assistant</p>
+    <p style="font-size:14px">Ask a question, follow up, or ask Quill to rewrite selected text. Configure Quill in Settings → Experimental.</p>
+    <div style="display:flex;justify-content:space-between;margin-top:16px;font-size:14px"><span>Back</span><span>Next →</span></div>
+  </div>
+  <p class="pattern-note">Reuse Quill's bundled feather and Time Turner's orbital hourglass. Other cards use their feature symbols: Chat bubbles, dictation waveform, Cotypist text cursor, app formatting text, meeting record circle, search magnifier, model CPU and cleanup sparkles. The tour changes destinations without changing settings or starting capture. A missing target keeps the card centered and navigable. Wait for the dashboard's first ordered layout, ignore subpixel geometry churn, and cancel nonanimated Settings/Models scrolls when the target or destination changes. This specimen abbreviates the card's copy; the native catalog retains provider/privacy disclosures.</p>
+
   <h3>Insights Session Vocabulary</h3>
   <p class="pattern-note">App/model rankings count one saved, non-deleted dictation record as one session within the selected date range, including synced dictations. Duration and streaming chunks do not multiply the count. Meetings, Quill, and computer-use records are excluded from these rankings. Rank by session count, then word count.</p>
   <p class="pattern-note">Known counting inconsistency: the overview's Dictation sessions total uses the broader history cache, which still includes saved Quill/computer-use records. This reference documents current behavior; this PR does not change the aggregation policy.</p>
