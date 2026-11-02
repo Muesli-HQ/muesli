@@ -41,6 +41,8 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 ## Features
 
 - **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
+- **Failed dictation recovery** — When dictation captures audio but transcription or buffered streaming finalization fails, keep the recording and any available partial text locally for playback and retry from Dictations. Retry uses your selected local model and saves text to history. Failed recordings remain until recovered or discarded; successful dictations keep no recovery audio.
+- **Microphone capture health** — Standard dictation, Quill, and voice-command capture show an advisory warning after 3 seconds while startup remains pending. Core Audio events report confirmed capture failures; slow startup and silent audio alone do not fail a session. Startup telemetry contains only fixed status labels and timing, never recording content or device identifiers.
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
@@ -204,6 +206,8 @@ See [Help and troubleshooting](https://muesli.works/help) for setup and permissi
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development builds and tests, [AGENTS.md](AGENTS.md) for agent workflows, and the [SQLite database guide](database-schema.md) before changing persistence or sync fields. Please open an issue before submitting a large PR.
 
 Contributions require a DCO sign-off and disclosure of material AI assistance, as described in the contribution guide.
+
+For manual watchdog and failed-streaming recovery QA, see [Dev C failure simulations](docs/dictation-recovery-dev-testing.md). The one-shot controls are Debug-only and do not alter microphone permissions or CoreAudio.
 
 ---
 

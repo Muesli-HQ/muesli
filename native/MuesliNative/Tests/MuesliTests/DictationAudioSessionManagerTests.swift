@@ -6,6 +6,147 @@ import Testing
 
 @Suite("DictationAudioSessionManager")
 struct DictationAudioSessionManagerTests {
+    #if DEBUG
+    @Test("manual startup simulation warns and stays pending until cancelled")
+    func manualStartupSimulation() {
+        let harness = Harness(routeKind: .speakerLike)
+        let gate = DispatchSemaphore(value: 0), entered = DispatchSemaphore(value: 0)
+        harness.manager.devFaults = DictationDevFaults(.microphoneStartup)
+        harness.manager.devStartupWait = { _ in entered.signal(); gate.wait() }
+        harness.manager.beginRecording(mode: "test", duckingEnabled: false, mediaPauseEnabled: false)
+        defer { gate.signal() }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        harness.deadlines.fire(0)
+        harness.eventQueue.sync {}
+        #expect(!harness.manager.isRetiringStartup)
+        #expect(harness.events.contains { if case .startupWarning = $0 { return true }; return false })
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+        #expect(harness.recorder.startCalls == 0)
+        gate.signal()
+        harness.wait()
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+        #expect(harness.manager.hasActiveSession)
+        harness.manager.cancel(reason: "user")
+        harness.wait()
+        #expect(!harness.manager.hasActiveSession)
+    }
+    #endif
+
+    @Test("queued startup warns without starting or failing a microphone")
+    func queuedStartupWarns() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.managerQueue.suspend()
+        let id = harness.manager.beginRecording(mode: "test", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.deadlines.fire(0)
+        harness.eventQueue.sync {}
+        #expect(harness.manager.isStartupPending(id))
+        #expect(harness.recorder.startCalls == 0)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+        harness.manager.cancel(reason: "user")
+        #expect(!harness.manager.isRetiringStartup)
+        harness.managerQueue.resume()
+        harness.wait()
+        #expect(harness.recorder.startCalls == 0)
+        #expect(!harness.manager.hasActiveSession)
+    }
+
+    @Test("blocked start warns then can become ready without restarting capture")
+    func blockedStartWarnsThenRecovers() throws {
+        let harness = Harness(routeKind: .speakerLike)
+        let entered = DispatchSemaphore(value: 0), gate = DispatchSemaphore(value: 0)
+        harness.recorder.startEntered = entered
+        harness.recorder.startGate = gate
+        harness.manager.beginRecording(mode: "test", duckingEnabled: false, mediaPauseEnabled: false)
+        defer { gate.signal() }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        let id = try #require(harness.manager.currentSessionID)
+        harness.deadlines.fire(0)
+        harness.eventQueue.sync {}
+        #expect(harness.manager.isStartupPending(id))
+        #expect(!harness.manager.isRetiringStartup)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+        gate.signal()
+        harness.wait()
+        harness.recorder.onFirstCapturedAudioBuffer?(Date())
+        harness.wait()
+        #expect(harness.manager.currentState == .streamActive(id))
+        #expect(!harness.manager.isStartupPending(id))
+        #expect(harness.recorder.cancelCalls == 0)
+    }
+
+    @Test("Core Audio failure bypasses a blocked start, retires capture, and rejects stale events")
+    func blockedStartFailsOnDeviceEvent() throws {
+        let harness = Harness(routeKind: .speakerLike)
+        let entered = DispatchSemaphore(value: 0), gate = DispatchSemaphore(value: 0)
+        harness.recorder.startEntered = entered
+        harness.recorder.startGate = gate
+        harness.manager.beginRecording(mode: "test", duckingEnabled: false, mediaPauseEnabled: false)
+        defer { gate.signal() }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        let id = try #require(harness.manager.currentSessionID)
+        let lateBuffer = harness.recorder.onFirstCapturedAudioBuffer
+        let lateFailure = harness.observer.failure
+        harness.observer.failure?(.deviceUnavailable)
+        harness.observer.failure?(.ioStoppedAbnormally)
+        harness.eventQueue.sync {}
+        #expect(harness.manager.isRetiringStartup)
+        #expect(harness.events.filter { if case .failed = $0 { return true }; return false }.count == 1)
+        harness.manager.beginRecording(mode: "retry", duckingEnabled: false, mediaPauseEnabled: false)
+        lateBuffer?(Date())
+        gate.signal()
+        harness.wait()
+        #expect(!harness.manager.hasActiveSession)
+        #expect(harness.recorder.cancelCalls == 1)
+        harness.recorder.startGate = nil
+        harness.manager.beginRecording(mode: "new", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.wait()
+        let newID = try #require(harness.manager.currentSessionID)
+        #expect(newID != id)
+        lateFailure?(.deviceUnavailable)
+        lateBuffer?(Date())
+        harness.wait()
+        #expect(harness.manager.currentSessionID == newID)
+        #expect(harness.manager.currentState == .acquiringAudio(newID))
+        harness.recorder.onFirstCapturedAudioBuffer?(Date())
+        harness.wait()
+        #expect(harness.manager.currentState == .streamActive(newID))
+    }
+
+    @Test("stop and cancel disarm synchronously while native start is blocked", arguments: [true, false])
+    func blockedStartCanBeAbandoned(stop: Bool) {
+        let harness = Harness(routeKind: .speakerLike)
+        let entered = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        harness.recorder.startEntered = entered
+        harness.recorder.startGate = gate
+        harness.manager.beginRecording(mode: "test", duckingEnabled: false, mediaPauseEnabled: false)
+        defer { gate.signal() }
+        #expect(entered.wait(timeout: .now() + 2) == .success)
+        if stop { harness.manager.stop() } else { harness.manager.cancel(reason: "user") }
+        harness.deadlines.fire(0)
+        harness.eventQueue.sync {}
+        #expect(harness.manager.isRetiringStartup)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+        gate.signal()
+        harness.wait()
+        #expect(!harness.manager.hasActiveSession)
+    }
+
+    @Test("first buffer inside start and duplicate activation do not rearm the deadline")
+    func firstBufferDuringStart() {
+        let harness = Harness(routeKind: .speakerLike)
+        harness.recorder.callbackDuringStart = true
+        harness.manager.beginRecording(mode: "first", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.wait()
+        harness.manager.beginRecording(mode: "duplicate", duckingEnabled: false, mediaPauseEnabled: false)
+        harness.wait()
+        #expect(harness.recorder.startCalls == 1)
+        #expect(harness.deadlines.count == 1)
+        harness.deadlines.fire(0)
+        harness.wait()
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
+    }
+
     @Test("arm activates warm engine without starting capture")
     func armActivatesWarmEngineWithoutStartingCapture() {
         let harness = Harness(routeKind: .speakerLike)
@@ -510,46 +651,29 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.events.contains { if case .noAudioTimeout = $0 { return true }; return false })
     }
 
-    @Test("no audio timeout before first buffer fails startup")
-    func noAudioTimeoutBeforeFirstBufferFailsStartup() {
+    @Test("no audio timeout before first buffer is advisory, not a failure")
+    func noAudioTimeoutBeforeFirstBufferIsAdvisory() {
         let harness = Harness(routeKind: .speakerLike)
-
         harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: true)
         harness.wait()
-        harness.recorder.onNoAudioTimeout?(Date().addingTimeInterval(1.5))
+        harness.recorder.onNoAudioTimeout?(Date())
         harness.wait()
-
-        #expect(harness.recorder.cancelCalls == 1)
-        #expect(!harness.recorder.keepsAudioGraphWarm)
-        #expect(harness.manager.currentState == .idle)
-        #expect(harness.manager.currentSessionID == nil)
-        #expect(harness.ducking.restoreCalls == 1)
-        #expect(harness.media.restoreCalls == 1)
-        #expect(harness.events.contains { if case .failed = $0 { return true }; return false })
-        #expect(!harness.events.contains { if case .noAudioTimeout = $0 { return true }; return false })
+        #expect(harness.recorder.cancelCalls == 0)
+        #expect(harness.manager.hasActiveSession)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
     }
 
-    @Test("no audio timeout on headphone preferred input does not retry system default")
+    @Test("no audio timeout on a preferred input neither retries nor fails capture")
     func noAudioTimeoutOnHeadphonePreferredInputDoesNotRetrySystemDefault() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
-
         harness.manager.beginRecording(mode: "toggle", duckingEnabled: true, mediaPauseEnabled: false)
         harness.wait()
-        harness.recorder.onNoAudioTimeout?(Date().addingTimeInterval(1.5))
+        harness.recorder.onNoAudioTimeout?(Date())
         harness.wait()
-
-        #expect(harness.recorder.cancelCalls == 1)
         #expect(harness.recorder.startCalls == 1)
-        #expect(harness.recorder.activateCalls == 0)
-        #expect(harness.recorder.preferredInputDeviceID == nil)
-        #expect(harness.manager.currentSessionID == nil)
-        #expect(harness.events.contains { if case .failed = $0 { return true }; return false })
-        #expect(!harness.events.contains { event in
-            if case .latency(let name, _) = event {
-                return name.hasPrefix("input_fallback_begin:default")
-            }
-            return false
-        })
+        #expect(harness.recorder.cancelCalls == 0)
+        #expect(harness.manager.hasActiveSession)
+        #expect(!harness.events.contains { if case .failed = $0 { return true }; return false })
     }
 
     @Test("recorder failure fails active session")
@@ -703,7 +827,10 @@ struct DictationAudioSessionManagerTests {
 }
 
 private final class Harness {
+    let observer = FakeDictationInputObserver()
     let recorder = FakeDictationRecorder()
+    let deadlines = StartupTestScheduler()
+    let startupReports = StartupTestReports()
     let ducking = FakeDuckingManager()
     let media = FakeMediaPlaybackManager()
     let route: FakeDictationRoute
@@ -717,7 +844,10 @@ private final class Harness {
             mediaPlaybackController: media,
             routingController: route,
             queue: managerQueue,
-            eventQueue: eventQueue
+            eventQueue: eventQueue,
+            inputObserver: observer,
+            startupScheduler: deadlines.schedule,
+            startupTelemetry: startupReports.record
         )
         manager.onEvent = { [weak self] event in
             self?.events.append(event)
@@ -760,6 +890,9 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var activeRecordingID: UUID?
     var warmUpDelay: TimeInterval = 0
     var activateError: Error?
+    var startGate: DispatchSemaphore?
+    var startEntered: DispatchSemaphore?
+    var callbackDuringStart = false
 
     func prepare() throws {
         prepareCalls += 1
@@ -792,6 +925,9 @@ private final class FakeDictationRecorder: DictationAudioRecording {
 
     func start() throws -> UUID {
         startCalls += 1
+        startEntered?.signal()
+        startGate?.wait()
+        if callbackDuringStart { onFirstCapturedAudioBuffer?(Date()) }
         let id = UUID()
         activeRecordingID = id
         return id
@@ -955,4 +1091,10 @@ extension ComputerUseRunDiagnosticsTests {
         controller.handleComputerUseCancel()
         harness.wait()
     }
+}
+
+private final class FakeDictationInputObserver: DictationInputObserving {
+    var failure: ((DictationMicrophoneStartupError) -> Void)?
+    func start(sessionID: UUID, preferredInputDeviceID: AudioObjectID?, onFailure: @escaping (DictationMicrophoneStartupError) -> Void) { failure = onFailure }
+    func stop(sessionID: UUID) {}
 }

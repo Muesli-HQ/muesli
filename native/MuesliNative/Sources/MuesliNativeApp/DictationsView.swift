@@ -90,6 +90,10 @@ struct DictationsView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
+            FailedDictationsView(appState: appState, controller: controller)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.bottom, appState.failedDictations.isEmpty ? 0 : MuesliTheme.spacing12)
+
             if appState.dictationRows.isEmpty {
                 Spacer()
                 VStack(spacing: MuesliTheme.spacing12) {
@@ -165,6 +169,7 @@ struct DictationsView: View {
                 }
             }
         }
+        .task { await controller.refreshFailedDictations() }
     }
 
     private var emptyStateInstruction: String {

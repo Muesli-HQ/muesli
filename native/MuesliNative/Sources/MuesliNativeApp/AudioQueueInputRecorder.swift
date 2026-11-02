@@ -8,7 +8,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     var nativeStopDrainRange: (() -> Range<Int64>?)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
-    var onRecordingFailed: ((Error) -> Void)?
+    var onRecordingFailed: ((Error) -> Void)? {
+        get { callbackState.withLock { $0.failureHandler } }
+        set { callbackState.withLock { $0.failureHandler = newValue } }
+    }
     var onLatencyEvent: ((String, Date) -> Void)?
     private let inputDevice = OSAllocatedUnfairLock<AudioObjectID?>(initialState: nil)
     var preferredInputDeviceID: AudioObjectID? {
@@ -32,6 +35,18 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var start: (AudioQueueRef) -> OSStatus = { AudioQueueStart($0, nil) }
         var stop: (AudioQueueRef, Bool) -> OSStatus = { AudioQueueStop($0, $1) }
         var dispose: (AudioQueueRef) -> OSStatus = { AudioQueueDispose($0, true) }
+        var addRunningListener: (AudioQueueRef, AudioQueuePropertyListenerProc, UnsafeMutableRawPointer) -> OSStatus = {
+            AudioQueueAddPropertyListener($0, kAudioQueueProperty_IsRunning, $1, $2)
+        }
+        var removeRunningListener: (AudioQueueRef, AudioQueuePropertyListenerProc, UnsafeMutableRawPointer) -> Void = {
+            AudioQueueRemovePropertyListener($0, kAudioQueueProperty_IsRunning, $1, $2)
+        }
+        var runningState: (AudioQueueRef) -> Bool? = {
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioQueueGetProperty($0, kAudioQueueProperty_IsRunning, &running, &size) == noErr else { return nil }
+            return running != 0
+        }
         var isRunning: (AudioQueueRef) -> Bool = {
             var running: UInt32 = 0
             var size = UInt32(MemoryLayout<UInt32>.size)
@@ -46,6 +61,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     // processing queue acquire this lock, including during synchronous disposal.
     private let operationLock = NSRecursiveLock()
     private struct CallbackState {
+        var failureHandler: ((Error) -> Void)?
         var queue: AudioQueueRef?
         var isRunning = false
         var isDraining = false
@@ -54,6 +70,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var invalidated = false
         var pendingBuffers = 0
         var overloaded = false
+        var observedRunning = false
+        var reportedUnexpectedStop = false
     }
     private let callbackState = OSAllocatedUnfairLock(initialState: CallbackState())
     private let stateLock = OSAllocatedUnfairLock(initialState: FileState())
@@ -61,6 +79,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     private let failureCallbackQueue = DispatchQueue(label: "com.muesli.audio-queue-input-recorder-failures")
 
     private var audioQueue: AudioQueueRef?
+    private var hasRunningListener = false
     private var queueCallbackUserData: UnsafeMutableRawPointer?
     private var buffers: [AudioQueueBufferRef] = []
     private var preparedInputDeviceID: AudioObjectID?
@@ -122,6 +141,8 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             $0.generation &+= 1
             $0.isRunning = true
             $0.overloaded = false
+            $0.observedRunning = false
+            $0.reportedUnexpectedStop = false
         }
         for buffer in buffers {
             let status = native.enqueue(audioQueue, buffer)
@@ -261,6 +282,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         audioQueue = queue
         queueCallbackUserData = callbackUserData
         callbackState.withLock { $0.queue = queue }
+        hasRunningListener = native.addRunningListener(queue, Self.runningCallback, callbackUserData) == noErr
 
         do {
             if let targetInputDeviceID {
@@ -309,6 +331,33 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         emitLatency("audio_queue_set_current_device_end")
         guard status == noErr else {
             throw Self.runtimeError(code: 7, message: "AudioQueueSetProperty current device failed: \(status)")
+        }
+    }
+
+    private static let runningCallback: AudioQueuePropertyListenerProc = { userData, queue, _ in
+        guard let userData else { return }
+        Unmanaged<AudioQueueInputRecorder>.fromOpaque(userData).takeUnretainedValue().handleRunningChanged(queue)
+    }
+
+    private func handleRunningChanged(_ queue: AudioQueueRef) {
+        let identity = UInt(bitPattern: queue)
+        let snapshot = callbackState.withLock { state -> (UInt64, ((Error) -> Void)?)? in
+            guard state.queue.map({ UInt(bitPattern: $0) }) == identity, state.isRunning else { return nil }
+            return (state.generation, state.failureHandler)
+        }
+        guard let snapshot, let running = native.runningState(queue) else { return }
+        let failed = callbackState.withLock { state in
+            guard state.queue.map({ UInt(bitPattern: $0) }) == identity,
+                  state.generation == snapshot.0, state.isRunning, !state.invalidated else { return false }
+            if running { state.observedRunning = true; return false }
+            // Initial stopped state, explicit stop/cancel, unknown reads, and
+            // reads from a retired run are never evidence of capture failure.
+            guard state.observedRunning, !state.reportedUnexpectedStop else { return false }
+            state.reportedUnexpectedStop = true
+            return true
+        }
+        if failed, let callback = snapshot.1 {
+            failureCallbackQueue.async { callback(DictationMicrophoneStartupError.queueStoppedUnexpectedly) }
         }
     }
 
@@ -447,6 +496,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         }
         isPrepared = false
         if let audioQueue {
+            if hasRunningListener, let context = queueCallbackUserData {
+                native.removeRunningListener(audioQueue, Self.runningCallback, context)
+                hasRunningListener = false
+            }
             native.stop(audioQueue, true)
             let status = native.dispose(audioQueue)
             guard status == noErr else {

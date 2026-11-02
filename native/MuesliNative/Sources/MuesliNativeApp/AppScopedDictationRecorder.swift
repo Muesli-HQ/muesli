@@ -462,22 +462,24 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
     private func scheduleNoAudioTimeoutLocked() {
         noAudioTimeoutWorkItem?.cancel()
+        let recordingID = activeRecordingID
         let workItem = DispatchWorkItem { [weak self] in
-            self?.notifyNoAudioTimeoutIfNeeded()
+            self?.notifyNoAudioTimeoutIfNeeded(recordingID: recordingID)
         }
         noAudioTimeoutWorkItem = workItem
         callbackQueue.asyncAfter(deadline: .now() + Self.noAudioTimeout, execute: workItem)
     }
 
-    private func notifyNoAudioTimeoutIfNeeded() {
+    private func notifyNoAudioTimeoutIfNeeded(recordingID: UUID?) {
         lock.lock()
-        guard activeRecordingID != nil, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
+        guard activeRecordingID == recordingID, activeRecordingID != nil, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
             lock.unlock()
             return
         }
         hasReportedNoAudioTimeout = true
+        let callback = onNoAudioTimeout
         lock.unlock()
-        onNoAudioTimeout?(Date())
+        callback?(Date())
     }
 
     private func cancelTimersLocked() {
