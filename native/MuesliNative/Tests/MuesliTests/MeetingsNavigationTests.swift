@@ -905,7 +905,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         let liveMeeting = try #require(try store.meeting(id: meetingID))
@@ -940,7 +941,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let meeting = try #require(try store.meeting(id: meetingID))
 
@@ -1460,7 +1462,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: meetingID, notes: "Decision before crash")
@@ -1479,7 +1482,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: 1, notes: "Draft survives retry")
@@ -1511,7 +1515,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: meetingID, notes: "First durable note")
@@ -1539,7 +1544,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .always }
 
@@ -1584,7 +1590,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1683,7 +1690,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1723,7 +1731,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1766,7 +1775,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1808,7 +1818,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1847,7 +1858,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1906,7 +1918,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
@@ -1927,7 +1940,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
@@ -1950,7 +1964,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
