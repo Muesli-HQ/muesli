@@ -40,6 +40,83 @@ struct GlobalSearchTests {
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
     }
 
+    @Test("FTS corruption is repaired without blocking dictation, meeting, or Chat writes")
+    func sourceWritesRecoverFTS() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-repair-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let dictation = try store.insertDictation(text: "orchid dictation", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let meeting = try store.insertMeeting(title: "orchid meeting", calendarEventID: nil, startTime: Date(), endTime: Date(),
+            rawTranscript: "orchid transcript", formattedNotes: "notes", micAudioPath: nil, systemAudioPath: nil)
+        let chat = MeetingChatStore(databaseURL: url)
+        let session = try chat.createSession(scope: .init(), title: "orchid chat")
+        let turn = try chat.beginTurn(sessionID: session.id, question: "orchid?", scope: .init(), provider: "test", model: "test")
+        let index = try GlobalSearchIndex(databaseURL: url)
+        func damage() throws {
+            var db: OpaquePointer?
+            defer { sqlite3_close(db) }
+            #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+            #expect(sqlite3_exec(db, "INSERT INTO global_search_fts(global_search_fts) VALUES('delete-all')", nil, nil, nil) == SQLITE_OK)
+        }
+        try damage()
+        try store.updateMeetingTranscript(id: meeting, rawTranscript: "violet revised transcript")
+        #expect(try store.meeting(id: meeting)?.rawTranscript == "violet revised transcript")
+        #expect(try index.search(.init(text: "violet", kinds: [.meeting])).count == 1)
+        try damage()
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "violet answer", citations: [], dependencies: []))
+        #expect(try chat.turns(sessionID: session.id).first?.originalAnswer == "violet answer")
+        #expect(try index.search(.init(text: "violet", kinds: [.chat]), validateDerived: { _, _ in true }).count == 1)
+        var metadataDB: OpaquePointer?
+        #expect(sqlite3_open(url.path, &metadataDB) == SQLITE_OK)
+        #expect(sqlite3_exec(metadataDB, "UPDATE meetings SET cloud_record_name='meeting-test'", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(metadataDB)
+        try damage()
+        // Exercise a multi-statement transaction that uses the store's exec path.
+        try store.resetTextRecordCloudMetadataForZoneRecreation()
+        #expect(try index.search(.init(text: "violet", kinds: [.meeting])).count == 1)
+        try damage()
+        try store.deleteDictation(id: dictation)
+        #expect(try index.search(.init(text: "orchid", kinds: [.dictation])).isEmpty)
+        #expect(try store.meeting(id: meeting) != nil)
+    }
+
+    @Test("FTS repair preserves outer transaction ownership and unrelated failures")
+    func repairTransactionOwnership() throws {
+        let f = try Fixture()
+        try f.sql("INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','orchid','dictation','Editor','com.test.editor',NULL)")
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        try f.sql("INSERT INTO global_search_fts(global_search_fts) VALUES('delete-all'); BEGIN IMMEDIATE;")
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(f.db, "DELETE FROM dictations WHERE id=1", -1, &statement, nil) == SQLITE_OK)
+        #expect(try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE)
+        sqlite3_finalize(statement)
+        #expect(sqlite3_get_autocommit(f.db) == 0)
+        try f.sql("ROLLBACK")
+        // Both the source deletion and the derived repair belong to the caller.
+        try f.sql("INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild')")
+        #expect(try index.search(.init(text: "orchid")).count == 1)
+        #expect(sqlite3_prepare_v2(f.db, "INSERT INTO dictations(id) VALUES(1)", -1, &statement, nil) == SQLITE_OK)
+        #expect(try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_CONSTRAINT)
+        sqlite3_finalize(statement)
+        #expect(try index.search(.init(text: "orchid")).count == 1)
+        // Corruption in another FTS table must never trigger a global-search reset.
+        try f.sql("""
+            CREATE TABLE other_docs(id INTEGER PRIMARY KEY,text TEXT);
+            INSERT INTO other_docs VALUES(1,'other');
+            CREATE VIRTUAL TABLE unrelated USING fts5(text,content='other_docs',content_rowid='id');
+            CREATE TRIGGER broken BEFORE DELETE ON dictations BEGIN
+                INSERT INTO unrelated(unrelated,rowid,text) VALUES('delete',1,'other');
+            END;
+            """)
+        #expect(sqlite3_prepare_v2(f.db, "DELETE FROM dictations WHERE id=1", -1, &statement, nil) == SQLITE_OK)
+        #expect(throws: (any Error).self) { try GlobalSearchIndex.stepSourceWrite(statement) }
+        sqlite3_finalize(statement)
+        #expect(try index.search(.init(text: "orchid")).count == 1)
+    }
+
     @Test("Unvalidated derived kinds cannot consume the result limit")
     func derivedKindsBeforeLimit() throws {
         let f = try Fixture()

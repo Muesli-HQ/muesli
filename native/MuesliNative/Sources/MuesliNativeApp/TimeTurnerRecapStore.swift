@@ -98,7 +98,7 @@ final class TimeTurnerRecapStore {
         bind(recap.timeZone, to: s, at: 4)
         sqlite3_bind_double(s, 5, recap.generatedAt.timeIntervalSince1970)
         bind(body, to: s, at: 6)
-        guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
     }
     /// Delete derived text, including stored OCR snapshots, without needing to open its day.
     func delete(captureIDs: Set<String>) throws {
@@ -114,7 +114,7 @@ final class TimeTurnerRecapStore {
                 """)
             defer { sqlite3_finalize(s) }
             bind(ids, to: s, at: 1)
-            guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+            guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -135,7 +135,7 @@ final class TimeTurnerRecapStore {
         defer { sqlite3_finalize(s) }
         bind(key, to: s, at: 1)
         if let generatedAt { sqlite3_bind_double(s, 2, generatedAt.timeIntervalSince1970) }
-        guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
     }
 }
 

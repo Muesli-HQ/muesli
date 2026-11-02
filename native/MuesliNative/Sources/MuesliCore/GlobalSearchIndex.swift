@@ -83,6 +83,53 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         return sqlite3_column_int64(s, 0)
     }
 
+    /// Source stores may recover a failed statement only after proving the global
+    /// FTS projection is inconsistent. Never replay a transaction or source work
+    /// on SQLITE_BUSY, constraints, I/O errors, or corruption of another index.
+    public static func stepSourceWrite(_ statement: OpaquePointer?) throws -> Int32 {
+        let db = sqlite3_db_handle(statement)
+        let wasAutocommit = sqlite3_get_autocommit(db)
+        let status = sqlite3_step(statement)
+        let corruptVirtualTable = SQLITE_CORRUPT | (1 << 8)
+        guard status != SQLITE_DONE, status != SQLITE_ROW,
+              sqlite3_stmt_readonly(statement) == 0,
+              sqlite3_extended_errcode(db) == corruptVirtualTable else { return status }
+        func failure() -> NSError {
+            NSError(domain: "MuesliDB", code: Int(sqlite3_extended_errcode(db)),
+                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+        }
+        let original = failure()
+        // A failed statement must not have rolled back the caller's transaction.
+        guard sqlite3_get_autocommit(db) == wasAutocommit else { throw original }
+        sqlite3_reset(statement) // bindings survive; the aborted statement can be retried once
+        let check = sqlite3_exec(db, "INSERT INTO global_search_fts(global_search_fts,rank) VALUES('integrity-check',1)", nil, nil, nil)
+        guard check != SQLITE_OK, sqlite3_extended_errcode(db) == corruptVirtualTable else { throw original }
+        func run(_ sql: String) throws {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw failure() }
+        }
+        try run("SAVEPOINT global_search_repair")
+        do {
+            // Only derived token data is replaced. Documents and authoritative
+            // records remain intact, including earlier writes in an outer transaction.
+            do {
+                try run("INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild')")
+            } catch {
+                guard sqlite3_extended_errcode(db) == corruptVirtualTable else { throw error }
+                try run("DROP TABLE global_search_fts")
+                try run("CREATE VIRTUAL TABLE global_search_fts USING fts5(title,text,content='global_search_documents',content_rowid='rowid')")
+                try run("INSERT INTO global_search_fts(global_search_fts) VALUES('rebuild')")
+            }
+            let retried = sqlite3_step(statement)
+            guard retried == SQLITE_DONE else { throw failure() }
+            try run("RELEASE global_search_repair")
+            return retried
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK TO global_search_repair", nil, nil, nil)
+            _ = sqlite3_exec(db, "RELEASE global_search_repair", nil, nil, nil)
+            throw error
+        }
+    }
+
     /// Idempotent lazy installation handles Chat/Recap tables created after first search.
     /// Each source backfills once. Subsequent source writes update affected documents in their transaction.
     public func installAvailableSources() throws {

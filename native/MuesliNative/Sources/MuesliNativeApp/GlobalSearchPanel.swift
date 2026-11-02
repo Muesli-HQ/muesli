@@ -102,6 +102,35 @@ final class GlobalSearchPresentation {
     }
 }
 
+/// Retain readable text across transient errors, but only a fresh successful
+/// resolution permits copying. Navigation/close invalidates in-flight refreshes.
+@MainActor @Observable
+final class GlobalSearchPreview {
+    var text: String?
+    var source: GlobalSearchResult?
+    var error: String?
+    private var generation = UUID()
+    func clear() { generation = UUID(); text = nil; source = nil; error = nil }
+    func show(_ text: String, source: GlobalSearchResult) {
+        clear(); self.text = text; self.source = source
+    }
+    func refresh(resolve: (GlobalSearchResult) async throws -> GlobalSearchDestination?) async -> Bool {
+        guard let source else { return true }
+        let token = generation
+        do {
+            let current = try await resolve(source)
+            guard !Task.isCancelled, token == generation else { return true }
+            if case .text(let text) = current { self.text = text; error = nil }
+            else { clear(); error = "This item is no longer available." }
+            return true
+        } catch {
+            guard !Task.isCancelled, token == generation else { return true }
+            self.error = "Preview couldn’t refresh. Retrying…"
+            return false
+        }
+    }
+}
+
 struct GlobalSearchPanel: View {
     let controller: MuesliController
     let appState: AppState
@@ -110,8 +139,7 @@ struct GlobalSearchPanel: View {
     @State private var model = GlobalSearchPresentation()
     @State private var opening = false
     @State private var openTask: Task<Void, Never>?
-    @State private var preview: String?
-    @State private var previewResult: GlobalSearchResult?
+    @State private var preview = GlobalSearchPreview()
     @State private var copied = false
 
     var body: some View {
@@ -141,8 +169,8 @@ struct GlobalSearchPanel: View {
                 Spacer()
             }.padding(.horizontal, 16).padding(.bottom, 10)
             Divider()
-            if let preview {
-                previewView(preview)
+            if let text = preview.text {
+                previewView(text)
             } else if let error = model.error {
                 VStack {
                     empty(error)
@@ -175,7 +203,7 @@ struct GlobalSearchPanel: View {
         .background(MuesliTheme.backgroundBase)
         .frame(width: min(780, (NSScreen.main?.visibleFrame.width ?? 900) - 80), height: 580)
         .task(id: request) {
-            openTask?.cancel(); opening = false; preview = nil; previewResult = nil
+            openTask?.cancel(); opening = false; preview.clear()
             var revision = try? await controller.globalSearchWorker.changeToken()
             await model.refresh(request, using: controller.globalSearchWorker, debounce: true)
             // Refresh only this bounded, visible query; preserve selection across new captures.
@@ -185,16 +213,13 @@ struct GlobalSearchPanel: View {
                 guard updated == nil || updated != revision else { continue }
                 revision = updated
                 await model.refresh(request, using: controller.globalSearchWorker, debounce: false)
-                if let source = previewResult {
-                    let current = try? await controller.globalSearchWorker.destination(for: source)
-                    guard !Task.isCancelled else { return }
-                    guard previewResult?.id == source.id else { continue }
-                    if case .text(let text) = current { preview = text }
-                    else { preview = nil; previewResult = nil; model.error = "This item is no longer available." }
-                }
+                let refreshed = await preview.refresh { try await controller.globalSearchWorker.destination(for: $0) }
+                if !refreshed { revision = nil }
+                if preview.text == nil, let error = preview.error { model.error = error }
+
             }
         }
-        .onDisappear { openTask?.cancel() }
+        .onDisappear { openTask?.cancel(); preview.clear() }
         .onExitCommand(perform: close)
     }
 
@@ -241,15 +266,18 @@ struct GlobalSearchPanel: View {
     private func previewView(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Button("Back to results") { preview = nil; previewResult = nil }
+                Button("Back to results") { preview.clear() }
                 Spacer()
                 Button(copied ? "Copied" : "Copy text") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     copied = true
-                }
+                }.disabled(preview.error != nil)
             }.buttonStyle(.muesli(.quiet))
-            if let result = previewResult {
+            if let error = preview.error {
+                Text(error).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            }
+            if let result = preview.source {
                 Text(result.kind.searchLabel + " · " + result.date.formatted(date: .abbreviated, time: .shortened))
                     .font(MuesliTheme.headline())
             }
@@ -271,7 +299,7 @@ struct GlobalSearchPanel: View {
                     model.error = "This item is no longer available."; return
                 }
                 switch destination {
-                case .text(let text): preview = text; previewResult = result; copied = false
+                case .text(let text): preview.show(text, source: result); copied = false
                 case .meeting(let record):
                     controller.clearSearch()
                     appState.selectedTab = .meetings

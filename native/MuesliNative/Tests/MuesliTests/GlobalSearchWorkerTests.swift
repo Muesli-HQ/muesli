@@ -5,6 +5,81 @@ import MuesliCore
 
 @Suite("Global search source validation")
 struct GlobalSearchWorkerTests {
+    private final class OpenCounter: @unchecked Sendable {
+        let lock = NSLock()
+        private var count = 0
+        var value: Int { lock.withLock { count } }
+        func open(_ root: URL) throws -> VisualMemoryStore {
+            lock.withLock { count += 1 }
+            return try VisualMemoryStore(root: root, readOnly: true)
+        }
+    }
+
+    private final class RetryClock: @unchecked Sendable {
+        let lock = NSLock()
+        private var instant = Date()
+        private var attempts = 0
+        func now() -> Date { lock.withLock { instant } }
+        func advance() { lock.withLock { instant = instant.addingTimeInterval(6) } }
+        var count: Int { lock.withLock { attempts } }
+        func open(_ root: URL) throws -> VisualMemoryStore {
+            let attempt = lock.withLock { attempts += 1; return attempts }
+            if attempt == 1 { throw CocoaError(.fileReadUnknown) }
+            return try VisualMemoryStore(root: root, readOnly: true)
+        }
+    }
+
+    @Test("A transient catalog-open failure retries with backoff even without file writes")
+    func transientCatalogOpen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("catalog-retry-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        try DictationStore(databaseURL: url).migrateIfNeeded()
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        try memory.save([.init(id: "capture", kind: .moment, source: "Editor", text: "orchid", path: "one.png")])
+        let clock = RetryClock()
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot,
+            now: { clock.now() }, openScreen: { try clock.open($0) })
+        #expect(try await worker.search(.init(text: "orchid")).isEmpty)
+        let token = try await worker.changeToken()
+        #expect(try await worker.search(.init(text: "orchid")).isEmpty)
+        #expect(clock.count == 1)
+        #expect(try await worker.changeToken() == token)
+        clock.advance()
+        #expect(try await worker.changeToken() != token)
+        #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == ["capture"])
+        #expect(clock.count == 2)
+    }
+
+    @Test("Filter changes and captures reuse the catalog; file replacement opens the new catalog")
+    func catalogLifetime() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("catalog-lifetime-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        try DictationStore(databaseURL: url).migrateIfNeeded()
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        try memory.save([.init(id: "one", kind: .moment, source: "Editor", text: "orchid", path: "one.png")])
+        let counter = OpenCounter()
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot, openScreen: { try counter.open($0) })
+        for _ in 0..<3 {
+            _ = try await worker.search(.init(text: "orchid", kinds: [.meeting]))
+            #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == ["one"])
+        }
+        #expect(counter.value == 1)
+        try memory.save([.init(id: "two", kind: .moment, source: "Editor", text: "orchid", path: "two.png")])
+        #expect(try await worker.search(.init(text: "orchid")).count == 2)
+        #expect(counter.value == 1)
+        try FileManager.default.moveItem(at: screenRoot, to: root.appendingPathComponent("old-catalog"))
+        let replacement = try VisualMemoryStore(root: screenRoot)
+        try replacement.save([.init(id: "replacement", kind: .moment, source: "Editor", text: "orchid", path: "new.png")])
+        #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == ["replacement"])
+        #expect(counter.value == 2)
+    }
+
     @Test("Search opens persisted recap identity after travel and still revalidates its sources")
     @MainActor func recapNavigationAcrossTimeZones() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-travel-\(UUID())")
@@ -104,6 +179,8 @@ struct GlobalSearchWorkerTests {
         let catalog = screenRoot.appendingPathComponent("catalog.sqlite")
         try Data("not a SQLite database".utf8).write(to: catalog)
         let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        let corruptToken = try await worker.changeToken()
+        #expect(try await worker.changeToken() == corruptToken)
         #expect(try await worker.search(.init(text: "orchid", kinds: [.meeting])).map(\.sourceID) == [String(id)])
         #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == [String(id)])
         await #expect(throws: CocoaError.self) {
@@ -111,6 +188,7 @@ struct GlobalSearchWorkerTests {
         }
         try FileManager.default.removeItem(at: catalog)
         let memory = try VisualMemoryStore(root: screenRoot)
+        #expect(try await worker.changeToken() != corruptToken)
         try memory.save([.init(id: "capture", kind: .moment, source: "Editor", text: "Orchid screen", path: "screen.png")])
         #expect(try await worker.search(.init(text: "orchid", kinds: [.screenHistory])).map(\.sourceID) == ["capture"])
         #expect(Set(try await worker.search(.init(text: "orchid")).map(\.kind)) == [.meeting, .screenHistory])

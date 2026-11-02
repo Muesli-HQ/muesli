@@ -649,6 +649,17 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   and rebuilds those projections in the same transaction; source records are
   unchanged.
 
+Prepared source writes in `DictationStore`, `MeetingChatSQL`, and
+`TimeTurnerRecapStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
+is retried only for `SQLITE_CORRUPT_VTAB` after a separate FTS integrity check
+confirms corruption of **global_search_fts**. A savepoint rebuilds its tokens from
+`global_search_documents` (recreating the virtual table only if the rebuild itself
+reports virtual-table corruption) and retries the aborted statement once.
+The repair and retry remain within the caller's transaction; caller rollback
+still rolls back both. It never replays a whole operation, changes source rows
+as part of repair, or treats busy, constraint, I/O, or another index's errors as
+permission to rebuild. Unrecoverable corruption remains an explicit save error.
+
 Sources are dictations, CUA **input commands only**, meetings (title, transcript,
 manual/generated notes as one result), Quill conversations, accepted Cotypist
 text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
@@ -679,7 +690,14 @@ copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable t
 observation deletion removes it. An unreadable optional screen-history catalog
 is omitted from mixed-source searches; screen-history-only queries report an
 error. Queries scoped to other kinds do not open that catalog. Main-index errors
-still propagate. Results use a shared `GlobalSearchResult` envelope
+still propagate. The worker keeps one main search service across filter changes
+and retains the optional catalog while its file identity is unchanged. Its
+persistent monitor uses SQLite data versions plus file identity to detect writes,
+removal and replacement; a corrupt optional catalog produces a stable unavailable
+revision, with open retries when its database/WAL fingerprint changes. Healthy
+catalog writes do not require reopening the store. If a readable catalog's store
+initialization fails, retries use an exponential 5–60 second backoff so transient
+failures recover without requiring another write. Results use a shared `GlobalSearchResult` envelope
 with kind, source ID, date, title, excerpt, app identity, and media availability.
 Queries apply type, exact app/bundle, and half-open date filters before limits;
 an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
@@ -707,5 +725,9 @@ Recaps navigate by the persisted `day_key` and retain their original day bounds
 and timezone, including for explicit regeneration. Travel does not re-key a saved
 recap in the current timezone. Choosing another date resumes current-calendar day
 browsing. Source validation still runs when opening either kind of result.
+An open text preview distinguishes confirmed source absence from transient read
+failure. Read failures retain the displayed text, show a retry status, disable the
+Copy action until verification succeeds, and retry on the next poll. Closing or
+replacing the preview invalidates in-flight reads.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.

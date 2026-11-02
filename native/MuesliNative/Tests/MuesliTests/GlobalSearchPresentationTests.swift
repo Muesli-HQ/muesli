@@ -1,10 +1,35 @@
 import Foundation
 import Testing
-import MuesliCore
+@testable import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Global search presentation")
 struct GlobalSearchPresentationTests {
+    @Test("Preview distinguishes temporary failures from deletion and recovers without losing selection")
+    @MainActor func previewRecovery() async {
+        let preview = GlobalSearchPreview()
+        let source = GlobalSearchResult(kind: .dictation, sourceID: "1", date: Date(), title: "Title", excerpt: "Text", appName: "", bundleID: "", mediaAvailable: false)
+        preview.show("Original", source: source)
+        #expect(await preview.refresh { _ in throw CocoaError(.fileReadUnknown) } == false)
+        #expect(preview.text == "Original")
+        #expect(preview.source == source)
+        #expect(preview.error == "Preview couldn’t refresh. Retrying…")
+        #expect(await preview.refresh { _ in .text("Updated") })
+        #expect(preview.text == "Updated")
+        #expect(preview.error == nil)
+        #expect(await preview.refresh { _ in nil })
+        #expect(preview.text == nil)
+        #expect(preview.source == nil)
+        #expect(preview.error == "This item is no longer available.")
+        preview.show("Reopened", source: source)
+        _ = await preview.refresh { _ in
+            preview.clear() // User navigated away before the async read completed.
+            return .text("Late")
+        }
+        #expect(preview.text == nil)
+        #expect(preview.error == nil)
+    }
+
     @Test("Opening a capture replaces retained navigation, including repeated and same-day results")
     @MainActor func captureNavigation() {
         let state = AppState()
