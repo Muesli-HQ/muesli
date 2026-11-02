@@ -214,7 +214,14 @@ enum CleanupModelInstallation {
         do {
             try fileManager.moveItem(at: staging, to: liveDirectory)
         } catch {
-            if let retired { try? fileManager.moveItem(at: retired, to: liveDirectory) }
+            if let retired {
+                do {
+                    try fileManager.moveItem(at: retired, to: liveDirectory)
+                } catch let restoreError {
+                    // Launch-time recovery restores it; log for field debugging.
+                    fputs("[muesli-native] cleanup update could not restore \(retired.lastPathComponent): \(restoreError.localizedDescription)\n", stderr)
+                }
+            }
             throw error
         }
         // A loaded engine keeps its open or mapped files; unlinking them is safe.

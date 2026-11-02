@@ -129,7 +129,7 @@ struct SidebarView: View {
             }
             .scrollIndicators(.hidden)
             Spacer(minLength: 0)
-            collapsedItem(tab: .models, icon: "cpu", label: "Models")
+            collapsedItem(tab: .models, icon: "cpu", label: "Models", tooltip: modelsUpdateCTA?.tooltip)
                 .overlay(alignment: .topTrailing) {
                     if let modelsUpdateCTA {
                         Circle()
@@ -154,7 +154,7 @@ struct SidebarView: View {
         SidebarToggleButton(isCollapsed: isCollapsed, action: onToggleCollapsed)
     }
 
-    private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {
+    private func collapsedItem(tab: DashboardTab, icon: String, label: String, tooltip: String? = nil) -> some View {
         Button {
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
@@ -186,7 +186,7 @@ struct SidebarView: View {
         }
         .buttonStyle(SidebarRowButtonStyle(isSelected: appState.selectedTab == tab))
         .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
-        .help(label)
+        .help(tooltip ?? label)
         .accessibilityLabel(label)
         .accessibilityAddTraits(appState.selectedTab == tab ? .isSelected : [])
         // Match the expanded rows so a tour targeting the sidebar keeps its
