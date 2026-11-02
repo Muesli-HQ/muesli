@@ -110,13 +110,15 @@ enum ChatFileReader {
                                  relativeTo: nil, bookmarkDataIsStale: &stale), url.isFileURL else { throw ChatFileError.unavailable }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw ChatFileError.unavailable }
-        guard Int64(values.fileSize ?? 0) == file.byteCount, try digest(url) == file.id else { throw ChatFileError.changed }
-        let value = try body(url)
-        try Task.checkCancellation()
-        guard try digest(url) == file.id else { throw ChatFileError.changed }
-        return value
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { throw ChatFileError.unavailable }
+            guard Int64(values.fileSize ?? 0) == file.byteCount, try digest(url) == file.id else { throw ChatFileError.changed }
+            let value = try body(url)
+            try Task.checkCancellation()
+            guard try digest(url) == file.id else { throw ChatFileError.changed }
+            return value
+        } catch is CocoaError { throw ChatFileError.unavailable }
     }
 
     static func validate(_ files: [ChatFileReference]) throws {

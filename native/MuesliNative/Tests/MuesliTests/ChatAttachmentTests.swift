@@ -144,7 +144,7 @@ struct ChatAttachmentTests {
         #expect(updated.count == 1 && updated[0].id != refs[0].id)
         try ChatFileReader.validate(updated)
         try FileManager.default.removeItem(at: original)
-        #expect(throws: (any Error).self) { try ChatFileReader.validate(updated) }
+        #expect(throws: ChatFileError.unavailable) { try ChatFileReader.validate(updated) }
     }
 
     @Test func pdfTextWorksWithoutVisionAndNeverCreatesAStoredExtraction() throws {

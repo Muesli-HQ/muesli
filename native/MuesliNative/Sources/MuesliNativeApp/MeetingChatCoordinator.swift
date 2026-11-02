@@ -767,13 +767,13 @@ final class MeetingChatCoordinator {
                 scheduleHistoryReload()
             }
             do {
-                let (evidence, history) = try await worker.evidence(for: turn)
                 let attachments: PreparedChatFiles
                 if let preparedAttachments { attachments = preparedAttachments }
                 else {
                     phase = "Preparing attachments"
                     attachments = try await worker.preparedFiles(for: turn, config: config)
                 }
+                let (evidence, history) = try await worker.evidence(for: turn)
                 let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
