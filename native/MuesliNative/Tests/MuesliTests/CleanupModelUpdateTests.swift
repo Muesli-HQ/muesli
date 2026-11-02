@@ -83,6 +83,9 @@ struct CleanupModelUpdateTests {
         let unsafe = [
             Self.release(version: "v20", sequence: 20, repo: "someone-else/cleanup", contents: model),
             Self.release(version: "v20", sequence: 20, repo: "Muesli-HQ/..", contents: model),
+            Self.release(version: "v20", sequence: 20, repo: "Muesli-HQ//x", contents: model),
+            Self.release(version: "v20", sequence: 20, repo: "Muesli-HQ/x/", contents: model),
+            Self.release(version: "v20", sequence: 20, contents: [("model.safetensors", "w"), ("tokenizér.json", "x")]),
             Self.release(version: "v20", sequence: 20, revision: "main", contents: model),
             Self.release(version: "v20", sequence: 20, runtime: .ggufLFM25, contents: model),
             Self.release(version: "v20", sequence: 20, contents: [("model.safetensors", "w"), ("../escape", "x")]),
@@ -233,7 +236,7 @@ struct CleanupModelUpdateTests {
         var future = encoded
         future["runtime"] = "mlx-lfm3"
         future["sequence"] = 16
-        document["releases"] = [future, ["slot": 7], encoded]
+        document["releases"] = [future, ["slot": 7], "not an object", NSNull(), 3, encoded]
         let data = try JSONSerialization.data(withJSONObject: document)
 
         let latest = try CleanupModelCatalog.latestReleases(catalog: data, signature: nil, publicKey: "",

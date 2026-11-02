@@ -43,7 +43,10 @@ enum CleanupModelCatalog {
             self.releases = releases
         }
 
-        private struct SkippedEntry: Decodable {}
+        /// Accepts any JSON value (object, string, number or null) without reading it.
+        private struct SkippedEntry: Decodable {
+            init(from decoder: Decoder) throws {}
+        }
     }
 
     enum CatalogError: LocalizedError {

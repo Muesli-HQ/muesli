@@ -73,9 +73,10 @@ struct CleanupModelRelease: Codable, Equatable, Sendable {
         guard self.slot == slot.id else { return "slot mismatch" }
         guard runtime == slot.runtime else { return "runtime \(runtime.rawValue) does not match \(slot.runtime.rawValue)" }
         guard sequence > 0, !version.isEmpty else { return "missing version" }
-        guard repo.hasPrefix("Muesli-HQ/"), repo.split(separator: "/").count == 2,
+        let repoParts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard repo.hasPrefix("Muesli-HQ/"), repoParts.count == 2,
               repo.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_./".contains($0)) }),
-              repo.split(separator: "/")[1].first.map({ $0.isLetter || $0.isNumber }) == true else {
+              repoParts[1].first.map({ $0.isLetter || $0.isNumber }) == true else {
             return "untrusted repository \(repo)"
         }
         guard revision.count == 40, revision.allSatisfy(\.isHexDigit) else { return "revision is not a commit hash" }
@@ -87,7 +88,7 @@ struct CleanupModelRelease: Codable, Equatable, Sendable {
         var seen = Set<String>()
         for file in files {
             guard !file.path.isEmpty, !file.path.contains("/"), !file.path.hasPrefix("."),
-                  file.path.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }),
+                  file.path.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }),
                   seen.insert(file.path).inserted else { return "invalid file path \(file.path)" }
             guard file.size > 0, file.sha256.count == 64, file.sha256.allSatisfy(\.isHexDigit),
                   file.sha256 == file.sha256.lowercased() else { return "invalid digest for \(file.path)" }

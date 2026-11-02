@@ -122,6 +122,8 @@ def save(catalog: dict) -> None:
 def command_add(args: argparse.Namespace) -> None:
     runtime, model_file = SLOTS[args.slot]
     catalog = load()
+    if problems := [p for r in catalog.get("releases", []) for p in validate(r)]:
+        sys.exit("Fix the existing catalog first:\n" + "\n".join(problems))
     existing = [r for r in catalog["releases"] if r["slot"] == args.slot]
     if any(r["sequence"] >= args.sequence for r in existing):
         sys.exit(f"sequence {args.sequence} must exceed every published {args.slot} release")
