@@ -12284,7 +12284,9 @@ public final class MuesliController: NSObject {
         dictationAudioSessionManager.beginRecording(
             mode: "hold-start",
             duckingEnabled: config.muteSystemAudioDuringDictation,
-            mediaPauseEnabled: config.pauseMediaDuringDictation
+            mediaPauseEnabled: config.pauseMediaDuringDictation,
+            attenuationEnabled: config.lowerVolumeDuringDictation,
+            attenuationLevel: config.resolvedDictationAttenuationLevel
         )
     }
 
@@ -12493,7 +12495,9 @@ public final class MuesliController: NSObject {
                 dictationAudioSessionManager.beginExternalSession(
                     source: "nemotron-toggle",
                     duckingEnabled: config.muteSystemAudioDuringDictation,
-                    mediaPauseEnabled: config.pauseMediaDuringDictation
+                    mediaPauseEnabled: config.pauseMediaDuringDictation,
+                    attenuationEnabled: config.lowerVolumeDuringDictation,
+                    attenuationLevel: config.resolvedDictationAttenuationLevel
                 )
                 meetingMonitor.refreshState()
                 fputs("[muesli-native] Nemotron streaming toggle mode active\n", stderr)
@@ -12508,7 +12512,9 @@ public final class MuesliController: NSObject {
         dictationAudioSessionManager.beginRecording(
             mode: "toggle",
             duckingEnabled: config.muteSystemAudioDuringDictation,
-            mediaPauseEnabled: config.pauseMediaDuringDictation
+            mediaPauseEnabled: config.pauseMediaDuringDictation,
+            attenuationEnabled: config.lowerVolumeDuringDictation,
+            attenuationLevel: config.resolvedDictationAttenuationLevel
         )
         return true
     }
