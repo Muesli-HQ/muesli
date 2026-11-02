@@ -3,7 +3,7 @@ import Foundation
 /// A user-selected original, never an imported copy. Payload bytes and thumbnails
 /// are deliberately absent from persisted chat JSON, sync and search projections.
 public struct ChatFileReference: Codable, Equatable, Identifiable, Sendable {
-    public enum Kind: String, Codable, Sendable { case image, pdf }
+    public enum Kind: String, Codable, Sendable { case image, pdf, markdown, text }
     public let id: String
     public let name: String
     public let kind: Kind

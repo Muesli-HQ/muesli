@@ -50,6 +50,41 @@ struct ChatAttachmentTests {
         #expect(Set(json[0].keys) == ["id", "name", "kind", "bookmark", "byteCount"])
     }
 
+    @Test(arguments: ["md", "markdown", "txt", "MD"])
+    func textFilesStayReferencedAndWorkWithoutVision(_ suffix: String) throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("notes." + suffix)
+        let content = "# Synthetic notes\n\nCafé ✅ launch Friday.\n![remote](https://example.invalid/image.png)"
+        var bytes = Data([0xEF, 0xBB, 0xBF]); bytes.append(Data(content.utf8)); try bytes.write(to: original)
+        let refs = try ChatFileReader.references(urls: [original, original], existing: [])
+        #expect(refs.count == 1)
+        #expect(refs[0].kind == (suffix.lowercased() == "txt" ? .text : .markdown))
+        var config = AppConfig(); config.meetingSummaryBackend = "ollama"
+        let prepared = try ChatFileReader.prepare(refs, config: config)
+        #expect(prepared.images.isEmpty)
+        #expect(prepared.context.contains(content))
+        #expect(!prepared.context.contains("\u{FEFF}"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [original.lastPathComponent])
+        let data = try JSONEncoder().encode(refs)
+        #expect(try JSONDecoder().decode([ChatFileReference].self, from: data) == refs)
+    }
+
+    @Test func invalidOrOversizedTextFailsWithoutSilentlyReplacingBytes() throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("notes.txt")
+        var config = AppConfig(); config.meetingSummaryBackend = "ollama"
+        for bytes in [Data([0xff]), Data("bad\0text".utf8), Data(" \n".utf8)] {
+            try bytes.write(to: original)
+            let refs = try ChatFileReader.references(urls: [original], existing: [])
+            #expect(throws: ChatFileError.unreadableText) { try ChatFileReader.prepare(refs, config: config) }
+        }
+        try Data(repeating: 65, count: ChatFileReader.maximumContextCharacters + 1).write(to: original)
+        let refs = try ChatFileReader.references(urls: [original], existing: [])
+        #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.prepare(refs, config: config) }
+        try Data(repeating: 65, count: ChatFileReader.maximumTextBytes + 1).write(to: original)
+        #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.references(urls: [original], existing: []) }
+    }
+
     @Test func changedOriginalRequiresReattachmentAndDoesNotDuplicateItsSlot() throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("image.png"); try image(at: original)
@@ -141,9 +176,13 @@ struct ChatAttachmentTests {
         #expect(try chat.historyContext(before: second).turns.isEmpty)
         #expect(try chat.finishTurn(turnID: second.id, answer: "Late response", citations: [], dependencies: []) == false)
     }
-    @Test @MainActor func fileOnlySendReopensReferencesAndPreservesDraftAcrossNavigation() async throws {
+    @Test(arguments: ["png", "md", "txt"]) @MainActor
+    func fileOnlySendReopensReferencesAndPreservesDraftAcrossNavigation(_ suffix: String) async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
-        let original = root.appendingPathComponent("image.png"); try image(at: original)
+        let original = root.appendingPathComponent("attachment." + suffix)
+        if suffix == "png" { try image(at: original) }
+        else { try "# Synthetic file\nLaunch Friday.".write(to: original, atomically: true, encoding: .utf8) }
+        let imageCount = suffix == "png" ? 1 : 0
         let database = root.appendingPathComponent("fixture.db")
         let meetings = DictationStore(databaseURL: database); try meetings.migrateIfNeeded()
         let probe = AttachmentReplyProbe()
@@ -159,7 +198,7 @@ struct ChatAttachmentTests {
         #expect(chat.turns.first?.state == .completed)
         #expect(chat.turns.first?.question == "Describe the attached files.")
         #expect(chat.scope.selection == .meetings([]))
-        #expect(await probe.imageCounts == [1])
+        #expect(await probe.imageCounts == [imageCount])
         chat.composerDraft = "Keep my text"
         let undo = chat.composerUndoIdentity
         chat.showIndex(); chat.selectChat(id: sessionID); await chat.waitForIdle()
@@ -176,7 +215,7 @@ struct ChatAttachmentTests {
         config.meetingSummaryBackend = "anthropic"
         await reopened.send(question: "Shorten that", config: config); await reopened.waitForIdle()
         #expect(reopened.turns.last?.state == .completed)
-        #expect(await probe.imageCounts == [1, 0])
+        #expect(await probe.imageCounts == [imageCount, 0])
         await reopened.deleteChat(id: sessionID)
         #expect(FileManager.default.fileExists(atPath: original.path))
     }

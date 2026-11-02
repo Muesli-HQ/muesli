@@ -86,7 +86,8 @@ Live synthetic follow-up checks with no current sources returned `conversation` 
 
 ## Original-file attachments
 
-The paperclip accepts images and PDFs. muesli stores original-file bookmarks,
+The paperclip sits to the right of the editor and accepts images, PDFs, Markdown
+(`.md`/`.markdown`) and plain text (`.txt`). It remains visible in the compact composer. muesli stores original-file bookmarks,
 not managed copies, so the original must remain available when a chat is reopened.
 Identical bytes selected twice use one attachment slot. Reattaching a changed
 original replaces its composer reference; earlier answers remain tied to the
@@ -98,17 +99,20 @@ Files are untrusted conversation input, never meeting citation sources.
 All file hashing, extraction and image preparation run on `MeetingChatWorker`.
 ImageIO downsamples from the URL to a maximum 2048-pixel dimension, strips metadata
 by JPEG re-encoding, and caps each result at 2 MiB. PDFKit extracts selectable text;
-Vision OCR handles textless pages one at a time in an autorelease pool. PDF input
+Vision OCR handles textless pages one at a time in an autorelease pool.
+Markdown/plain text is read as bounded UTF-8 (optional BOM), with invalid/empty
+text rejected. Markdown is sent literally; attachment preparation never renders
+it, follows its links, or loads embedded images. PDF input
 supplies text/OCR only, not visual layout or embedded figures. No provider Files API
 objects or application temporary copies are created. Prepared bytes/text live only
 for the active request; portable history stores the question and answer. Provider
 retention still follows the selected provider's policy.
 
 Limits: five files, three images, 20 MiB per original, 40 MiB combined, 100 million
-image pixels, 50 PDF pages, 48,000 combined extracted-context characters, 2 MiB per
+image pixels, 50 PDF pages, 48,000 combined document-context characters (UTF-8 text reads also cap at 192,003 bytes), 2 MiB per
 encoded image, and 12 MiB per serialized request. Image requests reserve 4096 input
 tokens per image in addition to the existing text budget. This is a conservative
-estimate, not a tokenizer for every provider/model. PDFs work through existing
+estimate, not a tokenizer for every provider/model. PDFs, Markdown and plain text work through existing
 text adapters. Images require a vision-capable ChatGPT, OpenAI, OpenRouter or
 Anthropic model; unsupported transports fail with an actionable error. Native tool
 call IDs, replay and source-scope checks remain unchanged.

@@ -154,7 +154,7 @@ struct MeetingChatView: View {
         }
         .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
         .onChange(of: coordinator.composerDraft) { _, _ in dismissedMention = nil }
-        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.image, .pdf], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: ChatFileReader.supportedContentTypes, allowsMultipleSelection: true) { result in
             if case let .success(urls) = result {
                 let session = coordinator.selectedSessionID
                 Task {
@@ -328,24 +328,28 @@ struct MeetingChatView: View {
                     if coordinator.isPreparingFiles { ProgressView("Checking attachments…").controlSize(.small) }
                 }
             }, editor: {
-                ZStack(alignment: .topLeading) {
-                    if coordinator.composerDraft.isEmpty {
-                        Text("What’s on your mind?")
-                            .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
-                    }
-                    MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
-                                              focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
-
+                HStack(alignment: .bottom, spacing: 8) {
+                    ZStack(alignment: .topLeading) {
+                        if coordinator.composerDraft.isEmpty {
+                            Text("What’s on your mind?")
+                                .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
+                        }
+                        MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
+                                                  focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
+                    }.frame(maxWidth: .infinity)
+                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
+                        .buttonStyle(.muesli(.quiet)).foregroundStyle(MuesliTheme.textSecondary)
+                        .help("Attach images, PDFs, Markdown or text without copying the originals")
+                        .accessibilityLabel("Attach files").accessibilityIdentifier("meeting-chat-attach-files")
+                        .disabled(footerControlsDisabled)
+                        .padding(.bottom, 2)
                 }
             }, footer: {
                 // Footer actions share a 28pt hit height; padding sits inside each label so
                 // icon/text gaps are clickable and neighbors stay separate targets.
                 HStack(spacing: 2) {
-                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
-                        .buttonStyle(.muesli(.quiet)).help("Attach images or PDFs without copying the originals")
-                        .accessibilityLabel("Attach images or PDFs").disabled(footerControlsDisabled)
                     Button { insertMentionTrigger() } label: {
                         AIIcon(.atSign).frame(width: 28, height: 28)
                     }
@@ -405,7 +409,7 @@ struct MeetingChatView: View {
                 .padding(.leading, -6)
             })
             if !coordinator.composerFiles.isEmpty {
-                Text("Originals stay in place. Image content and PDF text/OCR are sent to the selected AI provider when you send. Use a vision-capable model for images.")
+                Text("Originals stay in place. Image content and document text (PDF text/OCR, Markdown and plain text) are sent to the selected AI provider when you send. Use a vision-capable model for images.")
                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
             }
             if !composerIsCompact {

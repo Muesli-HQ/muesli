@@ -8,16 +8,17 @@ import Vision
 import MuesliCore
 
 enum ChatFileError: Error, LocalizedError, Equatable {
-    case unavailable, changed, unsupported, tooLarge, tooMany, unreadablePDF, unsupportedProvider
+    case unavailable, changed, unsupported, tooLarge, tooMany, unreadablePDF, unreadableText, unsupportedProvider
     var errorDescription: String? {
         switch self {
         case .unavailable: "An attached file is no longer available. Remove it or attach the original again."
         case .changed: "An attached file changed. Attach it again before sending."
-        case .unsupported: "Choose a readable image or PDF document."
-        case .tooLarge: "Use files up to 20 MB each (40 MB total), images up to 100 megapixels, and PDFs up to 50 pages or 48,000 characters."
+        case .unsupported: "Choose an image, PDF, Markdown (.md or .markdown), or plain-text (.txt) file."
+        case .tooLarge: "Use files up to 20 MB each (40 MB total), images up to 100 megapixels, PDFs up to 50 pages, and document text up to 48,000 characters."
         case .tooMany: "Attach up to five files, including up to three images."
         case .unreadablePDF: "This PDF is locked or has no readable text. Choose an unlocked document or an image."
-        case .unsupportedProvider: "Image attachments need a vision-capable model through ChatGPT, OpenAI, OpenRouter or Anthropic. PDF text works with your current provider."
+        case .unreadableText: "This text file is empty or unreadable. Save it as UTF-8 and attach it again."
+        case .unsupportedProvider: "Image attachments need a vision-capable model through ChatGPT, OpenAI, OpenRouter or Anthropic. PDF, Markdown and plain text work with your current provider."
         }
     }
 }
@@ -43,6 +44,12 @@ struct PreparedChatFiles: Sendable {
 /// Called only by MeetingChatWorker. No body evaluation, thumbnail cache, imported
 /// file directory, remote Files API, or persisted base64 representation is used.
 enum ChatFileReader {
+    static let supportedContentTypes: [UTType] = [.image, .pdf, .plainText,
+        UTType(filenameExtension: "md") ?? .plainText,
+        UTType(filenameExtension: "markdown") ?? .plainText]
+    static let maximumContextCharacters = 48_000
+    // Bound bytes before decoding, even for invalid UTF-8 or combining characters.
+    static let maximumTextBytes = maximumContextCharacters * 4 + 3
     static let maximumFiles = 5
     static let maximumFileBytes: Int64 = 20 * 1_024 * 1_024
     static let maximumTotalBytes: Int64 = 40 * 1_024 * 1_024
@@ -67,9 +74,12 @@ enum ChatFileReader {
             let size = Int64(values.fileSize ?? 0)
             guard size > 0, size <= maximumFileBytes else { throw ChatFileError.tooLarge }
             let kind: ChatFileReference.Kind
-            if values.contentType?.conforms(to: .pdf) == true { kind = .pdf }
+            if ["md", "markdown"].contains(url.pathExtension.lowercased()) { kind = .markdown }
+            else if url.pathExtension.lowercased() == "txt" { kind = .text }
+            else if values.contentType?.conforms(to: .pdf) == true { kind = .pdf }
             else if values.contentType?.conforms(to: .image) == true { kind = .image }
             else { throw ChatFileError.unsupported }
+            if kind == .markdown || kind == .text, size > maximumTextBytes { throw ChatFileError.tooLarge }
             let id = try digest(url)
             // The same bytes selected twice occupy one attachment slot.
             if result.contains(where: { $0.id == id }) { continue }
@@ -135,13 +145,32 @@ enum ChatFileReader {
                 case .image:
                     prepared.images.append(.init(name: file.name, data: try image(url)))
                     prepared.context += "\nImage attachment: " + quoted(file.name) + ". Interpret the supplied image; do not infer meeting facts from it.\n"
+                case .markdown, .text:
+                    let label = file.kind == .markdown ? "Markdown" : "Plain-text"
+                    prepared.context += "\n" + label + " attachment: " + quoted(file.name) + "\n" + (try text(url))
                 case .pdf:
                     prepared.context += "\nPDF attachment (text/OCR only; layout and embedded images are not supplied): " + quoted(file.name) + "\n" + (try pdf(url))
                 }
             }
-            guard prepared.context.count <= 48_000 else { throw ChatFileError.tooLarge }
+            guard prepared.context.count <= maximumContextCharacters else { throw ChatFileError.tooLarge }
         }
         return prepared
+    }
+
+    private static func text(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        while let chunk = try handle.read(upToCount: min(32_768, maximumTextBytes - data.count + 1)), !chunk.isEmpty {
+            try Task.checkCancellation()
+            guard data.count + chunk.count <= maximumTextBytes else { throw ChatFileError.tooLarge }
+            data.append(chunk)
+        }
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) { data.removeFirst(3) }
+        guard let text = String(data: data, encoding: .utf8), !text.contains("\0"),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatFileError.unreadableText }
+        guard text.count <= maximumContextCharacters else { throw ChatFileError.tooLarge }
+        return text
     }
 
     private static func quoted(_ value: String) -> String {
