@@ -292,6 +292,14 @@ originals before context reuse and completion; missing/changed originals invalid
 dependent answers, drafts, rolling memory and generated titles through store APIs.
 Deleting a chat removes references, never the user's original files.
 
+Optional `documentCoverage` in turn bodies decodes as nil in older records. Each
+entry stores the attached PDF's `fileID`, `totalPages`, `pagesWithoutText`, and
+`wasCondensed`. Completion validates attachment identity and page counts; retries
+and file invalidation clear it. The UI shows coverage only alongside a surviving
+answer. This adds no SQL columns, CloudKit fields, telemetry or export/CLI data.
+Extracted document text, OCR images and intermediate rolling document notes remain
+transient even when a large PDF requires several model requests.
+
 Selection, anchoring, and evidence dependency are distinct. The anchor records
 where a chat started, selected rows describe explicit retrieval scope, and
 dependency rows record sources actually supplied to a turn. Folder/archive/date

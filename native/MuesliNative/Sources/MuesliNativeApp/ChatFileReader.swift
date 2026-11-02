@@ -9,14 +9,12 @@ import MuesliCore
 
 enum ChatFileError: Error, LocalizedError, Equatable {
     case unavailable, changed, unsupported, tooLarge, tooMany, unreadablePDF, unreadableText, unsupportedProvider
-    case pdfPageLimit(Int)
     var errorDescription: String? {
         switch self {
         case .unavailable: "An attached file is no longer available. Remove it or attach the original again."
         case .changed: "An attached file changed. Attach it again before sending."
         case .unsupported: "Choose an image, PDF, Markdown (.md or .markdown), or plain-text (.txt) file."
-        case .tooLarge: "Use files up to 20 MB each (40 MB total), images up to 100 megapixels, PDFs up to 50 pages, and document text up to 48,000 characters."
-        case .pdfPageLimit(let pages): "This PDF has \(pages) pages. Chat supports PDFs up to \(ChatFileReader.maximumPDFPages) pages. Export the pages you need into a shorter PDF and attach it again."
+        case .tooLarge: "Use files up to 20 MB each (40 MB total), images up to 100 megapixels, and Markdown/plain text up to 48,000 characters."
         case .tooMany: "Attach up to five files, including up to three images."
         case .unreadablePDF: "This PDF is locked or has no readable text. Choose an unlocked document or an image."
         case .unreadableText: "This text file is empty or unreadable. Save it as UTF-8 and attach it again."
@@ -39,6 +37,7 @@ struct ChatImageInput: Sendable {
 struct PreparedChatFiles: Sendable {
     var context = ""
     var images: [ChatImageInput] = []
+    var documentCoverage: [ChatDocumentCoverage] = []
     var isEmpty: Bool { context.isEmpty && images.isEmpty }
     static let empty = PreparedChatFiles()
 }
@@ -52,7 +51,6 @@ enum ChatFileReader {
     static let maximumContextCharacters = 48_000
     // Bound bytes before decoding, even for invalid UTF-8 or combining characters.
     static let maximumTextBytes = maximumContextCharacters * 4 + 3
-    static let maximumPDFPages = 50
     static let maximumThumbnailBytes = 128 * 1_024
     static let maximumFiles = 5
     static let maximumFileBytes: Int64 = 20 * 1_024 * 1_024
@@ -137,7 +135,7 @@ enum ChatFileReader {
         return "\(values.fileSize ?? -1):\(values.contentModificationDate?.timeIntervalSince1970 ?? -1):\(String(describing: values.fileResourceIdentifier))"
     }
 
-    static func prepare(_ files: [ChatFileReference], config: AppConfig) throws -> PreparedChatFiles {
+    static func prepareNonPDF(_ files: [ChatFileReference], config: AppConfig) throws -> PreparedChatFiles {
         try validateLimits(files)
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         if files.contains(where: { $0.kind == .image }), ![.chatGPT, .openAI, .openRouter, .anthropic].contains(provider) {
@@ -154,8 +152,7 @@ enum ChatFileReader {
                 case .markdown, .text:
                     let label = file.kind == .markdown ? "Markdown" : "Plain-text"
                     prepared.context += "\n" + label + " attachment: " + quoted(file.name) + "\n" + (try text(url))
-                case .pdf:
-                    prepared.context += "\nPDF attachment (text/OCR only; layout and embedded images are not supplied): " + quoted(file.name) + "\n" + (try pdf(url))
+                case .pdf: throw ChatFileError.unsupported // PDFs use the incremental reader.
                 }
             }
             guard prepared.context.count <= maximumContextCharacters else { throw ChatFileError.tooLarge }
@@ -229,32 +226,4 @@ enum ChatFileReader {
         }
     }
 
-    private static func pdf(_ url: URL) throws -> String {
-        guard let document = PDFDocument(url: url), !document.isLocked, document.pageCount > 0 else { throw ChatFileError.unreadablePDF }
-        guard document.pageCount <= maximumPDFPages else { throw ChatFileError.pdfPageLimit(document.pageCount) }
-        var text = ""; var hasReadableText = false
-        for index in 0..<document.pageCount {
-            try Task.checkCancellation()
-            let pageText: String = try autoreleasepool {
-            guard let page = document.page(at: index) else { throw ChatFileError.unreadablePDF }
-            var pageText = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if pageText.isEmpty {
-                let preview = page.thumbnail(of: NSSize(width: 1_536, height: 1_536), for: .mediaBox)
-                var bounds = CGRect(origin: .zero, size: preview.size)
-                if let cg = preview.cgImage(forProposedRect: &bounds, context: nil, hints: nil) {
-                    let request = VNRecognizeTextRequest()
-                    request.recognitionLevel = .accurate; request.automaticallyDetectsLanguage = true
-                    try VNImageRequestHandler(cgImage: cg).perform([request])
-                    pageText = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-                }
-            }
-                return pageText
-            }
-            hasReadableText = hasReadableText || !pageText.isEmpty
-            text += "\n[Page \(index + 1)]\n" + pageText
-            guard text.count <= 48_000 else { throw ChatFileError.tooLarge }
-        }
-        guard hasReadableText else { throw ChatFileError.unreadablePDF }
-        return text
-    }
 }

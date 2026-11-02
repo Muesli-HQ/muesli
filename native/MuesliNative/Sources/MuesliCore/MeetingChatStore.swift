@@ -187,7 +187,7 @@ public struct MeetingChatStore: Sendable {
             }
             var invalidated = Set<UUID>()
             for var turn in turns where !(Set((turn.fileDependencies ?? turn.fileAttachments ?? []).map(\.id)).isDisjoint(with: ids)) {
-                turn.state = .sourceDeleted; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
+                turn.state = .sourceDeleted; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []; turn.documentCoverage = nil
                 turn.error = "An original attachment changed or is unavailable. Attach the file again."
                 invalidated.insert(turn.id)
                 try saveTurn(turn, db: db)
@@ -246,11 +246,13 @@ public struct MeetingChatStore: Sendable {
     public func dependenciesAreCurrent(_ dependencies: [MeetingChatDependency]) throws -> Bool {
         try connection { db in try sourcesMatch(dependencies, db: db) }
     }
-    public func finishTurn(turnID: UUID, answer: String, citations: [MeetingChatCitation], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage? = nil, isDraft: Bool = false, attemptID: UUID? = nil) throws -> Bool {
+    public func finishTurn(turnID: UUID, answer: String, citations: [MeetingChatCitation], dependencies: [MeetingChatDependency], coverage: MeetingChatCoverage? = nil, isDraft: Bool = false, attemptID: UUID? = nil, documentCoverage: [ChatDocumentCoverage]? = nil) throws -> Bool {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             guard var turn = try turn(turnID, db: db), turn.state.isPending,
                   attemptID == nil || turn.attemptID == attemptID,
                   try sourcesMatch(dependencies, db: db) else { return false }
+            let pdfIDs = Set((turn.fileAttachments ?? []).filter { $0.kind == .pdf }.map(\.id))
+            guard (documentCoverage ?? []).allSatisfy({ pdfIDs.contains($0.fileID) && $0.totalPages > 0 && $0.pagesWithoutText >= 0 && $0.pagesWithoutText <= $0.totalPages }) else { return false }
             let storedDependencies = try MeetingChatSQL.rows("SELECT meeting_id,revision FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db) {
                 MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
             }
@@ -264,6 +266,7 @@ public struct MeetingChatStore: Sendable {
                 try MeetingChatSQL.execute("INSERT OR REPLACE INTO meeting_chat_dependencies VALUES(?,?,?)", [.text(turnID.uuidString), .integer(dependency.meetingID), .text(dependency.revision)], db: db)
             }
             turn.state = .completed; turn.originalAnswer = answer; turn.citations = citations; turn.error = nil
+            turn.documentCoverage = documentCoverage
             turn.coverage = coverage; turn.isDraft = isDraft
             try saveTurn(turn, db: db)
             return true
@@ -275,7 +278,7 @@ public struct MeetingChatStore: Sendable {
             guard attemptID == nil || turn.attemptID == attemptID else { return }
             guard state != .writing || turn.state.isPending else { return }
             turn.state = state; turn.error = error
-            if state != .completed { turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = [] }
+            if state != .completed { turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []; turn.documentCoverage = nil }
             try saveTurn(turn, db: db)
         } }
     }
@@ -297,7 +300,7 @@ public struct MeetingChatStore: Sendable {
                 session.rollingSummary = nil
                 try saveSession(session, db: db)
             }
-            turn.state = .finding; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
+            turn.state = .finding; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []; turn.documentCoverage = nil
             turn.error = nil; turn.provider = provider; turn.model = model; turn.coverage = nil
             turn.attemptID = UUID()
             try MeetingChatSQL.execute("DELETE FROM meeting_chat_dependencies WHERE turn_id=?", [.text(id.uuidString)], db: db)

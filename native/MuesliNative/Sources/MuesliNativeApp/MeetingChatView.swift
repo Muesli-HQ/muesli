@@ -406,7 +406,7 @@ struct MeetingChatView: View {
                 .padding(.leading, -6)
             })
             if !coordinator.composerFiles.isEmpty {
-                Text("Originals stay in place. Image content and document text (PDF text/OCR, Markdown and plain text) are sent to the selected AI provider when you send. Use a vision-capable model for images.")
+                Text("Originals stay in place. Image content and document text (PDF text/OCR, Markdown and plain text) are sent to the selected AI provider when you send. Large PDFs may use multiple AI requests. Use a vision-capable model for images.")
                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(nil).layoutPriority(1)
             }
@@ -622,6 +622,16 @@ struct MeetingChatView: View {
                             })
                         if !turn.citations.isEmpty {
                             MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
+                        }
+                        if let documents = turn.documentCoverage, !documents.isEmpty {
+                            ForEach(documents, id: \.fileID) { document in
+                                let name = turn.fileAttachments?.first { $0.id == document.fileID }?.name ?? "PDF"
+                                Text("\(name): all \(document.totalPages) pages inspected."
+                                     + (document.wasCondensed ? " Answer uses condensed notes." : "")
+                                     + (document.pagesWithoutText > 0 ? " \(document.pagesWithoutText) pages had no recoverable text." : ""))
+                                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
+                                    .textSelection(.enabled)
+                            }
                         }
                         answerActions(turn)
                     } else if turn.state == .sourceDeleted {

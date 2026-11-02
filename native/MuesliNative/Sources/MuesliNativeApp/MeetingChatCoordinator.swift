@@ -22,11 +22,23 @@ actor MeetingChatWorker {
     func setFiles(sessionID: UUID, files: [ChatFileReference]) throws {
         try store.setFileAttachments(sessionID: sessionID, files: files)
     }
-    func preparedFiles(for turn: MeetingChatTurn, config: AppConfig) throws -> PreparedChatFiles {
-        try ChatFileReader.prepare(turn.fileAttachments ?? [], config: config)
-    }
-    func prepareFiles(_ files: [ChatFileReference], config: AppConfig) throws -> PreparedChatFiles {
-        try ChatFileReader.prepare(files, config: config)
+    func prepareFiles(_ files: [ChatFileReference], config: AppConfig, question: String,
+        budget: MeetingChatContextBudget, sessionID: UUID?, beforeOrdinal: Int? = nil,
+        generator: any MeetingTextGenerating, progress: @Sendable (String) async -> Void
+    ) async throws -> PreparedChatFiles {
+        var historyReserve = 0
+        if let sessionID, !files.isEmpty {
+            try validateFileSources(sessionID: sessionID)
+            let start = try store.sessions().first { $0.id == sessionID }?.contextStartOrdinal ?? 0
+            let history = try store.turns(sessionID: sessionID).filter {
+                $0.ordinal >= start && (beforeOrdinal == nil || $0.ordinal < beforeOrdinal!) && $0.state == .completed
+            }
+            let plan = budget.plan(history: history)
+            historyReserve = plan.recentTurns.reduce(0) { $0 + MeetingChatContextBudget.estimateTokens(MeetingChatHistory.promptBlock($1)) }
+            if !plan.olderTurns.isEmpty { historyReserve += budget.summaryTokens }
+        }
+        return try await ChatPDFProcessing.prepare(files, config: config, question: question, budget: budget,
+            historyReserve: historyReserve, sessionID: sessionID ?? UUID(), generator: generator, progress: progress)
     }
     private var thumbnailCache: [String: (stamp: String, data: Data)] = [:]
     private var thumbnailOrder: [String] = []
@@ -106,7 +118,7 @@ actor MeetingChatWorker {
         // needs new facts. Removing a meeting affects retrieval, not validated history.
         let explicitlyEmpty: Bool
         if case .meetings(let ids) = turn.scope.selection { explicitlyEmpty = ids.isEmpty } else { explicitlyEmpty = false }
-        if !history.isEmpty || explicitlyEmpty {
+        if !history.isEmpty || explicitlyEmpty || turn.fileAttachments?.isEmpty == false {
             let eligible = explicitlyEmpty ? [] : try store.sourceChoices().filter { source in
                 switch turn.scope.selection {
                 case .all: break
@@ -270,9 +282,9 @@ actor MeetingChatWorker {
         guard let attemptID = turn.attemptID else { return false }
         return try store.updateTitleIfAutomatic(turnID: turn.id, attemptID: attemptID, title: title)
     }
-    func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool) throws -> Bool {
+    func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool, documentCoverage: [ChatDocumentCoverage] = []) throws -> Bool {
         try validateFileSources(sessionID: turn.sessionID, force: true)
-        return try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID)
+        return try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID, documentCoverage: documentCoverage.isEmpty ? nil : documentCoverage)
     }
 }
 
@@ -662,7 +674,15 @@ final class MeetingChatCoordinator {
             else {
                 phase = "Preparing attachments"
                 let worker = worker
-                let task = Task { try await worker.prepareFiles(files, config: config) }
+                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
+                let generator = generator
+                let task = Task { try await worker.prepareFiles(files, config: config, question: question,
+                    budget: budget, sessionID: draftKey, generator: generator, progress: { [weak self] message in
+                        await MainActor.run {
+                            guard let self, self.activeRequestID == requestID else { return }
+                            self.phase = message
+                        }
+                    }) }
                 filePreparation = (requestID, task)
                 defer { if filePreparation?.id == requestID { filePreparation = nil } }
                 prepared = try await task.value
@@ -730,7 +750,7 @@ final class MeetingChatCoordinator {
     }
     func retry(turnID: UUID, config: AppConfig, contextWindowTokens: Int? = nil) async {
         guard !isBusy, !isUpdatingChat else { return }
-        if let previous = turns.first(where: { $0.id == turnID }), case .meetings(let ids) = previous.scope.selection, ids.isEmpty,
+        if let previous = turns.first(where: { $0.id == turnID }), previous.fileAttachments?.isEmpty != false, case .meetings(let ids) = previous.scope.selection, ids.isEmpty,
            !turns.contains(where: { $0.ordinal < previous.ordinal && $0.state == .completed && $0.originalAnswer != nil }) {
             errorMessage = "This question had no meetings attached. Attach a meeting or choose All saved meetings, then send the question again."
             return
@@ -768,14 +788,21 @@ final class MeetingChatCoordinator {
                 scheduleHistoryReload()
             }
             do {
+                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
                 let attachments: PreparedChatFiles
                 if let preparedAttachments { attachments = preparedAttachments }
                 else {
                     phase = "Preparing attachments"
-                    attachments = try await worker.preparedFiles(for: turn, config: config)
+                    attachments = try await worker.prepareFiles(turn.fileAttachments ?? [], config: config, question: turn.question,
+                        budget: budget, sessionID: turn.sessionID, beforeOrdinal: turn.ordinal, generator: generator,
+                        progress: { [weak self] message in
+                            await MainActor.run {
+                                guard let self, self.activeRequestID == requestID else { return }
+                                self.phase = message
+                            }
+                        })
                 }
                 let (evidence, history) = try await worker.evidence(for: turn)
-                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
                 var rollingSummary = savedSummary?.text
@@ -833,7 +860,7 @@ final class MeetingChatCoordinator {
                     })
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
-                guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft) else { throw MeetingChatError.sourceChanged }
+                guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft, documentCoverage: attachments.documentCoverage) else { throw MeetingChatError.sourceChanged }
                 guard activeRequestID == requestID, !Task.isCancelled else { return }
                 if !answer.insufficientEvidence { scheduleTitle(turn: turn, config: config) }
             } catch {
@@ -881,7 +908,7 @@ final class MeetingChatCoordinator {
     func waitForTitles() async { while let task = titleTasks.values.first { await task.value } }
 
     static func failureMessage(_ error: Error) -> String {
-        if error is ChatFileError { return error.localizedDescription }
+        if error is ChatFileError || error is ChatPDFProcessingError { return error.localizedDescription }
         if error is MeetingChatError || error is MeetingChatHarnessError || error is MeetingTextGenerationError || error is MeetingNativeToolTransportError { return error.localizedDescription }
         if error is MeetingChatContextBudget.SummaryError { return "Could not fit conversation memory into this model’s context budget. Try again or choose a model with a larger context window. Your conversation is still saved." }
         if error is ChatGPTAuthError { return "Your ChatGPT connection needs attention. Sign in again in AI Settings, then retry." }

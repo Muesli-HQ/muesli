@@ -15,7 +15,7 @@ Each inference includes the user question, bounded prior conversation, the curre
 
 Conversation memory retains complete raw exchanges locally. A contiguous suffix of recent exchanges is supplied verbatim; older exchanges are compacted by the selected provider/model into a rolling summary stored on the session. The summary has exact covered-turn fingerprints and inherited source revisions; pending-attempt checks protect saves. Source edits, soft/hard deletion, participant changes, and covered-turn changes scrub the summary. Every compaction call revalidates source dependencies before and after inference. Failed compaction preserves existing history and reports a recoverable error instead of silently omitting it.
 
-Budgeting uses selected OpenRouter catalog context sizes where available, with explicit conservative operational defaults elsewhere (64K for native transports, 32K other cloud transports, 8K local/custom). These defaults are not claims about advertised model capacity. Input is capped at 32K estimated tokens, recent history at 8K, and rolling memory at 2K; output/reasoning space is reserved separately. Token estimates use ASCII bytes/3 plus non-ASCII UTF-8 bytes and envelope overhead, not an exact provider tokenizer. Small local/custom windows can return a bounded context error for large evidence packets. Compaction is bounded to 16 batches and one size-repair per batch. Provider switches rebuild context from this portable memory and current exchanges; opaque provider state is not treated as portable memory.
+Budgeting uses selected OpenRouter catalog context sizes and verified direct-model presets where available, with conservative operational defaults for unknown models (64K for native transports, 32K other cloud transports, 8K local/custom). These defaults are not claims about advertised model capacity. Input is capped at 32K estimated tokens, recent history at 8K, and rolling memory at 2K; output/reasoning space is reserved separately. Token estimates use ASCII bytes/3 plus non-ASCII UTF-8 bytes and envelope overhead, not an exact provider tokenizer. Small local/custom windows can return a bounded context error for large evidence packets. Compaction is bounded to 16 batches and one size-repair per batch. Provider switches rebuild context from this portable memory and current exchanges; opaque provider state is not treated as portable memory.
 
 The persistent “Partial recap” footer is removed. Source disclosures remain; coverage limitations belong in the answer only when material to the question, such as unfinished reads or incomplete requested comparisons.
 
@@ -98,7 +98,8 @@ history, while missing/changed evidence invalidates dependent history and memory
 File-only questions work without widening an explicit empty meeting selection.
 Files are untrusted conversation input, never meeting citation sources.
 
-All file hashing, extraction and image preparation run on `MeetingChatWorker`.
+All file hashing, extraction and image preparation run off the main actor through
+`MeetingChatWorker` and a pull-driven `ChatPDFPageReader` actor.
 ImageIO downsamples from the URL to a maximum 2048-pixel dimension, strips metadata
 by JPEG re-encoding, and caps each result at 2 MiB. PDFKit extracts selectable text;
 Vision OCR handles textless pages one at a time in an autorelease pool.
@@ -111,7 +112,7 @@ for the active request; portable history stores the question and answer. Provide
 retention still follows the selected provider's policy.
 
 Limits: five files, three images, 20 MiB per original, 40 MiB combined, 100 million
-image pixels, 50 PDF pages, 48,000 combined document-context characters (UTF-8 text reads also cap at 192,003 bytes), 2 MiB per
+image pixels, 48,000 combined Markdown/plain-text context characters (UTF-8 text reads also cap at 192,003 bytes), 2 MiB per
 encoded image, and 12 MiB per serialized request. Image requests reserve 4096 input
 tokens per image in addition to the existing text budget. This is a conservative
 estimate, not a tokenizer for every provider/model. PDFs, Markdown and plain text work through existing
@@ -141,10 +142,54 @@ written to SQLite, application support, exports or provider input. Missing/chang
 originals fall back to the file label; invalidated turns suppress content previews.
 
 File preparation happens before a new turn is accepted, with request ownership
-and cancellation. Validation failure preserves draft text, scope, undo identity
-and selected files and does not start a provider request. Prepared content is
-reused by the accepted turn, avoiding repeated OCR. Retry validation displays the
-same actionable local error. A PDF over 50 pages explicitly reports its page
-count and asks for a shorter PDF; it is not reported as a connection failure.
-The first-page display preview can still render for an oversized PDF. The preview
-and the provider's bounded document context are distinct operations.
+and cancellation. Local validation failure preserves draft text, scope, undo
+identity and selected files without a provider request. Large-PDF preparation can
+make AI requests before accepting the turn; failure or Stop still preserves the
+draft. Accepted turns reuse prepared content, avoiding repeated OCR. Retrying
+reprocesses the original under the currently selected model's budget.
+
+### Incremental PDF context
+
+PDFs have no page-count or total extracted-text cutoff. The reader walks every
+page in order, using selectable text or bounded OCR, and splits even an oversized
+single page at Unicode scalar boundaries. It holds a PDF handle and one extracted
+page; the processor pulls bounded fragments rather than buffering the whole
+extraction. A small first fragment avoids preprocessing calls when the whole PDF
+fits the final attachment allowance. Larger documents use chronological rolling
+notes through the selected model, consuming every fragment. One initial fragment,
+one bounded batch, the current page and rolling notes bound transient memory;
+PDFKit may maintain its own document caches. Model responses are bounded and have
+one shorter-output retry; oversized responses are never silently truncated.
+
+Batches use the selected model's catalog context minus its output reserve and
+input ceiling. OpenRouter supplies live context metadata; known direct models
+use verified presets. Unknown/custom models keep conservative transport defaults,
+not a claimed backend limit. The existing final chat/tool input envelope remains
+at most 32K tokens; document notes share its remaining room with the question,
+system/tool overhead, history, images and non-PDF attachments. Multiple PDFs split
+the remaining allowance. Requests leave 25% estimation headroom. The estimator
+is approximate, so backend context rejections still fail visibly; this is not a
+provider tokenizer or unlimited context. Large PDFs can incur several AI requests.
+
+Verified catalog sources: [OpenAI GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+[GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+and [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+list 1,050,000 context and 922,000 maximum input tokens for the API. The Sol page
+separately documents a default 500K context in Codex/ChatGPT Work; the subscription
+transport does not inherit the API allowance. Other ChatGPT models retain the
+conservative fallback until their transport metadata is established.
+[Anthropic context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows)
+and [model overview](https://platform.claude.com/docs/en/models/overview) document
+1M context for the current Sonnet/Opus/Fable presets and 200K for Haiku 4.5.
+Rolling condensation follows the general pattern in
+[Anthropic's summarization guide](https://platform.claude.com/cookbook/capabilities-summarization-guide).
+
+Condensation is lossy: the final answer explicitly discloses it and reports how
+many pages had no recoverable text after OCR. These coverage counts are local
+turn metadata; raw text and intermediate notes are never persisted. Diagrams,
+layout and textless pages cannot be claimed as understood. Hashes are checked at
+open, after complete extraction, after preparation and before answer publication;
+metadata is checked between batches/model calls. Source changes or cancellation
+discard the active result and close the original's security scope. Removing a
+file and changing/deleting its original retain their existing distinct semantics.

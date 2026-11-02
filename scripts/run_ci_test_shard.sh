@@ -223,6 +223,7 @@ case "${shard}" in
       SettingsModelFieldTests
       MeetingSummaryClientTests
       MeetingChatStoreTests
+      ChatPDFProcessingTests
       ChatAttachmentTests
       MeetingChatRetrievalTests
       MeetingChatClientTests

@@ -1199,27 +1199,29 @@ struct SummaryModelPreset {
     let id: String
     let label: String
     var contextWindowTokens: Int? = nil
+    var maximumInputTokens: Int? = nil
 
+    // Verified model metadata; see docs/meeting-chat-architecture.md.
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
-        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
-        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 500_000),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
         SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
         SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let anthropicModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
-        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
-        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
-        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindowTokens: 200000),
     ]
 
     static let claudeCodeModels: [SummaryModelPreset] = [

@@ -10,25 +10,32 @@ struct MeetingChatContextBudget {
     let modelID: String
     private(set) var maximumInputTokens: Int
     let maximumOutputTokens: Int
+    let documentRequestInputTokens: Int
     let historyTokens: Int
     let summaryTokens: Int
     private let summaryBatchTokens: Int
     private let summaryOutputTokens: Int
 
     init(config: AppConfig, contextWindowTokens: Int? = nil) {
-        modelID = MeetingTextGenerationClient.model(config)
+        let selectedModelID = MeetingTextGenerationClient.model(config)
+        modelID = selectedModelID
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
-        // OpenRouter's live catalog exposes contextLength; other current catalogs
-        // don't. A host with verified metadata can supply it for the selected model.
+        // Live host metadata (OpenRouter) takes precedence over verified presets.
+        // Unknown models retain conservative operational transport defaults.
         let native = MeetingTextGenerationClient().supportsNativeTools(config: config)
         // Native tool turns reserve 32K for output/reasoning. 64K is an
         // operational default, not catalog metadata; explicit metadata wins.
         let fallback = native ? 65_536 : (provider == .customLLM || provider == .ollama || provider == .lmStudio ? 8_192 : 32_768)
-        let context = max(1, contextWindowTokens ?? fallback)
+        let preset = provider.summaryModels(config: config, openRouterModels: []).first { $0.id == selectedModelID }
+        let context = max(1, contextWindowTokens ?? preset?.contextWindowTokens ?? fallback)
         let outputReserve = min(native ? 32_768 : 4_096, max(1, context / 2))
         maximumOutputTokens = outputReserve
         summaryOutputTokens = min(4_096, outputReserve)
-        maximumInputTokens = min(32_768, max(1, context - outputReserve))
+        let remaining = max(1, context - outputReserve)
+        documentRequestInputTokens = min(remaining, preset?.maximumInputTokens ?? remaining)
+        // Keep the existing final chat/tool envelope bounded. Long document passes
+        // use the selected model's larger request budget and return bounded notes.
+        maximumInputTokens = min(32_768, remaining)
         historyTokens = max(1, min(8_192, maximumInputTokens / 4))
         summaryTokens = max(1, min(2_048, maximumInputTokens / 8))
         summaryBatchTokens = max(1, maximumInputTokens - summaryTokens - 1_024)
@@ -38,6 +45,19 @@ struct MeetingChatContextBudget {
         var copy = self
         copy.maximumInputTokens = max(1, maximumInputTokens - count * 4_096)
         return copy
+    }
+
+    func documentContextTokens(question: String, baseContext: String, imageCount: Int, historyReserve: Int) throws -> Int {
+        let evidence = MeetingChatEvidence(scope: .init(selection: .meetings([])), passages: [], dependencies: [],
+            coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
+        let base = try MeetingChatClient.makePrompt(question: question, evidence: evidence, history: [],
+            budget: self, validateBudget: false, attachmentContext: baseContext)
+        let remaining = maximumInputTokens - Self.estimateTokens(base.system + base.user)
+            - 2_048 - historyReserve - imageCount * 4_096
+        // Leave room for native envelopes, validation repair and future scoped retrieval.
+        let result = max(0, remaining * 3 / 4)
+        guard result >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
+        return result
     }
 
     static func estimateTokens(_ text: String) -> Int {

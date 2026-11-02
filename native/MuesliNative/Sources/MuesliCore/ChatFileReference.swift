@@ -13,3 +13,15 @@ public struct ChatFileReference: Codable, Equatable, Identifiable, Sendable {
         self.id = id; self.name = name; self.kind = kind; self.bookmark = bookmark; self.byteCount = byteCount
     }
 }
+
+/// Local answer metadata only; no extracted document text or intermediate notes.
+public struct ChatDocumentCoverage: Codable, Equatable, Sendable {
+    public let fileID: String
+    public let totalPages: Int
+    public let pagesWithoutText: Int
+    public let wasCondensed: Bool
+    public init(fileID: String, totalPages: Int, pagesWithoutText: Int, wasCondensed: Bool) {
+        self.fileID = fileID; self.totalPages = totalPages
+        self.pagesWithoutText = pagesWithoutText; self.wasCondensed = wasCondensed
+    }
+}

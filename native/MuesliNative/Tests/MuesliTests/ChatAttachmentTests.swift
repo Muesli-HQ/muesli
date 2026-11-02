@@ -34,12 +34,11 @@ struct ChatAttachmentTests {
         try (data as Data).write(to: url)
     }
 
-    @Test func largePDFHasPreciseLocalLimitAndStillGetsABoundedPreview() async throws {
+    @Test func largePDFStillGetsABoundedPreview() async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("large.pdf"); try pdf(at: original, pages: 51)
         let refs = try ChatFileReader.references(urls: [original], existing: [])
         var config = AppConfig(); config.meetingSummaryBackend = "openai"
-        #expect(throws: ChatFileError.pdfPageLimit(51)) { try ChatFileReader.prepare(refs, config: config) }
         let worker = MeetingChatWorker(databaseURL: root.appendingPathComponent("unused.db"))
         let data = try #require(await worker.thumbnail(for: refs[0]))
         #expect(data.count <= ChatFileReader.maximumThumbnailBytes)
@@ -51,7 +50,7 @@ struct ChatAttachmentTests {
         #expect(await worker.thumbnail(for: refs[0]) == nil)
     }
 
-    @Test @MainActor func localPDFRejectionPreservesDraftAndNeverCallsAI() async throws {
+    @Test @MainActor func missingOriginalPreservesDraftAndNeverCallsAI() async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("large.pdf"); try pdf(at: original, pages: 51)
         let database = root.appendingPathComponent("fixture.db")
@@ -60,11 +59,11 @@ struct ChatAttachmentTests {
         let chat = MeetingChatCoordinator(databaseURL: database, generator: probe)
         await chat.waitForIdle(); chat.startDraft(scope: .init(selection: .meetings([])))
         await chat.attachFiles([original]); chat.composerDraft = "Summarize this document"
+        try FileManager.default.removeItem(at: original)
         let undo = chat.composerUndoIdentity
         var config = AppConfig(); config.meetingSummaryBackend = "openai"
         await chat.send(question: chat.composerDraft, config: config)
-        #expect(chat.errorMessage?.contains("51 pages") == true)
-        #expect(chat.errorMessage?.contains("50 pages") == true)
+        #expect(chat.errorMessage == ChatFileError.unavailable.localizedDescription)
         #expect(chat.errorMessage?.contains("connection") == false)
         #expect(chat.composerDraft == "Summarize this document")
         #expect(chat.composerUndoIdentity == undo)
@@ -96,7 +95,7 @@ struct ChatAttachmentTests {
     }
 
     @Test @MainActor func attachmentFailuresKeepTheirActionableMessages() {
-        for error in [ChatFileError.tooLarge, .unavailable, .changed, .unreadablePDF, .unreadableText, .unsupportedProvider, .pdfPageLimit(289)] {
+        for error in [ChatFileError.tooLarge, .unavailable, .changed, .unreadablePDF, .unreadableText, .unsupportedProvider] {
             #expect(MeetingChatCoordinator.failureMessage(error) == error.localizedDescription)
         }
     }
@@ -109,7 +108,7 @@ struct ChatAttachmentTests {
         #expect(refs.count == 1)
         let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
         var config = AppConfig(); config.meetingSummaryBackend = "openai"
-        let prepared = try ChatFileReader.prepare(refs, config: config)
+        let prepared = try ChatFileReader.prepareNonPDF(refs, config: config)
         #expect(prepared.images.count == 1)
         #expect(prepared.images[0].data.count <= 2 * 1_024 * 1_024)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == before)
@@ -130,7 +129,7 @@ struct ChatAttachmentTests {
         #expect(refs.count == 1)
         #expect(refs[0].kind == (suffix.lowercased() == "txt" ? .text : .markdown))
         var config = AppConfig(); config.meetingSummaryBackend = "ollama"
-        let prepared = try ChatFileReader.prepare(refs, config: config)
+        let prepared = try ChatFileReader.prepareNonPDF(refs, config: config)
         #expect(prepared.images.isEmpty)
         #expect(prepared.context.contains(content))
         #expect(!prepared.context.contains("\u{FEFF}"))
@@ -146,11 +145,11 @@ struct ChatAttachmentTests {
         for bytes in [Data([0xff]), Data("bad\0text".utf8), Data(" \n".utf8)] {
             try bytes.write(to: original)
             let refs = try ChatFileReader.references(urls: [original], existing: [])
-            #expect(throws: ChatFileError.unreadableText) { try ChatFileReader.prepare(refs, config: config) }
+            #expect(throws: ChatFileError.unreadableText) { try ChatFileReader.prepareNonPDF(refs, config: config) }
         }
         try Data(repeating: 65, count: ChatFileReader.maximumContextCharacters + 1).write(to: original)
         let refs = try ChatFileReader.references(urls: [original], existing: [])
-        #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.prepare(refs, config: config) }
+        #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.prepareNonPDF(refs, config: config) }
         try Data(repeating: 65, count: ChatFileReader.maximumTextBytes + 1).write(to: original)
         #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.references(urls: [original], existing: []) }
     }
@@ -168,12 +167,13 @@ struct ChatAttachmentTests {
         #expect(throws: ChatFileError.unavailable) { try ChatFileReader.validate(updated) }
     }
 
-    @Test func pdfTextWorksWithoutVisionAndNeverCreatesAStoredExtraction() throws {
+    @Test func pdfTextWorksWithoutVisionAndNeverCreatesAStoredExtraction() async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("notes.pdf"); try pdf(at: original)
         let refs = try ChatFileReader.references(urls: [original], existing: [])
         var config = AppConfig(); config.meetingSummaryBackend = "ollama"
-        let prepared = try ChatFileReader.prepare(refs, config: config)
+        let prepared = try await ChatPDFProcessing.prepare(refs, config: config, question: "Summarize",
+            budget: .init(config: config), generator: AttachmentReplyProbe())
         #expect(prepared.context.contains("launch Friday"))
         #expect(prepared.context.contains("text/OCR only"))
         #expect(prepared.images.isEmpty)
@@ -185,7 +185,7 @@ struct ChatAttachmentTests {
         let original = root.appendingPathComponent("image.png"); try image(at: original)
         let refs = try ChatFileReader.references(urls: [original], existing: [])
         var config = AppConfig(); config.meetingSummaryBackend = "ollama"
-        #expect(throws: ChatFileError.unsupportedProvider) { try ChatFileReader.prepare(refs, config: config) }
+        #expect(throws: ChatFileError.unsupportedProvider) { try ChatFileReader.prepareNonPDF(refs, config: config) }
         #expect(throws: ChatFileError.tooMany) { try ChatFileReader.validateLimits(Array(repeating: refs[0], count: 4)) }
         let oversized = ChatFileReference(id: "fixture", name: "large.pdf", kind: .pdf, bookmark: Data(), byteCount: ChatFileReader.maximumFileBytes + 1)
         #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.validateLimits([oversized]) }
