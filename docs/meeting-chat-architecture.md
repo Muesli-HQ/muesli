@@ -128,3 +128,23 @@ The implementation follows Apple's [file bookmark guidance](https://developer.ap
 and [ImageIO URL thumbnail guidance](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Conceptual/ImageIOGuide/imageio_source/ikpg_source.html),
 and uses the [OpenAI inline image format](https://developers.openai.com/api/docs/guides/images-vision)
 and [Anthropic inline image format](https://platform.claude.com/docs/en/build-with-claude/vision).
+
+### Attachment previews and local validation
+
+Composer and sent attachments sit above the question in a vertical message group.
+PDFs show a first-page thumbnail; images show a downsampled preview. The reusable
+AIElements preview tile receives an image from the host and performs no file I/O.
+The worker renders at most 320 pixels per dimension with a 128 KiB encoded cap;
+a FIFO cache holds at most 12 entries in memory and checks original metadata
+before reuse. Views release decoded thumbnails on disappearance. No preview is
+written to SQLite, application support, exports or provider input. Missing/changed
+originals fall back to the file label; invalidated turns suppress content previews.
+
+File preparation happens before a new turn is accepted, with request ownership
+and cancellation. Validation failure preserves draft text, scope, undo identity
+and selected files and does not start a provider request. Prepared content is
+reused by the accepted turn, avoiding repeated OCR. Retry validation displays the
+same actionable local error. A PDF over 50 pages explicitly reports its page
+count and asks for a shorter PDF; it is not reported as a connection failure.
+The first-page display preview can still render for an oversized PDF. The preview
+and the provider's bounded document context are distinct operations.

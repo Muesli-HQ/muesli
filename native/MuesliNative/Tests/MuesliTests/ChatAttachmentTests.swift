@@ -19,16 +19,65 @@ struct ChatAttachmentTests {
         rep.setColor(.red, atX: 0, y: 0)
         try #require(rep.representation(using: .png, properties: [:])).write(to: url)
     }
-    private func pdf(at url: URL) throws {
+    private func pdf(at url: URL, pages: Int = 1) throws {
         let data = NSMutableData()
         let consumer = try #require(CGDataConsumer(data: data))
         var box = CGRect(x: 0, y: 0, width: 300, height: 200)
         let context = try #require(CGContext(consumer: consumer, mediaBox: &box, nil))
+        for _ in 0..<pages {
         context.beginPDFPage(nil)
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: "Synthetic document: launch Friday.", attributes: [.font: NSFont.systemFont(ofSize: 14)]))
         context.textPosition = CGPoint(x: 20, y: 100); CTLineDraw(line, context)
-        context.endPDFPage(); context.closePDF()
+        context.endPDFPage()
+        }
+        context.closePDF()
         try (data as Data).write(to: url)
+    }
+
+    @Test func largePDFHasPreciseLocalLimitAndStillGetsABoundedPreview() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("large.pdf"); try pdf(at: original, pages: 51)
+        let refs = try ChatFileReader.references(urls: [original], existing: [])
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"
+        #expect(throws: ChatFileError.pdfPageLimit(51)) { try ChatFileReader.prepare(refs, config: config) }
+        let worker = MeetingChatWorker(databaseURL: root.appendingPathComponent("unused.db"))
+        let data = try #require(await worker.thumbnail(for: refs[0]))
+        #expect(data.count <= ChatFileReader.maximumThumbnailBytes)
+        let bitmap = try #require(NSBitmapImageRep(data: data))
+        #expect(bitmap.pixelsWide <= 320 && bitmap.pixelsHigh <= 320)
+        #expect(await worker.thumbnail(for: refs[0]) == data)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["large.pdf"])
+        try FileManager.default.removeItem(at: original)
+        #expect(await worker.thumbnail(for: refs[0]) == nil)
+    }
+
+    @Test @MainActor func localPDFRejectionPreservesDraftAndNeverCallsAI() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("large.pdf"); try pdf(at: original, pages: 51)
+        let database = root.appendingPathComponent("fixture.db")
+        let meetings = DictationStore(databaseURL: database); try meetings.migrateIfNeeded()
+        let probe = AttachmentReplyProbe()
+        let chat = MeetingChatCoordinator(databaseURL: database, generator: probe)
+        await chat.waitForIdle(); chat.startDraft(scope: .init(selection: .meetings([])))
+        await chat.attachFiles([original]); chat.composerDraft = "Summarize this document"
+        let undo = chat.composerUndoIdentity
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"
+        await chat.send(question: chat.composerDraft, config: config)
+        #expect(chat.errorMessage?.contains("51 pages") == true)
+        #expect(chat.errorMessage?.contains("50 pages") == true)
+        #expect(chat.errorMessage?.contains("connection") == false)
+        #expect(chat.composerDraft == "Summarize this document")
+        #expect(chat.composerUndoIdentity == undo)
+        #expect(chat.composerFiles.count == 1)
+        #expect(chat.selectedSessionID == nil && !chat.isBusy)
+        #expect(try chat.store.sessions().isEmpty)
+        #expect(await probe.imageCounts.isEmpty)
+    }
+
+    @Test @MainActor func attachmentFailuresKeepTheirActionableMessages() {
+        for error in [ChatFileError.tooLarge, .unavailable, .changed, .unreadablePDF, .unreadableText, .unsupportedProvider, .pdfPageLimit(289)] {
+            #expect(MeetingChatCoordinator.failureMessage(error) == error.localizedDescription)
+        }
     }
 
     @Test func deduplicatesBytesAndPersistsOnlyReferenceMetadata() throws {

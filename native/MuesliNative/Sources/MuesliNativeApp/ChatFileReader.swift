@@ -9,12 +9,14 @@ import MuesliCore
 
 enum ChatFileError: Error, LocalizedError, Equatable {
     case unavailable, changed, unsupported, tooLarge, tooMany, unreadablePDF, unreadableText, unsupportedProvider
+    case pdfPageLimit(Int)
     var errorDescription: String? {
         switch self {
         case .unavailable: "An attached file is no longer available. Remove it or attach the original again."
         case .changed: "An attached file changed. Attach it again before sending."
         case .unsupported: "Choose an image, PDF, Markdown (.md or .markdown), or plain-text (.txt) file."
         case .tooLarge: "Use files up to 20 MB each (40 MB total), images up to 100 megapixels, PDFs up to 50 pages, and document text up to 48,000 characters."
+        case .pdfPageLimit(let pages): "This PDF has \(pages) pages. Chat supports PDFs up to \(ChatFileReader.maximumPDFPages) pages. Export the pages you need into a shorter PDF and attach it again."
         case .tooMany: "Attach up to five files, including up to three images."
         case .unreadablePDF: "This PDF is locked or has no readable text. Choose an unlocked document or an image."
         case .unreadableText: "This text file is empty or unreadable. Save it as UTF-8 and attach it again."
@@ -41,7 +43,7 @@ struct PreparedChatFiles: Sendable {
     static let empty = PreparedChatFiles()
 }
 
-/// Called only by MeetingChatWorker. No body evaluation, thumbnail cache, imported
+/// Called only by MeetingChatWorker. No body evaluation, disk thumbnail cache, imported
 /// file directory, remote Files API, or persisted base64 representation is used.
 enum ChatFileReader {
     static let supportedContentTypes: [UTType] = [.image, .pdf, .plainText,
@@ -50,6 +52,8 @@ enum ChatFileReader {
     static let maximumContextCharacters = 48_000
     // Bound bytes before decoding, even for invalid UTF-8 or combining characters.
     static let maximumTextBytes = maximumContextCharacters * 4 + 3
+    static let maximumPDFPages = 50
+    static let maximumThumbnailBytes = 128 * 1_024
     static let maximumFiles = 5
     static let maximumFileBytes: Int64 = 20 * 1_024 * 1_024
     static let maximumTotalBytes: Int64 = 40 * 1_024 * 1_024
@@ -189,25 +193,43 @@ enum ChatFileReader {
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func image(_ url: URL) throws -> Data {
+    private static func image(_ url: URL, pixelSize: Int = 2_048, byteLimit: Int = 2 * 1_024 * 1_024) throws -> Data {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0, width <= 100_000_000 / height else { throw ChatFileError.tooLarge }
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0,
-            [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 2_048,
+            [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: pixelSize,
              kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ChatFileError.unsupported }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { throw ChatFileError.unsupported }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.7] as CFDictionary)
-        guard CGImageDestinationFinalize(destination), data.length <= 2 * 1_024 * 1_024 else { throw ChatFileError.tooLarge }
+        guard CGImageDestinationFinalize(destination), data.length <= byteLimit else { throw ChatFileError.tooLarge }
         return data as Data
+    }
+
+    /// First-page/image display only. It is never OCR, inference context or persisted data.
+    static func thumbnail(_ file: ChatFileReference) throws -> Data? {
+        guard file.kind == .pdf || file.kind == .image else { return nil }
+        return try withOriginal(file) { url in
+            try autoreleasepool {
+                if file.kind == .image { return try image(url, pixelSize: 320, byteLimit: maximumThumbnailBytes) }
+                guard let document = PDFDocument(url: url), !document.isLocked,
+                      let page = document.page(at: 0) else { throw ChatFileError.unreadablePDF }
+                let preview = page.thumbnail(of: NSSize(width: 320, height: 240), for: .mediaBox)
+                var bounds = CGRect(origin: .zero, size: preview.size)
+                guard let cg = preview.cgImage(forProposedRect: &bounds, context: nil, hints: nil),
+                      let data = NSBitmapImageRep(cgImage: cg).representation(using: .jpeg, properties: [.compressionFactor: 0.65]),
+                      data.count <= maximumThumbnailBytes else { return nil }
+                return data
+            }
+        }
     }
 
     private static func pdf(_ url: URL) throws -> String {
         guard let document = PDFDocument(url: url), !document.isLocked, document.pageCount > 0 else { throw ChatFileError.unreadablePDF }
-        guard document.pageCount <= 50 else { throw ChatFileError.tooLarge }
+        guard document.pageCount <= maximumPDFPages else { throw ChatFileError.pdfPageLimit(document.pageCount) }
         var text = ""; var hasReadableText = false
         for index in 0..<document.pageCount {
             try Task.checkCancellation()

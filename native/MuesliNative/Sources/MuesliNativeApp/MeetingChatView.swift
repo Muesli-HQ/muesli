@@ -418,17 +418,18 @@ struct MeetingChatView: View {
             .frame(maxWidth: .infinity)
     }
     private var fileChips: some View {
+        filePreviews(coordinator.composerFiles, editable: true)
+    }
+    private func filePreviews(_ files: [ChatFileReference], editable: Bool, allowsPreview: Bool = true) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(coordinator.composerFiles) { file in
-                    AIAttachment(title: file.name, icon: file.kind == .image ? .image : .fileText) {
-                        Task { await coordinator.removeFile(file.id) }
-                    }
-                    .help(file.name + " · " + ByteCountFormatter.string(fromByteCount: file.byteCount, countStyle: .file))
-                    .disabled(footerControlsDisabled)
+            LazyHStack(alignment: .top, spacing: 8) {
+                ForEach(files) { file in
+                    MeetingChatAttachmentPreview(file: file, coordinator: coordinator, allowsPreview: allowsPreview,
+                        onRemove: editable ? { Task { await coordinator.removeFile(file.id) } } : nil)
+                        .disabled(editable && footerControlsDisabled)
                 }
             }
-        }.frame(height: 30)
+        }.frame(height: files.contains(where: { $0.kind == .pdf || $0.kind == .image }) ? 180 : 76)
     }
 
     private func attachmentChips(_ ids: [Int64]) -> some View {
@@ -575,10 +576,11 @@ struct MeetingChatView: View {
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             AIMessage(role: .user) {
-                Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
-                if let files = turn.fileAttachments, !files.isEmpty {
-                    Text(files.map(\.name).joined(separator: " · "))
-                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    if let files = turn.fileAttachments, !files.isEmpty {
+                        filePreviews(files, editable: false, allowsPreview: turn.state != .sourceDeleted)
+                    }
+                    Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
                 }
             }
             AIMessage(role: .assistant) {
