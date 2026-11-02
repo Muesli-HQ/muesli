@@ -15,7 +15,7 @@ struct DictationContext {
 }
 
 enum DictationContextCapture {
-    struct FocusedWindowSnapshot {
+    struct FocusedWindowSnapshot: Sendable {
         let documentIdentifier: String?
         let title: String
         let frame: CGRect?
@@ -142,8 +142,9 @@ enum DictationContextCapture {
 
     // MARK: - Accessibility helpers
 
-    static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
+    static func focusedUIElement(for app: NSRunningApplication, messagingTimeout: Float? = nil) -> AXUIElement? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(axApp, messagingTimeout) }
         var focusedElement: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement)
         guard result == .success, let element = focusedElement,
@@ -272,15 +273,18 @@ enum DictationContextCapture {
 
     static func focusedWindowSnapshot(
         for app: NSRunningApplication?,
-        allowTitleFallback: Bool = true
+        allowTitleFallback: Bool = true,
+        messagingTimeout: Float? = nil
     ) -> FocusedWindowSnapshot? {
         guard let app else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(axApp, messagingTimeout) }
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
               let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
         let window = windowRef as! AXUIElement
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(window, messagingTimeout) }
         let title = axStringValue(window, attribute: kAXTitleAttribute as String)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let attributes = allowTitleFallback

@@ -288,7 +288,7 @@ struct MeetingsView: View {
                         if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
                         else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
                     },
-                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
+                    backLabel: appState.meetingChatDocumentTarget != nil ? (appState.meetingSourceReturnsToTimeTurner ? "Back to Time Turner" : "Back to Chat") : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {

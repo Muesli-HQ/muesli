@@ -21,6 +21,9 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
+      VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
       GranolaImportTests
@@ -60,7 +63,6 @@ case "${shard}" in
       StandardMenuShortcutTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
-      VisualMemoryStoreTests
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests

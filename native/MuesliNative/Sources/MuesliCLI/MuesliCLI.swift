@@ -53,6 +53,8 @@ struct MetaBody: Encodable {
     let generatedAt: String
     let dbPath: String
     let warnings: [String]
+    var nextCursor: String? = nil
+    var hasMore: Bool? = nil
 }
 
 struct SuccessEnvelope<T: Encodable>: Encodable {
@@ -115,11 +117,11 @@ func appBundlePath() -> String? {
     return FileManager.default.fileExists(atPath: defaultPath) ? defaultPath : nil
 }
 
-func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL, warnings: [String] = []) {
+func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL, warnings: [String] = [], nextCursor: String? = nil, hasMore: Bool? = nil) {
     let envelope = SuccessEnvelope(
         command: command,
         data: data,
-        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath.path, warnings: warnings)
+        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath.path, warnings: warnings, nextCursor: nextCursor, hasMore: hasMore)
     )
     emitJSON(envelope)
 }
@@ -328,8 +330,8 @@ struct CommandSpecPayload: Encodable {
 struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
-        abstract: "Agent-friendly CLI for local muesli meetings and dictations.",
-        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self]
+        abstract: "Agent-friendly CLI for local muesli meetings, dictations, and screen history.",
+        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self, TimeTurnerCommand.self]
     )
 
     static func main() async {
@@ -374,7 +376,10 @@ struct MuesliCLI: AsyncParsableCommand {
 
     static func specPayload() -> CommandSpecPayload {
         CommandSpecPayload(commands: [
-            .init(name: "spec", usage: "muesli-cli spec", summary: "Dump the command tree and CLI schema metadata.", examples: ["muesli-cli spec"]),
+            .init(name: "time-turner history", usage: "muesli-cli time-turner history (--last <6h> | --from <ISO8601> --until <ISO8601> | --cursor <token>) [--app <bundle-id-or-name>] [--limit <1-1000>] [--support-dir <dir>]", summary: "Read chronological app/window observations and OCR with a fixed time range and paginated JSON; no model invocation.", examples: ["muesli-cli time-turner history --last 6h", "muesli-cli time-turner history --cursor TOKEN"]),
+            .init(name: "time-turner search", usage: "muesli-cli time-turner search [--query <phrase>] [--from <ISO8601>] [--until <ISO8601>] [--app <bundle-id-or-name>] [--limit <1-1000>] [--cursor <token>] [--support-dir <dir>]", summary: "Search local screen OCR and source titles by capture time and app.", examples: ["muesli-cli time-turner search --query roadmap --app ChatGPT"]),
+            .init(name: "time-turner get", usage: "muesli-cli time-turner get <id> [--output <new.png>] [--support-dir <dir>]", summary: "Read OCR and metadata; export the original still or exact archived frame as PNG for visual inspection.", examples: ["muesli-cli time-turner get CAPTURE_ID --output /tmp/capture.png"]),
+            .init(name: "spec", usage: "muesli-cli spec", summary: "Show all commands, usage, and examples as JSON.", examples: ["muesli-cli spec"]),
             .init(name: "info", usage: "muesli-cli info [--db-path <path>] [--support-dir <dir>]", summary: "Show resolved support and database paths.", examples: ["muesli-cli info", "muesli-cli info --support-dir ~/Library/Application\\ Support/Muesli"]),
             .init(name: "model-terms", usage: "muesli-cli model-terms medasr [--accept]", summary: "Read MedASR's terms and optionally record acceptance on this Mac.", examples: ["muesli-cli model-terms medasr", "muesli-cli model-terms medasr --accept"]),
             .init(name: "transcribe", usage: "muesli-cli transcribe <file> [--format text|json|markdown] [--model \(TranscribeModel.allCases.map(\.rawValue).joined(separator: "|"))] [--summarize] [--save-meeting] [--title <title>] [--output <path>] [--dictionary <path>]", summary: "Transcribe a local mp3, mp4, m4a, or wav file with muesli's bundled local ASR models.", examples: ["muesli-cli transcribe call.mp3", "muesli-cli transcribe call.m4a --format json", "muesli-cli transcribe call.wav --model nemotron35 --dictionary dictionary.json"]),
@@ -388,7 +393,7 @@ struct MuesliCLI: AsyncParsableCommand {
 }
 
 struct SpecCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "spec", abstract: "Dump CLI command metadata as JSON.")
+    static let configuration = CommandConfiguration(commandName: "spec", abstract: "Show all commands, usage, and examples as JSON.")
     @OptionGroup var global: GlobalOptions
     func run() throws {
         let context = CLIContext(options: global)

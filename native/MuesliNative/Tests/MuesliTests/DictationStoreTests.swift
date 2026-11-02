@@ -18,6 +18,24 @@ struct DictationStoreTests {
         return store
     }
 
+    @Test("Timeline search matches middle Quill turns before pagination")
+    func timelineSearchBeforePagination() throws {
+        let store = try makeStore()
+        for day in ["28", "29", "30"] {
+            let session = UUID()
+            for answer in ["First", "Needle", "Last"] {
+                try store.appendQuillTurn(sessionID: session, turn: .init(id: UUID(), question: "Question",
+                    answer: answer, timestamp: "2026-10-\(day)T10:00:00Z", backend: "test", model: "test"))
+            }
+        }
+        try store.appendQuillTurn(sessionID: UUID(), turn: .init(id: UUID(), question: "Unrelated",
+            answer: "Newer", timestamp: "2026-10-31T10:00:00Z", backend: "test", model: "test"))
+        #expect(try store.timelineEntries(limit: 1, searchText: "needle").first?.timestamp == "2026-10-30T10:00:00Z")
+        #expect(try store.timelineEntries(limit: 1, offset: 1, searchText: "needle").first?.timestamp == "2026-10-29T10:00:00Z")
+        #expect(try store.timelineEntries(searchText: "needle", activity: "Meetings").isEmpty)
+        #expect(try store.timelineEntries(searchText: "needle", activity: "Quill").count == 3)
+    }
+
     @Test("Quill conversations persist full follow-ups across reopen and stay local-only")
     func quillConversationRoundTrip() throws {
         let store = try makeStore()

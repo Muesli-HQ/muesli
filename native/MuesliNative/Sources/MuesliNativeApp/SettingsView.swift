@@ -2298,6 +2298,7 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
             quilSettingsSection
             if appState.settingsModelAvailability.cotypistAvailable {

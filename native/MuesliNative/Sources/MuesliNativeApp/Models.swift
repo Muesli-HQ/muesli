@@ -2400,6 +2400,13 @@ struct AppConfig: Codable, Equatable {
     var dictationFormattingTemplates: [DictationFormattingTemplate] = []
     var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    var timeTurnerEnabled: Bool = false
+    var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerInterval: String = "10"
+    var timeTurnerBudget: String = "10"
+    var timeTurnerScreenshotRetention: String = "7"
+    var timeTurnerHistoryRetention: String = "30"
+    var timeTurnerExcludedApps: String = ""
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
     var cotypistSuggestionLength: CotypistSuggestionLength = .sentence
@@ -2572,6 +2579,13 @@ struct AppConfig: Codable, Equatable {
         case dictationFormattingTemplates = "dictation_formatting_templates"
         case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
+        case timeTurnerEnabled = "time_turner_enabled"
+        case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerInterval = "time_turner_interval"
+        case timeTurnerBudget = "time_turner_budget"
+        case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
+        case timeTurnerHistoryRetention = "time_turner_history_retention"
+        case timeTurnerExcludedApps = "time_turner_excluded_apps"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
         case cotypistSuggestionLength = "cotypist_suggestion_length"
@@ -2859,6 +2873,13 @@ struct AppConfig: Codable, Equatable {
             activeTranscriptCleanupPromptId = defaults.activeTranscriptCleanupPromptId
             postProcessorSystemPrompt = defaults.postProcessorSystemPrompt
         }
+        timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
+        timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
+        timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
+        timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
+        timeTurnerHistoryRetention = (try? c.decode(String.self, forKey: .timeTurnerHistoryRetention)) ?? "30"
+        timeTurnerExcludedApps = (try? c.decode(String.self, forKey: .timeTurnerExcludedApps)) ?? ""
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
         cotypistSuggestionLength = (try? c.decode(CotypistSuggestionLength.self, forKey: .cotypistSuggestionLength)) ?? defaults.cotypistSuggestionLength
@@ -2992,4 +3013,12 @@ enum DictationState: String {
     case preparing
     case recording
     case transcribing
+}
+
+extension AppConfig {
+    var timeTurnerRetentionPolicy: VisualMemoryRetentionPolicy {
+        VisualMemoryRetentionPolicy(screenshotDays: timeTurnerScreenshotRetention == "forever" ? nil : (Int(timeTurnerScreenshotRetention) ?? 7),
+            historyDays: timeTurnerHistoryRetention == "forever" ? nil : (Int(timeTurnerHistoryRetention) ?? 30),
+            mediaBudgetBytes: min(max(Int64(timeTurnerBudget) ?? 10, 0), Int64.max / 1_000_000_000) * 1_000_000_000)
+    }
 }

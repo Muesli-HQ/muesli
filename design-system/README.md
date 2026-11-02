@@ -289,3 +289,37 @@ bar, with 16pt padding, a 10pt question/answer gap, and a 26pt footer separated 
 Copy confirms success; Follow up starts hands-free capture; the shortcut retains
 hold/release semantics. Dismiss clears active context and New conversation starts
 fresh. Background recognition does not display partial text while recording.
+
+## Time Turner workspace (experimental)
+
+Time Turner has a dedicated sidebar destination after Timeline. Its History and
+Recap tabs share a date selector; capture status, pause/resume and settings remain
+available in both. History prioritizes the screenshot and compact app scrubber. Center the day
+control in wide headers and place it on its own centered row at narrow widths;
+its formatted date opens a calendar. Meetings and Time Turner share the same
+pause/resume control. Recap screenshot citations show small image previews with
+timestamps, resolving current media locations after compaction.
+Recap uses a bounded reading column with evidence buttons, generation time and
+original model attribution. It has no permanent screenshot sidebar; a source
+opens the corresponding History moment or meeting passage. The title, date and compact capture controls share one header row, stacking at
+narrow widths. Left-aligned underline tabs sit directly above the content;
+Recap does not repeat the selected date. Timeline retains its stats and dictation/meeting activity without
+embedding the Time Turner workspace. Use the shared typography and semantic
+surfaces in `TimeTurnerPage` and `TimeTurnerRecapView`.
+
+Time Turner settings use the standard section headings, bordered cards and
+`SettingsRow` control columns. All controls live in one Time Turner card, with inset Capture, Excluded apps
+and Storage & retention subsections separated by dividers. Capture switches
+have visible labels; storage budget and usage stay within that card. Permission setup
+stays in onboarding, with a recovery action only when required access is missing.
+
+Time Turner Storage & retention uses shared SettingsRow menus for screenshot
+retention and searchable-history retention. The screenshot budget does not remove
+OCR. Setup uses the same fixed-width SettingsRow menu column. A collapsed
+“How retention works” disclosure holds capture-time aging, cleanup while paused/off,
+and deletion details; the storage estimate remains visible. OCR-only history displays “Screenshot expired” with readable,
+selectable captured text rather than implying a corrupt screenshot.
+
+Time Turner retention and budget reductions show a confirmation before applying
+the policy. Manual Settings uses a sheet; voice uses the shared question UI. Keep
+current settings is the default action. Increasing limits needs no confirmation.

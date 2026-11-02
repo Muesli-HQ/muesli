@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import Foundation
 import MuesliCore
 
@@ -38,6 +39,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var countdownOverride: String?
+    private let captureDot = NSView(frame: .zero)
+    private var captureIndicatorTimer: Timer?
+
+    deinit { captureIndicatorTimer?.invalidate() }
 
     init(controller: MuesliController, runtime: RuntimePaths) {
         self.controller = controller
@@ -46,6 +51,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         super.init()
         menu.delegate = self
         build()
+        installCaptureIndicator()
     }
 
     func setStatus(_ text: String) {}
@@ -111,6 +117,47 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         rebuildMenu()
         updateMenuBarTitle()
         statusItem.menu = menu
+    }
+
+    private func installCaptureIndicator() {
+        guard let button = statusItem.button else { return }
+        captureDot.wantsLayer = true
+        captureDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        captureDot.layer?.cornerRadius = 4
+        captureDot.layer?.borderWidth = 1
+        captureDot.layer?.borderColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        captureDot.translatesAutoresizingMaskIntoConstraints = false
+        captureDot.isHidden = true
+        button.addSubview(captureDot)
+        NSLayoutConstraint.activate([
+            captureDot.widthAnchor.constraint(equalToConstant: 8),
+            captureDot.heightAnchor.constraint(equalToConstant: 8),
+            captureDot.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 24),
+            captureDot.topAnchor.constraint(equalTo: button.topAnchor, constant: 2)
+        ])
+        controller.visualMemory.onAmbientCaptureActivity = { [weak self] captured in
+            guard let self else { return }
+            self.updateCaptureIndicator()
+            guard captured, !self.captureDot.isHidden,
+                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 0.3
+            pulse.toValue = 1
+            pulse.duration = 0.7
+            self.captureDot.layer?.add(pulse, forKey: "capturePulse")
+        }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateCaptureIndicator() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        captureIndicatorTimer = timer
+        updateCaptureIndicator()
+    }
+
+    private func updateCaptureIndicator() {
+        let active = controller.visualMemory.ambientIndicatorActive
+        captureDot.isHidden = !active
+        if !active { captureDot.layer?.removeAnimation(forKey: "capturePulse") }
     }
 
     private func rebuildMenu() {
@@ -257,6 +304,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(meetingBackendItem)
 
         menu.addItem(.separator())
+        menu.addItem(timeTurnerMenuItem())
         menu.addItem(actionItem(title: "Settings…", action: #selector(MuesliController.openSettingsTab)))
         menu.addItem(actionItem(title: "What's New in muesli", action: #selector(MuesliController.showWhatsNew)))
         menu.addItem(checkForUpdatesItem())
@@ -474,6 +522,55 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             return "\(hours)h"
         }
         return "\(hours)h \(remainingMinutes)m"
+    }
+
+    private func timeTurnerMenuItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Time Turner", action: nil, keyEquivalent: "")
+        parent.image = TimeTurnerIcon.image()
+        let submenu = NSMenu(title: "Time Turner")
+        @discardableResult func add(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            submenu.addItem(item)
+            return item
+        }
+        if controller.config.timeTurnerEnabled {
+            add(controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture", #selector(toggleTimeTurnerPause))
+            add("Turn Off Time Turner", #selector(disableTimeTurner))
+            if let app = NSWorkspace.shared.frontmostApplication,
+               let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier {
+                let excluded = controller.config.timeTurnerExcludedApps.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespacesAndNewlines) == bundle }
+                if !excluded {
+                    let item = add("Exclude “\(app.localizedName ?? bundle)”", #selector(excludeTimeTurnerApp(_:)))
+                    item.representedObject = bundle
+                }
+            }
+        } else {
+            add("Enable Time Turner…", #selector(setupTimeTurner))
+        }
+        submenu.addItem(.separator())
+        add("Time Turner Settings…", #selector(openTimeTurnerSettings))
+        parent.submenu = submenu
+        return parent
+    }
+
+    @objc private func toggleTimeTurnerPause() { controller.visualMemory.toggleAmbientPause(); refresh() }
+    @objc private func disableTimeTurner() { controller.setSettingFromUI("time_turner_enabled", value: "off") }
+    @objc private func setupTimeTurner() {
+        controller.appState.requestsTimeTurnerSetup = true
+        openTimeTurnerSettings()
+    }
+    @objc private func openTimeTurnerSettings() {
+        controller.appState.selectedSettingsPane = .experimental
+        controller.openSettingsTab()
+    }
+    @objc private func excludeTimeTurnerApp(_ sender: NSMenuItem) {
+        guard let bundle = sender.representedObject as? String else { return }
+        controller.updateConfig { config in
+            var bundles = Set(config.timeTurnerExcludedApps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+            bundles.insert(bundle)
+            config.timeTurnerExcludedApps = bundles.sorted().joined(separator: ",")
+        }
     }
 
     private func actionItem(title: String, action: Selector) -> NSMenuItem {
