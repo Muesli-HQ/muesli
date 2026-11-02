@@ -57,6 +57,54 @@ struct GlobalSearchTests {
         #expect(try index.search(.init(text: "orchid", kinds: [.chat, .recap], limit: 1)).isEmpty)
     }
 
+    @Test("Stale derived hits cannot hide matches beyond the first candidate batch", arguments: [GlobalSearchKind.chat, .recap])
+    func refillStaleCandidates(kind: GlobalSearchKind) throws {
+        let f = try Fixture()
+        try f.sql("CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT)")
+        for i in 0..<245 {
+            let id = i < 240 ? "stale-\(i)" : "valid-\(i)"
+            let timestamp = 1793527200 - i
+            if kind == .chat {
+                try f.sql("""
+                    INSERT INTO meeting_chat_sessions VALUES('\(id)','{"title":"orchid"}',\(timestamp));
+                    INSERT INTO meeting_chat_turns VALUES('\(id)','\(id)','completed','{"question":"orchid","originalAnswer":"orchid"}');
+                    """)
+            } else {
+                try f.sql("""
+                    INSERT INTO time_turner_recaps VALUES('\(id)',\(timestamp),'{"version":1,"insights":[{"text":"orchid"}]}');
+                    """)
+            }
+        }
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        let validator: (GlobalSearchKind, String) throws -> Bool = { _, id in id.hasPrefix("valid-") }
+        #expect(try index.search(.init(text: "orchid", kinds: [kind], limit: 1), validateDerived: validator).map(\.sourceID) == ["valid-240"])
+        let service = try GlobalSearchService(databaseURL: f.url)
+        #expect(try service.search(.init(text: "orchid", kinds: [kind], limit: 3), validateDerived: validator).map(\.sourceID) == ["valid-240", "valid-241", "valid-242"])
+        #expect(try index.search(.init(text: "orchid", kinds: [kind], limit: 200), validateDerived: validator).count == 5)
+        #expect(try index.search(.init(text: "orchid", kinds: [kind]), validateDerived: { _, _ in false }).isEmpty)
+    }
+
+    @Test("Refilling after a stale candidate restarts all accepted hits on concurrent deletion")
+    func refillRevalidatesEarlierHits() throws {
+        let f = try Fixture()
+        for (i, id) in ["first", "stale", "last"].enumerated() {
+            try f.sql("""
+                INSERT INTO meeting_chat_sessions VALUES('\(id)','{"title":"orchid"}',\(1793527200-i));
+                INSERT INTO meeting_chat_turns VALUES('\(id)','\(id)','completed','{"question":"orchid","originalAnswer":"orchid"}');
+                """)
+        }
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        var deleted = false
+        let hits = try index.search(.init(text: "orchid", kinds: [.chat], limit: 2), validateDerived: { _, id in
+            if id == "stale" && !deleted {
+                deleted = true
+                try f.sql("DELETE FROM meeting_chat_sessions WHERE id='first'")
+            }
+            return id != "stale"
+        })
+        #expect(hits.map(\.sourceID) == ["last"])
+    }
+
     @Test("Malformed JSON does not block backfill, trigger writes, or unrelated results")
     func malformedBodies() throws {
         let f = try Fixture()

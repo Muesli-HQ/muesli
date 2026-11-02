@@ -4,6 +4,7 @@ import MuesliCore
 
 struct TimeTurnerRecapView: View {
     let day: Date
+    var selection: TimeTurnerRecapSelection? = nil
     let controller: MuesliController
     let onCapture: (VisualMemoryItem) -> Void
     @State private var model = TimeTurnerRecapModel()
@@ -13,7 +14,7 @@ struct TimeTurnerRecapView: View {
     private var provider: MeetingSummaryBackendOption { .resolved(controller.config.meetingSummaryBackend) }
     private var selectedModel: String { MeetingTextGenerationClient.model(controller.config) }
     private var selectionID: String {
-        "\(Calendar.current.startOfDay(for: day).timeIntervalSince1970)|\(Calendar.current.timeZone.identifier)"
+        selection?.key ?? SavedTimeTurnerRecap.key(dayStart: Calendar.current.startOfDay(for: day), timeZone: Calendar.current.timeZone.identifier)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -62,7 +63,7 @@ struct TimeTurnerRecapView: View {
         .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(MuesliTheme.surfaceBorder).allowsHitTesting(false))
         .task(id: selectionID) {
-            await model.load(day: day, root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
+            await model.load(day: day, selection: selection, root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
@@ -81,6 +82,10 @@ struct TimeTurnerRecapView: View {
             HStack(spacing: 8) {
                 Image(systemName: "text.page").foregroundStyle(MuesliTheme.accent)
                 Text("Daily recap").font(MuesliTheme.headline())
+            }
+            if let selection, selection.timeZone != Calendar.current.timeZone.identifier {
+                Text("\(selection.dayLabel) · \(selection.timeZone)")
+                    .font(MuesliTheme.caption()).foregroundStyle(.secondary)
             }
             if let date = model.generatedAt {
                 Text("Generated \(date.formatted(date: .abbreviated, time: .shortened))").font(MuesliTheme.caption()).foregroundStyle(.secondary)
@@ -115,7 +120,7 @@ struct TimeTurnerRecapView: View {
             } else {
                 Button(model.hasGenerated ? "Regenerate" : "Generate recap") {
                     expanded = true
-                    model.generate(day: day, root: memory.store?.root,
+                    model.generate(day: day, selection: selection, root: memory.store?.root,
                         databaseURL: controller.timeTurnerRecapDatabaseURL, config: controller.config)
                 }
                 .buttonStyle(.borderedProminent)

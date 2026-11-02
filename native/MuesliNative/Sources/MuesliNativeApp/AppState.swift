@@ -317,7 +317,12 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
-    var timeTurnerDay = Date()
+    var timeTurnerDay = Date() {
+        didSet {
+            if timeTurnerDay != oldValue { timeTurnerSelectedRecap = nil }
+        }
+    }
+    var timeTurnerSelectedRecap: TimeTurnerRecapSelection?
     var timeTurnerShowsRecap = false
     var timeTurnerSelectedCapture: VisualMemoryItem?
     // Explicit source navigation must reset the explorer's local scrub position,
@@ -327,7 +332,16 @@ final class AppState {
     func openTimeTurnerCapture(_ capture: VisualMemoryItem) {
         timeTurnerDay = capture.capturedAt
         timeTurnerSelectedCapture = capture
+        timeTurnerSelectedRecap = nil
         timeTurnerShowsRecap = false
+        timeTurnerNavigationID = UUID()
+        selectedTab = .timeTurner
+    }
+
+    func openTimeTurnerRecap(_ recap: SavedTimeTurnerRecap) {
+        timeTurnerDay = recap.dayStart
+        timeTurnerSelectedRecap = TimeTurnerRecapSelection(recap)
+        timeTurnerShowsRecap = true
         timeTurnerNavigationID = UUID()
         selectedTab = .timeTurner
     }

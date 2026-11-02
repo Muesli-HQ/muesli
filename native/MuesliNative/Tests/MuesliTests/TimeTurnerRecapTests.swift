@@ -281,6 +281,42 @@ struct TimeTurnerRecapTests {
         #expect(reopened.generatedAt == model.generatedAt)
     }
 
+    @MainActor @Test func regenerationPreservesSavedTimezoneAndDSTBounds() async throws {
+        let (root, db, memory, original) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        var item = original
+        item.capturedAt = ISO8601DateFormatter().date(from: "2026-03-08T14:00:00Z")!
+        try memory.save([item])
+        let interval = try #require(calendar.dateInterval(of: .day, for: item.capturedAt))
+        #expect(interval.duration == 23 * 3600)
+        let saved = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
+            timeZone: calendar.timeZone.identifier, generatedAt: item.capturedAt, provider: "test", model: "test",
+            insights: [], sources: [])
+        let generator = RecapTestGenerator()
+        let model = TimeTurnerRecapModel()
+        // Even a different browsing date must not redefine the selected saved day.
+        model.generate(day: day, selection: TimeTurnerRecapSelection(saved), captures: [item],
+            root: root, databaseURL: db, config: AppConfig(), generator: generator)
+        for _ in 0..<200 {
+            if await generator.received { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await generator.received)
+        await generator.finish()
+        for _ in 0..<200 {
+            if !model.isGenerating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.hasGenerated)
+        let regenerated = try #require(try TimeTurnerRecapStore(databaseURL: db).load(key: saved.key))
+        #expect(regenerated.dayStart == interval.start)
+        #expect(regenerated.dayEnd == interval.end)
+        #expect(regenerated.timeZone == saved.timeZone)
+        #expect(regenerated.sources.first?.capture?.id == item.id)
+    }
+
     @MainActor @Test func cancellationDiscardsLateProviderResult() async throws {
         let (root, db, _, item) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -175,39 +175,59 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         guard !kinds.isEmpty else { return [] }
         let appClause = query.app == nil ? "" : " AND (d.bundle_id=? COLLATE NOCASE OR d.app_name=? COLLATE NOCASE)"
         let revision = try dataVersion()
-        var s = try prepare("""
-            SELECT d.kind,d.source_id,d.timestamp,d.title,
-                snippet(global_search_fts,-1,'','',' … ',28),d.app_name,d.bundle_id
-            FROM global_search_fts JOIN global_search_documents d ON d.rowid=global_search_fts.rowid
-            WHERE global_search_fts MATCH ? AND d.timestamp>=? AND d.timestamp<?
-                AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)
-            ORDER BY bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity LIMIT ?
-            """)
-        defer { sqlite3_finalize(s) }
-        bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, 1)
-        sqlite3_bind_double(s, 2, query.from.timeIntervalSince1970)
-        sqlite3_bind_double(s, 3, query.until.timeIntervalSince1970)
-        var slot: Int32 = 4
-        for kind in kinds { bind(kind, s, slot); slot += 1 }
-        if let app = query.app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
-        sqlite3_bind_int(s, slot, Int32(max(1, min(200, query.limit))))
-        var result: [GlobalSearchResult] = []
-        var status = sqlite3_step(s)
-        while status == SQLITE_ROW {
-            func string(_ column: Int32) -> String { sqlite3_column_text(s, column).map { String(cString: $0) } ?? "" }
-            if let kind = GlobalSearchKind(rawValue: string(0)) {
-                result.append(.init(kind: kind, sourceID: string(1), date: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
-                    title: string(3), excerpt: string(4), appName: string(5), bundleID: string(6), mediaAvailable: false))
+        let limit = max(1, min(200, query.limit))
+        let batchSize = limit
+        func candidates(offset: Int) throws -> [GlobalSearchResult] {
+            let s = try prepare("""
+                SELECT d.kind,d.source_id,d.timestamp,d.title,
+                    snippet(global_search_fts,-1,'','',' … ',28),d.app_name,d.bundle_id
+                FROM global_search_fts JOIN global_search_documents d ON d.rowid=global_search_fts.rowid
+                WHERE global_search_fts MATCH ? AND d.timestamp>=? AND d.timestamp<?
+                    AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)
+                ORDER BY bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity LIMIT ? OFFSET ?
+                """)
+            defer { sqlite3_finalize(s) }
+            bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, 1)
+            sqlite3_bind_double(s, 2, query.from.timeIntervalSince1970)
+            sqlite3_bind_double(s, 3, query.until.timeIntervalSince1970)
+            var slot: Int32 = 4
+            for kind in kinds { bind(kind, s, slot); slot += 1 }
+            if let app = query.app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
+            sqlite3_bind_int(s, slot, Int32(batchSize))
+            sqlite3_bind_int64(s, slot + 1, Int64(offset))
+            var batch: [GlobalSearchResult] = []
+            var status = sqlite3_step(s)
+            while status == SQLITE_ROW {
+                func string(_ column: Int32) -> String { sqlite3_column_text(s, column).map { String(cString: $0) } ?? "" }
+                if let kind = GlobalSearchKind(rawValue: string(0)) {
+                    batch.append(.init(kind: kind, sourceID: string(1), date: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
+                        title: string(3), excerpt: string(4), appName: string(5), bundleID: string(6), mediaAvailable: false))
+                }
+                status = sqlite3_step(s)
             }
-            status = sqlite3_step(s)
+            guard status == SQLITE_DONE else { throw Self.error }
+            return batch
         }
-        guard status == SQLITE_DONE else { throw Self.error }
-        sqlite3_finalize(s); s = nil
-        // Validate outside the FTS read snapshot. Source deletion must not race a cached excerpt.
-        result = try result.filter { item in
-            try (![GlobalSearchKind.chat, .recap].contains(item.kind) || (validateDerived?(item.kind, item.sourceID) ?? false))
+        var result: [GlobalSearchResult] = []
+        var offset = 0
+        while result.count < limit {
+            try Task.checkCancellation()
+            let batch = try candidates(offset: offset)
+            // Finalize each read before source validation. Rejected derived hits do
+            // not spend result slots: continue in rank order until full or exhausted.
+            for item in batch {
+                if try (![GlobalSearchKind.chat, .recap].contains(item.kind) ||
+                        (validateDerived?(item.kind, item.sourceID) ?? false)) {
+                    result.append(item)
+                    if result.count == limit { break }
+                }
+            }
+            // OFFSET is valid only while the source set/ranking stays unchanged.
+            // Restart the entire query on mutation, including previously accepted hits.
+            guard try dataVersion() == revision else { throw GlobalSearchError.changedSources }
+            if batch.count < batchSize { break }
+            offset += batch.count
         }
-        guard try dataVersion() == revision else { throw GlobalSearchError.changedSources }
         return result
     }
 

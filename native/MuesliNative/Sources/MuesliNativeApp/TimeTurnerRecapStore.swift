@@ -19,6 +19,35 @@ struct SavedTimeTurnerRecap: Codable, Sendable {
     }
 }
 
+/// Navigation carries the persisted identity and day bounds, never a date rebuilt
+/// in the device's current timezone. No source content is cached in this target.
+struct TimeTurnerRecapSelection: Equatable, Sendable {
+    let key: String
+    let interval: DateInterval
+    let timeZone: String
+
+    init(_ recap: SavedTimeTurnerRecap) {
+        key = recap.key
+        interval = DateInterval(start: recap.dayStart, end: recap.dayEnd)
+        timeZone = recap.timeZone
+    }
+
+    // Date controls browse local calendar days; only presentation is converted.
+    // The persisted key and original generation interval remain untouched.
+    func browsingDay(in calendar: Calendar = .current) -> Date {
+        var original = calendar
+        original.timeZone = TimeZone(identifier: timeZone) ?? TimeZone(secondsFromGMT: 0)!
+        let parts = original.dateComponents([.era, .year, .month, .day], from: interval.start)
+        return calendar.date(from: parts) ?? interval.start
+    }
+
+    var dayLabel: String {
+        var style = Date.FormatStyle().day().month(.abbreviated).year()
+        style.timeZone = TimeZone(identifier: timeZone) ?? TimeZone(secondsFromGMT: 0)!
+        return interval.start.formatted(style)
+    }
+}
+
 /// Local-only, lazily migrated store in muesli.db. Call off the main actor.
 /// The versioned body owns its source snapshots; no CloudKit or export projection.
 final class TimeTurnerRecapStore {

@@ -292,9 +292,7 @@ struct GlobalSearchPanel: View {
                     dismiss()
                 case .recap(let recap):
                     controller.clearSearch()
-                    appState.timeTurnerDay = recap.dayStart
-                    appState.timeTurnerShowsRecap = true
-                    appState.selectedTab = .timeTurner
+                    appState.openTimeTurnerRecap(recap)
                     dismiss()
                 }
             } catch {

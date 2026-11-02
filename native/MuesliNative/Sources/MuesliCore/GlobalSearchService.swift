@@ -1,7 +1,7 @@
 import Foundation
 
 /// One typed search boundary; source-owned stores retain deletion and retention responsibility.
-/// This first-page API is bounded to 200 hits per source. A durable cross-source cursor is a later UI integration step.
+/// This first-page API is bounded to 200 validated hits per source. A durable cross-source cursor is a later UI integration step.
 public final class GlobalSearchService: @unchecked Sendable {
     private let index: GlobalSearchIndex
     private let screenHistory: VisualMemoryStore?

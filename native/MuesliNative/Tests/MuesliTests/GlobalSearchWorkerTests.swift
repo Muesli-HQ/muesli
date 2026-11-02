@@ -5,6 +5,89 @@ import MuesliCore
 
 @Suite("Global search source validation")
 struct GlobalSearchWorkerTests {
+    @Test("Search opens persisted recap identity after travel and still revalidates its sources")
+    @MainActor func recapNavigationAcrossTimeZones() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-travel-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        try DictationStore(databaseURL: url).migrateIfNeeded()
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        let instant = ISO8601DateFormatter().date(from: "2026-11-02T01:00:00Z")!
+        let capture = VisualMemoryItem(id: "stable-capture", kind: .moment, capturedAt: instant, source: "Editor", text: "Orchid evidence", path: "image.png")
+        try memory.save([capture])
+        var origin = Calendar(identifier: .gregorian)
+        origin.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        var destination = origin
+        destination.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let interval = try #require(origin.dateInterval(of: .day, for: instant))
+        let saved = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
+            timeZone: origin.timeZone.identifier, generatedAt: instant, provider: "test", model: "test",
+            insights: [.init(section: .work, text: "Orchid recap", sources: ["C1"])],
+            sources: [.init(id: "C1", title: "Editor", date: instant, excerpt: capture.text, capture: capture, meeting: nil)])
+        let store = try TimeTurnerRecapStore(databaseURL: url)
+        try store.save(saved)
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        let hit = try #require(try await worker.search(.init(text: "orchid", kinds: [.recap])).first)
+        guard case .recap(let resolved) = try await worker.destination(for: hit) else {
+            Issue.record("Expected saved recap"); return
+        }
+        let state = AppState()
+        state.openTimeTurnerRecap(resolved)
+        #expect(state.timeTurnerSelectedRecap?.key == saved.key)
+        #expect(state.timeTurnerSelectedRecap?.interval == interval)
+        #expect(state.timeTurnerSelectedRecap?.timeZone == origin.timeZone.identifier)
+        let browsingDay = try #require(state.timeTurnerSelectedRecap?.browsingDay(in: destination))
+        #expect(destination.component(.day, from: browsingDay) == origin.component(.day, from: interval.start))
+        #expect(browsingDay != interval.start)
+        let model = TimeTurnerRecapModel()
+        await model.load(day: state.timeTurnerDay, selection: state.timeTurnerSelectedRecap,
+            root: screenRoot, databaseURL: url, calendar: destination)
+        #expect(model.hasGenerated)
+        #expect(model.insights.first?.text == "Orchid recap")
+        #expect(model.sources.first?.capture?.id == capture.id)
+        // Without explicit identity, ordinary day browsing follows the new timezone.
+        await model.load(day: state.timeTurnerDay, root: screenRoot, databaseURL: url, calendar: destination)
+        #expect(!model.hasGenerated)
+        try memory.delete(ids: [capture.id])
+        await model.load(day: state.timeTurnerDay, selection: state.timeTurnerSelectedRecap,
+            root: screenRoot, databaseURL: url, calendar: destination)
+        #expect(!model.hasGenerated)
+        #expect(try store.load(key: saved.key) == nil)
+        state.timeTurnerDay = instant.addingTimeInterval(86400)
+        #expect(state.timeTurnerSelectedRecap == nil)
+    }
+
+    @Test("Identical screen text at different times opens distinct stable capture IDs")
+    @MainActor func captureIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-capture-id-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        try DictationStore(databaseURL: url).migrateIfNeeded()
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        let captures = (0..<2).map { i in
+            VisualMemoryItem(id: "capture-\(i)", kind: .moment,
+                capturedAt: Date(timeIntervalSince1970: 1793527200 + Double(i)*86400),
+                source: "Editor", text: "Same orchid content", path: "\(i).png")
+        }
+        try memory.save(captures)
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        let hits = try await worker.search(.init(text: "orchid", kinds: [.screenHistory]))
+        #expect(hits.count == 2)
+        let state = AppState()
+        for hit in hits {
+            guard case .capture(let capture) = try await worker.destination(for: hit) else {
+                Issue.record("Expected original capture"); continue
+            }
+            state.openTimeTurnerCapture(capture)
+            #expect(state.timeTurnerSelectedCapture?.id == hit.sourceID)
+            #expect(state.timeTurnerSelectedCapture?.capturedAt == hit.date)
+        }
+    }
+
     @Test("An unreadable optional screen catalog does not block main content and can recover")
     func unreadableScreenCatalog() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-corrupt-\(UUID())")

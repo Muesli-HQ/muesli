@@ -625,7 +625,11 @@ Chat `sourceDeleted` turns are excluded and invalidated answers disappear throug
 existing source-owner updates. Because edited evidence can invalidate otherwise
 persisted derived text, Chat and Recap hits additionally require a current-source
 validator; the core API excludes these kinds before the SQL limit without one.
-With a validator, rejected stale candidates can shorten the bounded result page.
+With a validator, ranked candidates are read in batches of at most 200. Rejected
+stale Chat/recap candidates do not consume result slots: the index continues until
+the requested valid-result limit is filled or all matching candidates are exhausted.
+Each read statement is finalized before validation; data-version checks between
+batches restart the whole query after concurrent main-database changes.
 `GlobalSearchWorker` supplies
 existing meeting dependency and recap evidence validation. Main-database mutation
 during validation retries the complete query and source validation once, so an
@@ -645,8 +649,9 @@ with kind, source ID, date, title, excerpt, app identity, and media availability
 Queries apply type, exact app/bundle, and half-open date filters before limits;
 an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
 
-This first implementation returns a bounded first page (at most 200 candidates
-per store, at most 200 results), not a complete export. Independent BM25 corpus
+This first implementation returns a bounded first page (at most 200 validated hits
+per store, at most 200 results; invalid derived candidates may require additional
+SQL batches), not a complete export. Independent BM25 corpus
 scores are not directly compared: title-match tiers, recency and stable IDs order
 the merged candidates. The dashboard sidebar and ⌘F now open a shared search panel
 with typed filters, calendar-based date ranges and exact app-name/bundle filters.
@@ -661,5 +666,11 @@ bounded current query when either source database changes. Navigation resolves
 fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
 cannot open from old snippets. Short writing records open as selectable text,
 while meetings, chats, captures and recaps open their existing destinations.
+Captures navigate by stable capture ID, never by a formatted date or image hash;
+identical screen content captured at different instants remains distinct history.
+Recaps navigate by the persisted `day_key` and retain their original day bounds
+and timezone, including for explicit regeneration. Travel does not re-key a saved
+recap in the current timezone. Choosing another date resumes current-calendar day
+browsing. Source validation still runs when opening either kind of result.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.
