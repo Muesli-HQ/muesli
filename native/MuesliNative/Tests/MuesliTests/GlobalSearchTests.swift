@@ -40,6 +40,62 @@ struct GlobalSearchTests {
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
     }
 
+    @Test("Evidence failures withhold only unverifiable candidates and report partial completeness", arguments: [GlobalSearchKind.chat, .recap])
+    func partialEvidence(kind: GlobalSearchKind) throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','orchid','dictation','Editor','editor',NULL);
+            CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT);
+            """)
+        for id in ["unavailable", "valid"] {
+            if kind == .chat {
+                try f.sql("INSERT INTO meeting_chat_sessions VALUES('\(id)','{\"title\":\"orchid\"}',1793527200)")
+            } else {
+                try f.sql("INSERT INTO time_turner_recaps VALUES('\(id)',1793527200,'{\"version\":1,\"insights\":[{\"text\":\"orchid\"}]}')")
+            }
+        }
+        let service = try GlobalSearchService(databaseURL: f.url)
+        let query = GlobalSearchQuery(text: "orchid", kinds: [.dictation, kind])
+        let partial = try service.searchResponse(query) { _, id in
+            if id == "unavailable" { throw CocoaError(.fileReadUnknown) }
+            return true
+        }
+        #expect(partial.unavailableKinds == [kind])
+        #expect(Set(partial.results.map(\.sourceID)) == ["1", "valid"])
+        let scoped = try service.searchResponse(.init(text: "orchid", kinds: [kind])) { _, _ in throw CocoaError(.fileReadUnknown) }
+        #expect(scoped.results.isEmpty && scoped.unavailableKinds == [kind])
+        #expect(throws: GlobalSearchError.self) { try scoped.matches() }
+        let recovered = try service.searchResponse(query, validateDerived: { _, _ in true })
+        #expect(recovered.results.count == 3 && recovered.unavailableKinds.isEmpty)
+        #expect(throws: CancellationError.self) {
+            try service.searchResponse(query) { _, _ in throw CancellationError() }
+        }
+        #expect(throws: GlobalSearchError.self) {
+            try service.searchResponse(query) { _, _ in throw GlobalSearchError.changedSources }
+        }
+    }
+
+    @Test("Failure querying an already-open screen catalog preserves main matches")
+    func attachedCatalogQueryFailure() throws {
+        let f = try Fixture()
+        try f.sql("INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','orchid','dictation','Editor','editor',NULL)")
+        let root = f.root.appendingPathComponent("screens")
+        let writer = try VisualMemoryStore(root: root)
+        try writer.save([.init(id: "screen", kind: .moment, source: "Editor", text: "orchid", path: "image.png")])
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        let service = try GlobalSearchService(databaseURL: f.url, screenHistory: reader)
+        #expect(try service.search(.init(text: "orchid")).count == 2)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "DROP TABLE evidence_search", nil, nil, nil) == SQLITE_OK)
+        let response = try service.searchResponse(.init(text: "orchid"))
+        #expect(response.results.map(\.sourceID) == ["1"])
+        #expect(response.unavailableKinds == [.screenHistory])
+        let unrelated = try service.searchResponse(.init(text: "orchid", kinds: [.dictation]))
+        #expect(unrelated.unavailableKinds.isEmpty && unrelated.results.count == 1)
+    }
+
     @Test("FTS corruption is repaired without blocking dictation, meeting, or Chat writes")
     func sourceWritesRecoverFTS() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-repair-\(UUID())")

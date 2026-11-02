@@ -337,3 +337,13 @@ Opening re-resolves the source: meetings and chats use their existing destinatio
 screen history and recaps use Time Turner, and short writing records have a
 selectable text preview with a Copy action. The panel refreshes its bounded query
 while visible and retains selection across incoming captures.
+
+### Search availability
+
+Global search keeps verified matches usable when another source cannot be read.
+A compact helper-text row names unavailable content types with a quiet Retry
+button; it does not replace the results list. Empty partial responses say no
+verified matches are available rather than claiming the history has no matches.
+Opening an unavailable or deleted item reports that state in the same row while
+preserving the other results. Use existing semantic text colors and 12pt helper
+typography for this row.

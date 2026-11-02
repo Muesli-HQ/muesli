@@ -628,7 +628,7 @@ an authoritative diary or a record of time spent.
 ### Global search
 
 `GlobalSearchIndex` lazily installs a local, rebuildable index in `muesli.db`
-when global search is constructed. It does not change source ownership,
+on the first query that requests main-database content. It does not change source ownership,
 CloudKit serialization, exports, or meeting-agent retrieval scope.
 
 - `global_search_documents`: integer `rowid`, unique namespaced `identity`, typed
@@ -689,10 +689,33 @@ recoverable through Time Turner's existing deletion queue.
 
 `GlobalSearchService` federates the source-owned Time Turner OCR FTS rather than
 copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable text;
-observation deletion removes it. An unreadable optional screen-history catalog
-is omitted from mixed-source searches; screen-history-only queries report an
-error. Queries scoped to other kinds do not open that catalog. Main-index errors
-still propagate. The worker keeps one main search service across filter changes
+observation deletion removes it. Search and destination retrieval share the
+`GlobalSearchRead` contract: verified data, confirmed absence, or temporary
+unavailability. Read errors never count as proof of deletion. Cancellation and
+`changedSources` escape this boundary rather than publishing superseded/stale data.
+
+`GlobalSearchResponse` returns verified matches plus `unavailableKinds`, including
+when there are zero verified matches. Each failed Chat/recap evidence check excludes
+only that candidate; other verified candidates of the same kind remain eligible.
+The refill loop still fills result slots after excluded candidates. An unavailable
+main index excludes its kinds but does not prevent readable OCR results; an OCR
+query/open failure does not discard main-index matches. Queries scoped to unrelated
+kinds do not read the failing optional source. The legacy array-returning `search`
+API returns available matches, but throws `unavailableSources` when there are no
+matches and completeness cannot be established. New UI callers use the response
+API so a partial result is never presented as an exhaustive absence of matches.
+A never-created optional catalog is empty; disappearance of a catalog observed by
+the worker is unavailable. Recap evidence is verified independently in either case.
+
+Destination resolution uses the same read boundary and revalidates source content:
+missing/stale evidence returns `missing`, failed verification returns `unavailable`,
+and only verified destinations may open. Neither outcome wipes unrelated search
+results. Destination and evidence lookups use read-only source-store connections,
+which cannot recreate a missing database or run store migrations. These policies
+do not repair or mutate source records; the rebuildable search index retains its
+existing separate initialization/repair lifecycle.
+
+The worker keeps one main search service across filter changes
 and retains the optional catalog while its file identity is unchanged. Its
 persistent monitor uses SQLite data versions plus file identity to detect writes,
 removal and replacement; a corrupt optional catalog produces a stable unavailable
@@ -717,7 +740,11 @@ available in their own views.
 `GlobalSearchPresentation` discards superseded requests and preserves the selected
 source identity during live refresh. While visible, the panel checks persistent
 read connections' SQLite `data_version` every five seconds and reruns only the
-bounded current query when either source database changes. Navigation resolves
+bounded current query when either source database changes. Partial responses show
+a compact availability notice and Retry action alongside usable results. Partial
+queries also retry every 30 seconds without requiring a source write; changing the
+query cancels that polling task. Empty partial responses are distinguished from
+complete zero-match responses. Navigation resolves
 fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
 cannot open from old snippets. Short writing records open as selectable text,
 while meetings, chats, captures and recaps open their existing destinations.

@@ -129,7 +129,7 @@ enum TimeTurnerRecap {
             }
         }
         let dependencies = sources.compactMap(\.meeting).map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) }
-        return try MeetingChatStore(databaseURL: databaseURL).dependenciesAreCurrent(dependencies)
+        return try MeetingChatStore(databaseURL: databaseURL, readOnly: true).dependenciesAreCurrent(dependencies)
     }
 }
 

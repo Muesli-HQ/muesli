@@ -34,6 +34,7 @@ public final class DictationStore {
     private static let iso8601FormatterLock = NSLock()
 
     private let databaseURL: URL
+    private let readOnly: Bool
     private static let dictationColumns = """
     d.id, d.timestamp, d.duration_seconds, d.raw_text, d.app_context, d.word_count, d.source,
     d.target_app_name, d.target_app_bundle_id,
@@ -45,10 +46,12 @@ public final class DictationStore {
 
     public init() {
         self.databaseURL = MuesliPaths.defaultDatabaseURL()
+        self.readOnly = false
     }
 
-    public init(databaseURL: URL) {
+    public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL
+        self.readOnly = readOnly
     }
 
     public var resolvedDatabaseURL: URL {
@@ -1222,9 +1225,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeDictationRecord(statement)
     }
 
@@ -1547,9 +1550,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeMeetingRecord(statement)
     }
 
@@ -5962,24 +5965,27 @@ public final class DictationStore {
     }
 
     private func openDatabase() throws -> OpaquePointer? {
-        try FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
         var db: OpaquePointer?
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            throw lastError(db)
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let error = lastError(db)
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_busy_timeout(db, 5_000) != SQLITE_OK {
-            throw lastError(db)
+        do {
+            guard sqlite3_busy_timeout(db, 5_000) == SQLITE_OK else { throw lastError(db) }
+            if !readOnly {
+                guard sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+            }
+            return db
+        } catch {
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        return db
     }
 
     private func exec(_ sql: String, db: OpaquePointer?) throws {

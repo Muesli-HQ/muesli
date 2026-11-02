@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-public enum GlobalSearchError: Error { case changedSources }
+public enum GlobalSearchError: Error { case changedSources, unavailableSources(Set<GlobalSearchKind>) }
 
 /// Source identities remain owned by their stores. Search never becomes a second history store.
 public enum GlobalSearchKind: String, CaseIterable, Codable, Sendable {

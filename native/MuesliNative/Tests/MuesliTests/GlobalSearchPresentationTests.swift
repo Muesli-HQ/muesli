@@ -30,6 +30,25 @@ struct GlobalSearchPresentationTests {
         #expect(preview.error == nil)
     }
 
+    @Test("Partial results remain selectable and recovery clears the availability notice")
+    @MainActor func partialSearchPresentation() async {
+        let model = GlobalSearchPresentation()
+        let hit = GlobalSearchResult(kind: .meeting, sourceID: "1", date: Date(), title: "Meeting", excerpt: "Text", appName: "", bundleID: "", mediaAvailable: false)
+        let request = GlobalSearchRequest(text: "text")
+        await model.refreshResponse(request, debounce: false) { _ in
+            .init(results: [hit], unavailableKinds: [.recap, .screenHistory])
+        }
+        #expect(model.results == [hit] && model.selection == hit.id)
+        #expect(model.error == nil && model.availabilityMessage != nil)
+        await model.refreshResponse(request, debounce: false) { _ in .init(results: [hit]) }
+        #expect(model.selection == hit.id && model.availabilityMessage == nil)
+        await model.refreshResponse(request, debounce: false) { _ in .init(unavailableKinds: [.meeting]) }
+        #expect(model.results.isEmpty && model.error == nil)
+        #expect(model.unavailableKinds == [.meeting])
+        await model.refreshResponse(.init(), debounce: false) { _ in .init() }
+        #expect(model.unavailableKinds.isEmpty)
+    }
+
     @Test("Opening a capture replaces retained navigation, including repeated and same-day results")
     @MainActor func captureNavigation() {
         let state = AppState()

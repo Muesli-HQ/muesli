@@ -63,34 +63,47 @@ final class GlobalSearchPresentation {
     var selection: String?
     var isLoading = false
     var error: String?
+    var unavailableKinds: Set<GlobalSearchKind> = []
+    var availabilityMessage: String? {
+        guard !unavailableKinds.isEmpty else { return nil }
+        let names = unavailableKinds.map(\.searchLabel).sorted().joined(separator: ", ")
+        return "Some results unavailable: " + names
+    }
     private var generation = UUID()
 
     func refresh(_ request: GlobalSearchRequest, using worker: GlobalSearchWorker, debounce: Bool) async {
-        await refresh(request, debounce: debounce) { try await worker.search($0) }
+        await refreshResponse(request, debounce: debounce) { try await worker.searchResponse($0) }
     }
 
     func refresh(_ request: GlobalSearchRequest, debounce: Bool,
                  search: @Sendable (GlobalSearchQuery) async throws -> [GlobalSearchResult]) async {
+        await refreshResponse(request, debounce: debounce) { .init(results: try await search($0)) }
+    }
+
+    func refreshResponse(_ request: GlobalSearchRequest, debounce: Bool,
+                         search: @Sendable (GlobalSearchQuery) async throws -> GlobalSearchResponse) async {
         let token = UUID()
         generation = token
         error = nil
         if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            results = []; selection = nil; isLoading = false; return
+            results = []; selection = nil; unavailableKinds = []; isLoading = false; return
         }
         isLoading = true
-        if debounce { results = []; selection = nil }
+        if debounce { results = []; selection = nil; unavailableKinds = [] }
         defer { if generation == token { isLoading = false } }
         do {
             if debounce { try await Task.sleep(for: .milliseconds(200)) }
             try Task.checkCancellation()
-            let found = try await search(request.query())
+            let response = try await search(request.query())
+            let found = response.results
             try Task.checkCancellation()
             guard generation == token else { return }
             results = found
+            unavailableKinds = response.unavailableKinds
             if !found.contains(where: { $0.id == selection }) { selection = found.first?.id }
         } catch is CancellationError {} catch {
             guard generation == token, !Task.isCancelled else { return }
-            results = []; selection = nil
+            results = []; selection = nil; unavailableKinds = []
             self.error = "Search couldn’t load. Try again."
         }
     }
@@ -141,6 +154,7 @@ struct GlobalSearchPanel: View {
     @State private var openTask: Task<Void, Never>?
     @State private var preview = GlobalSearchPreview()
     @State private var copied = false
+    @State private var navigationError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -169,6 +183,13 @@ struct GlobalSearchPanel: View {
                 Spacer()
             }.padding(.horizontal, 16).padding(.bottom, 10)
             Divider()
+            if let message = navigationError ?? model.availabilityMessage {
+                HStack {
+                    Text(message).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    Spacer()
+                    Button("Retry") { request.retry += 1 }.buttonStyle(.muesli(.quiet))
+                }.padding(.horizontal, 16).padding(.vertical, 8)
+            }
             if let text = preview.text {
                 previewView(text)
             } else if let error = model.error {
@@ -179,7 +200,8 @@ struct GlobalSearchPanel: View {
             } else if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 empty("Search your words, meetings, chats and screen history")
             } else if model.results.isEmpty {
-                empty(model.isLoading ? "Searching…" : "No matches. Try another word or filter.")
+                empty(model.isLoading ? "Searching…" : (model.unavailableKinds.isEmpty
+                    ? "No matches. Try another word or filter." : "No verified matches in the available sources."))
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -203,19 +225,22 @@ struct GlobalSearchPanel: View {
         .background(MuesliTheme.backgroundBase)
         .frame(width: min(780, (NSScreen.main?.visibleFrame.width ?? 900) - 80), height: 580)
         .task(id: request) {
-            openTask?.cancel(); opening = false; preview.clear()
+            openTask?.cancel(); opening = false; preview.clear(); navigationError = nil
+            var partialRetryAt = Date().addingTimeInterval(30)
             var revision = try? await controller.globalSearchWorker.changeToken()
             await model.refresh(request, using: controller.globalSearchWorker, debounce: true)
             // Refresh only this bounded, visible query; preserve selection across new captures.
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 let updated = try? await controller.globalSearchWorker.changeToken()
-                guard updated == nil || updated != revision else { continue }
+                let retryPartial = !model.unavailableKinds.isEmpty && Date() >= partialRetryAt
+                guard updated == nil || updated != revision || retryPartial else { continue }
                 revision = updated
+                partialRetryAt = Date().addingTimeInterval(30)
                 await model.refresh(request, using: controller.globalSearchWorker, debounce: false)
                 let refreshed = await preview.refresh { try await controller.globalSearchWorker.destination(for: $0) }
                 if !refreshed { revision = nil }
-                if preview.text == nil, let error = preview.error { model.error = error }
+                if preview.text == nil, let error = preview.error { navigationError = error }
 
             }
         }
@@ -290,13 +315,17 @@ struct GlobalSearchPanel: View {
     private func openSelection() {
         guard !opening, let result = model.results.first(where: { $0.id == model.selection }) else { return }
         opening = true
+        navigationError = nil
         openTask = Task { @MainActor in
             defer { if !Task.isCancelled { opening = false } }
             do {
-                let resolved = try await controller.globalSearchWorker.destination(for: result)
+                let resolved = try await controller.globalSearchWorker.resolveDestination(for: result)
                 guard !Task.isCancelled else { return }
-                guard let destination = resolved else {
-                    model.error = "This item is no longer available."; return
+                let destination: GlobalSearchDestination
+                switch resolved {
+                case .available(let value): destination = value
+                case .missing: navigationError = "This item is no longer available."; return
+                case .unavailable: navigationError = "This item is temporarily unavailable. Try again."; return
                 }
                 switch destination {
                 case .text(let text): preview.show(text, source: result); copied = false
@@ -325,7 +354,7 @@ struct GlobalSearchPanel: View {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                model.error = "This item couldn’t be opened. Try again."
+                navigationError = "This item couldn’t be opened. Try again."
             }
         }
     }

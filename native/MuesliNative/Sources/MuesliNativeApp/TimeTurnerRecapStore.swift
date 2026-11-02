@@ -53,12 +53,14 @@ struct TimeTurnerRecapSelection: Equatable, Sendable {
 final class TimeTurnerRecapStore {
     private var db: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    init(databaseURL: URL) throws {
-        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+    init(databaseURL: URL, readOnly: Bool = false) throws {
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             if db != nil { sqlite3_close(db); db = nil }
             throw Self.failure
         }
         sqlite3_busy_timeout(db, 5_000)
+        if readOnly { return }
         try execute("PRAGMA journal_mode=WAL")
         try execute("""
             CREATE TABLE IF NOT EXISTS time_turner_recaps (

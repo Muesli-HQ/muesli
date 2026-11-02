@@ -42,9 +42,11 @@ struct GlobalSearchWorkerTests {
         let clock = RetryClock()
         let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot,
             now: { clock.now() }, openScreen: { try clock.open($0) })
-        #expect(try await worker.search(.init(text: "orchid")).isEmpty)
+        let first = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(first.results.isEmpty && first.unavailableKinds == [.screenHistory])
         let token = try await worker.changeToken()
-        #expect(try await worker.search(.init(text: "orchid")).isEmpty)
+        let retry = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(retry.results.isEmpty && retry.unavailableKinds == [.screenHistory])
         #expect(clock.count == 1)
         #expect(try await worker.changeToken() == token)
         clock.advance()
@@ -187,7 +189,7 @@ struct GlobalSearchWorkerTests {
         #expect(try await worker.changeToken() == corruptToken)
         #expect(try await worker.search(.init(text: "orchid", kinds: [.meeting])).map(\.sourceID) == [String(id)])
         #expect(try await worker.search(.init(text: "orchid")).map(\.sourceID) == [String(id)])
-        await #expect(throws: CocoaError.self) {
+        await #expect(throws: GlobalSearchError.self) {
             try await worker.search(.init(text: "orchid", kinds: [.screenHistory]))
         }
         try FileManager.default.removeItem(at: catalog)
@@ -197,7 +199,126 @@ struct GlobalSearchWorkerTests {
         #expect(try await worker.search(.init(text: "orchid", kinds: [.screenHistory])).map(\.sourceID) == ["capture"])
         #expect(Set(try await worker.search(.init(text: "orchid")).map(\.kind)) == [.meeting, .screenHistory])
         let invalidMain = GlobalSearchWorker(databaseURL: root.appendingPathComponent("missing.db"), screenRoot: screenRoot)
-        await #expect(throws: (any Error).self) { try await invalidMain.search(.init(text: "orchid")) }
+        let partial = try await invalidMain.searchResponse(.init(text: "orchid"))
+        #expect(partial.results.map(\.sourceID) == ["capture"])
+        #expect(partial.unavailableKinds == Set(GlobalSearchKind.allCases).subtracting([.screenHistory]))
+        await #expect(throws: GlobalSearchError.self) {
+            try await invalidMain.search(.init(text: "orchid", kinds: [.meeting]))
+        }
+    }
+
+    @Test("Read-only search stores cannot create missing databases or mutate existing history")
+    func readOnlyStores() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-readonly-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        #expect(throws: (any Error).self) { try DictationStore(databaseURL: url, readOnly: true).dictation(id: 1) }
+        #expect(throws: (any Error).self) { try MeetingChatStore(databaseURL: url, readOnly: true).turns(sessionID: UUID()) }
+        #expect(throws: (any Error).self) { try TimeTurnerRecapStore(databaseURL: url, readOnly: true) }
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        let writer = DictationStore(databaseURL: url)
+        try writer.migrateIfNeeded()
+        let id = try writer.insertDictation(text: "orchid", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let reader = DictationStore(databaseURL: url, readOnly: true)
+        #expect(try reader.dictation(id: id)?.rawText == "orchid")
+        #expect(throws: (any Error).self) { try reader.deleteDictation(id: id) }
+        #expect(throws: (any Error).self) {
+            try MeetingChatStore(databaseURL: url, readOnly: true).createSession(scope: .init(), title: "Must not save")
+        }
+        #expect(try writer.dictation(id: id) != nil)
+    }
+
+    @Test("Removing a warm main database preserves screen search and recovers after restoration")
+    func mainDatabaseAvailability() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-main-availability-\(UUID())")
+        let mainRoot = root.appendingPathComponent("main")
+        try FileManager.default.createDirectory(at: mainRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = mainRoot.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        _ = try store.insertDictation(text: "orchid dictation", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        try memory.save([.init(id: "capture", kind: .moment, source: "Editor", text: "orchid", path: "image.png")])
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        let healthy = try await worker.searchResponse(.init(text: "orchid"))
+        let dictation = try #require(healthy.results.first { $0.kind == .dictation })
+        let backup = root.appendingPathComponent("main-backup")
+        try FileManager.default.moveItem(at: mainRoot, to: backup)
+        let partial = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(partial.results.map(\.sourceID) == ["capture"])
+        #expect(partial.unavailableKinds == Set(GlobalSearchKind.allCases).subtracting([.screenHistory]))
+        guard case .unavailable = try await worker.resolveDestination(for: dictation) else {
+            Issue.record("Missing database must not read an old connection or report a deleted record"); return
+        }
+        #expect(!FileManager.default.fileExists(atPath: mainRoot.path))
+        try FileManager.default.moveItem(at: backup, to: mainRoot)
+        let recovered = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(recovered.unavailableKinds.isEmpty)
+        #expect(Set(recovered.results.map(\.id)) == Set(healthy.results.map(\.id)))
+    }
+
+    @Test("Unavailable recap evidence cannot hide independent results and recovers without reindexing", arguments: [false, true])
+    func recapEvidenceAvailability(corrupt: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-recap-availability-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        _ = try store.insertDictation(text: "orchid dictation", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        _ = try store.insertMeeting(title: "Orchid meeting", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), rawTranscript: "orchid", formattedNotes: "Notes",
+            micAudioPath: nil, systemAudioPath: nil)
+        let screenRoot = root.appendingPathComponent("visual-memory")
+        let backup = root.appendingPathComponent("catalog-backup")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        let capture = VisualMemoryItem(id: "capture", kind: .moment, source: "Editor", text: "orchid", path: "image.png")
+        try memory.save([capture])
+        let saved = SavedTimeTurnerRecap(version: 1, dayStart: Date(), dayEnd: Date().addingTimeInterval(86400),
+            timeZone: "UTC", generatedAt: Date(), provider: "test", model: "test",
+            insights: [.init(section: .work, text: "orchid recap", sources: ["C1"])],
+            sources: [.init(id: "C1", title: "Editor", date: capture.capturedAt, excerpt: capture.text, capture: capture, meeting: nil)])
+        try TimeTurnerRecapStore(databaseURL: url).save(saved)
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: screenRoot)
+        let healthy = try await worker.searchResponse(.init(text: "orchid"))
+        let recapHit = try #require(healthy.results.first { $0.kind == .recap })
+        let captureHit = try #require(healthy.results.first { $0.kind == .screenHistory })
+        let meetingHit = try #require(healthy.results.first { $0.kind == .meeting })
+        try FileManager.default.moveItem(at: screenRoot, to: backup)
+        if corrupt {
+            try FileManager.default.createDirectory(at: screenRoot, withIntermediateDirectories: true)
+            try Data("damaged catalog".utf8).write(to: screenRoot.appendingPathComponent("catalog.sqlite"))
+        }
+        let partial = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(Set(partial.results.map(\.kind)) == [.dictation, .meeting])
+        #expect(partial.unavailableKinds == [.recap, .screenHistory])
+        #expect(!partial.results.contains { $0.id == recapHit.id })
+        let scoped = try await worker.searchResponse(.init(text: "orchid", kinds: [.recap]))
+        #expect(scoped.results.isEmpty)
+        #expect(scoped.unavailableKinds == [.recap])
+        guard case .unavailable = try await worker.resolveDestination(for: recapHit),
+              case .unavailable = try await worker.resolveDestination(for: captureHit),
+              case .available(.meeting) = try await worker.resolveDestination(for: meetingHit) else {
+            Issue.record("Unavailable evidence must stay distinct from deletion and independent destinations"); return
+        }
+        if corrupt { try FileManager.default.removeItem(at: screenRoot) }
+        try FileManager.default.moveItem(at: backup, to: screenRoot)
+        let recovered = try await worker.searchResponse(.init(text: "orchid"))
+        #expect(recovered.unavailableKinds.isEmpty)
+        #expect(Set(recovered.results.map(\.id)) == Set(healthy.results.map(\.id)))
+        guard case .available(.recap) = try await worker.resolveDestination(for: recapHit) else {
+            Issue.record("Restored evidence should resolve again"); return
+        }
+        // Deletion has a different result: no retryable error, and no stale recap content.
+        try memory.delete(ids: [capture.id])
+        let deleted = try await worker.searchResponse(.init(text: "orchid", kinds: [.recap]))
+        #expect(deleted.results.isEmpty && deleted.unavailableKinds.isEmpty)
+        guard case .missing = try await worker.resolveDestination(for: recapHit),
+              case .missing = try await worker.resolveDestination(for: captureHit) else {
+            Issue.record("Confirmed missing evidence must not look temporarily unavailable"); return
+        }
     }
 
     @Test("Opening a result rechecks deletion rather than trusting its snippet")
