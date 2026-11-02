@@ -300,12 +300,15 @@ dependent answers, drafts, rolling memory and generated titles through store API
 Deleting a chat removes references, never the user's original files.
 
 Optional `documentCoverage` in turn bodies decodes as nil in older records. Each
-entry stores the attached PDF's `fileID`, `totalPages`, `pagesWithoutText`, and
-`wasCondensed`. Completion validates attachment identity and page counts; retries
+legacy entry stores the attached PDF's `fileID`, `totalPages`, `pagesWithoutText`, and
+`wasCondensed`. New on-demand document turns leave this legacy whole-document
+coverage empty; page ranges and extracted content are transient tool results,
+not additional serialized fields. Completion validates legacy attachment identity and page counts; retries
 and file invalidation clear it. The UI shows coverage only alongside a surviving
 answer. This adds no SQL columns, CloudKit fields, telemetry or export/CLI data.
-Extracted document text, OCR images and intermediate rolling document notes remain
-transient even when a large PDF requires several model requests.
+Extracted document text and OCR/page images remain transient. Document tools can
+revisit valid original-file dependencies from earlier turns without copying files
+or persisting their contents; conversation-memory compaction is separate.
 
 Selection, anchoring, and evidence dependency are distinct. The anchor records
 where a chat started, selected rows describe explicit retrieval scope, and

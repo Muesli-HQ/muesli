@@ -39,7 +39,8 @@ struct PreparedChatFiles: Sendable {
     var context = ""
     var images: [ChatImageInput] = []
     var documentCoverage: [ChatDocumentCoverage] = []
-    var isEmpty: Bool { context.isEmpty && images.isEmpty }
+    var documents: [ChatFileReference] = []
+    var isEmpty: Bool { context.isEmpty && images.isEmpty && documents.isEmpty }
     static let empty = PreparedChatFiles()
 }
 
@@ -171,7 +172,7 @@ enum ChatFileReader {
         return prepared
     }
 
-    private static func text(_ url: URL) throws -> String {
+    static func text(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()

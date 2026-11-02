@@ -406,7 +406,7 @@ struct MeetingChatView: View {
                 .padding(.leading, -6)
             })
             if !coordinator.composerFiles.isEmpty {
-                Text("Originals stay in place. Image content and document text (PDF text/OCR, Markdown and plain text) are sent to the selected AI provider when you send. Large PDFs may use multiple AI requests. Use a vision-capable model for images.")
+                Text("Originals stay in place. Your selected AI provider receives images and the document pages it requests. PDF page images need a vision-capable model.")
                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(nil).layoutPriority(1)
             }

@@ -189,8 +189,10 @@ struct ChatAttachmentTests {
         var config = AppConfig(); config.meetingSummaryBackend = "ollama"
         let prepared = try await ChatPDFProcessing.prepare(refs, config: config, question: "Summarize",
             budget: .init(config: config), generator: AttachmentReplyProbe())
-        #expect(prepared.context.contains("launch Friday"))
-        #expect(prepared.context.contains("text/OCR only"))
+        #expect(!prepared.context.contains("launch Friday"))
+        #expect(prepared.documents == refs)
+        let tools = ChatDocumentTools(files: refs, supportsVision: false)
+        #expect(try await tools.execute(.read(refs[0].id, 1, 0)).output.contains("launch Friday"))
         #expect(prepared.images.isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["notes.pdf"])
     }

@@ -29,20 +29,24 @@ actor MeetingChatWorker {
         budget: MeetingChatContextBudget, sessionID: UUID?, beforeOrdinal: Int? = nil,
         generator: any MeetingTextGenerating, progress: @Sendable (String) async -> Void
     ) async throws -> PreparedChatFiles {
-        var historyReserve = 0
-        if let sessionID, !files.isEmpty {
-            try validateFileSources(sessionID: sessionID)
-            let start = try store.sessions().first { $0.id == sessionID }?.contextStartOrdinal ?? 0
-            let history = try store.turns(sessionID: sessionID).filter {
-                $0.ordinal >= start && (beforeOrdinal == nil || $0.ordinal < beforeOrdinal!) && $0.state == .completed
-            }
-            let plan = budget.plan(history: history)
-            historyReserve = plan.recentTurns.reduce(0) { $0 + MeetingChatContextBudget.estimateJSONTextTokens(MeetingChatHistory.promptBlock($1)) }
-            if !plan.olderTurns.isEmpty { historyReserve += budget.summaryTokens }
-        }
+        if let sessionID { try validateFileSources(sessionID: sessionID) }
         return try await ChatPDFProcessing.prepare(files, config: config, question: question, budget: budget,
-            historyReserve: historyReserve, sessionID: sessionID ?? UUID(), generator: generator, progress: progress)
+            sessionID: sessionID ?? UUID(), generator: generator, progress: progress)
     }
+    func inheritedDocuments(_ prepared: PreparedChatFiles, turn: MeetingChatTurn) throws -> PreparedChatFiles {
+        try validateFileSources(sessionID: turn.sessionID)
+        let documents = (turn.fileDependencies ?? turn.fileAttachments ?? []).filter { $0.kind != .image }
+        // Dependencies were captured by beginTurn from valid, in-context history.
+        // Preserve the image context and rebuild only the document manifest.
+        var result = prepared
+        if !prepared.documents.isEmpty {
+            result.context = result.context.replacingOccurrences(of: try ChatDocumentTools.manifest(prepared.documents), with: "")
+        }
+        result.documents = documents
+        if !documents.isEmpty { result.context += try ChatDocumentTools.manifest(documents) }
+        return result
+    }
+
     private var thumbnailCache: [String: (stamp: String, data: Data)] = [:]
     private var thumbnailOrder: [String] = []
     func thumbnail(for file: ChatFileReference) -> Data? {
@@ -178,6 +182,7 @@ actor MeetingChatWorker {
         var incomingIsPartialRecap = false
         var nextPage: Int?
         switch call {
+        case .document: throw MeetingChatError.invalidResponse // Dispatched to the attempt-owned document reader.
         case .search(let query):
             let retrieved = try retrieval.retrieve(question: query, scope: turn.scope)
             incoming = retrieved.passages
@@ -804,7 +809,7 @@ final class MeetingChatCoordinator {
             }
             do {
                 let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
-                let attachments: PreparedChatFiles
+                var attachments: PreparedChatFiles
                 if let preparedAttachments { attachments = preparedAttachments }
                 else {
                     phase = "Preparing attachments"
@@ -817,6 +822,10 @@ final class MeetingChatCoordinator {
                             }
                         })
                 }
+                attachments = try await worker.inheritedDocuments(attachments, turn: turn)
+                let documentTools = ChatDocumentTools(files: attachments.documents,
+                    supportsVision: [.chatGPT, .openAI, .openRouter, .anthropic].contains(MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)),
+                    maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)))
                 let (evidence, history) = try await worker.evidence(for: turn)
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
@@ -841,6 +850,13 @@ final class MeetingChatCoordinator {
                     evidence: evidence, history: plan.recentTurns, config: config, sessionID: turn.sessionID, generator: generator,
                     execute: { call, current in
                         try Task.checkCancellation()
+                        if case .document(let request) = call {
+                            let result = try await documentTools.execute(request)
+                            if self.activeRequestID == requestID, let index = self.activities.indices.last {
+                                self.activities[index].output = "Attachment content returned"
+                            }
+                            return MeetingChatToolResult(evidence: current, documentOutput: result.output, images: result.images)
+                        }
                         let (result, next, count, nextPage) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey, native: generator.supportsNativeTools(config: config))
                         nextSourceKey = next
                         if self.activeRequestID == requestID, let index = self.activities.indices.last {
@@ -854,7 +870,11 @@ final class MeetingChatCoordinator {
                             if let index = self.activities.indices.last { self.activities[index].state = .completed }
                             self.phase = "Writing answer"
                         } else {
-                            self.activities.append(.init(title: call.title, detail: call.detail, state: .running))
+                            let detail: String
+                            if case .document(let request) = call {
+                                detail = (attachments.documents.first { $0.id == request.fileID }?.name ?? "Attachment") + " · " + request.detail
+                            } else { detail = call.detail }
+                            self.activities.append(.init(title: call.title, detail: detail, state: .running))
                             self.phase = call.title
                         }
                     }, progress: { phase in

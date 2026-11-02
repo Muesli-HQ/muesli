@@ -39,7 +39,7 @@ Threads are first-class records, separate from meetings. They belong in their ow
 | `meeting_chat_dependencies` | Every source revision disclosed to a turn, including inherited history and uncited evidence |
 | `meeting_chat_passages` and index tables | Rebuildable local retrieval data |
 
-The anchor records where a conversation started; it is independent of the current set of selected meetings. Timeline, Dictations and Meetings share one dashboard-level composer. Ordinary navigation preserves its selected conversation, draft, explicit scope, native editor and undo identity; opening a meeting does not silently attach it or select an anchored thread. Users choose meeting context through the visible scope picker or `@` attachments. The composer still retrieves meetings only, including when shown on the Dictations page.
+The anchor records where a conversation started; it is independent of the current set of selected meetings. Timeline, Dictations and Meetings share one dashboard-level composer. Ordinary navigation preserves its selected conversation, draft, explicit scope, native editor and undo identity; opening a meeting does not silently attach it or select an anchored thread. Users choose meeting context through the visible scope picker or `@` attachments. Meeting retrieval stays scoped to saved meetings; user-selected files have a separate document capability, including on the Dictations page.
 
 The separate controller method `showMeetingChat(meetingID:)` can resume the newest anchored conversation that still explicitly includes the requested meeting, or prepare a draft when none exists. This method refuses meeting-specific entry while a response or chat update is active; it is not the ordinary saved-meeting selection path. Archive-wide chats which merely cited a meeting are not selected by this anchor lookup.
 
@@ -100,26 +100,20 @@ File-only questions work without widening an explicit empty meeting selection.
 Files are untrusted conversation input, never meeting citation sources.
 
 All file hashing, extraction and image preparation run off the main actor through
-`MeetingChatWorker` and a pull-driven `ChatPDFPageReader` actor.
-ImageIO downsamples from the URL to a maximum 2048-pixel dimension, strips metadata
-by JPEG re-encoding, and caps each result at 2 MiB. PDFKit extracts selectable text;
-Vision OCR handles textless pages one at a time in an autorelease pool.
-Markdown/plain text is read as bounded UTF-8 (optional BOM), with invalid/empty
-text rejected. Markdown is sent literally; attachment preparation never renders
-it, follows its links, or loads embedded images. PDF input
-supplies text/OCR only, not visual layout or embedded figures. No provider Files API
-objects or application temporary copies are created. Prepared bytes/text live only
-for the active request; portable history stores the question and answer. Provider
-retention still follows the selected provider's policy.
+`MeetingChatWorker` and the attempt-owned `ChatDocumentTools` actor. Initial document
+preparation supplies only an ID/name/kind/size manifest. Images still use ImageIO
+URL downsampling to 2048 pixels, strip metadata by JPEG re-encoding and cap each
+result at 2 MiB. No provider Files API objects or application copies are created.
+Provider retention follows the selected provider's policy.
 
-Limits: five files, three images, 20 MiB per original, 40 MiB combined, 100 million
-image pixels, 48,000 combined Markdown/plain-text context characters (UTF-8 text reads also cap at 192,003 bytes), 2 MiB per
-encoded image, and 12 MiB per serialized request. Image requests reserve 4096 input
-tokens per image in addition to the existing text budget. This is a conservative
-estimate, not a tokenizer for every provider/model. PDFs, Markdown and plain text work through existing
-text adapters. Images require a vision-capable ChatGPT, OpenAI, OpenRouter or
-Anthropic model; unsupported transports fail with an actionable error. Native tool
-call IDs, replay and source-scope checks remain unchanged.
+Selection limits remain five files, three images, 20 MiB per original, 40 MiB
+combined and 100 million image pixels. Markdown/plain text remains bounded at
+48,000 characters per file and 192,003 UTF-8 bytes (optional BOM); invalid/empty
+text is rejected on reading. Markdown stays literal: links and embedded images
+are never fetched. Serialized requests remain bounded at 12 MiB. PDF pages have
+no count limit. All tool content must fit the selected model's context after
+output, system, schema, history and image reservations. The token estimator is
+approximate; backend context rejections fail visibly.
 
 Originals are content-hashed around preparation and rechecked before publishing
 answers; cached metadata checks bound repeated context reads. Attach/remove and
@@ -147,58 +141,59 @@ and cancellation. Local validation failure preserves draft text, scope, undo
 identity and selected files without a provider request. The composer hides submitted attachment previews immediately on Send, retaining
 private recovery references during preparation. Failure or Stop restores them;
 accepted sends consume the matching persisted composer selection. Immutable turn
-references and valid conversation history remain available, but subsequent sends
-do not automatically reattach or reprocess the file. Large-PDF preparation can
-make AI requests before accepting the turn. Accepted turns reuse prepared content,
-avoiding repeated OCR. Retrying
-reprocesses the original under the currently selected model's budget.
+references and valid conversation history remain available. Follow-ups inherit document
+capabilities from valid in-context file dependencies without repopulating the
+composer. No document preprocessing AI requests happen before accepting a turn.
+Retry rereads only pages requested by the model from the original file.
 
-### Incremental PDF context
+### On-demand document tools
 
-PDFs have no page-count or total extracted-text cutoff. The reader walks every
-page in order, using selectable text or bounded OCR, and splits even an oversized
-single page at Unicode scalar boundaries. It holds a PDF handle and one extracted
-page; the processor pulls bounded fragments rather than buffering the whole
-extraction. An ordered stream shares the available input allowance across all PDFs rather
-than dividing it equally per file. If their combined text fits, it goes directly
-to the final answer without a condensation request. Only an actual overflow of
-that allowance starts chronological rolling notes through the selected model,
-consuming every fragment. One initial fragment, one bounded batch, the current
-page and rolling notes bound transient memory;
-PDFKit may maintain its own document caches. Model responses are bounded and have
-one shorter-output retry; oversized responses are never silently truncated.
+Documents participate in the existing inference → tool → inference loop. Native
+providers receive strict function schemas and matching call/result replay;
+compatibility providers receive the same four operations through the existing
+JSON protocol. Both allow up to twelve total tools when documents are available;
+meeting-only compatibility chats retain their three-call limit. File-only chats
+can use document tools even with zero eligible meetings, without widening scope.
 
-Batches use the selected model's catalog context minus its output reserve and
-input ceiling. OpenRouter supplies live context metadata; known direct models
-use verified presets. Unknown/custom models keep conservative transport defaults,
-not a claimed backend limit. Final chat and PDF preprocessing use the same model
-input allowance, accounting for question/system text, JSON escaping, tool/repair
-space, history, images, non-PDF context and small metadata wrappers. There is no
-32K final-input cap, equal per-PDF split or percentage reduction that triggers
-condensation. If combined PDF text exceeds the remaining allowance, rolling notes
-are bounded separately by the model's output allowance. The estimator remains
-approximate; backend context rejections fail visibly. This is not a provider
-tokenizer or unlimited context. Over-budget PDFs can incur several AI requests.
+- `inspect_document(document_id)` returns format, byte count and total pages.
+- `search_document(document_id, query, start_page)` performs literal,
+  case-insensitive text search over at most 64 pages per call. It returns the first
+  matching excerpt per page, up to eight hits, plus the scanned range and
+  `next_page` even when there are no hits. This is not a complete occurrence index
+  or semantic search; selectable text can omit visual-only content.
+- `read_document(document_id, page, offset, end_page)` reads a requested range,
+  at most 64 pages and 256,000 UTF-8 bytes per call, reduced for small model windows.
+  A null end page requests one page. Pages are 1-based; text/Markdown has one logical
+  page. Unicode-scalar offsets preserve large pages without silent truncation. Resume
+  with `next_page` and `next_offset` together until `requested_range_complete`;
+  whole-document requests can progress through many pages in one call. PDFKit reads
+  selectable text, Vision OCR handles textless pages and augments sparse pages on
+  explicit reads. Mixed raster/text pages may still require rendering.
+- `render_document_page(document_id, page)` supplies a PDF page image to supported
+  vision transports. At most three images are rendered per attempt, at 1536 pixels
+  and 1 MiB each. Native replay includes a labeled user image after the matching
+  function result; compatibility calls retain labeled images only for that attempt.
+  Image context reserves 4096 estimated tokens per image, and serialized image
+  bytes count toward the request guard. Text-only transports do not register the
+  native render tool and receive an actionable fallback on compatibility calls.
 
-Verified catalog sources: [OpenAI GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
-[GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra),
-[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
-and [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
-list 1,050,000 context and 922,000 maximum input tokens for the API. The Sol page
-separately documents a default 500K context in Codex/ChatGPT Work; the subscription
-transport does not inherit the API allowance. Other ChatGPT models retain the
-conservative fallback until their transport metadata is established.
-[Anthropic context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows)
-and [model overview](https://platform.claude.com/docs/en/models/overview) document
-1M context for the current Sonnet/Opus/Fable presets and 200K for Haiku 4.5.
-Rolling condensation follows the general pattern in
-[Anthropic's summarization guide](https://platform.claude.com/cookbook/capabilities-summarization-guide).
+Only exact content IDs from the captured manifest are accepted. Tools cannot open
+model-selected paths/URLs, fetch links, run a shell or write files. Each call opens
+and validates the original, then releases its security scope. There is no extracted
+text index, managed original, rendered-page disk cache or persistent tool payload.
+A tool reader holds a PDF and one page during the operation; PDFKit can maintain
+its own transient caches. Cancellation, original changes and request ownership
+prevent late publication through the existing worker/store guards.
 
-Condensation is lossy: the final answer explicitly discloses it and reports how
-many pages had no recoverable text after OCR. These coverage counts are local
-turn metadata; raw text and intermediate notes are never persisted. Diagrams,
-layout and textless pages cannot be claimed as understood. Hashes are checked at
-open, after complete extraction, after preparation and before answer publication;
-metadata is checked between batches/model calls. Source changes or cancellation
-discard the active result and close the original's security scope. Removing a
-file and changing/deleting its original retain their existing distinct semantics.
+Document text is never condensed upfront. The model chooses pages according to the
+question, can revisit the original on a follow-up, and must cite filename/page in
+ordinary text (meeting `[[S]]` citations remain separate). Tool outputs report actual
+range coverage; bounded search is not proof of absence, and a few page reads do not
+establish exhaustive understanding. A full summary must sample across the document
+and disclose material unread ranges. Context exhaustion returns a bounded tool
+error and finalizes from content already disclosed instead of silently dropping
+prior pages. Conversation-memory compaction remains a separate mechanism.
+
+Legacy `documentCoverage` records remain readable for previously completed answers.
+New on-demand turns do not populate the former “all pages inspected” metadata;
+actual operations and their ranges appear in the tool activity/result stream.
