@@ -91,7 +91,7 @@ struct CleanupModelRelease: Codable, Equatable, Sendable {
         }
         if let minimumAppVersion {
             let parts = minimumAppVersion.split(separator: ".", omittingEmptySubsequences: false)
-            guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else {
+            guard !parts.isEmpty, parts.allSatisfy({ $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) && Int($0) != nil }) else {
                 return "invalid minimum app version \(minimumAppVersion)"
             }
             if Self.compareVersions(appVersion, minimumAppVersion) == .orderedAscending {

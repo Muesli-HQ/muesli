@@ -90,7 +90,7 @@ struct CleanupModelUpdateTests {
         ]
         var tooNew = Self.release(version: "v20", sequence: 20, contents: model)
         tooNew.minimumAppVersion = "9.0"
-        let badMinimums = ["", "-", "1..0", "0.9-beta"].map { minimum in
+        let badMinimums = ["", "-", "1..0", "0.9-beta", "1.-2", "1.+2", "1.999999999999999999999"].map { minimum in
             var release = Self.release(version: "v20", sequence: 20, contents: model)
             release.minimumAppVersion = minimum
             return release

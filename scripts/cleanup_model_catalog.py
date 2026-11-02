@@ -81,7 +81,7 @@ def validate(release: dict) -> list[str]:
     if not re.fullmatch(r"[0-9a-f]{40}", release.get("revision", "")):
         problems.append(f"{name}: revision must be a full commit hash")
     minimum = release.get("minimum_app_version")
-    if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"\d+(\.\d+)*", minimum)):
+    if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"\d{1,18}(\.\d{1,18})*", minimum)):
         problems.append(f"{name}: minimum_app_version must be numeric, e.g. 0.9.2 (the app ignores other suffixes)")
     files = release.get("files") or []
     if not files or files[0].get("path") != model_file:
