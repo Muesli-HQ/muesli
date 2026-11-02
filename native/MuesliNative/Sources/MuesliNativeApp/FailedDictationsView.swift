@@ -37,7 +37,7 @@ struct FailedDictationsView: View {
                                                       || appState.activeAudioImportCount > 0 || appState.modelFileMutationCount > 0
                                                       || appState.isMeetingRecording || appState.isMeetingStarting)
                                         Button("Discard", role: .destructive) { pendingDiscard = record }
-                                            .disabled(appState.recoveringDictationID != nil)
+                                            .disabled(appState.recoveringDictationID != nil || appState.activeAudioImportCount > 0)
                                     }
                                 }
                                 if expandedID == record.id {

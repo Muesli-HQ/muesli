@@ -70,10 +70,15 @@ or CLI fields. Explicit local retry lazily creates the local-only
 unique `dictation_id` foreign key with `ON DELETE CASCADE`. The history insert
 and retry key commit in one transaction before deleting recovery files. If
 archive deletion fails, another retry (including after relaunch) returns the
-already saved text instead of creating duplicate history. Ordinary successful
-dictations do not access this table. Recovered text follows the existing history
+already saved text instead of creating duplicate history. If the saved row was
+deleted or its text cleared, an explicit retry atomically saves a replacement and remaps the key;
+the old tombstone remains available to sync. Database writes run on a worker
+with an independent connection. Cancellation during a pending write keeps the
+archive even if that write commits; a later retry reuses its key. Ordinary
+successful dictations do not access this table. Recovered text follows the existing history
 sync policy; the retry key is never synced. Discard removes one recovery, and
-confirmed history clearing also removes the recovery directory. Audio is retained until recovery,
+confirmed history clearing removes the recovery directory and clears history on a worker,
+reserving operation ownership until completion. Audio is retained until recovery,
 discard, or history clearing; no automatic expiry is implied.
 
 ### Appearance preferences outside SQLite

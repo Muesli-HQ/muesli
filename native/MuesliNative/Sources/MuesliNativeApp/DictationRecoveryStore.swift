@@ -1,4 +1,5 @@
 import Foundation
+import MuesliCore
 
 struct FailedDictation: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
@@ -138,20 +139,38 @@ enum DictationRecoveryPolicy {
 }
 
 enum DictationRecoveryRetry {
+    /// Each worker owns its SQLite connection. Lock waits and filesystem work
+    /// must not occupy the main actor; only the returned text crosses back.
+    @MainActor
+    static func persistHistory(record: FailedDictation, text: String, databaseURL: URL,
+                               model: DictationModelIdentity? = nil) async throws -> String {
+        try Task.checkCancellation()
+        return try await Task.detached(priority: .userInitiated) {
+            try DictationStore(databaseURL: databaseURL).insertRecoveredDictation(
+                recoveryID: record.id, text: text, durationSeconds: record.durationSeconds,
+                startedAt: record.startedAt,
+                endedAt: record.startedAt.addingTimeInterval(record.durationSeconds),
+                transcriptionModel: model)
+        }.value
+    }
+
     /// A retry never opens a microphone or pastes into the foreground app.
     /// Keep the only recovery copy until text is durably saved to history.
     @MainActor
     static func run(
         record: FailedDictation, store: DictationRecoveryStore,
         transcribe: (URL) async throws -> String,
-        persist: (String) throws -> Void
+        persist: (String) async throws -> Void
     ) async throws {
         let audio = try await Task.detached { try store.validatedAudioURL(for: record) }.value
         try Task.checkCancellation()
         let text = try await transcribe(audio).trimmingCharacters(in: .whitespacesAndNewlines)
         try Task.checkCancellation()
         guard !text.isEmpty else { throw DictationRecoveryStore.Failure.emptyTranscript }
-        try persist(text)
+        try await persist(text)
+        // Cancellation during a database wait may arrive after its transaction
+        // commits. Keep the archive; its durable retry key prevents duplicates.
+        try Task.checkCancellation()
         try await Task.detached { try store.discard(record) }.value
     }
 }

@@ -255,6 +255,130 @@ struct DictationRecoveryTests {
         #expect(try history.recentDictations().count == 2)
     }
 
+    @Test("deleted or cleared recovered history is replaced before its audio is removed", arguments: [true, false])
+    @MainActor
+    func unavailableHistoryIsReplaced(deleteHistory: Bool) async throws {
+        let (root, source, store) = try fixture()
+        let record = try save(source, to: store)
+        let session = store.audioURL(for: record).deletingLastPathComponent()
+        defer {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: session.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let database = root.appendingPathComponent("history.db")
+        let history = DictationStore(databaseURL: database)
+        try history.migrateIfNeeded()
+        _ = try await DictationRecoveryRetry.persistHistory(record: record, text: "First saved text", databaseURL: database)
+        let oldID = try #require(try history.recentDictations().first?.id)
+        if deleteHistory {
+            try history.deleteDictation(id: oldID)
+        } else {
+            // Synthetic fixture: also exercise a surviving row with cleared text.
+            var db: OpaquePointer?
+            #expect(sqlite3_open(database.path, &db) == SQLITE_OK)
+            defer { sqlite3_close(db) }
+            #expect(sqlite3_exec(db, "UPDATE dictations SET raw_text = '' WHERE id = \(oldID)", nil, nil, nil) == SQLITE_OK)
+        }
+        var savedText: String?
+        do {
+            try await DictationRecoveryRetry.run(record: record, store: store,
+                transcribe: { _ in "Replacement recovered text" }, persist: { text in
+                    savedText = try await DictationRecoveryRetry.persistHistory(record: record, text: text, databaseURL: database)
+                    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: session.path)
+                })
+            Issue.record("Expected archive deletion failure after replacement save")
+        } catch { #expect((error as NSError).code == NSFileWriteNoPermissionError) }
+        #expect(savedText == "Replacement recovered text")
+        let replacement = try #require(try history.recentDictations().first(where: { !$0.rawText.isEmpty }))
+        #expect(replacement.id != oldID)
+        #expect(replacement.rawText == savedText)
+        #expect(try store.recordings() == [record])
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: session.path)
+        try await DictationRecoveryRetry.run(record: record, store: store,
+            transcribe: { _ in "A different later result" }, persist: { text in
+                savedText = try await DictationRecoveryRetry.persistHistory(record: record, text: text, databaseURL: database)
+            })
+        #expect(savedText == "Replacement recovered text")
+        #expect(try history.recentDictations().filter { !$0.rawText.isEmpty }.map(\.id) == [replacement.id])
+        #expect(try store.recordings().isEmpty)
+    }
+
+    @Test("a locked recovery database leaves the main actor responsive")
+    @MainActor
+    func databaseWaitDoesNotBlockMainActor() async throws {
+        let (root, source, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try save(source, to: store)
+        let database = root.appendingPathComponent("history.db")
+        try DictationStore(databaseURL: database).migrateIfNeeded()
+        let ready = AsyncStream<Void>.makeStream()
+        let entered = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let state = RecoveryWriteLockState()
+        let worker = DispatchQueue(label: "test.recovery.sqlite-writer")
+        worker.async {
+            var db: OpaquePointer?
+            precondition(sqlite3_open(database.path, &db) == SQLITE_OK)
+            precondition(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+            ready.continuation.yield(())
+            // Deadlock safeguard: a regression must fail rather than hang CI.
+            _ = release.wait(timeout: .now() + 3)
+            state.markReleased()
+            precondition(sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK)
+            sqlite3_close(db)
+            ready.continuation.finish()
+        }
+        defer { release.signal(); worker.sync {}; entered.continuation.finish() }
+        for await _ in ready.stream { break }
+        let write = Task { @MainActor in
+            entered.continuation.yield(())
+            return try await DictationRecoveryRetry.persistHistory(record: record, text: "Recovered text", databaseURL: database)
+        }
+        for await _ in entered.stream { break }
+        // This main-actor continuation runs while the other connection still
+        // holds its write lock. No wall-clock performance threshold is needed.
+        #expect(!state.hasReleased)
+        release.signal()
+        #expect(try await write.value == "Recovered text")
+    }
+
+    @Test("cancellation during persistence keeps audio even if history commits")
+    @MainActor
+    func cancellationDuringPersistenceKeepsAudio() async throws {
+        let (root, source, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try save(source, to: store)
+        let database = root.appendingPathComponent("history.db")
+        let history = DictationStore(databaseURL: database)
+        try history.migrateIfNeeded()
+        let entered = AsyncStream<Void>.makeStream()
+        var resumePersistence: CheckedContinuation<Void, Never>?
+        let task = Task { @MainActor in
+            try await DictationRecoveryRetry.run(record: record, store: store,
+                transcribe: { _ in "Saved before cancellation" }, persist: { text in
+                    _ = try await DictationRecoveryRetry.persistHistory(record: record, text: text, databaseURL: database)
+                    await withCheckedContinuation { continuation in
+                        resumePersistence = continuation
+                        entered.continuation.yield(())
+                    }
+                })
+        }
+        for await _ in entered.stream { break }
+        task.cancel()
+        resumePersistence?.resume()
+        do { try await task.value; Issue.record("Expected cancellation") }
+        catch is CancellationError {} catch { throw error }
+        entered.continuation.finish()
+        #expect(try store.recordings() == [record])
+        #expect(try history.recentDictations().map(\.rawText) == ["Saved before cancellation"])
+        try await DictationRecoveryRetry.run(record: record, store: store,
+            transcribe: { _ in "Another retry" }, persist: { text in
+                _ = try await DictationRecoveryRetry.persistHistory(record: record, text: text, databaseURL: database)
+            })
+        #expect(try history.recentDictations().map(\.rawText) == ["Saved before cancellation"])
+        #expect(try store.recordings().isEmpty)
+    }
+
     @Test("a failed retry-key write rolls back history and leaves the recording retryable")
     @MainActor
     func retryKeyFailureRollsBackHistory() async throws {
@@ -344,4 +468,11 @@ struct DictationRecoveryTests {
         #expect(!persisted)
         #expect(try store.recordings() == [record])
     }
+}
+
+private final class RecoveryWriteLockState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    var hasReleased: Bool { lock.withLock { released } }
+    func markReleased() { lock.withLock { released = true } }
 }

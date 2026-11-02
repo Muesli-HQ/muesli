@@ -7168,26 +7168,44 @@ public final class MuesliController: NSObject {
         syncAppState()
     }
 
-    func clearDictationHistory() {
-        guard dictationRecoveryTask == nil, dictationState == .idle else {
+    @discardableResult
+    func clearDictationHistory() -> Task<Void, Never>? {
+        guard dictationRecoveryTask == nil, dictationState == .idle,
+              appState.activeAudioImportCount == 0, discardingDictationRecoveryIDs.isEmpty else {
             presentErrorAlert(title: "Dictation is in progress",
-                              message: "Finish or cancel the current dictation or recovery before clearing history.")
-            return
+                              message: "Finish or cancel the current dictation, recovery, or audio import before clearing history.")
+            return nil
         }
-        do {
-            try dictationRecoveryStore.discardAll()
-        } catch {
-            presentErrorAlert(title: "Couldn't Clear Dictation History",
-                              message: "The failed recordings could not be removed. \(error.localizedDescription)")
-            return
+        let recoveries = dictationRecoveryStore
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        // Reserve ownership before yielding. New captures/retries/imports must
+        // not race deletion; navigation and other UI remain responsive.
+        appState.activeAudioImportCount += 1
+        dictationRecoveryTask = Task {
+            defer {
+                self.appState.activeAudioImportCount -= 1
+                self.dictationRecoveryTask = nil
+            }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try recoveries.discardAll()
+                    try DictationStore(databaseURL: databaseURL).clearDictations()
+                }.value
+                self.dictationRecoveryRefreshGeneration += 1
+                self.appState.failedDictations = []
+                self.scheduleICloudSyncAfterLocalChange()
+                self.statusBarController?.refresh()
+                self.historyWindowController?.reload()
+                self.syncAppState()
+            } catch {
+                await self.refreshFailedDictations()
+                if !Task.isCancelled {
+                    self.presentErrorAlert(title: "Couldn't Clear Dictation History",
+                                          message: "History could not be completely cleared. \(error.localizedDescription)")
+                }
+            }
         }
-        dictationRecoveryRefreshGeneration += 1
-        appState.failedDictations = []
-        try? dictationStore.clearDictations()
-        scheduleICloudSyncAfterLocalChange()
-        statusBarController?.refresh()
-        historyWindowController?.reload()
-        syncAppState()
+        return dictationRecoveryTask
     }
 
     func canDeleteMeeting(_ meeting: MeetingRecord) -> Bool {
@@ -9662,7 +9680,7 @@ public final class MuesliController: NSObject {
     }
 
     private var canBeginDictationInteraction: Bool {
-        DictationStartAdmissionPolicy.allowsStart(
+        !isClearingDictationHistory && DictationStartAdmissionPolicy.allowsStart(
             dictationState: dictationState,
             isMeetingAudioProcessing: isMeetingAudioProcessing
         )
@@ -11044,7 +11062,7 @@ public final class MuesliController: NSObject {
     }
 
     var canPrepareComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isClearingDictationHistory && !isMeetingRecording()
             && !isDictationTestMode
             && !isMeetingAudioProcessing
             && dictationStartedAt == nil
@@ -11057,7 +11075,7 @@ public final class MuesliController: NSObject {
     }
 
     private var canStartComputerUseCommand: Bool {
-        !isMeetingRecording()
+        !isClearingDictationHistory && !isMeetingRecording()
             && !isDictationTestMode
             && !isMeetingAudioProcessing
             && dictationStartedAt == nil
@@ -11091,7 +11109,7 @@ public final class MuesliController: NSObject {
     }
 
     private var canPrepareQuil: Bool {
-        config.enableQuilMode
+        !isClearingDictationHistory && config.enableQuilMode
             && !isMeetingRecording()
             && !isDictationTestMode
             && !isMeetingAudioProcessing
@@ -11102,7 +11120,7 @@ public final class MuesliController: NSObject {
     }
 
     private var canStartQuil: Bool {
-        config.enableQuilMode
+        !isClearingDictationHistory && config.enableQuilMode
             && !isMeetingRecording()
             && !isDictationTestMode
             && !isMeetingAudioProcessing
@@ -13542,6 +13560,10 @@ public final class MuesliController: NSObject {
         }
     }
 
+    private var isClearingDictationHistory: Bool {
+        dictationRecoveryTask != nil && appState.recoveringDictationID == nil
+    }
+
     private var dictationRecoveryStore: DictationRecoveryStore {
         DictationRecoveryStore(directory: configStore.supportDirectory()
             .appendingPathComponent("Dictation Recovery", isDirectory: true))
@@ -13570,7 +13592,7 @@ public final class MuesliController: NSObject {
     }
 
     func discardFailedDictation(_ record: FailedDictation) {
-        guard appState.recoveringDictationID == nil,
+        guard dictationRecoveryTask == nil, appState.recoveringDictationID == nil,
               discardingDictationRecoveryIDs.insert(record.id).inserted else { return }
         let store = dictationRecoveryStore
         Task {
@@ -13639,11 +13661,9 @@ public final class MuesliController: NSObject {
                     )
                     return result.text
                 }, persist: { text in
-                    recoveredText = try self.dictationStore.insertRecoveredDictation(
-                        recoveryID: record.id, text: text, durationSeconds: record.durationSeconds,
-                        startedAt: record.startedAt,
-                        endedAt: record.startedAt.addingTimeInterval(record.durationSeconds),
-                        transcriptionModel: DictationModelIdentity(backend: backend.backend,
+                    recoveredText = try await DictationRecoveryRetry.persistHistory(
+                        record: record, text: text, databaseURL: self.dictationStore.resolvedDatabaseURL,
+                        model: DictationModelIdentity(backend: backend.backend,
                             model: backend.model, name: backend.label)
                     )
                     self.scheduleICloudSyncAfterLocalChange()

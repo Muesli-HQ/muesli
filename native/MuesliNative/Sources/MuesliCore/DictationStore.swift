@@ -893,25 +893,31 @@ public final class DictationStore {
             var existing: OpaquePointer?
             let lookup = """
             SELECT d.raw_text FROM dictation_recovery_history r
-            JOIN dictations d ON d.id = r.dictation_id WHERE r.recovery_id = ?
+            JOIN dictations d ON d.id = r.dictation_id
+            WHERE r.recovery_id = ? AND d.deleted_at IS NULL
             """
             guard sqlite3_prepare_v2(db, lookup, -1, &existing, nil) == SQLITE_OK else { throw lastError(db) }
             defer { sqlite3_finalize(existing) }
             sqlite3_bind_text(existing, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
             let status = sqlite3_step(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
             if status == SQLITE_ROW {
                 let savedText = stringColumn(existing, index: 0)
-                try exec("COMMIT", db: db)
-                return savedText
+                if !savedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try exec("COMMIT", db: db)
+                    return savedText
+                }
             }
-            guard status == SQLITE_DONE else { throw lastError(db) }
             let id = try insertDictation(text: text, durationSeconds: durationSeconds,
                 source: "dictation", targetAppName: nil, targetAppBundleID: nil,
                 startedAt: startedAt, endedAt: endedAt,
                 transcriptionModel: transcriptionModel, db: db)
             var link: OpaquePointer?
             guard sqlite3_prepare_v2(db,
-                "INSERT INTO dictation_recovery_history (recovery_id, dictation_id) VALUES (?, ?)",
+                """
+                INSERT INTO dictation_recovery_history (recovery_id, dictation_id) VALUES (?, ?)
+                ON CONFLICT(recovery_id) DO UPDATE SET dictation_id = excluded.dictation_id
+                """,
                 -1, &link, nil) == SQLITE_OK else { throw lastError(db) }
             defer { sqlite3_finalize(link) }
             sqlite3_bind_text(link, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
