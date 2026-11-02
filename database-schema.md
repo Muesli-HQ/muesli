@@ -668,7 +668,9 @@ recap source snapshots are deliberately excluded.
 
 Source deletion/soft deletion updates the index in the same SQLite transaction.
 Chat `sourceDeleted` turns are excluded and invalidated answers disappear through
-existing source-owner updates. Because edited evidence can invalidate otherwise
+existing source-owner updates. Validation and destination resolution inspect only
+surviving searchable turns, so deleting one source does not hide unrelated answers
+or later turns in the same conversation. Because edited evidence can invalidate otherwise
 persisted derived text, Chat and Recap hits additionally require a current-source
 validator; the core API excludes these kinds before the SQL limit without one.
 With a validator, ranked candidates are read in batches of at most 200. Rejected
@@ -723,7 +725,9 @@ Captures navigate by stable capture ID, never by a formatted date or image hash;
 identical screen content captured at different instants remains distinct history.
 Recaps navigate by the persisted `day_key` and retain their original day bounds
 and timezone, including for explicit regeneration. Travel does not re-key a saved
-recap in the current timezone. Choosing another date resumes current-calendar day
+recap in the current timezone. The shared History date uses the saved recap's
+calendar date in the current timezone, so switching tabs keeps the displayed day.
+Choosing another date resumes current-calendar day
 browsing. Source validation still runs when opening either kind of result.
 An open text preview distinguishes confirmed source absence from transient read
 failure. Read failures retain the displayed text, show a retry status, disable the

@@ -340,9 +340,10 @@ final class AppState {
         selectedTab = .timeTurner
     }
 
-    func openTimeTurnerRecap(_ recap: SavedTimeTurnerRecap) {
-        timeTurnerDay = recap.dayStart
-        timeTurnerSelectedRecap = TimeTurnerRecapSelection(recap)
+    func openTimeTurnerRecap(_ recap: SavedTimeTurnerRecap, calendar: Calendar = .current) {
+        let selection = TimeTurnerRecapSelection(recap)
+        timeTurnerDay = selection.browsingDay(in: calendar)
+        timeTurnerSelectedRecap = selection
         timeTurnerShowsRecap = true
         timeTurnerNavigationID = UUID()
         selectedTab = .timeTurner

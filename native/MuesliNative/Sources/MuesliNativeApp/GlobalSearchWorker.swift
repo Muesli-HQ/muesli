@@ -75,12 +75,7 @@ actor GlobalSearchWorker {
             switch kind {
             case .chat:
                 guard let sessionID = UUID(uuidString: id) else { return false }
-                let turns = try chat.turns(sessionID: sessionID)
-                guard !turns.isEmpty, !turns.contains(where: { $0.state == .sourceDeleted }) else { return false }
-                for turn in turns where turn.state == .completed {
-                    guard try chat.dependenciesAreCurrent(chat.dependencies(turnID: turn.id)) else { return false }
-                }
-                return true
+                return try Self.searchableChatIsCurrent(sessionID, store: chat)
             case .recap:
                 guard let saved = try TimeTurnerRecapStore(databaseURL: databaseURL).load(key: id) else { return false }
                 return try TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: screenRoot, databaseURL: databaseURL)
@@ -101,6 +96,17 @@ enum GlobalSearchDestination: Sendable {
 }
 
 extension GlobalSearchWorker {
+    /// Match the index projection: deleted-source turns contribute no searchable
+    /// text, but must not hide unrelated surviving turns in the same conversation.
+    private static func searchableChatIsCurrent(_ id: UUID, store: MeetingChatStore) throws -> Bool {
+        let turns = try store.turns(sessionID: id).filter { $0.state != .sourceDeleted }
+        guard !turns.isEmpty else { return false }
+        for turn in turns where turn.state == .completed {
+            guard try store.dependenciesAreCurrent(store.dependencies(turnID: turn.id)) else { return false }
+        }
+        return true
+    }
+
     func destination(for result: GlobalSearchResult) throws -> GlobalSearchDestination? {
         let store = DictationStore(databaseURL: databaseURL)
         switch result.kind {
@@ -119,11 +125,7 @@ extension GlobalSearchWorker {
         case .chat:
             guard let id = UUID(uuidString: result.sourceID) else { return nil }
             let chat = MeetingChatStore(databaseURL: databaseURL)
-            let turns = try chat.turns(sessionID: id)
-            guard !turns.isEmpty, !turns.contains(where: { $0.state == .sourceDeleted }) else { return nil }
-            for turn in turns where turn.state == .completed {
-                guard try chat.dependenciesAreCurrent(chat.dependencies(turnID: turn.id)) else { return nil }
-            }
+            guard try Self.searchableChatIsCurrent(id, store: chat) else { return nil }
             return .chat(id)
         case .screenHistory:
             guard let screenRoot,

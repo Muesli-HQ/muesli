@@ -109,13 +109,17 @@ struct GlobalSearchWorkerTests {
             Issue.record("Expected saved recap"); return
         }
         let state = AppState()
-        state.openTimeTurnerRecap(resolved)
+        state.openTimeTurnerRecap(resolved, calendar: destination)
         #expect(state.timeTurnerSelectedRecap?.key == saved.key)
         #expect(state.timeTurnerSelectedRecap?.interval == interval)
         #expect(state.timeTurnerSelectedRecap?.timeZone == origin.timeZone.identifier)
         let browsingDay = try #require(state.timeTurnerSelectedRecap?.browsingDay(in: destination))
         #expect(destination.component(.day, from: browsingDay) == origin.component(.day, from: interval.start))
         #expect(browsingDay != interval.start)
+        #expect(state.timeTurnerDay == browsingDay)
+        state.timeTurnerShowsRecap = false
+        #expect(destination.component(.day, from: state.timeTurnerDay) == 2)
+        #expect(state.timeTurnerSelectedRecap?.key == saved.key)
         let model = TimeTurnerRecapModel()
         await model.load(day: state.timeTurnerDay, selection: state.timeTurnerSelectedRecap,
             root: screenRoot, databaseURL: url, calendar: destination)
@@ -243,6 +247,46 @@ struct GlobalSearchWorkerTests {
         #expect(try await worker.search(.init(text: "orchid", kinds: [.chat])).isEmpty)
         try store.deleteMeeting(id: id)
         #expect(try await worker.search(.init(text: "orchid", kinds: [.chat])).isEmpty)
+    }
+
+    @Test("Deleting one Chat source preserves unrelated and subsequent searchable turns")
+    func survivingChatTurns() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-chat-survivors-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let chat = MeetingChatStore(databaseURL: url)
+        let session = try chat.createSession(scope: .init(), title: "Planning")
+        var meetingIDs: [Int64] = []
+        for text in ["Orchid", "Marigold"] {
+            let id = try store.insertMeeting(title: text, calendarEventID: nil,
+                startTime: Date(), endTime: Date(), rawTranscript: text, formattedNotes: text,
+                micAudioPath: nil, systemAudioPath: nil)
+            meetingIDs.append(id)
+            let turn = try chat.beginTurn(sessionID: session.id, question: "Discuss this meeting",
+                scope: .init(), provider: "test", model: "test")
+            let source = try #require(chat.sourceSnapshots(scope: .init()).first { $0.meetingID == id })
+            #expect(try chat.finishTurn(turnID: turn.id, answer: text, citations: [],
+                dependencies: [.init(meetingID: id, revision: source.revision)]))
+        }
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: nil)
+        let hit = try #require(try await worker.search(.init(text: "marigold", kinds: [.chat])).first)
+        try store.deleteMeeting(id: meetingIDs[0])
+        #expect(try await worker.search(.init(text: "orchid", kinds: [.chat])).isEmpty)
+        #expect(try await worker.search(.init(text: "marigold", kinds: [.chat])).count == 1)
+        guard case .chat(let destination) = try await worker.destination(for: hit) else {
+            Issue.record("Surviving conversation should open"); return
+        }
+        #expect(destination == session.id)
+        let later = try chat.beginTurn(sessionID: session.id, question: "Next steps", scope: .init(), provider: "test", model: "test")
+        #expect(try chat.finishTurn(turnID: later.id, answer: "Sunflower", citations: [], dependencies: []))
+        #expect(try await worker.search(.init(text: "sunflower", kinds: [.chat])).count == 1)
+        // A stale surviving answer is still rejected; deleted turns are the only exclusion.
+        try store.updateMeetingTranscript(id: meetingIDs[1], rawTranscript: "Changed evidence")
+        #expect(try await worker.search(.init(text: "marigold", kinds: [.chat])).isEmpty)
+        #expect(try await worker.destination(for: hit) == nil)
     }
 
     @Test("Recap validation hides derived text while cross-database deletion is still pending")
