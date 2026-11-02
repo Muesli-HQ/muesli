@@ -34,6 +34,7 @@ public final class DictationStore {
     private static let iso8601FormatterLock = NSLock()
 
     private let databaseURL: URL
+    private let readOnly: Bool
     private static let dictationColumns = """
     d.id, d.timestamp, d.duration_seconds, d.raw_text, d.app_context, d.word_count, d.source,
     d.target_app_name, d.target_app_bundle_id,
@@ -45,10 +46,12 @@ public final class DictationStore {
 
     public init() {
         self.databaseURL = MuesliPaths.defaultDatabaseURL()
+        self.readOnly = false
     }
 
-    public init(databaseURL: URL) {
+    public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL
+        self.readOnly = readOnly
     }
 
     public var resolvedDatabaseURL: URL {
@@ -952,7 +955,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 3)
         }
         sqlite3_bind_int64(statement, 4, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     @discardableResult
@@ -1070,7 +1073,7 @@ public final class DictationStore {
         bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
         bindOptionalText(transcriptionModel?.endpoint, at: 15, statement: statement)
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -1222,9 +1225,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeDictationRecord(statement)
     }
 
@@ -1547,9 +1550,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeMeetingRecord(statement)
     }
 
@@ -1779,7 +1782,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 24)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -2043,7 +2046,7 @@ public final class DictationStore {
             bindOptionalText(participant.emailAddress, at: 4, statement: statement)
             sqlite3_bind_int64(statement, 5, meetingID)
             sqlite3_bind_text(statement, 6, (source.rawValue as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -2124,7 +2127,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -2145,7 +2148,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -2209,7 +2212,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 17)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -2700,7 +2703,7 @@ public final class DictationStore {
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_text(statement, 1, (signature as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
@@ -2877,7 +2880,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode(pairs)
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 10, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Records the source revision even when it contributes no analytics. This keeps
@@ -2899,7 +2902,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode([])
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 5, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func removeCachedInsightsRecord(kind: String, id: Int64, db: OpaquePointer?) throws {
@@ -2931,7 +2934,7 @@ public final class DictationStore {
         guard sqlite3_prepare_v2(db, "DELETE FROM insights_record_cache WHERE kind = ? AND record_id = ?", -1, &delete, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(delete) }
         sqlite3_bind_text(delete, 1, (kind as NSString).utf8String, -1, nil); sqlite3_bind_int64(delete, 2, id)
-        guard sqlite3_step(delete) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(delete) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsDaily(day: String, dictationWords: Int, dictationSessions: Int, meetingWords: Int, meetings: Int, duration: Double, db: OpaquePointer?) throws {
@@ -2945,7 +2948,7 @@ public final class DictationStore {
         var s: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
         sqlite3_bind_text(s, 1, (day as NSString).utf8String, -1, nil); sqlite3_bind_int64(s, 2, Int64(dictationWords))
         sqlite3_bind_int(s, 3, Int32(dictationSessions)); sqlite3_bind_int64(s, 4, Int64(meetingWords)); sqlite3_bind_int(s, 5, Int32(meetings)); sqlite3_bind_double(s, 6, duration)
-        guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsToken(day: String, pair: InsightsContributionCodec.Pair, meeting: Bool, multiplier: Int, db: OpaquePointer?) throws {
@@ -2958,13 +2961,13 @@ public final class DictationStore {
             var index: Int32 = 1
             if sql.contains("daily_tokens") { sqlite3_bind_text(s, index, (day as NSString).utf8String, -1, nil); index += 1 }
             sqlite3_bind_int64(s, index, pair.tokenID); sqlite3_bind_int(s, index + 1, Int32(dictation)); sqlite3_bind_int(s, index + 2, Int32(meetingCount))
-            guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
     private func internInsightsToken(_ token: String, db: OpaquePointer?) throws -> Int64 {
         var insert: OpaquePointer?; guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO insights_tokens(token) VALUES(?)", -1, &insert, nil) == SQLITE_OK else { throw lastError(db) }
-        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
+        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
         var select: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT id FROM insights_tokens WHERE token=?", -1, &select, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(select) }
         sqlite3_bind_text(select, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(select) == SQLITE_ROW else { throw lastError(db) }
         return sqlite3_column_int64(select, 0)
@@ -3143,7 +3146,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, now)
         sqlite3_bind_double(statement, 2, now)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3188,7 +3191,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 1, now)
             sqlite3_bind_double(statement, 2, now)
             sqlite3_bind_int64(statement, 3, id)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
             guard sqlite3_changes(db) > 0 else {
@@ -3243,7 +3246,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (message as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -3308,7 +3311,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (finalStatus as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, (finalMessage as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (traceJSON as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3358,7 +3361,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3375,7 +3378,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3395,7 +3398,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 2, Int32(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3492,7 +3495,7 @@ public final class DictationStore {
                 sqlite3_bind_double(statement, 4, entry.startSeconds)
                 sqlite3_bind_double(statement, 5, entry.endSeconds)
                 sqlite3_bind_text(statement, 6, (entry.text as NSString).utf8String, -1, nil)
-                guard sqlite3_step(statement) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -3552,7 +3555,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 6, Int32(wordCount))
         sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3582,7 +3585,7 @@ public final class DictationStore {
         sqlite3_bind_int64(statement, 2, Int64(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3626,7 +3629,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(statement, 3, id)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3691,7 +3694,7 @@ public final class DictationStore {
         bindOptionalText(visualContext, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 19, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3846,7 +3849,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 4, snapshot.durationSeconds)
         sqlite3_bind_text(statement, 5, (snapshot.startTime as NSString).utf8String, -1, nil)
         bindOptionalText(snapshot.endTime, at: 6, statement: statement)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3971,7 +3974,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 7, Int32(wordCount))
         sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 9, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -4018,7 +4021,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4031,7 +4034,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4044,7 +4047,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4057,7 +4060,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4091,7 +4094,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 6, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4129,7 +4132,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 10, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -4149,7 +4152,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4165,7 +4168,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         bindOptionalText(path, at: 1, statement: statement)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4186,7 +4189,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 2)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -4203,7 +4206,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4275,7 +4278,7 @@ public final class DictationStore {
                     sqlite3_bind_null(reparentStmt, 1)
                 }
                 sqlite3_bind_int64(reparentStmt, 2, childID)
-                guard sqlite3_step(reparentStmt) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(reparentStmt) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -4287,7 +4290,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s1) }
             sqlite3_bind_int64(s1, 1, id)
-            guard sqlite3_step(s1) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s1) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4297,7 +4300,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s2) }
             sqlite3_bind_int64(s2, 1, id)
-            guard sqlite3_step(s2) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s2) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4331,7 +4334,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4356,7 +4359,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4534,7 +4537,7 @@ public final class DictationStore {
             sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(data.count), transient)
         }
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     public func clearCloudSyncStateData(forKey key: String) throws {
@@ -4547,7 +4550,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Promotes a legacy environment namespace only when its hashed account owner
@@ -4599,7 +4602,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(Data(expectedScope.utf8), at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4612,7 +4615,7 @@ public final class DictationStore {
             }
             sqlite3_bind_text(deleteStatement, 1, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4711,7 +4714,7 @@ public final class DictationStore {
             sqlite3_bind_text(deleteStatement, 1, (stateKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 3, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4725,7 +4728,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(expectedData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4798,7 +4801,7 @@ public final class DictationStore {
                     nil
                 )
             }
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4881,7 +4884,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (key as NSString).utf8String, -1, nil)
             bindOptionalBlob(scopeData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else { throw lastError(db) }
             try exec("COMMIT", db: db)
             return true
         } catch {
@@ -5203,7 +5206,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 3, syncedAt.timeIntervalSince1970)
         sqlite3_bind_text(statement, 4, (recordName as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 5, recordUpdatedAt.timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5234,7 +5237,7 @@ public final class DictationStore {
         bindOptionalText(changeTag, at: 1, statement: statement)
         bindOptionalBlob(systemFields, at: 2, statement: statement)
         sqlite3_bind_text(statement, 3, (recordName as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Drops obsolete CKRecord versions after this same account's zone was recreated.
@@ -5346,7 +5349,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 2, predecessorID)
         sqlite3_bind_int64(statement, 3, predecessorID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5389,7 +5392,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, cutoff)
         sqlite3_bind_double(statement, 3, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5411,7 +5414,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -5458,7 +5461,7 @@ public final class DictationStore {
             sqlite3_bind_text(update, 1, (recordName as NSString).utf8String, -1, nil)
             sqlite3_bind_double(update, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(update, 3, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5493,7 +5496,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(fillRecordName) }
         sqlite3_bind_double(fillRecordName, 1, now)
-        guard sqlite3_step(fillRecordName) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillRecordName) == SQLITE_DONE else {
             throw lastError(db)
         }
 
@@ -5532,7 +5535,7 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(fillLocalID) }
-        guard sqlite3_step(fillLocalID) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillLocalID) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5699,7 +5702,7 @@ public final class DictationStore {
             defer { sqlite3_finalize(update) }
             sqlite3_bind_text(update, 1, (source as NSString).utf8String, -1, nil)
             sqlite3_bind_int64(update, 2, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5762,7 +5765,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 12, statement: statement)
         sqlite3_bind_double(statement, 13, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5836,7 +5839,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5962,29 +5965,47 @@ public final class DictationStore {
     }
 
     private func openDatabase() throws -> OpaquePointer? {
-        try FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
         var db: OpaquePointer?
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            throw lastError(db)
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let error = lastError(db)
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_busy_timeout(db, 5_000) != SQLITE_OK {
-            throw lastError(db)
+        do {
+            guard sqlite3_busy_timeout(db, 5_000) == SQLITE_OK else { throw lastError(db) }
+            if !readOnly {
+                guard sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+            }
+            return db
+        } catch {
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        return db
     }
 
     private func exec(_ sql: String, db: OpaquePointer?) throws {
-        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
+        // Match sqlite3_exec's multi-statement behavior, but give each source
+        // statement the same narrowly scoped FTS recovery as bound writes.
+        try sql.withCString { start in
+            var cursor = start
+            while cursor.pointee != 0 {
+                var statement: OpaquePointer?
+                var tail: UnsafePointer<CChar>?
+                guard sqlite3_prepare_v2(db, cursor, -1, &statement, &tail) == SQLITE_OK else { throw lastError(db) }
+                defer { sqlite3_finalize(statement) }
+                if let statement {
+                    var status = try GlobalSearchIndex.stepSourceWrite(statement)
+                    while status == SQLITE_ROW { status = try GlobalSearchIndex.stepSourceWrite(statement) }
+                    guard status == SQLITE_DONE else { throw lastError(db) }
+                }
+                guard let tail, tail > cursor else { break }
+                cursor = tail
+            }
         }
     }
 
@@ -6202,7 +6223,7 @@ public final class DictationStore {
                     sqlite3_bind_int(update, 1, Int32(Self.countWords(in: instruction)))
                     sqlite3_bind_double(update, 2, migrationTime)
                     sqlite3_bind_int64(update, 3, dictationID)
-                    guard sqlite3_step(update) == SQLITE_DONE else { throw lastError(db) }
+                    guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else { throw lastError(db) }
                 }
 
                 let markSQL = """
@@ -6221,7 +6242,7 @@ public final class DictationStore {
                     -1,
                     nil
                 )
-                guard sqlite3_step(mark) == SQLITE_DONE else { throw lastError(db) }
+                guard try GlobalSearchIndex.stepSourceWrite(mark) == SQLITE_DONE else { throw lastError(db) }
             }
             try exec("COMMIT", db: db)
         } catch {
@@ -6395,7 +6416,7 @@ extension DictationStore {
             let create = try prepare("INSERT INTO meeting_folders (name, parent_id) VALUES (?, NULL)")
             defer { sqlite3_finalize(create) }
             text("Granola", 1, create)
-            guard sqlite3_step(create) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(create) == SQLITE_DONE else { throw lastError(db) }
             let id = sqlite3_last_insert_rowid(db)
             destinationFolderID = id
             return id
@@ -6431,13 +6452,13 @@ extension DictationStore {
             sqlite3_bind_int64(insert, 7, try importFolder())
             sqlite3_bind_double(insert, 8, Date().timeIntervalSince1970)
             text(record.syncIdentity, 9, insert)
-            guard sqlite3_step(insert) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { throw lastError(db) }
             let meetingID = sqlite3_last_insert_rowid(db)
             sqlite3_reset(provenance); sqlite3_clear_bindings(provenance)
             sqlite3_bind_int64(provenance, 1, meetingID)
             text(record.id, 2, provenance); text(record.workspace, 3, provenance); text(record.ownerEmail, 4, provenance)
             sqlite3_bind_double(provenance, 5, Date().timeIntervalSince1970)
-            guard sqlite3_step(provenance) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(provenance) == SQLITE_DONE else { throw lastError(db) }
             imported += 1
         }
         // Finalize the existence cursor before committing when the last record was a duplicate.

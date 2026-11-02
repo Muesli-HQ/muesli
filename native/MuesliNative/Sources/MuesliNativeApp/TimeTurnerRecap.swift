@@ -129,7 +129,7 @@ enum TimeTurnerRecap {
             }
         }
         let dependencies = sources.compactMap(\.meeting).map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) }
-        return try MeetingChatStore(databaseURL: databaseURL).dependenciesAreCurrent(dependencies)
+        return try MeetingChatStore(databaseURL: databaseURL, readOnly: true).dependenciesAreCurrent(dependencies)
     }
 }
 
@@ -154,12 +154,12 @@ final class TimeTurnerRecapModel {
         if clear { insights = []; sources = []; hasGenerated = false; error = nil; generatedAt = nil; savedKey = nil }
     }
 
-    func generate(day: Date, captures: [VisualMemoryItem]? = nil, root: URL?, databaseURL: URL, config: AppConfig,
+    func generate(day: Date, selection: TimeTurnerRecapSelection? = nil, captures: [VisualMemoryItem]? = nil, root: URL?, databaseURL: URL, config: AppConfig,
                   generator: any MeetingTextGenerating = MeetingTextGenerationClient()) {
         cancel(clear: true)
-        guard let interval = Calendar.current.dateInterval(of: .day, for: day) else { return }
+        guard let interval = selection?.interval ?? Calendar.current.dateInterval(of: .day, for: day) else { return }
         let token = attempt
-        let timeZone = Calendar.current.timeZone.identifier
+        let timeZone = selection?.timeZone ?? Calendar.current.timeZone.identifier
         isGenerating = true
         modelLabel = MeetingTextGenerationClient.model(config)
         providerLabel = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label
@@ -216,10 +216,11 @@ final class TimeTurnerRecapModel {
         modelLabel = saved.model; providerLabel = saved.provider
     }
 
-    func load(day: Date, root: URL?, databaseURL: URL) async {
+    func load(day: Date, selection: TimeTurnerRecapSelection? = nil, root: URL?, databaseURL: URL,
+              calendar: Calendar = .current) async {
         cancel(clear: true)
         let token = attempt
-        let key = SavedTimeTurnerRecap.key(dayStart: Calendar.current.startOfDay(for: day), timeZone: Calendar.current.timeZone.identifier)
+        let key = selection?.key ?? SavedTimeTurnerRecap.key(dayStart: calendar.startOfDay(for: day), timeZone: calendar.timeZone.identifier)
         isLoading = true
         do {
             let saved = try await Task.detached(priority: .utility) {

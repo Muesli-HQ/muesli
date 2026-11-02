@@ -511,6 +511,8 @@ public final class MuesliController: NSObject {
         self?.applyInteractionPermissionSnapshot(snapshot)
     }
 
+    lazy var globalSearchWorker = GlobalSearchWorker(databaseURL: dictationStore.resolvedDatabaseURL,
+        screenRoot: configStore.supportDirectory().appendingPathComponent("visual-memory"))
     private var searchTask: Task<Void, Never>?
     private var onboardingModelPreparationTask: Task<Void, Never>?
     private var openRouterSummaryCatalogTask: Task<Void, Never>?
@@ -6117,7 +6119,7 @@ public final class MuesliController: NSObject {
         guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
         presentHistoryWindow()
         DispatchQueue.main.async { [weak self] in
-            self?.appState.focusSearchField = true
+            self?.appState.globalSearchPresented = true
         }
     }
 

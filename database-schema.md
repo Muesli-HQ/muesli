@@ -116,7 +116,8 @@ see [MedASR setup](docs/medasr.md).
   media paths and video records, chat history and memory, import provenance,
   destination-app attribution, Cotypist typeahead history, and Insights data are
   local-only.
-- Global search uses parameterized `LIKE` queries. Ask Meetings has a separate
+- Global search uses the local FTS5 projections described below; legacy scoped
+  searches may still use parameterized `LIKE` queries. Ask Meetings has a separate
   FTS5 index, `meeting_chat_fts`, over revisioned meeting passages. Its FTS shadow
   tables are SQLite-managed implementation details, not application records.
 - ISO-8601 strings are used for user-visible event times such as `timestamp` and
@@ -619,7 +620,145 @@ for retry; only confirmed stale evidence removes it. Media
 compaction alone does not invalidate unchanged source content. New captures do
 not regenerate an existing recap or imply complete coverage.
 
-These records are local-only: no CloudKit, telemetry, global search, CLI export
-or agent-memory ingestion is added. Recaps survive app restarts but do not extend
+These records are local-only: no CloudKit, telemetry, CLI export or agent-memory
+ingestion is added. Valid recap insight text participates in global search below. Recaps survive app restarts but do not extend
 capture retention. They are model-derived summaries of sampled evidence, not
 an authoritative diary or a record of time spent.
+
+### Global search
+
+`GlobalSearchIndex` lazily installs a local, rebuildable index in `muesli.db`
+on the first query that requests main-database content. It does not change source ownership,
+CloudKit serialization, exports, or meeting-agent retrieval scope.
+
+- `global_search_documents`: integer `rowid`, unique namespaced `identity`, typed
+  `kind`, original `source_id`, Unix `timestamp`, `title`, searchable `text`,
+  `app_name`, and `bundle_id`. These are derived projections, never writable
+  history APIs. Source IDs are used to navigate back to the authoritative store.
+- `global_search_fts`: external-content FTS5 over title/text, maintained by
+  insert/update/delete triggers on `global_search_documents`.
+- `global_search_<source>_v1` (or `_v2` for Quill, Chat and recap): versioned
+  projection views and source-table triggers. Each available source is backfilled transactionally once. Subsequent
+  writes refresh only the affected parent document. Schema-version checks discover
+  Chat and Recap tables created after first search without reindexing all history.
+  Installation checks every source trigger as well as its view. Missing triggers
+  (including after a source or child table is recreated) rebuild that source's
+  missing schema objects and documents atomically, removing obsolete indexed text.
+  The v2 projections guard JSON reads so malformed bodies cannot block index
+  backfill or source writes. Installation removes v1 JSON-source views/triggers
+  and rebuilds those projections in the same transaction; source records are
+  unchanged.
+
+Prepared source writes in `DictationStore`, `MeetingChatSQL`, and
+`TimeTurnerRecapStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
+is retried only for `SQLITE_CORRUPT_VTAB` after a separate FTS integrity check
+confirms corruption of **global_search_fts**. A savepoint rebuilds its tokens from
+`global_search_documents` (recreating the virtual table only if the rebuild itself
+reports virtual-table corruption) and retries the aborted statement once.
+The repair and retry remain within the caller's transaction; caller rollback
+still rolls back both. It never replays a whole operation, changes source rows
+as part of repair, or treats busy, constraint, I/O, or another index's errors as
+permission to rebuild. Unrecoverable corruption remains an explicit save error.
+
+Sources are dictations, CUA **input commands only**, meetings (title, transcript,
+manual/generated notes as one result), Quill conversations, accepted Cotypist
+text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
+Cotypist suggestions, chat drafts/provider fields, rolling model memory, and
+recap source snapshots are deliberately excluded.
+
+Source deletion/soft deletion updates the index in the same SQLite transaction.
+Chat `sourceDeleted` turns are excluded and invalidated answers disappear through
+existing source-owner updates. Validation and destination resolution inspect only
+surviving searchable turns, so deleting one source does not hide unrelated answers
+or later turns in the same conversation. Because edited evidence can invalidate otherwise
+persisted derived text, Chat and Recap hits additionally require a current-source
+validator; the core API excludes these kinds before the SQL limit without one.
+With a validator, ranked candidates are read in batches of at most 200. Rejected
+stale Chat/recap candidates do not consume result slots: the index continues until
+the requested valid-result limit is filled or all matching candidates are exhausted.
+Each read statement is finalized before validation; data-version checks between
+batches restart the whole query after concurrent main-database changes.
+`GlobalSearchWorker` supplies
+existing meeting dependency and recap evidence validation. Main-database mutation
+during validation retries the complete query and source validation once, so an
+unrelated concurrent save does not immediately fail search. If the second attempt
+also overlaps a write, it throws `GlobalSearchError.changedSources`; callers must
+retry or discard that request rather than publish stale excerpts. This does not replace
+source retention/cleanup. In particular, cross-database recap invalidation remains
+recoverable through Time Turner's existing deletion queue.
+
+`GlobalSearchService` federates the source-owned Time Turner OCR FTS rather than
+copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable text;
+observation deletion removes it. Search and destination retrieval share the
+`GlobalSearchRead` contract: verified data, confirmed absence, or temporary
+unavailability. Read errors never count as proof of deletion. Cancellation and
+`changedSources` escape this boundary rather than publishing superseded/stale data.
+
+`GlobalSearchResponse` returns verified matches plus `unavailableKinds`, including
+when there are zero verified matches. Each failed Chat/recap evidence check excludes
+only that candidate; other verified candidates of the same kind remain eligible.
+The refill loop still fills result slots after excluded candidates. An unavailable
+main index excludes its kinds but does not prevent readable OCR results; an OCR
+query/open failure does not discard main-index matches. Queries scoped to unrelated
+kinds do not read the failing optional source. The legacy array-returning `search`
+API returns available matches, but throws `unavailableSources` when there are no
+matches and completeness cannot be established. New UI callers use the response
+API so a partial result is never presented as an exhaustive absence of matches.
+A never-created optional catalog is empty; disappearance of a catalog observed by
+the worker is unavailable. Recap evidence is verified independently in either case.
+
+Destination resolution uses the same read boundary and revalidates source content:
+missing/stale evidence returns `missing`, failed verification returns `unavailable`,
+and only verified destinations may open. Neither outcome wipes unrelated search
+results. Destination and evidence lookups use read-only source-store connections,
+which cannot recreate a missing database or run store migrations. These policies
+do not repair or mutate source records; the rebuildable search index retains its
+existing separate initialization/repair lifecycle.
+
+The worker keeps one main search service across filter changes
+and retains the optional catalog while its file identity is unchanged. Its
+persistent monitor uses SQLite data versions plus file identity to detect writes,
+removal and replacement; a corrupt optional catalog produces a stable unavailable
+revision, with open retries when its database/WAL fingerprint changes. Healthy
+catalog writes do not require reopening the store. If a readable catalog's store
+initialization fails, retries use an exponential 5–60 second backoff so transient
+failures recover without requiring another write. Results use a shared `GlobalSearchResult` envelope
+with kind, source ID, date, title, excerpt, app identity, and media availability.
+Queries apply type, exact app/bundle, and half-open date filters before limits;
+an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
+
+This first implementation returns a bounded first page (at most 200 validated hits
+per store, at most 200 results; invalid derived candidates may require additional
+SQL batches), not a complete export. Independent BM25 corpus
+scores are not directly compared: title-match tiers, recency and stable IDs order
+the merged candidates. The dashboard sidebar and ⌘F now open a shared search panel
+with typed filters, calendar-based date ranges and exact app-name/bundle filters.
+The panel displays up to 100 matches and labels that cap; a shared pagination
+cursor remains follow-up work. Existing destination-specific search tools remain
+available in their own views.
+
+`GlobalSearchPresentation` discards superseded requests and preserves the selected
+source identity during live refresh. While visible, the panel checks persistent
+read connections' SQLite `data_version` every five seconds and reruns only the
+bounded current query when either source database changes. Partial responses show
+a compact availability notice and Retry action alongside usable results. Partial
+queries also retry every 30 seconds without requiring a source write; changing the
+query cancels that polling task. Empty partial responses are distinguished from
+complete zero-match responses. Navigation resolves
+fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
+cannot open from old snippets. Short writing records open as selectable text,
+while meetings, chats, captures and recaps open their existing destinations.
+Captures navigate by stable capture ID, never by a formatted date or image hash;
+identical screen content captured at different instants remains distinct history.
+Recaps navigate by the persisted `day_key` and retain their original day bounds
+and timezone, including for explicit regeneration. Travel does not re-key a saved
+recap in the current timezone. The shared History date uses the saved recap's
+calendar date in the current timezone, so switching tabs keeps the displayed day.
+Choosing another date resumes current-calendar day
+browsing. Source validation still runs when opening either kind of result.
+An open text preview distinguishes confirmed source absence from transient read
+failure. Read failures retain the displayed text, show a retry status, disable the
+Copy action until verification succeeds, and retry on the next poll. Closing or
+replacing the preview invalidates in-flight reads.
+The search panel does not mutate source content. “Copy text” copies the displayed
+text preview to the system clipboard at the user's request.
