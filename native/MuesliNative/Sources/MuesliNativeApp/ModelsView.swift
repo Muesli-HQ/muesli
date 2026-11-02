@@ -1848,11 +1848,12 @@ struct ModelsView: View {
                 }
 
                 let replacedInstalledModel = try await downloadPostProcModel(option, generation: generation)
-                try Task.checkCancellation()
                 if replacedInstalledModel {
                     // Loaded engines hold the previous weights; the next request loads the new build.
+                    // Unload even if paused meanwhile: the swap has already happened.
                     await controller.transcriptionCoordinator.unloadLocalPostProcessor()
                 }
+                try Task.checkCancellation()
 
                 await MainActor.run {
                     guard downloadGenerations[option.id] == generation, !Task.isCancelled else { return }

@@ -31,8 +31,9 @@ enum MuesliCleanupV2Prompt {
         var skipping = false
         for line in appContext.components(separatedBy: "\n") {
             if let label = labels.first(where: { line.hasPrefix($0) }) {
-                skipping = label == "Selected text:" || line.trimmingCharacters(in: .whitespacesAndNewlines) == label
-                if skipping { continue }
+                skipping = label == "Selected text:"
+                // An empty header may still be followed by the section's text.
+                if skipping || line.trimmingCharacters(in: .whitespacesAndNewlines) == label { continue }
                 if label == "App:",
                    let range = line.range(of: #" \([A-Za-z][A-Za-z0-9+.-]*://.*\)$"#, options: .regularExpression) {
                     kept.append(String(line[..<range.lowerBound]))

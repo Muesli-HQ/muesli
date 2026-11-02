@@ -76,12 +76,12 @@ def validate(release: dict) -> list[str]:
     if release.get("notes") is not None and not isinstance(release["notes"], str):
         problems.append(f"{name}: notes must be a string")
     repo = release.get("repo", "")
-    if not repo.startswith("Muesli-HQ/") or repo.count("/") != 1:
+    if not re.fullmatch(r"Muesli-HQ/[A-Za-z0-9][A-Za-z0-9._-]*", repo):
         problems.append(f"{name}: repo must be under Muesli-HQ/")
     if not re.fullmatch(r"[0-9a-f]{40}", release.get("revision", "")):
         problems.append(f"{name}: revision must be a full commit hash")
     minimum = release.get("minimum_app_version")
-    if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"\d{1,18}(\.\d{1,18})*", minimum)):
+    if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"[0-9]{1,18}(\.[0-9]{1,18})*", minimum)):
         problems.append(f"{name}: minimum_app_version must be numeric, e.g. 0.9.2 (the app ignores other suffixes)")
     files = release.get("files") or []
     if not files or files[0].get("path") != model_file:

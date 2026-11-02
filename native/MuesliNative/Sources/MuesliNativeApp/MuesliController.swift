@@ -598,6 +598,18 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// Runs once at launch, before any update can start, so it never races a swap in progress.
+    private func recoverInterruptedCleanupModelSwaps() {
+        let folders = PostProcessorOption.all.compactMap { option in option.cleanupSlot.map { ($0, option.cacheDirectory) } }
+        Task.detached { [weak self] in
+            let restored = folders.reduce(false) { restored, folder in
+                CleanupModelInstallation.recoverInterruptedSwap(for: folder.0, liveDirectory: folder.1) || restored
+            }
+            guard restored else { return }
+            await MainActor.run { self?.refreshSettingsModelAvailability(force: true) }
+        }
+    }
+
     func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
         let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
         guard available != cleanupAvailabilityIDs else { return }
@@ -1062,6 +1074,7 @@ public final class MuesliController: NSObject {
         installICloudPersistentSyncObservers()
         refreshSettingsModelAvailability()
         checkCleanupModelUpdates()
+        recoverInterruptedCleanupModelSwaps()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)

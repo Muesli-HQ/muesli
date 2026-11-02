@@ -74,7 +74,10 @@ struct CleanupModelRelease: Codable, Equatable, Sendable {
         guard runtime == slot.runtime else { return "runtime \(runtime.rawValue) does not match \(slot.runtime.rawValue)" }
         guard sequence > 0, !version.isEmpty else { return "missing version" }
         guard repo.hasPrefix("Muesli-HQ/"), repo.split(separator: "/").count == 2,
-              repo.allSatisfy({ $0.isLetter || $0.isNumber || "-_./".contains($0) }) else { return "untrusted repository \(repo)" }
+              repo.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_./".contains($0)) }),
+              repo.split(separator: "/")[1].first.map({ $0.isLetter || $0.isNumber }) == true else {
+            return "untrusted repository \(repo)"
+        }
         guard revision.count == 40, revision.allSatisfy(\.isHexDigit) else { return "revision is not a commit hash" }
         // The runtime loads the slot's model file by name, so it is fixed per slot.
         guard let first = files.first, first.path == slot.bundled.files[0].path,
@@ -215,6 +218,28 @@ enum CleanupModelInstallation {
         }
         // A loaded engine keeps its open or mapped files; unlinking them is safe.
         if let retired { try? fileManager.removeItem(at: retired) }
+    }
+
+    /// Undoes a swap cut short between its two moves (the app quit or the Mac lost
+    /// power): if the live folder is missing, the retired build that is still complete
+    /// goes back in place. Retired folders left beside a live model are deleted.
+    /// Returns true if a model was restored.
+    @discardableResult
+    static func recoverInterruptedSwap(for slot: CleanupModelSlot, liveDirectory: URL,
+                                       fileManager: FileManager = .default) -> Bool {
+        let retired = siblingDirectories(of: liveDirectory, infix: retiredInfix, fileManager: fileManager)
+        guard !retired.isEmpty else { return false }
+        var restored = false
+        if !fileManager.fileExists(atPath: liveDirectory.path),
+           let complete = retired.first(where: { installedRelease(for: slot, in: $0) != nil }) {
+            restored = (try? fileManager.moveItem(at: complete, to: liveDirectory)) != nil
+        }
+        if fileManager.fileExists(atPath: liveDirectory.path) {
+            for leftover in retired where fileManager.fileExists(atPath: leftover.path) {
+                try? fileManager.removeItem(at: leftover)
+            }
+        }
+        return restored
     }
 
     /// Staging and retired folders that belong to a model folder, for deletion and cleanup.

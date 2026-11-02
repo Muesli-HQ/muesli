@@ -82,6 +82,7 @@ struct CleanupModelUpdateTests {
         let older = Self.release(version: "v13", sequence: 13, contents: model)
         let unsafe = [
             Self.release(version: "v20", sequence: 20, repo: "someone-else/cleanup", contents: model),
+            Self.release(version: "v20", sequence: 20, repo: "Muesli-HQ/..", contents: model),
             Self.release(version: "v20", sequence: 20, revision: "main", contents: model),
             Self.release(version: "v20", sequence: 20, runtime: .ggufLFM25, contents: model),
             Self.release(version: "v20", sequence: 20, contents: [("model.safetensors", "w"), ("../escape", "x")]),
@@ -159,6 +160,30 @@ struct CleanupModelUpdateTests {
         #expect(CleanupModelInstallation.auxiliaryDirectories(of: live).isEmpty)
     }
 
+    @Test func swapInterruptedBetweenMovesIsRestoredAtLaunch() throws {
+        let root = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = root.appendingPathComponent("postproc-\(CleanupModelSlot.liteID)")
+        let v14 = Self.release(version: "v14", sequence: 14, revision: Self.revisionA, contents: [("model.safetensors", "w14")])
+        let staging = try CleanupModelInstallation.prepareStaging(for: v14, liveDirectory: live, installed: nil)
+        try Self.write([("model.safetensors", "w14")], to: staging)
+        try CleanupModelInstallation.commit(v14, staging: staging, liveDirectory: live)
+
+        // Quit after the live folder was moved aside, before staging moved in.
+        let retired = root.appendingPathComponent(live.lastPathComponent + ".retired-\(UUID().uuidString)")
+        try FileManager.default.moveItem(at: live, to: retired)
+        #expect(CleanupModelInstallation.recoverInterruptedSwap(for: Self.liteSlot, liveDirectory: live))
+        #expect(CleanupModelInstallation.installedRelease(for: Self.liteSlot, in: live) == v14)
+        #expect(CleanupModelInstallation.auxiliaryDirectories(of: live).isEmpty)
+
+        // Quit after the swap, before the retired copy was deleted: just clean up.
+        let leftover = root.appendingPathComponent(live.lastPathComponent + ".retired-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
+        #expect(!CleanupModelInstallation.recoverInterruptedSwap(for: Self.liteSlot, liveDirectory: live))
+        #expect(!FileManager.default.fileExists(atPath: leftover.path))
+        #expect(CleanupModelInstallation.installedRelease(for: Self.liteSlot, in: live) == v14)
+    }
+
     @Test func abandonedStagingForOtherRevisionsIsRemoved() throws {
         let root = try Self.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -228,5 +253,7 @@ struct CleanupModelUpdateTests {
         #expect(MuesliCleanupV2Prompt.trainingContext(context) == "App: Safari\nDocument context: Draft\nOCR screen text: Inbox")
         #expect(MuesliCleanupV2Prompt.trainingContext("App: Notes\nDocument context:\nOCR screen text: x") == "App: Notes\nOCR screen text: x")
         #expect(MuesliCleanupV2Prompt.trainingContext("App: Notes (Work)") == "App: Notes (Work)")
+        // A document that begins with a blank line keeps its text.
+        #expect(MuesliCleanupV2Prompt.trainingContext("App: Notes\nDocument context: \nProject Zephyr") == "App: Notes\nProject Zephyr")
     }
 }
