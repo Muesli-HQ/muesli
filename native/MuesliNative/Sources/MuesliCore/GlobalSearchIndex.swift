@@ -112,8 +112,13 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 END;
                 """)
             for source in Self.sources {
-                guard try source.tables.allSatisfy({ try exists($0) }), !(try exists(source.view)) else { continue }
-                try execute("CREATE VIEW \(source.view) AS \(source.select)")
+                guard try source.tables.allSatisfy({ try exists($0) }) else { continue }
+                let complete = try exists(source.view) && source.triggerNames.allSatisfy { try exists($0) }
+                guard !complete else { continue }
+                // Dropping a source table removes its triggers, but leaves its view and indexed text.
+                // Repair the entire source atomically so deleted/changed rows cannot survive a migration.
+                try execute("DELETE FROM global_search_documents WHERE identity GLOB '\(source.prefix):*'")
+                try execute("CREATE VIEW IF NOT EXISTS \(source.view) AS \(source.select)")
                 try execute("INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id) SELECT * FROM \(source.view)")
                 for (table, key) in source.watches {
                     for event in ["INSERT", "UPDATE", "DELETE"] {
@@ -126,7 +131,7 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                                     \(source.select) AND \(source.primaryKey)=\(row).\(key);
                                 """
                         }.joined(separator: "\n")
-                        try execute("CREATE TRIGGER \(source.view)_\(table)_\(event) AFTER \(event) ON \(table) BEGIN \(refresh) END")
+                        try execute("CREATE TRIGGER IF NOT EXISTS \(source.view)_\(table)_\(event) AFTER \(event) ON \(table) BEGIN \(refresh) END")
                     }
                 }
             }
@@ -139,6 +144,17 @@ public final class GlobalSearchIndex: @unchecked Sendable {
     /// Chat and recaps require the application's current-source validator before any derived text is exposed.
     public func search(_ query: GlobalSearchQuery, validateDerived: ((GlobalSearchKind, String) throws -> Bool)? = nil) throws -> [GlobalSearchResult] {
         lock.lock(); defer { lock.unlock() }
+        do {
+            return try searchSnapshot(query, validateDerived: validateDerived)
+        } catch GlobalSearchError.changedSources {
+            // A save on another connection may be unrelated. Re-read and revalidate once rather
+            // than exposing a transient failure or returning excerpts from before a deletion.
+            return try searchSnapshot(query, validateDerived: validateDerived)
+        }
+    }
+
+    private func searchSnapshot(_ query: GlobalSearchQuery,
+                                validateDerived: ((GlobalSearchKind, String) throws -> Bool)?) throws -> [GlobalSearchResult] {
         guard !query.kinds.isEmpty, query.from < query.until else { return [] }
         try installAvailableSources()
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -189,6 +205,9 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         let watches: [(String, String)]
         let select: String
         var view: String { "global_search_\(prefix)_v1" }
+        var triggerNames: [String] {
+            watches.flatMap { table, _ in ["INSERT", "UPDATE", "DELETE"].map { "\(view)_\(table)_\($0)" } }
+        }
         var primaryKey: String { prefix == "recap" ? "day_key" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
     }
     private static func unix(_ expression: String) -> String { "coalesce((julianday(\(expression))-2440587.5)*86400.0,0)" }

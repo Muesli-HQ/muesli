@@ -28,8 +28,14 @@ struct GlobalSearchTests {
         }
         func sql(_ text: String) throws {
             guard sqlite3_exec(db, text, nil, nil, nil) == SQLITE_OK else {
-                throw NSError(domain: "Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db))])
+                throw NSError(domain: "Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(db)) + " SQL: " + text])
             }
+        }
+        func reopenWriter() throws {
+            sqlite3_close(db)
+            db = nil
+            guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw CocoaError(.fileWriteUnknown) }
+            try sql("PRAGMA foreign_keys=ON")
         }
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
     }
@@ -133,12 +139,100 @@ struct GlobalSearchTests {
             CREATE TABLE time_turner_recaps(day_key TEXT PRIMARY KEY,day_start REAL,body TEXT);
             INSERT INTO time_turner_recaps VALUES('day',1793527200,'{"version":1,"insights":[{"text":"orchid insight"}]}');
             """)
+        let hits = try index.search(.init(text: "orchid"), validateDerived: { _, _ in
+            try f.sql("DELETE FROM time_turner_recaps")
+            return true
+        })
+        #expect(hits.isEmpty)
+    }
+
+    @Test("A missing source trigger or recreated table rebuilds stale documents", arguments: [false, true])
+    func repairSourceTriggers(recreateTable: Bool) throws {
+        let f = try Fixture()
+        try f.sql("INSERT INTO dictations VALUES(1,'2026-11-01T10:00:00Z','old orchid','dictation','Editor','com.test.editor',NULL)")
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try index.search(.init(text: "orchid")).count == 1)
+        if recreateTable {
+            try f.sql("""
+                DROP TABLE dictations;
+                CREATE TABLE dictations(id INTEGER PRIMARY KEY,timestamp TEXT,raw_text TEXT,source TEXT,target_app_name TEXT,target_app_bundle_id TEXT,deleted_at REAL);
+                """)
+        } else {
+            try f.sql("DROP TRIGGER global_search_dictation_v1_dictations_DELETE; DELETE FROM dictations")
+        }
+        try f.sql("INSERT INTO dictations VALUES(2,'2026-11-01T10:00:00Z','new violet','cua','Editor','com.test.editor',NULL)")
+        #expect(try index.search(.init(text: "orchid")).isEmpty)
+        #expect(try index.search(.init(text: "violet", kinds: [.command])).map(\.sourceID) == ["2"])
+        // The repaired triggers must keep future writes searchable and deletions private.
+        try f.sql("UPDATE dictations SET raw_text='lily replacement' WHERE id=2")
+        #expect(try index.search(.init(text: "violet")).isEmpty)
+        #expect(try index.search(.init(text: "lily")).count == 1)
+        try f.sql("DELETE FROM dictations WHERE id=2")
+        #expect(try index.search(.init(text: "lily")).isEmpty)
+        let reopened = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try reopened.search(.init(text: "orchid")).isEmpty)
+    }
+
+    @Test("Recreating a child source table restores all parent-document triggers")
+    func repairChildSourceTriggers() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO quill_conversations VALUES(1,'2026-11-01T10:00:00Z',NULL);
+            INSERT INTO quill_conversation_turns VALUES(1,1,'{"question":"orchid","answer":"old answer"}');
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try index.search(.init(text: "orchid")).count == 1)
+        try f.sql("""
+            DROP TABLE quill_conversation_turns;
+            CREATE TABLE quill_conversation_turns(id INTEGER PRIMARY KEY,conversation_id INTEGER REFERENCES quill_conversations(id) ON DELETE CASCADE,body TEXT);
+            INSERT INTO quill_conversation_turns VALUES(2,1,'{"question":"violet","answer":"new answer"}');
+            """)
+        #expect(try index.search(.init(text: "orchid")).isEmpty)
+        #expect(try index.search(.init(text: "violet")).count == 1)
+        // DictationStore opens a fresh connection per mutation after migration.
+        // Do not retain SQLite's pre-repair foreign-key schema on the fixture writer.
+        try f.reopenWriter()
+        try f.sql("INSERT INTO quill_conversation_turns VALUES(3,1,'{\"question\":\"lily\",\"answer\":\"later answer\"}')")
+        #expect(try index.search(.init(text: "lily")).count == 1)
+        try f.sql("DELETE FROM quill_conversations WHERE id=1")
+        #expect(try index.search(.init(text: "violet")).isEmpty)
+    }
+
+    @Test("An unrelated write during validation is retried without failing search")
+    func unrelatedWriteDuringValidation() throws {
+        let f = try Fixture()
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        try f.sql("""
+            INSERT INTO meeting_chat_sessions VALUES('chat','{"title":"Orchid"}',1793527200);
+            INSERT INTO meeting_chat_turns VALUES('turn','chat','completed','{"question":"orchid question","originalAnswer":"orchid answer"}');
+            """)
+        var validations = 0
+        let hits = try index.search(.init(text: "orchid", kinds: [.chat]), validateDerived: { _, _ in
+            validations += 1
+            if validations == 1 { try f.sql("INSERT INTO computer_use_traces VALUES(99,'unrelated result','unrelated trace')") }
+            return true
+        })
+        #expect(hits.map(\.sourceID) == ["chat"])
+        #expect(validations == 2)
+    }
+
+    @Test("Repeated writes remain bounded and fail closed after one retry")
+    func repeatedWritesDuringValidation() throws {
+        let f = try Fixture()
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        try f.sql("""
+            INSERT INTO meeting_chat_sessions VALUES('chat','{"title":"Orchid"}',1793527200);
+            INSERT INTO meeting_chat_turns VALUES('turn','chat','completed','{"question":"orchid","originalAnswer":"orchid answer"}');
+            """)
+        var validations = 0
         #expect(throws: GlobalSearchError.self) {
-            try index.search(.init(text: "orchid"), validateDerived: { _, _ in
-                try f.sql("DELETE FROM time_turner_recaps")
+            try index.search(.init(text: "orchid", kinds: [.chat]), validateDerived: { _, _ in
+                validations += 1
+                try f.sql("UPDATE meeting_chat_sessions SET updated_at=updated_at+1 WHERE id='chat'")
                 return true
             })
         }
+        #expect(validations == 2)
     }
 
     @Test("Federated OCR remains searchable after media expiry and disappears after history deletion")

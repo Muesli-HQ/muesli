@@ -605,6 +605,9 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   triggers. Each available source is backfilled transactionally once. Subsequent
   writes refresh only the affected parent document. Schema-version checks discover
   Chat and Recap tables created after first search without reindexing all history.
+  Installation checks every source trigger as well as its view. Missing triggers
+  (including after a source or child table is recreated) rebuild that source's
+  missing schema objects and documents atomically, removing obsolete indexed text.
 
 Sources are dictations, CUA **input commands only**, meetings (title, transcript,
 manual/generated notes as one result), Quill conversations, accepted Cotypist
@@ -618,8 +621,10 @@ existing source-owner updates. Because edited evidence can invalidate otherwise
 persisted derived text, Chat and Recap hits additionally require a current-source
 validator; the core API fails closed without one. `GlobalSearchWorker` supplies
 existing meeting dependency and recap evidence validation. Main-database mutation
-during validation produces `GlobalSearchError.changedSources` instead of returning
-a stale excerpt; the caller must retry or discard that request. This does not replace
+during validation retries the complete query and source validation once, so an
+unrelated concurrent save does not immediately fail search. If the second attempt
+also overlaps a write, it throws `GlobalSearchError.changedSources`; callers must
+retry or discard that request rather than publish stale excerpts. This does not replace
 source retention/cleanup. In particular, cross-database recap invalidation remains
 recoverable through Time Turner's existing deletion queue.
 
