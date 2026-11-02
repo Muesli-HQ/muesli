@@ -117,7 +117,7 @@ struct MeetingChatView: View {
             }
             // Shared structural position keeps the editor mounted when the Chat index
             // becomes a conversation after the first send.
-            composer
+            composer.layoutPriority(1)
         }
         .background(docked && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
         .clipShape(RoundedRectangle(cornerRadius: docked && expanded ? 20 : 0))
