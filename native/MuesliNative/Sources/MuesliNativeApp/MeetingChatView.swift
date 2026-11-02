@@ -408,7 +408,7 @@ struct MeetingChatView: View {
             if !coordinator.composerFiles.isEmpty {
                 Text("Originals stay in place. Image content and document text (PDF text/OCR, Markdown and plain text) are sent to the selected AI provider when you send. Use a vision-capable model for images.")
                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(nil).layoutPriority(1)
             }
             if !composerIsCompact {
                 Text("↵ Send · ⇧↵ New line")
