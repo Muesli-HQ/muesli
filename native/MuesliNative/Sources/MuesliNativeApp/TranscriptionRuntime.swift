@@ -380,9 +380,10 @@ actor TranscriptionCoordinator {
 
     /// Drops loaded cleanup engines so the next request loads freshly installed weights.
     /// In-flight requests keep the manager they already hold.
-    func unloadLocalPostProcessor() async {
+    /// Drops cached engines for the cleanup model in `directory` after an update replaced it.
+    func invalidateLocalPostProcessor(modelDirectory directory: URL) async {
         if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
-            await postProcessor.shutdown()
+            await postProcessor.invalidateModels(in: directory)
         }
     }
 

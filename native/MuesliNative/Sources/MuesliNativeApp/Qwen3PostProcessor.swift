@@ -484,6 +484,9 @@ actor Qwen3PostProcessor {
     private var activeConfiguration: Configuration
     private var managers: [Configuration: Qwen3PostProcessorManager] = [:]
     private var loadTasks: [Configuration: LoadTaskState] = [:]
+    /// Loads started before their model folder was replaced: waiters still get
+    /// the result, but it is not cached.
+    private var staleLoadIDs: Set<UUID> = []
 
     init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         // Local development env-var override takes precedence.
@@ -568,6 +571,24 @@ actor Qwen3PostProcessor {
         loadTasks.removeAll()
     }
 
+    /// Forgets engines for models inside `directory` after it was replaced, so the
+    /// next request loads the new build. Other models, and requests already waiting
+    /// on a load, are left alone.
+    func invalidateModels(in directory: URL) {
+        let root = directory.standardizedFileURL.path
+        func isInside(_ configuration: Configuration) -> Bool {
+            let path = configuration.modelURL.standardizedFileURL.path
+            return path == root || path.hasPrefix(root + "/")
+        }
+        for configuration in managers.keys where isInside(configuration) {
+            managers[configuration] = nil
+        }
+        for (configuration, state) in loadTasks where isInside(configuration) {
+            staleLoadIDs.insert(state.id)
+            loadTasks[configuration] = nil
+        }
+    }
+
     private func loadManager(for configuration: Configuration) async throws -> Qwen3PostProcessorManager {
         if let manager = managers[configuration] { return manager }
         if let loadTask = loadTasks[configuration] { return try await finishLoad(loadTask) }
@@ -599,6 +620,8 @@ actor Qwen3PostProcessor {
     private func finishLoad(_ state: LoadTaskState) async throws -> Qwen3PostProcessorManager {
         do {
             let loaded = try await state.task.value
+            // Serve the waiter, but never cache an engine for a replaced model folder.
+            if staleLoadIDs.contains(state.id) { return loaded }
             if let manager = managers[state.configuration] { return manager }
             if state.configuration != activeConfiguration {
                 if loadTasks[state.configuration]?.id == state.id {

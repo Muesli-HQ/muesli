@@ -60,9 +60,16 @@ def hub_files(repo: str, revision: str, model_file: str) -> list[dict]:
     return files
 
 
+def text(value) -> str:
+    """The value if it is a string, else "" so malformed entries fail checks instead of raising."""
+    return value if isinstance(value, str) else ""
+
+
 def validate(release: dict) -> list[str]:
+    if not isinstance(release, dict):
+        return [f"release must be an object, got {release!r}"]
     problems = []
-    slot = SLOTS.get(release.get("slot"))
+    slot = SLOTS.get(text(release.get("slot")))
     if not slot:
         return [f"unknown slot {release.get('slot')!r}"]
     runtime, model_file = slot
@@ -75,24 +82,26 @@ def validate(release: dict) -> list[str]:
         problems.append(f"{name}: needs a version and a positive integer sequence")
     if release.get("notes") is not None and not isinstance(release["notes"], str):
         problems.append(f"{name}: notes must be a string")
-    repo = release.get("repo", "")
+    repo = text(release.get("repo"))
     if not re.fullmatch(r"Muesli-HQ/[A-Za-z0-9][A-Za-z0-9._-]*", repo):
         problems.append(f"{name}: repo must be under Muesli-HQ/")
-    if not re.fullmatch(r"[0-9a-f]{40}", release.get("revision", "")):
+    if not re.fullmatch(r"[0-9a-f]{40}", text(release.get("revision"))):
         problems.append(f"{name}: revision must be a full commit hash")
     minimum = release.get("minimum_app_version")
     if minimum is not None and (not isinstance(minimum, str) or not re.fullmatch(r"[0-9]{1,18}(\.[0-9]{1,18})*", minimum)):
         problems.append(f"{name}: minimum_app_version must be numeric, e.g. 0.9.2 (the app ignores other suffixes)")
     files = release.get("files") or []
+    if not isinstance(files, list) or not all(isinstance(f, dict) for f in files):
+        return problems + [f"{name}: files must be a list of objects"]
     if not files or files[0].get("path") != model_file:
         problems.append(f"{name}: first file must be {model_file}")
     seen = set()
     for f in files:
-        path = f.get("path", "")
+        path = text(f.get("path"))
         if not SAFE_NAME.match(path) or path in seen:
             problems.append(f"{name}: bad or duplicate file path {path!r}")
         seen.add(path)
-        if type(f.get("size")) is not int or f["size"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", f.get("sha256", "")):
+        if type(f.get("size")) is not int or f["size"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", text(f.get("sha256"))):
             problems.append(f"{name}: bad size or sha256 for {path}")
     return problems
 

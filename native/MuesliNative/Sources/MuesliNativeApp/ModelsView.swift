@@ -1851,7 +1851,7 @@ struct ModelsView: View {
                 if replacedInstalledModel {
                     // Loaded engines hold the previous weights; the next request loads the new build.
                     // Unload even if paused meanwhile: the swap has already happened.
-                    await controller.transcriptionCoordinator.unloadLocalPostProcessor()
+                    await controller.transcriptionCoordinator.invalidateLocalPostProcessor(modelDirectory: option.cacheDirectory)
                 }
                 try Task.checkCancellation()
 

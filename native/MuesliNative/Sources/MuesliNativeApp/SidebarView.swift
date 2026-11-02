@@ -137,7 +137,8 @@ struct SidebarView: View {
                             .frame(width: 7, height: 7)
                             .offset(x: -6, y: 6)
                             .accessibilityLabel(modelsUpdateCTA.accessibilityLabel)
-                            .help(modelsUpdateCTA.tooltip)
+                            // Decorative: clicks belong to the Models button underneath.
+                            .allowsHitTesting(false)
                     }
                 }
             collapsedItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
@@ -168,7 +169,7 @@ struct SidebarView: View {
                     controller.showMeetingsHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
-                } else if tab == .models, modelsUpdateCTA != nil {
+                } else if tab == .models, modelsUpdateCTA != nil, appState.selectedTab != .models {
                     controller.showModels(category: .postProcessing)
                 } else {
                     appState.selectedTab = tab
@@ -544,7 +545,7 @@ struct SidebarView: View {
                     controller.showTimelineHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
-                } else if tab == .models, updateCTA != nil {
+                } else if tab == .models, updateCTA != nil, appState.selectedTab != .models {
                     controller.showModels(category: .postProcessing)
                 } else {
                     appState.selectedTab = tab
