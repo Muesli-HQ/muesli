@@ -36,9 +36,7 @@ struct TimeTurnerPage: View {
                 }
                 if appState.timeTurnerShowsRecap {
                     TimeTurnerRecapView(day: appState.timeTurnerDay, controller: controller) { capture in
-                        appState.timeTurnerDay = capture.capturedAt
-                        appState.timeTurnerSelectedCapture = capture
-                        appState.timeTurnerShowsRecap = false
+                        appState.openTimeTurnerCapture(capture)
                     }
                     .frame(maxWidth: 820, alignment: .leading)
                 } else {
@@ -53,6 +51,7 @@ struct TimeTurnerPage: View {
                                 appState.timeTurnerSelectedCapture = moments[index]
                             }
                         })
+                        .id(appState.timeTurnerNavigationID)
                 }
             }.padding(MuesliTheme.pageInset)
         }.task(id: "\(appState.timeTurnerDay)|\(controller.visualMemory.catalogRevision)") {

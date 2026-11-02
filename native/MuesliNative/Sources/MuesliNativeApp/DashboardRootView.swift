@@ -154,6 +154,16 @@ struct DashboardRootView: View {
                 }
             }
         }
+        .sheet(isPresented: Binding(get: { appState.globalSearchPresented },
+                                    set: { appState.globalSearchPresented = $0 })) {
+            GlobalSearchPanel(controller: controller, appState: appState)
+        }
+        .onChange(of: appState.focusSearchField) { _, focus in
+            if focus {
+                appState.focusSearchField = false
+                appState.globalSearchPresented = true
+            }
+        }
         .alert(
             appState.contributionMilestonePrompt?.title ?? "muesli milestone",
             isPresented: Binding(

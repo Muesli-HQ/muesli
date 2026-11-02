@@ -5,6 +5,30 @@ import MuesliCore
 
 @Suite("Global search source validation")
 struct GlobalSearchWorkerTests {
+    @Test("Opening a result rechecks deletion rather than trusting its snippet")
+    func deletedDestination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("search-open-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let id = try store.insertMeeting(title: "Orchid review", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), rawTranscript: "Notes", formattedNotes: "Notes",
+            micAudioPath: nil, systemAudioPath: nil)
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: nil)
+        let hit = try #require(try await worker.search(.init(text: "orchid")).first)
+        guard case .meeting(let meeting) = try await worker.destination(for: hit) else {
+            Issue.record("Expected meeting destination"); return
+        }
+        #expect(meeting.id == id)
+        let before = try await worker.changeToken()
+        #expect(try await worker.changeToken() == before)
+        try store.deleteMeeting(id: id)
+        #expect(try await worker.changeToken() != before)
+        #expect(try await worker.destination(for: hit) == nil)
+    }
+
     @Test("Meeting edits and deletions invalidate derived Chat search hits")
     func changedChatEvidence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("global-worker-\(UUID())")

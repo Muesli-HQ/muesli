@@ -88,7 +88,8 @@ see [MedASR setup](docs/medasr.md).
   media paths and video records, chat history and memory, import provenance,
   destination-app attribution, Cotypist typeahead history, and Insights data are
   local-only.
-- Global search uses parameterized `LIKE` queries. Ask Meetings has a separate
+- Global search uses the local FTS5 projections described below; legacy scoped
+  searches may still use parameterized `LIKE` queries. Ask Meetings has a separate
   FTS5 index, `meeting_chat_fts`, over revisioned meeting passages. Its FTS shadow
   tables are SQLite-managed implementation details, not application records.
 - ISO-8601 strings are used for user-visible event times such as `timestamp` and
@@ -584,12 +585,12 @@ for retry; only confirmed stale evidence removes it. Media
 compaction alone does not invalidate unchanged source content. New captures do
 not regenerate an existing recap or imply complete coverage.
 
-These records are local-only: no CloudKit, telemetry, global search, CLI export
-or agent-memory ingestion is added. Recaps survive app restarts but do not extend
+These records are local-only: no CloudKit, telemetry, CLI export or agent-memory
+ingestion is added. Valid recap insight text participates in global search below. Recaps survive app restarts but do not extend
 capture retention. They are model-derived summaries of sampled evidence, not
 an authoritative diary or a record of time spent.
 
-### Global search foundation (stacked implementation)
+### Global search
 
 `GlobalSearchIndex` lazily installs a local, rebuildable index in `muesli.db`
 when global search is constructed. It does not change source ownership,
@@ -638,7 +639,17 @@ an empty type selection returns nothing. Text is escaped as a literal FTS phrase
 This first implementation returns a bounded first page (at most 200 candidates
 per store, at most 200 results), not a complete export. Independent BM25 corpus
 scores are not directly compared: title-match tiers, recency and stable IDs order
-the merged candidates. A shared cursor, Spotlight panel, navigation actions, and
-migration of existing UI search entry points remain follow-up work. No existing
-search UI is redirected yet. UI integration must cancel/discard superseded queries,
-revalidate navigation targets, and refresh loaded results after source mutations.
+the merged candidates. The dashboard sidebar and ⌘F now open a shared search panel
+with typed filters, calendar-based date ranges and exact app-name/bundle filters.
+The panel displays up to 100 matches and labels that cap; a shared pagination
+cursor remains follow-up work. Existing destination-specific search tools remain
+available in their own views.
+
+`GlobalSearchPresentation` discards superseded requests and preserves the selected
+source identity during live refresh. While visible, the panel checks persistent
+read connections' SQLite `data_version` every five seconds and reruns only the
+bounded current query when either source database changes. Navigation resolves
+fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
+cannot open from old snippets. Short writing records open as selectable text,
+while meetings, chats, captures and recaps open their existing destinations.
+The search panel does not mutate or export source content.

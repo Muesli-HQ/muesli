@@ -28,6 +28,7 @@ case "${shard}" in
       DictationStoreTests
       GlobalSearchTests
       GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
       GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
