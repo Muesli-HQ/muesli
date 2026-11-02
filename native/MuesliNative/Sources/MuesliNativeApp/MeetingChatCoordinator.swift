@@ -11,7 +11,8 @@ actor MeetingChatWorker {
     func createChat(scope: MeetingChatScope, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession { try store.createSession(scope: scope, title: "New chat", expectedSourceVersion: expectedSourceVersion) }
     func updateSession(id: UUID, title: String? = nil, scope: MeetingChatScope? = nil) throws { try store.updateSession(id: id, title: title, scope: scope) }
     func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, config: AppConfig, attemptID: UUID, files: [ChatFileReference] = []) throws -> MeetingChatTurn {
-        try store.beginTurn(sessionID: sessionID, question: question, scope: scope,
+        try validateFileSources(sessionID: sessionID)
+        return try store.beginTurn(sessionID: sessionID, question: question, scope: scope,
             provider: MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label,
             model: MeetingTextGenerationClient.model(config), attemptID: attemptID, fileAttachments: files)
     }

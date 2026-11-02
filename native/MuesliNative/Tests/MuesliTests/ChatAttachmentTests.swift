@@ -74,6 +74,27 @@ struct ChatAttachmentTests {
         #expect(await probe.imageCounts.isEmpty)
     }
 
+    @Test func reattachedOriginalStartsWithCurrentFileDependencies() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("notes.pdf"); try pdf(at: original)
+        let database = root.appendingPathComponent("fixture.db")
+        let meetings = DictationStore(databaseURL: database); try meetings.migrateIfNeeded()
+        let worker = MeetingChatWorker(databaseURL: database)
+        let store = await worker.store
+        let session = try store.createSession(scope: .init(selection: .meetings([])), title: "New chat")
+        let oldFiles = try ChatFileReader.references(urls: [original], existing: [])
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"
+        let old = try await worker.beginTurn(sessionID: session.id, question: "Old file", scope: session.scope, config: config, attemptID: UUID(), files: oldFiles)
+        #expect(try store.finishTurn(turnID: old.id, answer: "Old version", citations: [], dependencies: []))
+        var bytes = try Data(contentsOf: original); bytes.append(0); try bytes.write(to: original)
+        let currentFiles = try ChatFileReader.references(urls: [original], existing: oldFiles)
+        let current = try await worker.beginTurn(sessionID: session.id, question: "New file", scope: session.scope, config: config, attemptID: UUID(), files: currentFiles)
+        #expect(try store.turns(sessionID: session.id).first?.state == .sourceDeleted)
+        #expect(current.fileDependencies == currentFiles)
+        _ = try await worker.evidence(for: current)
+        #expect(try store.finishTurn(turnID: current.id, answer: "New version", citations: [], dependencies: []))
+    }
+
     @Test @MainActor func attachmentFailuresKeepTheirActionableMessages() {
         for error in [ChatFileError.tooLarge, .unavailable, .changed, .unreadablePDF, .unreadableText, .unsupportedProvider, .pdfPageLimit(289)] {
             #expect(MeetingChatCoordinator.failureMessage(error) == error.localizedDescription)
