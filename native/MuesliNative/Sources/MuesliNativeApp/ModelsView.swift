@@ -1957,6 +1957,8 @@ struct ModelsView: View {
             }
         }
         try Task.checkCancellation()
+        // A load of this model still validating its files would fail mid-swap.
+        await controller.transcriptionCoordinator.waitForLocalPostProcessorLoads(modelDirectory: live)
         // The coordinator verified every size and SHA-256 before returning.
         return try await Task.detached(priority: .userInitiated) {
             let replaced = option.installedRelease != nil

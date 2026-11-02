@@ -575,18 +575,26 @@ actor Qwen3PostProcessor {
     /// next request loads the new build. Other models, and requests already waiting
     /// on a load, are left alone.
     func invalidateModels(in directory: URL) {
-        let root = directory.standardizedFileURL.path
-        func isInside(_ configuration: Configuration) -> Bool {
-            let path = configuration.modelURL.standardizedFileURL.path
-            return path == root || path.hasPrefix(root + "/")
-        }
-        for configuration in managers.keys where isInside(configuration) {
+        for configuration in managers.keys where Self.configuration(configuration, isInside: directory) {
             managers[configuration] = nil
         }
-        for (configuration, state) in loadTasks where isInside(configuration) {
+        for (configuration, state) in loadTasks where Self.configuration(configuration, isInside: directory) {
             staleLoadIDs.insert(state.id)
             loadTasks[configuration] = nil
         }
+    }
+
+    /// Waits for loads reading models inside `directory`, so an update does not
+    /// replace files while a load is still validating them.
+    func waitForLoads(in directory: URL) async {
+        let tasks = loadTasks.filter { Self.configuration($0.key, isInside: directory) }.map(\.value.task)
+        for task in tasks { _ = try? await task.value }
+    }
+
+    private static func configuration(_ configuration: Configuration, isInside directory: URL) -> Bool {
+        let root = directory.standardizedFileURL.path
+        let path = configuration.modelURL.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
     }
 
     private func loadManager(for configuration: Configuration) async throws -> Qwen3PostProcessorManager {
