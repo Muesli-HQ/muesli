@@ -33,10 +33,7 @@ actor ChatPDFPageReader {
 
     init(file: ChatFileReference) throws {
         try Task.checkCancellation()
-        var stale = false
-        guard let url = try? URL(resolvingBookmarkData: file.bookmark,
-            options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil,
-            bookmarkDataIsStale: &stale), url.isFileURL else { throw ChatFileError.unavailable }
+        let url = try ChatFileReader.resolve(file)
         let access = url.startAccessingSecurityScopedResource()
         do {
             guard try ChatFileReader.digest(url) == file.id else { throw ChatFileError.changed }

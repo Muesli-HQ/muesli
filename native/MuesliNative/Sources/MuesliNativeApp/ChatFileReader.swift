@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import ImageIO
 import PDFKit
+import Security
 import UniformTypeIdentifiers
 import Vision
 import MuesliCore
@@ -48,6 +49,21 @@ enum ChatFileReader {
     static let supportedContentTypes: [UTType] = [.image, .pdf, .plainText,
         UTType(filenameExtension: "md") ?? .plainText,
         UTType(filenameExtension: "markdown") ?? .plainText]
+    // Security-scoped bookmarks require an app-scope key from macOS. The shipped
+    // app is not sandboxed, so ordinary bookmarks retain file identity without
+    // involving that agent/key. A sandboxed host must retain security scope.
+    private static let isSandboxed: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil) else { return true }
+        return (SecTaskCopyValueForEntitlement(task, "com.apple.security.app-sandbox" as CFString, nil) as? Bool) == true
+    }()
+    static func resolve(_ file: ChatFileReference) throws -> URL {
+        var stale = false
+        var options: URL.BookmarkResolutionOptions = [.withoutUI, .withoutMounting]
+        if isSandboxed { options.insert(.withSecurityScope) }
+        guard let url = try? URL(resolvingBookmarkData: file.bookmark, options: options,
+            relativeTo: nil, bookmarkDataIsStale: &stale), url.isFileURL else { throw ChatFileError.unavailable }
+        return url
+    }
     static let maximumContextCharacters = 48_000
     // Bound bytes before decoding, even for invalid UTF-8 or combining characters.
     static let maximumTextBytes = maximumContextCharacters * 4 + 3
@@ -85,10 +101,9 @@ enum ChatFileReader {
             let id = try digest(url)
             // The same bytes selected twice occupy one attachment slot.
             if result.contains(where: { $0.id == id }) { continue }
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try url.bookmarkData(options: isSandboxed ? .withSecurityScope : [], includingResourceValuesForKeys: nil, relativeTo: nil)
             result.removeAll { old in
-                var stale = false
-                return (try? URL(resolvingBookmarkData: old.bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale))?.standardizedFileURL == url.standardizedFileURL
+                (try? resolve(old))?.standardizedFileURL == url.standardizedFileURL
             }
             result.append(.init(id: id, name: String(url.lastPathComponent.prefix(240)), kind: kind, bookmark: bookmark, byteCount: size))
             try validateLimits(result)
@@ -103,9 +118,7 @@ enum ChatFileReader {
     }
 
     static func withOriginal<T>(_ file: ChatFileReference, _ body: (URL) throws -> T) throws -> T {
-        var stale = false
-        guard let url = try? URL(resolvingBookmarkData: file.bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting],
-                                 relativeTo: nil, bookmarkDataIsStale: &stale), url.isFileURL else { throw ChatFileError.unavailable }
+        let url = try resolve(file)
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -125,9 +138,7 @@ enum ChatFileReader {
     }
 
     static func metadataStamp(_ file: ChatFileReference) throws -> String {
-        var stale = false
-        let url = try URL(resolvingBookmarkData: file.bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting],
-                          relativeTo: nil, bookmarkDataIsStale: &stale)
+        let url = try resolve(file)
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .fileResourceIdentifierKey])

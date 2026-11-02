@@ -89,7 +89,8 @@ Live synthetic follow-up checks with no current sources returned `conversation` 
 The paperclip sits on the right of the bottom controls row, immediately before
 Send/Stop, and accepts images, PDFs, Markdown (`.md`/`.markdown`) and plain text
 (`.txt`). The controls expand when the composer is focused or has a draft.
-muesli stores original-file bookmarks,
+muesli stores original-file bookmarks (security scoped in sandboxed hosts;
+ordinary bookmarks in the unsandboxed app),
 not managed copies, so the original must remain available when a chat is reopened.
 Identical bytes selected twice use one attachment slot. Reattaching a changed
 original replaces its composer reference; earlier answers remain tied to the

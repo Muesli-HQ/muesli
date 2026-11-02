@@ -154,6 +154,21 @@ struct ChatAttachmentTests {
         #expect(throws: ChatFileError.tooLarge) { try ChatFileReader.references(urls: [original], existing: []) }
     }
 
+    @Test func originalBookmarksFollowRenamesAndReadLegacyScopedRecords() throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("image.png"); try image(at: original)
+        let file = try #require(ChatFileReader.references(urls: [original], existing: []).first)
+        let legacy = ChatFileReference(id: file.id, name: file.name, kind: file.kind,
+            bookmark: try original.bookmarkData(options: .withSecurityScope), byteCount: file.byteCount)
+        try ChatFileReader.validate([legacy])
+        let renamed = root.appendingPathComponent("renamed.png")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        try ChatFileReader.validate([file])
+        try ChatFileReader.validate([legacy])
+        #expect(try ChatFileReader.resolve(file).standardizedFileURL == renamed.standardizedFileURL)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["renamed.png"])
+    }
+
     @Test func changedOriginalRequiresReattachmentAndDoesNotDuplicateItsSlot() throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let original = root.appendingPathComponent("image.png"); try image(at: original)

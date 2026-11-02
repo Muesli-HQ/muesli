@@ -281,8 +281,10 @@ require backward-compatible decoding even when no SQL column changes.
 
 Optional `fileAttachments` in session/turn bodies and `fileDependencies` in turn
 bodies decode as nil in older records. Each `ChatFileReference` stores a SHA-256
-content ID, basename, kind (`image`, `pdf`, `markdown` or `text`), security-scoped
-bookmark and original byte count. Existing image/PDF records decode unchanged.
+content ID, basename, kind (`image`, `pdf`, `markdown` or `text`), original-file
+bookmark and original byte count. Sandboxed hosts create security-scoped bookmarks;
+the unsandboxed app uses ordinary bookmarks without needing an app-scope key.
+Both forms decode without a record migration. Existing image/PDF records decode unchanged.
 The bookmark contains original-location metadata; it is private local state.
 There are no attachment blobs, copied originals, thumbnails, extracted text or
 base64 payloads in SQLite, exports, sync or telemetry. Session references describe
