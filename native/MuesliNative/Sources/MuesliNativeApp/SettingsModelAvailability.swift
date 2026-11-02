@@ -5,6 +5,8 @@ import MuesliCore
 struct SettingsModelAvailability: Equatable, Sendable {
     var backendIDs: Set<String> = []
     var postProcessorIDs: Set<String> = []
+    /// Installed build of each Muesli-published cleanup model, keyed by option id.
+    var postProcessorReleases: [String: CleanupModelRelease] = [:]
     var liveCaptionIDs: Set<String> = []
     var gemmaIDs: Set<String> = []
     var claudeCodeAvailable = false
@@ -16,9 +18,13 @@ struct SettingsModelAvailability: Equatable, Sendable {
     }
 
     static func scan(claudeCodePath: String) -> Self {
-        Self(
+        let releases = PostProcessorOption.all.reduce(into: [String: CleanupModelRelease]()) { result, option in
+            result[option.id] = option.installedRelease
+        }
+        return Self(
             backendIDs: Set(BackendOption.all.filter(\.isDownloaded).map { $0.backend + ":" + $0.model }),
             postProcessorIDs: Set(PostProcessorOption.downloaded.map(\.id)),
+            postProcessorReleases: releases,
             liveCaptionIDs: Set(MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded).map(\.rawValue)),
             gemmaIDs: Set(Gemma4LiteRTModel.allCases.filter { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }.map(\.rawValue)),
             claudeCodeAvailable: ClaudeCodeSummarizer.executableURL(configuredPath: claudeCodePath) != nil,

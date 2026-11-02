@@ -7,6 +7,18 @@ import Observation
 @Observable
 final class ModelLibraryState {
     var nemotron35UpdateAvailable = false
+    /// Newest runnable release per cleanup slot: bundled, then replaced by the signed catalog.
+    var latestCleanupReleases: [String: CleanupModelRelease] = CleanupModelCatalog.bundledLatest
+    var installedCleanupReleases: [String: CleanupModelRelease] = [:]
+    var cleanupCatalogCheckedAt: Date?
+    var cleanupCatalogTask: Task<Void, Never>?
+
+    /// Installed cleanup models with a newer build available, keyed by option id.
+    var cleanupModelUpdates: [String: CleanupModelRelease] {
+        latestCleanupReleases.filter { id, release in
+            installedCleanupReleases[id].map { release.sequence > $0.sequence } ?? false
+        }
+    }
     var downloadingModels: Set<String> = []
     var downloadProgress: [String: Double] = [:]
     var downloadMessages: [String: String] = [:]
@@ -79,6 +91,9 @@ final class ModelLibraryState {
         if downloadedModels != models { downloadedModels = models }
         if downloadedPostProcModels != snapshot.postProcessorIDs {
             downloadedPostProcModels = snapshot.postProcessorIDs
+        }
+        if installedCleanupReleases != snapshot.postProcessorReleases {
+            installedCleanupReleases = snapshot.postProcessorReleases
         }
         let liveCaption = snapshot.liveCaptionIDs.contains(MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue)
         if isLiveCaptionModelDownloaded != liveCaption { isLiveCaptionModelDownloaded = liveCaption }

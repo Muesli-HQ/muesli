@@ -378,6 +378,22 @@ actor TranscriptionCoordinator {
         }
     }
 
+    /// Drops loaded cleanup engines so the next request loads freshly installed weights.
+    /// In-flight requests keep the manager they already hold.
+    /// Waits for in-flight loads of the cleanup model in `directory` before an update replaces it.
+    func waitForLocalPostProcessorLoads(modelDirectory directory: URL) async {
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.waitForLoads(in: directory)
+        }
+    }
+
+    /// Drops cached engines for the cleanup model in `directory` after an update replaced it.
+    func invalidateLocalPostProcessor(modelDirectory directory: URL) async {
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.invalidateModels(in: directory)
+        }
+    }
+
     func unloadNemotron35Transcriber() async {
         if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
             await transcriber.shutdown()

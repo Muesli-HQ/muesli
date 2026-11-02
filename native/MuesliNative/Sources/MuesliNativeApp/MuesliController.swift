@@ -580,6 +580,36 @@ public final class MuesliController: NSObject {
     private let nativeRecordingGate = GemmaRecordingPreparationGate()
     private var cleanupAvailabilityIDs: Set<String> = []
     private var cleanupDownloadNoticeIDs: Set<String> = []
+    private var cleanupSwapRecoveryTask: Task<Void, Never>?
+
+    /// Refreshes the signed cleanup model catalog at most every six hours unless forced.
+    /// Never downloads weights: the Models page and sidebar offer each update.
+    func checkCleanupModelUpdates(force: Bool = false) {
+        let library = appState.modelLibrary
+        guard library.cleanupCatalogTask == nil else { return }
+        if !force, let checkedAt = library.cleanupCatalogCheckedAt, Date().timeIntervalSince(checkedAt) < 6 * 3600 { return }
+        library.cleanupCatalogTask = Task { [weak self] in
+            let latest = await CleanupModelCatalog.fetchLatest()
+            guard let self else { return }
+            let library = self.appState.modelLibrary
+            library.cleanupCatalogTask = nil
+            guard let latest else { return }
+            library.cleanupCatalogCheckedAt = Date()
+            if library.latestCleanupReleases != latest { library.latestCleanupReleases = latest }
+        }
+    }
+
+    /// Runs once at launch, before any update can start, so it never races a swap in progress.
+    private func recoverInterruptedCleanupModelSwaps() -> Task<Void, Never> {
+        let folders = PostProcessorOption.all.compactMap { option in option.cleanupSlot.map { ($0, option.cacheDirectory) } }
+        return Task.detached { [weak self] in
+            let restored = folders.reduce(false) { restored, folder in
+                CleanupModelInstallation.recoverInterruptedSwap(for: folder.0, liveDirectory: folder.1) || restored
+            }
+            guard restored else { return }
+            await MainActor.run { self?.refreshSettingsModelAvailability(force: true) }
+        }
+    }
 
     func refreshCleanupAvailability(downloadedIDs: Set<String>? = nil) {
         let available = downloadedIDs ?? PostProcessorOption.downloadedIDs
@@ -1043,7 +1073,9 @@ public final class MuesliController: NSObject {
             }
         }
         installICloudPersistentSyncObservers()
+        cleanupSwapRecoveryTask = recoverInterruptedCleanupModelSwaps()
         refreshSettingsModelAvailability()
+        checkCleanupModelUpdates()
 
         statusBarController = StatusBarController(controller: self, runtime: runtime)
         preferencesWindowController = PreferencesWindowController(controller: self)
@@ -1127,6 +1159,8 @@ public final class MuesliController: NSObject {
             let preparation = beginDictationBackendPreparation()
             let task = Task { [weak self] in
                 guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
+                // A restored model must be in place before the cleanup option is read.
+                await self.cleanupSwapRecoveryTask?.value
                 let includesMeetings = self.config.resolvedOnboardingUseCase.includesMeetings
                 let ppOption = self.runtimePostProcessorOption()
                 if #available(macOS 15, *) {
