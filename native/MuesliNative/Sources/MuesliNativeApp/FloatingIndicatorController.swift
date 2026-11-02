@@ -299,7 +299,9 @@ final class FloatingIndicatorController: NSObject {
     @discardableResult
     func showInstructionOutcome(_ outcome: NotchOutcome, mode: InstructionMode,
                                 instruction: String?, message: String, config: AppConfig) -> Bool {
-        guard state == .idle, config.indicatorAnchor == .notch, let screen = NSScreen.main else { return false }
+        // Returning false sends callers to showWarning/showSuccess, which honor hiding too.
+        guard state == .idle, !config.hideRecordingIndicator, config.indicatorAnchor == .notch,
+              let screen = NSScreen.main else { return false }
         notchIndicator.onReview = { [weak self] in self?.onReviewComputerUse?() }
         let icon = mode == .quill ? QuillIcon.image() :
             NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "Computer use") ?? NSImage()

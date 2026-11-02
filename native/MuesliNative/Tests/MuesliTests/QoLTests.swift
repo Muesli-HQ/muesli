@@ -100,6 +100,7 @@ struct FloatingIndicatorVisibilityTests {
             indicator.close()
             try? FileManager.default.removeItem(at: directory)
         }
+        struct QuillError: Error {}
         for anchor in [IndicatorAnchor.midTrailing, .notch] {
             var config = AppConfig()
             config.indicatorAnchor = anchor
@@ -117,6 +118,9 @@ struct FloatingIndicatorVisibilityTests {
             indicator.showLoading("Loading model")
             #expect(!indicator.isPresenting)
             indicator.hideLoading()
+            #expect(!indicator.showInstructionOutcome(.quillFailure(QuillError()), mode: .quill,
+                                                      instruction: "Rewrite", message: "Failed", config: config))
+            #expect(!indicator.isPresenting)
         }
 
         // Turning it back off mid-recording brings the indicator back.
