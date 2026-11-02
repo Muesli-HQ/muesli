@@ -42,8 +42,6 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 
 - **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
-- **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
-- **Cotypist typeahead (experimental, development builds)** — Suggests your next words inline as you type in any app, through a Muesli input source. Tab accepts; ⌥→ accepts one word. Runs entirely on your Mac.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
 - **Meeting notes** — Use templates, re-summarize with another model, and export notes, transcripts, and answers as Markdown or PDF.
@@ -52,9 +50,17 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
 - **Calendar and meeting detection** — Show upcoming events from macOS Calendar accounts, choose calendars and time windows, and join or record from reminders. Optional camera and microphone activity detection recognizes meeting apps.
 - **Shortcuts and Siri** — Start or stop dictation and meetings, retrieve the last dictation or meeting notes, and connect these actions to your own automations.
-- **Voice commands** — Use the optional Computer Use planner for app and browser actions or supported Muesli settings. Choose on-device Gemma on macOS 15+ or a connected ChatGPT account. AI prompt settings remain manual-only.
 - **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
 - **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
+
+### Experimental features
+
+Opt in under **Settings → Experimental**; availability depends on your build and model setup.
+
+- **[Time Turner](docs/visual-memory.md)** — Search local screen history by text, app, and date, generate source-linked daily recaps with your selected meeting model, and retrieve OCR and screenshots through `muesli-cli time-turner`.
+- **Computer Use voice commands** — Control apps, browsers, and supported muesli settings with on-device Gemma on macOS 15+ or a connected ChatGPT account; AI prompt settings remain manual-only.
+- **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
+- **Cotypist typeahead (development builds)** — Get on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word.
 
 ---
 
