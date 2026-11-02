@@ -164,7 +164,7 @@ enum FeatureTourCatalog {
                 id: "ask-meetings",
                 eyebrow: "CHAT",
                 title: "Ask your meetings",
-                message: "Ask questions across saved meetings in Chat. Attach meetings with @ and follow citations back to their source. Your selected provider processes the meeting context you send.",
+                message: "Ask questions across saved meetings in Chat. Attach meetings with @, add images or PDFs, and follow meeting citations to their source. Your selected provider processes the context you send.",
                 icon: .symbol("bubble.left.and.bubble.right"),
                 target: .chatSidebar
             ),

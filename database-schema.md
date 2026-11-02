@@ -23,6 +23,24 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### Credentials outside SQLite
+
+`ConfigStore` retains hydrated provider credentials in memory but serializes empty
+credential fields to `config.json`. OpenAI, Anthropic, custom API keys, custom
+credential commands and request headers share a typed Keychain item. OpenRouter,
+ChatGPT OAuth and Google Calendar OAuth use separate items. The service namespace
+is derived from the standardized application-support directory, separating stable
+and development lanes while allowing the app and its bundled CLI to share access.
+Environment-provided keys remain external to this migration.
+
+Migration reads existing config/auth JSON, writes Keychain, verifies the stored
+bytes, then removes the old plaintext fields/file. A failed or locked Keychain
+leaves the legacy copy intact for retry; new secret saves never fall back to
+plaintext. Existing valid Keychain data takes precedence over stale files.
+Credential writes fail visibly rather than silently losing a new key. These
+credentials are local-only, not SQLite rows, CloudKit fields, chat exports or
+telemetry. See [credential storage](docs/credential-storage.md).
+
 ### App formatting preferences outside SQLite
 
 `ConfigStore` saves dictation formatting preferences in the local `AppConfig`
@@ -260,6 +278,18 @@ The JSON bodies are typed serialized records, not arbitrary extension fields.
 Keep SQL projections (`state`, `ordinal`, `updated_at`), relationship rows, and
 body encodings consistent through the store APIs. Adding model properties may
 require backward-compatible decoding even when no SQL column changes.
+
+Optional `fileAttachments` in session/turn bodies and `fileDependencies` in turn
+bodies decode as nil in older records. Each `ChatFileReference` stores a SHA-256
+content ID, basename, kind, security-scoped bookmark and original byte count.
+The bookmark contains original-location metadata; it is private local state.
+There are no attachment blobs, copied originals, thumbnails, extracted text or
+base64 payloads in SQLite, exports, sync or telemetry. Session references describe
+composer selection; immutable turn references describe that request. Inherited
+file dependencies survive removing a composer attachment. The worker validates
+originals before context reuse and completion; missing/changed originals invalidate
+dependent answers, drafts, rolling memory and generated titles through store APIs.
+Deleting a chat removes references, never the user's original files.
 
 Selection, anchoring, and evidence dependency are distinct. The anchor records
 where a chat started, selected rows describe explicit retrieval scope, and

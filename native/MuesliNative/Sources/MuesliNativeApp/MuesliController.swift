@@ -494,7 +494,7 @@ public final class MuesliController: NSObject {
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
-    private let chatGPTAuth = ChatGPTAuthManager.shared
+    private let chatGPTAuth: ChatGPTAuthManager
     private let openRouterAuth: OpenRouterAuthManager
     private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
     private var calendarCheckTimer: Timer?
@@ -790,7 +790,8 @@ public final class MuesliController: NSObject {
         self.downloadedBackendOptions = {
             BackendOption.compatibleOptions(downloadedBackendOptions(), currentOSVersion: modelOSVersion)
         }
-        self.openRouterAuth = openRouterAuth ?? .shared
+        self.chatGPTAuth = ChatGPTAuthManager(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault)
+        self.openRouterAuth = openRouterAuth ?? OpenRouterAuthManager(credentialStore: OpenRouterCredentialStore(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault))
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
         let repairedModelSelection = BackendOption.normalizeRestoredSelections(
@@ -1650,6 +1651,9 @@ public final class MuesliController: NSObject {
 
     /// Observation publishes assignments even when their values have not changed.
     func publishConfig() {
+        if appState.credentialStorageError != configStore.credentialStorageError {
+            appState.credentialStorageError = configStore.credentialStorageError
+        }
         guard appState.config != config else { return }
         let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
         appState.config = config
@@ -4092,7 +4096,10 @@ public final class MuesliController: NSObject {
     }
 
     func signOutChatGPT() {
-        chatGPTAuth.signOut()
+        do { try chatGPTAuth.signOut() } catch {
+            appState.credentialStorageError = CredentialVaultError.unavailable.localizedDescription
+            return
+        }
         if selectedMeetingSummaryBackend == .chatGPT {
             selectMeetingSummaryBackend(.openAI)
         }

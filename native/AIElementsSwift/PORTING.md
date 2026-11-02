@@ -64,3 +64,5 @@ clients. Code blocks, verbatim tool payloads and source-number gutters retain
 monospaced fonts. Font loading and licensing stay in the host app.
 
 The prompt input accepts a host-provided `focus` color (defaulting to the accent) and draws a non-hit-testing 2pt focused border. This keeps focus readable independently of action fill colors.
+
+Attachment chips accept a host-selected Lucide icon (file text by default, image for photos). File picking, original-file bookmarks, provider preparation and persistence remain host-owned. Chips render names and removal controls without decoding image previews.

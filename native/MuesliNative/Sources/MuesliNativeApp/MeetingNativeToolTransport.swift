@@ -44,9 +44,14 @@ enum MeetingNativeToolTransport {
     static func requestBody(_ request: MeetingNativeToolRequest, stream: Bool) throws -> [String: Any] {
         guard request.inputItems.count <= maximumResponseBytes,
               request.tools.count <= 32_768,
-              let input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
+              var input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
               let tools = try JSONSerialization.jsonObject(with: request.tools) as? [[String: Any]] else {
             throw MeetingTextGenerationError.emptyResponse
+        }
+        if !request.base.images.isEmpty, let index = input.firstIndex(where: { $0["role"] as? String == "user" }) {
+            var content = input[index]["content"] as? [[String: Any]] ?? (input[index]["content"] as? String).map { [["type": "input_text", "text": $0]] } ?? []
+            content += request.base.images.map(\.responsesContent)
+            input[index]["content"] = content
         }
         let model = MeetingTextGenerationClient.model(request.base.config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }

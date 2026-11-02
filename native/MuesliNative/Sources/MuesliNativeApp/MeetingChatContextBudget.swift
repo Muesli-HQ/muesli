@@ -8,7 +8,7 @@ import MuesliCore
 /// are not claims about a model's actual capacity.
 struct MeetingChatContextBudget {
     let modelID: String
-    let maximumInputTokens: Int
+    private(set) var maximumInputTokens: Int
     let maximumOutputTokens: Int
     let historyTokens: Int
     let summaryTokens: Int
@@ -32,6 +32,12 @@ struct MeetingChatContextBudget {
         historyTokens = max(1, min(8_192, maximumInputTokens / 4))
         summaryTokens = max(1, min(2_048, maximumInputTokens / 8))
         summaryBatchTokens = max(1, maximumInputTokens - summaryTokens - 1_024)
+    }
+
+    func reservingImageTokens(_ count: Int) -> Self {
+        var copy = self
+        copy.maximumInputTokens = max(1, maximumInputTokens - count * 4_096)
+        return copy
     }
 
     static func estimateTokens(_ text: String) -> Int {

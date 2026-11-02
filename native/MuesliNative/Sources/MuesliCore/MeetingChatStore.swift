@@ -166,12 +166,55 @@ public struct MeetingChatStore: Sendable {
             try saveSession(session, db: db)
         } }
     }
-    public func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, provider: String, model: String, attemptID: UUID = UUID()) throws -> MeetingChatTurn {
+    public func setFileAttachments(sessionID: UUID, files: [ChatFileReference]) throws {
+        guard files.count <= 5 else { throw MeetingChatError.promptTooLarge }
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             var session = try session(sessionID, db: db)
-            let turn = MeetingChatTurn(id: UUID(), sessionID: sessionID, ordinal: try nextOrdinal(sessionID: sessionID, db: db), question: question,
+            session.fileAttachments = files.isEmpty ? nil : files
+            session.updatedAt = Date()
+            try saveSession(session, db: db)
+        } }
+    }
+
+    /// Scrub file-derived answers and rolling memory when an original disappears
+    /// or changes. Removing a selected reference alone does not delete its source.
+    public func invalidateFileSources(sessionID: UUID, ids: Set<String>) throws {
+        guard !ids.isEmpty else { return }
+        try connection { db in try MeetingChatSQL.transaction(db: db) {
+            var session = try session(sessionID, db: db)
+            let turns = try MeetingChatSQL.rows("SELECT body FROM meeting_chat_turns WHERE session_id=?", [.text(sessionID.uuidString)], db: db) {
+                try MeetingChatSQL.decode(MeetingChatTurn.self, MeetingChatSQL.text($0, 0))
+            }
+            var invalidated = Set<UUID>()
+            for var turn in turns where !(Set((turn.fileDependencies ?? turn.fileAttachments ?? []).map(\.id)).isDisjoint(with: ids)) {
+                turn.state = .sourceDeleted; turn.originalAnswer = nil; turn.editableDraft = nil; turn.citations = []
+                turn.error = "An original attachment changed or is unavailable. Attach the file again."
+                invalidated.insert(turn.id)
+                try saveTurn(turn, db: db)
+            }
+            if !invalidated.isEmpty {
+                session.rollingSummary = nil
+                if let generated = session.generatedTitleTurnID, invalidated.contains(generated) {
+                    session.title = "New chat"; session.generatedTitleTurnID = nil
+                }
+                try saveSession(session, db: db)
+            }
+        } }
+    }
+
+    public func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, provider: String, model: String, attemptID: UUID = UUID(), fileAttachments: [ChatFileReference] = []) throws -> MeetingChatTurn {
+        try connection { db in try MeetingChatSQL.transaction(db: db) {
+            var session = try session(sessionID, db: db)
+            var turn = MeetingChatTurn(id: UUID(), sessionID: sessionID, ordinal: try nextOrdinal(sessionID: sessionID, db: db), question: question,
                 scope: scope, state: .finding, citations: [], provider: provider, model: model,
                 attemptID: attemptID, scopeLabel: try scopeLabel(scope, db: db))
+            turn.fileAttachments = fileAttachments.isEmpty ? nil : fileAttachments
+            let context = try historyContext(before: turn, byteLimit: nil, db: db).turns
+            let inherited = context.flatMap { $0.fileDependencies ?? $0.fileAttachments ?? [] }
+            let references = inherited + fileAttachments
+            var seenFiles = Set<String>()
+            let dependencies = references.filter { seenFiles.insert($0.id).inserted }
+            turn.fileDependencies = dependencies.isEmpty ? nil : dependencies
             try MeetingChatSQL.execute("INSERT INTO meeting_chat_turns VALUES(?,?,?,?,?)", [.text(turn.id.uuidString), .text(sessionID.uuidString), .integer(Int64(turn.ordinal)), .text(turn.state.rawValue), .text(try MeetingChatSQL.encode(turn))], db: db)
             if turn.ordinal == 0, session.titleIsAutomatic == true {
                 session.title = String(question.prefix(64))

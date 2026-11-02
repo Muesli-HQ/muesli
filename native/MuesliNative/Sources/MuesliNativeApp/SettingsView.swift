@@ -407,6 +407,13 @@ struct SettingsView: View {
     var body: some View {
         // Geometry, hover and permission updates reuse the same catalog.
         settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
+            .safeAreaInset(edge: .top) {
+                if let issue = appState.credentialStorageError {
+                    Text(issue).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.warningText)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MuesliTheme.backgroundRaised)
+                }
+            }
     }
 
     private var settingsContent: some View {

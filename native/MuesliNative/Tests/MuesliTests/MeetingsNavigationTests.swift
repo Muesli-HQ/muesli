@@ -130,7 +130,7 @@ struct MeetingsNavigationTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.showFloatingIndicator = false
         configStore.save(config)
@@ -172,7 +172,7 @@ struct MeetingsNavigationTests {
                 bundlePath: nil
             ),
             dictationStore: dictationStore,
-            configStore: configStore ?? ConfigStore(supportDirectory: makeSupportDirectory())
+            configStore: configStore ?? makeTestConfigStore(supportDirectory: makeSupportDirectory())
         )
     }
 
@@ -671,7 +671,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -700,7 +700,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.wav")
@@ -732,7 +732,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -767,7 +767,7 @@ struct MeetingsNavigationTests {
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheDirectory.path)
             try? FileManager.default.removeItem(at: supportDirectory)
         }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -794,7 +794,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = supportDirectory.appendingPathComponent("shared.m4a")
         try Data("recording".utf8).write(to: savedRecordingURL)
@@ -853,7 +853,7 @@ struct MeetingsNavigationTests {
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let firstMissingRecordingURL = supportDirectory.appendingPathComponent("first-missing.m4a")
         try Data("first".utf8).write(to: firstMissingRecordingURL)
         let firstCacheURL = try RecordingWaveformCacheFiles.cacheURL(
@@ -1109,7 +1109,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let support = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: support) }
-        let config = ConfigStore(supportDirectory: support)
+        let config = makeTestConfigStore(supportDirectory: support)
         let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
         let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
@@ -1189,7 +1189,7 @@ struct MeetingsNavigationTests {
         defer { sqlite3_close(db) }
         #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
         do {
-            let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
             try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
             #expect(!controller.attachEarlyMeetingRecording(id: id, path: audio.path))
             let result = MeetingSessionResult(
@@ -1208,13 +1208,13 @@ struct MeetingsNavigationTests {
         }
         // A fresh controller has no in-memory path; failed recovery keeps the file.
         do {
-            let restarted = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            let restarted = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
             restarted.recoverRetainedMeetingRecordings()
             #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
             #expect(FileManager.default.fileExists(atPath: reference.path))
         }
         #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
-        let recovered = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let recovered = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         recovered.recoverRetainedMeetingRecordings()
         let recoveredPath = try #require(try store.meeting(id: id)?.savedRecordingPath)
         #expect(URL(fileURLWithPath: recoveredPath).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
@@ -1237,7 +1237,7 @@ struct MeetingsNavigationTests {
         try Data([0]).write(to: audio)
         let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
         controller.recoverRetainedMeetingRecordings()
         #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
@@ -1273,7 +1273,7 @@ struct MeetingsNavigationTests {
         let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
         try store.updateMeetingSavedRecordingPath(id: id, path: missing)
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
         let reference = MeetingRecordingRecoveryReference.url(for: audio)
         var db: OpaquePointer?
@@ -1300,7 +1300,7 @@ struct MeetingsNavigationTests {
         defer { try? FileManager.default.removeItem(at: support) }
         let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         let missingAudio = recordings.appendingPathComponent("missing.wav")
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: missingAudio.path)
         let foreignAudio = recordings.appendingPathComponent("foreign.wav")
@@ -1630,7 +1630,7 @@ struct MeetingsNavigationTests {
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
         let controller = makeController(
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         controller.updateConfig {
             $0.meetingRecordingSavePolicy = .never
@@ -2062,8 +2062,8 @@ struct MeetingsNavigationTests {
     @Test("disconnecting OpenRouter updates future providers without interrupting active dictation")
     func disconnectingOpenRouterFallsBackSafely() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
             loadData: { _ in throw URLError(.unsupportedURL) },
@@ -2133,7 +2133,7 @@ struct MeetingsNavigationTests {
     func openRouterCatalogRequiresAuthentication() async throws {
         let supportDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2158,7 +2158,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: supportDirectory),
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory),
             openRouterAuth: openRouterAuth,
             openRouterModelCatalogClient: catalogClient
         )
@@ -2196,7 +2196,7 @@ struct MeetingsNavigationTests {
         let configDirectory = makeSupportDirectory()
         let authDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: authDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: authDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2208,7 +2208,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: configDirectory),
+            configStore: makeTestConfigStore(supportDirectory: configDirectory),
             openRouterAuth: openRouterAuth
         )
         controller.updateConfig { $0.openRouterAPIKey = " sk-or-v1-legacy " }
@@ -2222,7 +2222,7 @@ struct MeetingsNavigationTests {
     func staleOpenRouterCatalogLoadCannotReplaceNewerModels() async throws {
         let supportDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2240,7 +2240,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: supportDirectory),
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory),
             openRouterAuth: openRouterAuth,
             openRouterModelCatalogClient: catalogClient
         )
@@ -2269,8 +2269,8 @@ struct MeetingsNavigationTests {
     @Test("failed OpenRouter credential deletion preserves provider selections")
     func failedOpenRouterDisconnectPreservesSelections() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
@@ -2307,8 +2307,8 @@ struct MeetingsNavigationTests {
     @Test("environment OpenRouter credential survives local disconnect without resetting providers")
     func environmentOpenRouterCredentialPreservesSelections() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
             loadData: { _ in throw URLError(.unsupportedURL) },
@@ -2345,7 +2345,7 @@ struct MeetingsNavigationTests {
 
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
-        let configStore = ConfigStore(supportDirectory: makeSupportDirectory())
+        let configStore = makeTestConfigStore(supportDirectory: makeSupportDirectory())
         var config = AppConfig()
         config.sttBackend = BackendOption.gemma4E2BLiteRT.backend
         config.sttModel = BackendOption.gemma4E2BLiteRT.model

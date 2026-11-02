@@ -1232,9 +1232,12 @@ struct CLISummaryConfig: Decodable {
 
     static func load(from supportDirectory: URL) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: url),
-              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
-            return CLISummaryConfig()
+        var config = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(CLISummaryConfig.self, from: $0) } ?? CLISummaryConfig()
+        let vault = KeychainCredentialVault(supportDirectory: supportDirectory)
+        if let data = try? vault.read(ConfigCredentials.account),
+           let secrets = try? JSONDecoder().decode(ConfigCredentials.self, from: data) {
+            config.openAIAPIKey = secrets.openAI; config.anthropicAPIKey = secrets.anthropic
+            config.customLLMAPIKey = secrets.custom; config.customLLMHeaders = secrets.customHeaders
         }
         if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             struct StoredOpenRouterCredential: Decodable {
@@ -1245,7 +1248,8 @@ struct CLISummaryConfig: Decodable {
                 }
             }
             let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
-            if let credentialData = try? Data(contentsOf: credentialURL),
+            let migration = CredentialFileMigration(legacyURL: credentialURL, account: "openrouter-auth", vault: vault)
+            if let credentialData = try? migration.load(validating: { _ = try JSONDecoder().decode(StoredOpenRouterCredential.self, from: $0) }),
                let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
                 config.openRouterAPIKey = credential.apiKey
             }

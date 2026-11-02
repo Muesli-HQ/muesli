@@ -4,53 +4,103 @@ import MuesliCore
 final class ConfigStore {
     private let configURL: URL
     private let openRouterCredentialStore: OpenRouterCredentialStore
+    let credentialVault: any CredentialVault
+    private var savedCredentials: ConfigCredentials?
+    private(set) var credentialStorageError: String?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(supportDirectory: URL = AppIdentity.supportDirectoryURL) {
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil) {
+        let vault = vault ?? KeychainCredentialVault(supportDirectory: supportDirectory)
+        self.credentialVault = vault
         self.configURL = supportDirectory.appendingPathComponent("config.json")
-        self.openRouterCredentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        self.openRouterCredentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory, vault: vault)
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
     func load() -> AppConfig {
         ensureDirectory()
-        guard let data = try? Data(contentsOf: configURL) else {
-            return AppConfig()
-        }
-        var config = (try? decoder.decode(AppConfig.self, from: data)) ?? AppConfig()
+        let data = try? Data(contentsOf: configURL)
+        var config = data.flatMap { try? decoder.decode(AppConfig.self, from: $0) } ?? AppConfig()
         let hadLegacyOpenRouterKey = !config.openRouterAPIKey
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty
         migrateLegacyOpenRouterCredential(in: &config)
-        if hadLegacyOpenRouterKey, config.openRouterAPIKey.isEmpty {
-            write(config)
+        let legacy = credentials(in: config)
+        do {
+            guard config.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
+            if let data = try credentialVault.read(ConfigCredentials.account) {
+                let stored = try decoder.decode(ConfigCredentials.self, from: data)
+                apply(stored, to: &config)
+                savedCredentials = stored
+                if !legacy.isEmpty || hadLegacyOpenRouterKey { try writeSanitized(config) }
+            } else if !legacy.isEmpty {
+                try storeCredentials(legacy)
+                try writeSanitized(config)
+            } else if hadLegacyOpenRouterKey, config.openRouterAPIKey.isEmpty {
+                try writeSanitized(config)
+            }
+            credentialStorageError = nil
+        } catch {
+            // Migration failure preserves the existing file and in-memory keys.
+            credentialStorageError = CredentialVaultError.unavailable.localizedDescription
         }
         return config
     }
 
-    func save(_ config: AppConfig) {
+    @discardableResult
+    func save(_ config: AppConfig) -> Bool {
         ensureDirectory()
         var persistedConfig = config
         migrateLegacyOpenRouterCredential(in: &persistedConfig)
-        write(persistedConfig)
-    }
-
-    private func write(_ config: AppConfig) {
-        guard let data = try? encoder.encode(config) else { return }
         do {
-            try data.write(to: configURL, options: .atomic)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: configURL.path
-            )
+            try storeCredentials(credentials(in: persistedConfig))
+            // Never write a new credential to plaintext after migration is introduced.
+            guard persistedConfig.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
+            try writeSanitized(persistedConfig)
+            credentialStorageError = nil
+            return true
         } catch {
-            fputs("[config-store] failed to save config: \(error)\n", stderr)
+            credentialStorageError = CredentialVaultError.unavailable.localizedDescription
+            return false
         }
     }
 
-    /// Moves the legacy config.json key into the dedicated owner-only
-    /// credential file. If that write fails, keep the old value in config so
+    private func storeCredentials(_ value: ConfigCredentials) throws {
+        guard savedCredentials != value else { return }
+        if value.isEmpty {
+            try credentialVault.remove(ConfigCredentials.account)
+        } else {
+            let data = try encoder.encode(value)
+            try credentialVault.write(data, account: ConfigCredentials.account)
+            guard try credentialVault.read(ConfigCredentials.account) == data else { throw CredentialVaultError.verificationFailed }
+        }
+        savedCredentials = value
+    }
+
+    private func credentials(in config: AppConfig) -> ConfigCredentials {
+        var value = ConfigCredentials()
+        value.openAI = config.openAIAPIKey; value.anthropic = config.anthropicAPIKey
+        value.custom = config.customLLMAPIKey; value.customCommand = config.customLLMAPIKeyCommand
+        value.customHeaders = config.customLLMHeaders
+        return value
+    }
+
+    private func apply(_ value: ConfigCredentials, to config: inout AppConfig) {
+        config.openAIAPIKey = value.openAI; config.anthropicAPIKey = value.anthropic
+        config.customLLMAPIKey = value.custom; config.customLLMAPIKeyCommand = value.customCommand
+        config.customLLMHeaders = value.customHeaders
+    }
+
+    private func writeSanitized(_ config: AppConfig) throws {
+        var sanitized = config
+        apply(ConfigCredentials(), to: &sanitized)
+        let data = try encoder.encode(sanitized)
+        try data.write(to: configURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+    }
+
+    /// Moves the legacy config.json key into the scoped Keychain item. If that write fails, keep the old value in config so
     /// migration can retry without losing the user's credential.
     private func migrateLegacyOpenRouterCredential(in config: inout AppConfig) {
         let legacyKey = config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)

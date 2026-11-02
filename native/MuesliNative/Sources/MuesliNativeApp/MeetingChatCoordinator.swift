@@ -10,10 +10,36 @@ actor MeetingChatWorker {
     func interruptPendingTurns() throws { try store.interruptPendingTurns() }
     func createChat(scope: MeetingChatScope, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession { try store.createSession(scope: scope, title: "New chat", expectedSourceVersion: expectedSourceVersion) }
     func updateSession(id: UUID, title: String? = nil, scope: MeetingChatScope? = nil) throws { try store.updateSession(id: id, title: title, scope: scope) }
-    func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, config: AppConfig, attemptID: UUID) throws -> MeetingChatTurn {
+    func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, config: AppConfig, attemptID: UUID, files: [ChatFileReference] = []) throws -> MeetingChatTurn {
         try store.beginTurn(sessionID: sessionID, question: question, scope: scope,
             provider: MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label,
-            model: MeetingTextGenerationClient.model(config), attemptID: attemptID)
+            model: MeetingTextGenerationClient.model(config), attemptID: attemptID, fileAttachments: files)
+    }
+    func fileReferences(urls: [URL], existing: [ChatFileReference]) throws -> [ChatFileReference] {
+        try ChatFileReader.references(urls: urls, existing: existing)
+    }
+    func setFiles(sessionID: UUID, files: [ChatFileReference]) throws {
+        try store.setFileAttachments(sessionID: sessionID, files: files)
+    }
+    func preparedFiles(for turn: MeetingChatTurn, config: AppConfig) throws -> PreparedChatFiles {
+        try ChatFileReader.prepare(turn.fileAttachments ?? [], config: config)
+    }
+    private var validatedFileStamps: [String: String] = [:]
+    private func validateFileSources(sessionID: UUID, force: Bool = false) throws {
+        let turns = try store.turns(sessionID: sessionID)
+        var checked = Set<String>(); var invalid = Set<String>()
+        for file in turns.filter({ $0.state != .sourceDeleted }).flatMap({ $0.fileDependencies ?? $0.fileAttachments ?? [] }) where checked.insert(file.id).inserted {
+            do {
+                let stamp = try ChatFileReader.metadataStamp(file)
+                if force || validatedFileStamps[file.id] != stamp {
+                    try ChatFileReader.validate([file])
+                    validatedFileStamps[file.id] = stamp
+                }
+            }
+            catch is CancellationError { throw CancellationError() }
+            catch { invalid.insert(file.id) }
+        }
+        try store.invalidateFileSources(sessionID: sessionID, ids: invalid)
     }
     func restartTurn(id: UUID, config: AppConfig) throws -> MeetingChatTurn? {
         try store.restartTurn(id: id, provider: MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label, model: MeetingTextGenerationClient.model(config))
@@ -24,6 +50,7 @@ actor MeetingChatWorker {
     func deleteChat(id: UUID) throws { try store.deleteSession(id: id) }
     /// History for the sidebar/index plus the requested conversation, read off the main actor.
     func history(selecting sessionID: UUID?) throws -> MeetingChatHistorySnapshot {
+        if let sessionID { try validateFileSources(sessionID: sessionID) }
         let sessions = try store.sessions()
         let hasChatHistory = try store.hasChatHistory()
         let turns = try sessionID.flatMap { id in sessions.contains { $0.id == id } ? id : nil }
@@ -45,6 +72,11 @@ actor MeetingChatWorker {
     }
     func evidence(for turn: MeetingChatTurn) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
         try Task.checkCancellation()
+        try validateFileSources(sessionID: turn.sessionID)
+        if turn.fileDependencies?.isEmpty == false {
+            guard let current = try store.turns(sessionID: turn.sessionID).first(where: { $0.id == turn.id }),
+                  current.state.isPending, current.attemptID == turn.attemptID else { throw ChatFileError.unavailable }
+        }
         let context = try store.historyContext(before: turn)
         let history = context.turns
         // Prior conversation can be transformed without re-reading meetings. Start with
@@ -191,6 +223,7 @@ actor MeetingChatWorker {
         return (selected, nil)
     }
     func canPublishSummary(turn: MeetingChatTurn) throws -> Bool {
+        try validateFileSources(sessionID: turn.sessionID)
         guard let current = try store.turns(sessionID: turn.sessionID).first(where: { $0.id == turn.id }),
               current.state.isPending, current.attemptID == turn.attemptID else { return false }
         let version = try store.sourceMutationVersion()
@@ -200,6 +233,7 @@ actor MeetingChatWorker {
         return true
     }
     func titleContext(turn: MeetingChatTurn) throws -> (question: String, answer: String)? {
+        try validateFileSources(sessionID: turn.sessionID)
         guard let session = try store.sessions().first(where: { $0.id == turn.sessionID }),
               session.titleIsAutomatic == true, session.generatedTitleTurnID == nil,
               session.scope == turn.scope, turn.ordinal >= session.contextStartOrdinal,
@@ -210,11 +244,13 @@ actor MeetingChatWorker {
         return (latest.question, answer)
     }
     func saveTitle(turn: MeetingChatTurn, title: String) throws -> Bool {
+        try validateFileSources(sessionID: turn.sessionID)
         guard let attemptID = turn.attemptID else { return false }
         return try store.updateTitleIfAutomatic(turnID: turn.id, attemptID: attemptID, title: title)
     }
     func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool) throws -> Bool {
-        try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID)
+        try validateFileSources(sessionID: turn.sessionID, force: true)
+        return try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID)
     }
 }
 
@@ -261,6 +297,40 @@ final class MeetingChatCoordinator {
     private(set) var reasoningIsStreaming = false
     private(set) var reasoningSummaries: [String] = []
     private(set) var activityTurnID: UUID?
+    private var fileDrafts: [UUID?: [ChatFileReference]] = [:]
+    private(set) var isPreparingFiles = false
+    var composerFiles: [ChatFileReference] {
+        fileDrafts[selectedSessionID] ?? sessions.first(where: { $0.id == selectedSessionID })?.fileAttachments ?? []
+    }
+    func attachFiles(_ urls: [URL]) async {
+        guard !isBusy, !isUpdatingChat, !isPreparingFiles else { return }
+        let key = selectedSessionID; let version = selectionVersion; let existing = composerFiles
+        isPreparingFiles = true
+        defer { isPreparingFiles = false }
+        do {
+            let files = try await worker.fileReferences(urls: urls, existing: existing)
+            guard key == selectedSessionID, version == selectionVersion, !Task.isCancelled else { return }
+            if let key { try await worker.setFiles(sessionID: key, files: files) }
+            guard key == selectedSessionID, version == selectionVersion, !Task.isCancelled else { return }
+            fileDrafts[key] = files; errorMessage = nil
+        } catch {
+            if key == selectedSessionID, version == selectionVersion { errorMessage = error.localizedDescription }
+        }
+    }
+    func removeFile(_ id: String) async {
+        guard !isBusy, !isUpdatingChat, !isPreparingFiles else { return }
+        let key = selectedSessionID; let version = selectionVersion
+        let files = composerFiles.filter { $0.id != id }
+        isPreparingFiles = true
+        defer { isPreparingFiles = false }
+        do {
+            if let key { try await worker.setFiles(sessionID: key, files: files) }
+            guard key == selectedSessionID, version == selectionVersion else { return }
+            fileDrafts[key] = files; errorMessage = nil
+        } catch {
+            if key == selectedSessionID, version == selectionVersion { errorMessage = error.localizedDescription }
+        }
+    }
     private var composerDrafts: [UUID?: String] = [:]
     private var composerEditVersion = UUID()
     private var untitledComposerUndoIdentity = UUID()
@@ -299,6 +369,7 @@ final class MeetingChatCoordinator {
         selectedSessionID = nil
         turns = []; turnsSessionID = nil
         draftScope = scope
+        fileDrafts[nil] = []
         composerDraft = ""
         untitledComposerUndoIdentity = UUID()
         errorMessage = nil
@@ -306,7 +377,7 @@ final class MeetingChatCoordinator {
 
     /// Browsing notes may seed an unused draft, never retarget an existing conversation.
     func prepareMeetingDraft(id: Int64) {
-        guard selectedSessionID == nil, composerDraft.isEmpty, !isBusy, !isUpdatingChat else { return }
+        guard selectedSessionID == nil, composerDraft.isEmpty, composerFiles.isEmpty, !isBusy, !isUpdatingChat else { return }
         draftScope = .init(selection: .meetings([id]))
     }
     var isBusy: Bool { activeRequestID != nil }
@@ -478,6 +549,11 @@ final class MeetingChatCoordinator {
                 if selectionVersion == version {
                     composerDrafts[session.id] = composerDrafts[nil]
                     composerDrafts[nil] = nil
+                    if let files = fileDrafts.removeValue(forKey: nil) {
+                        fileDrafts[session.id] = files
+                        try await worker.setFiles(sessionID: session.id, files: files)
+                    }
+                    guard selectionVersion == version, !Task.isCancelled else { return false }
                     transferUntitledComposerUndoIdentity(to: session.id)
                     showCreatedSession(session.id)
                 }
@@ -516,8 +592,10 @@ final class MeetingChatCoordinator {
     private static let previousAnswersReadError = "Could not read this chat’s previous answers. Please retry. Your question is still in the composer."
     private static let emptyScopeMessage = "Attach a meeting or choose All saved meetings before sending. Your question is still in the composer."
     func send(question: String, config: AppConfig, isDraft: Bool = false, contextWindowTokens: Int? = nil) async {
-        guard !isBusy, !isUpdatingChat else { return }
-        let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isBusy, !isUpdatingChat, !isPreparingFiles else { return }
+        let files = composerFiles
+        let entered = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let question = entered.isEmpty && !files.isEmpty ? "Describe the attached files." : entered
         guard !question.isEmpty else { return }
         guard question.count <= 2_000 else { errorMessage = MeetingChatError.questionTooLong.localizedDescription; return }
         let requestScope = scope
@@ -526,7 +604,7 @@ final class MeetingChatCoordinator {
         // Turns decide whether an empty selection is a valid follow-up. When they have not
         // loaded yet, the worker answers below after the request is reserved.
         let historyLoaded = turnsSessionID == selectedSessionID && (selectedSessionID == nil || !historyReadFailed)
-        if explicitlyEmpty, historyLoaded,
+        if files.isEmpty, explicitlyEmpty, historyLoaded,
            !turns.contains(where: { $0.state == .completed && $0.originalAnswer != nil }) {
             errorMessage = Self.emptyScopeMessage
             return
@@ -541,7 +619,7 @@ final class MeetingChatCoordinator {
                 activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""
             }
         }
-        if explicitlyEmpty, !historyLoaded, let draftKey {
+        if files.isEmpty, explicitlyEmpty, !historyLoaded, let draftKey {
             do {
                 let answered = try await worker.hasCompletedAnswer(sessionID: draftKey)
                 guard activeRequestID == requestID, !Task.isCancelled else { return }
@@ -570,7 +648,8 @@ final class MeetingChatCoordinator {
         activeSessionID = id
         do {
             let requestConfig = config
-            let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID)
+            try await worker.setFiles(sessionID: id, files: files)
+            let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID, files: files)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
                 await refreshHistory(); return
@@ -605,6 +684,7 @@ final class MeetingChatCoordinator {
         guard selectedSessionID == sessionID, composerDrafts[sessionID] == nil else { return }
         composerDrafts[sessionID] = composerDrafts[nil]
         composerDrafts[nil] = nil
+        if let files = fileDrafts.removeValue(forKey: nil) { fileDrafts[sessionID] = files }
         transferUntitledComposerUndoIdentity(to: sessionID)
     }
     func retry(turnID: UUID, config: AppConfig, contextWindowTokens: Int? = nil) async {
@@ -648,6 +728,8 @@ final class MeetingChatCoordinator {
             }
             do {
                 let (evidence, history) = try await worker.evidence(for: turn)
+                phase = "Preparing attachments"
+                let attachments = try await worker.preparedFiles(for: turn, config: config)
                 let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
@@ -692,7 +774,7 @@ final class MeetingChatCoordinator {
                         guard self.activeRequestID == requestID else { return }
                         self.reasoningIsStreaming = false
                         self.phase = phase
-                    }, rollingSummary: rollingSummary, contextBudget: budget, reasoningSummary: { [weak self] iteration, summary in
+                    }, rollingSummary: rollingSummary, contextBudget: budget, attachments: attachments, reasoningSummary: { [weak self] iteration, summary in
                         guard let self, self.activeRequestID == requestID, !Task.isCancelled else { return }
                         // Summaries contain meeting data too. Check persisted invalidation before
                         // displaying a delta, even when the UI has not yet refreshed after deletion.
@@ -797,7 +879,7 @@ final class MeetingChatCoordinator {
             reasoningSummaries = []; activityTurnID = nil
         }
         if activeSessionID == id { stop() }
-        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; composerUndoIdentities[id] = nil; await refreshHistory() } catch { errorMessage = error.localizedDescription }
+        do { try await worker.deleteChat(id: id); composerDrafts[id] = nil; fileDrafts[id] = nil; composerUndoIdentities[id] = nil; await refreshHistory() } catch { errorMessage = error.localizedDescription }
     }
     func saveDraft(turnID: UUID, text: String) async {
         do { try await worker.saveDraft(turnID: turnID, text: text); await refreshHistory() } catch { errorMessage = error.localizedDescription }

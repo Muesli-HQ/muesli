@@ -624,7 +624,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "bodhan"
         initial.sttModel = model.rawValue
@@ -852,7 +852,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.maraudersMapUnlocked = true
         initial.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.chatGPT).backend
@@ -928,7 +928,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "whisper"
         initial.sttModel = BackendOption.whisperLargeTurbo.model
@@ -971,7 +971,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "whisper"
         initial.sttModel = BackendOption.whisperLargeTurbo.model
@@ -1018,7 +1018,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableComputerUseHotkey = true
         configStore.save(initial)
@@ -1074,7 +1074,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableMeetingRecordingHotkey = true
         configStore.save(initial)
@@ -1120,7 +1120,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationHotkey = HotkeyConfig(keyCode: 59, label: "Left Ctrl")
         initial.computerUseHotkey = .combination(modifiers: .control, keyCode: 2)
@@ -1169,7 +1169,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationHotkey = HotkeyConfig(keyCode: 54, label: "Right Cmd")
         initial.computerUseHotkey = initial.dictationHotkey
@@ -1318,7 +1318,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let database = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
         try database.migrateIfNeeded()
-        let config = ConfigStore(supportDirectory: root)
+        let config = makeTestConfigStore(supportDirectory: root)
         config.save(AppConfig())
         let runtime = RuntimePaths(repoRoot: root, menuIcon: nil, appIcon: nil, bundlePath: nil)
         let subject = MuesliController(runtime: runtime, dictationStore: database, configStore: config)
@@ -1671,7 +1671,7 @@ struct ComputerUseSettingsTests {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.selectRecordingIndicatorStyle(style)

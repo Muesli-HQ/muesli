@@ -1362,7 +1362,7 @@ struct AppConfigTests {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-openrouter-resolution-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         var config = AppConfig()
         config.openRouterAPIKey = ""
 

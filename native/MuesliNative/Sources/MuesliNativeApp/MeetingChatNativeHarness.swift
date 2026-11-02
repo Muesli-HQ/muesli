@@ -55,10 +55,10 @@ enum MeetingChatNativeHarness {
         activity: (MeetingChatToolCall, Bool) -> Void,
         progress: (String) -> Void,
         reasoningSummary: @escaping @MainActor @Sendable (Int, String) async -> Void,
-        rollingSummary: String? = nil, budget: MeetingChatContextBudget? = nil
+        rollingSummary: String? = nil, budget: MeetingChatContextBudget? = nil, attachments: PreparedChatFiles = .empty
     ) async throws -> (MeetingChatAnswer, MeetingChatEvidence) {
         let budget = budget ?? MeetingChatContextBudget(config: config)
-        let prompt = try MeetingChatClient.makePrompt(question: question, evidence: initial, history: history, rollingSummary: rollingSummary, budget: budget)
+        let prompt = try MeetingChatClient.makePrompt(question: question, evidence: initial, history: history, rollingSummary: rollingSummary, budget: budget, attachmentContext: attachments.context)
         var user = prompt.user
         if case .meetings(let ids) = initial.scope.selection {
             user += "\nSelected meeting IDs: " + ids.map(String.init).joined(separator: ", ")
@@ -92,7 +92,7 @@ enum MeetingChatNativeHarness {
             progress(repairProgress ?? "Preparing answer")
             let response = try await generator.generateNative(.init(
                 base: .init(system: instructions, user: "", config: config, maxOutputTokens: budget.maximumOutputTokens,
-                    sessionID: sessionID, onReasoningSummary: { await reasoningSummary(iteration, $0) }, outputTokenLimit: budget.maximumOutputTokens),
+                    sessionID: sessionID, onReasoningSummary: { await reasoningSummary(iteration, $0) }, outputTokenLimit: budget.maximumOutputTokens, images: attachments.images),
                 inputItems: inputData, tools: registeredTools, allowTools: allowTools))
             try Task.checkCancellation()
             guard response.outputItems.count <= maximumInputBytes,
@@ -178,7 +178,7 @@ enum MeetingChatNativeHarness {
             progress("Checking source references")
             do {
                 guard response.text.utf8.count <= 64_000 else { throw MeetingChatHarnessError.oversizedResponse }
-                return (try MeetingChatClient.validateResponse(response.text, evidence: evidence, history: history, detailedErrors: true, rollingSummary: rollingSummary), evidence)
+                return (try MeetingChatClient.validateResponse(response.text, evidence: evidence, history: history, detailedErrors: true, rollingSummary: rollingSummary, hasAttachmentContext: !attachments.isEmpty), evidence)
             } catch let issue as MeetingChatHarnessError {
                 guard !corrected else { throw issue }
                 corrected = true

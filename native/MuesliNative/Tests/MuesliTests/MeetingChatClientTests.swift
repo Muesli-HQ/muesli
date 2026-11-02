@@ -694,7 +694,7 @@ struct MeetingChatClientTests {
         let gate = ChatReplyGate()
         let (store, coordinator, _) = try coordinatorFixture(generator: gate)
         let directory = store.resolvedDatabaseURL.deletingLastPathComponent().appendingPathComponent("chat-wipe-support-\(UUID())")
-        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         controller.meetingChatCoordinator = coordinator
         await coordinator.createChat(scope: .init()); await coordinator.send(question: "launch", config: AppConfig())
         await gate.waitUntilStarted()

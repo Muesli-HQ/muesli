@@ -9,9 +9,9 @@ Meeting chat uses a bounded inference → retrieval → inference loop. For an i
 - `read_meeting_source(source)`: reads up to two neighboring passages on either side of an issued source marker, restricted to the same meeting, revision, and source kind.
 - `read_full_meeting(meeting_id, page)` (native providers): reads the transcript, written notes, and generated summary in original order. Pages are bounded at 40 KB with explicit `next_page`; meeting IDs must remain inside the captured scope and date range. Exact passage offsets and citation markers are preserved.
 
-The application validates tool names and arguments, dispatches local operations, accumulates source dependencies before subsequent provider calls, and bounds execution by provider mode. Native call IDs cannot be reused; the compatibility loop also rejects repeated tool signatures. Source markers are not recycled when context is evicted. Empty lexical searches can be retried with different terms and preserve previously gathered evidence; the tool transcript explicitly records the zero-match result. An explicit empty meeting selection with no conversation still rejects Send/Retry without reserving busy state. With usable conversation, follow-ups begin with history only and no fresh source packet. The model can transform or explain existing content without retrieval; new meeting-based facts require read-only retrieval inside the current scope and current citations. Empty-scope follow-ups can return conversational answers or explain that new research needs a meeting. Cancellation and request-attempt checks prevent stopped or superseded work from publishing an answer.
+The application validates tool names and arguments, dispatches local operations, accumulates source dependencies before subsequent provider calls, and bounds execution by provider mode. Native call IDs cannot be reused; the compatibility loop also rejects repeated tool signatures. Source markers are not recycled when context is evicted. Empty lexical searches can be retried with different terms and preserve previously gathered evidence; the tool transcript explicitly records the zero-match result. An explicit empty meeting selection with no conversation or files still rejects Send/Retry without reserving busy state. With usable conversation, follow-ups begin with history only and no fresh source packet. The model can transform or explain existing content without retrieval; new meeting-based facts require read-only retrieval inside the current scope and current citations. Empty-scope follow-ups can return conversational answers or explain that new research needs a meeting. Cancellation and request-attempt checks prevent stopped or superseded work from publishing an answer.
 
-Each inference includes the user question, bounded prior conversation, the current evidence packet, and the tool transcript. Historical answers are labeled as untrusted conversation, never evidence for new meeting claims. Old citation markers are removed before sending history so they cannot collide with fresh source IDs. Responses distinguish conversation, answered (new cited meeting facts), and insufficient_evidence; conversation mode requires usable supplied history. The compatibility loop is capped at five inference calls; both transports enforce a selected-model context budget. Native requests replay API output items (including encrypted reasoning) and `function_call_output` items with matching call IDs, with a 512 KB serialized-input ceiling and 200 KB cumulative citation evidence ceiling. Native full reads never silently evict earlier pages. Both paths allow at most one final-answer validation repair; native finalization uses `tool_choice: none`. Repair progress distinguishes formatting, citation checks, context checks, and answer length. Returned citations must resolve to the current evidence packet; citations are never invented or attached automatically to repair a response. Citation validation establishes source identity, not factual entailment.
+Each inference includes the user question, bounded prior conversation, the current evidence packet, and the tool transcript. Historical answers are labeled as untrusted conversation, never evidence for new meeting claims. Old citation markers are removed before sending history so they cannot collide with fresh source IDs. Responses distinguish conversation, answered (new cited meeting facts), and insufficient_evidence; conversation mode requires usable supplied history or file context. The compatibility loop is capped at five inference calls; both transports enforce a selected-model context budget. Native requests replay API output items (including encrypted reasoning) and `function_call_output` items with matching call IDs, with a 512 KB serialized-input ceiling and 200 KB cumulative citation evidence ceiling. Native full reads never silently evict earlier pages. Both paths allow at most one final-answer validation repair; native finalization uses `tool_choice: none`. Repair progress distinguishes formatting, citation checks, context checks, and answer length. Returned citations must resolve to the current evidence packet; citations are never invented or attached automatically to repair a response. Citation validation establishes source identity, not factual entailment.
 
 Conversation memory retains complete raw exchanges locally. A contiguous suffix of recent exchanges is supplied verbatim; older exchanges are compacted by the selected provider/model into a rolling summary stored on the session. The summary has exact covered-turn fingerprints and inherited source revisions; pending-attempt checks protect saves. Source edits, soft/hard deletion, participant changes, and covered-turn changes scrub the summary. Every compaction call revalidates source dependencies before and after inference. Failed compaction preserves existing history and reports a recoverable error instead of silently omitting it.
 
@@ -83,3 +83,42 @@ The October 11, 2026 local review ran 142 meeting-chat/presentation/ChatGPT-tran
 This host uses Xcode 27 / Swift 6.4, newer than the documented CI toolchain. Automated suites use synthetic responses. Live checks using only synthetic content confirmed HTTP 200 and a valid cited Markdown-table answer from the configured `gpt-6.1-sol` model. A real meeting request exposed a response-validation failure; bounded recovery and specific diagnostics were added. A synthetic request with `reasoning.summary: auto` was accepted but emitted no summary events, confirming that the disclosure must remain conditional. End-to-end answer quality across real meeting archives still needs evaluation.
 
 Live synthetic follow-up checks with no current sources returned `conversation` for a rewrite and `insufficient_evidence` for an unsupported new meeting deadline. These checks used invented release-discussion text, not the user’s meeting archive.
+
+## Original-file attachments
+
+The paperclip accepts images and PDFs. muesli stores original-file bookmarks,
+not managed copies, so the original must remain available when a chat is reopened.
+Identical bytes selected twice use one attachment slot. Reattaching a changed
+original replaces its composer reference; earlier answers remain tied to the
+version actually supplied. Removal from the composer preserves valid conversation
+history, while missing/changed evidence invalidates dependent history and memory.
+File-only questions work without widening an explicit empty meeting selection.
+Files are untrusted conversation input, never meeting citation sources.
+
+All file hashing, extraction and image preparation run on `MeetingChatWorker`.
+ImageIO downsamples from the URL to a maximum 2048-pixel dimension, strips metadata
+by JPEG re-encoding, and caps each result at 2 MiB. PDFKit extracts selectable text;
+Vision OCR handles textless pages one at a time in an autorelease pool. PDF input
+supplies text/OCR only, not visual layout or embedded figures. No provider Files API
+objects or application temporary copies are created. Prepared bytes/text live only
+for the active request; portable history stores the question and answer. Provider
+retention still follows the selected provider's policy.
+
+Limits: five files, three images, 20 MiB per original, 40 MiB combined, 100 million
+image pixels, 50 PDF pages, 48,000 combined extracted-context characters, 2 MiB per
+encoded image, and 12 MiB per serialized request. Image requests reserve 4096 input
+tokens per image in addition to the existing text budget. This is a conservative
+estimate, not a tokenizer for every provider/model. PDFs work through existing
+text adapters. Images require a vision-capable ChatGPT, OpenAI, OpenRouter or
+Anthropic model; unsupported transports fail with an actionable error. Native tool
+call IDs, replay and source-scope checks remain unchanged.
+
+Originals are content-hashed around preparation and rechecked before publishing
+answers; cached metadata checks bound repeated context reads. Attach/remove and
+file-picker callbacks carry selection ownership. Bookmarks persist with the chat
+and are removed by chat deletion; prepared content has no disk cleanup queue.
+
+The implementation follows Apple's [file bookmark guidance](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/AccessingFilesandDirectories/AccessingFilesandDirectories.html)
+and [ImageIO URL thumbnail guidance](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Conceptual/ImageIOGuide/imageio_source/ikpg_source.html),
+and uses the [OpenAI inline image format](https://developers.openai.com/api/docs/guides/images-vision)
+and [Anthropic inline image format](https://platform.claude.com/docs/en/build-with-claude/vision).

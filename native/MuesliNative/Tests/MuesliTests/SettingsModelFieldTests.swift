@@ -18,7 +18,7 @@ struct SettingsModelFieldTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.customLLMModel = ""
         configStore.save(config)

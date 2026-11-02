@@ -72,7 +72,7 @@ struct ShutdownDeadlineTests {
         try store.migrateIfNeeded()
         return MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: directory)
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory)
         )
     }
 

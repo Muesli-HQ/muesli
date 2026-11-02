@@ -21,6 +21,7 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CredentialMigrationTests
       TimeTurnerPauseStateTests
       TimeTurnerRecapTests
       VisualMemoryStoreTests
@@ -222,6 +223,7 @@ case "${shard}" in
       SettingsModelFieldTests
       MeetingSummaryClientTests
       MeetingChatStoreTests
+      ChatAttachmentTests
       MeetingChatRetrievalTests
       MeetingChatClientTests
       MeetingChatContextBudgetTests

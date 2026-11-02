@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import MuesliCore
 import AIElementsSwift
 
@@ -11,6 +12,7 @@ struct MeetingChatView: View {
     @State private var showHistory = false
     @State private var showScope = false
     @State private var showModelPicker = false
+    @State private var showFilePicker = false
     @State private var citation: MeetingChatCitation?
     @State private var deletingChat: UUID?
     @State private var renamingChat: UUID?
@@ -152,6 +154,17 @@ struct MeetingChatView: View {
         }
         .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
         .onChange(of: coordinator.composerDraft) { _, _ in dismissedMention = nil }
+        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.image, .pdf], allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result {
+                let session = coordinator.selectedSessionID
+                Task {
+                    guard coordinator.selectedSessionID == session else { return }
+                    await coordinator.attachFiles(urls)
+                    guard coordinator.selectedSessionID == session else { return }
+                    focusComposer()
+                }
+            } else if case let .failure(error) = result { coordinator.errorMessage = error.localizedDescription }
+        }
         .onChange(of: mention) { _, _ in mentionIndex = 0 }
         .onChange(of: coordinator.turns.count) { _, _ in
             if let activeID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == activeID }) {
@@ -290,10 +303,10 @@ struct MeetingChatView: View {
         }
     }
 
-    private var footerControlsDisabled: Bool { coordinator.isBusy || coordinator.isUpdatingChat }
+    private var footerControlsDisabled: Bool { coordinator.isBusy || coordinator.isUpdatingChat || coordinator.isPreparingFiles }
 
     private var composerIsCompact: Bool {
-        !composerFocused && coordinator.composerDraft.isEmpty
+        !composerFocused && coordinator.composerDraft.isEmpty && coordinator.composerFiles.isEmpty && !coordinator.isPreparingFiles
             && !coordinator.isBusy && !expanded && !showScope && !showModelPicker
             && coordinator.errorMessage == nil
     }
@@ -309,7 +322,11 @@ struct MeetingChatView: View {
                     .padding(.horizontal, 4).padding(.bottom, 3)
             }
             AIPromptInput(isFocused: composerFocused, isCompact: composerIsCompact, header: {
-                if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
+                VStack(alignment: .leading, spacing: 6) {
+                    if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
+                    if !coordinator.composerFiles.isEmpty { fileChips }
+                    if coordinator.isPreparingFiles { ProgressView("Checking attachments…").controlSize(.small) }
+                }
             }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
@@ -326,6 +343,9 @@ struct MeetingChatView: View {
                 // Footer actions share a 28pt hit height; padding sits inside each label so
                 // icon/text gaps are clickable and neighbors stay separate targets.
                 HStack(spacing: 2) {
+                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
+                        .buttonStyle(.muesli(.quiet)).help("Attach images or PDFs without copying the originals")
+                        .accessibilityLabel("Attach images or PDFs").disabled(footerControlsDisabled)
                     Button { insertMentionTrigger() } label: {
                         AIIcon(.atSign).frame(width: 28, height: 28)
                     }
@@ -378,12 +398,16 @@ struct MeetingChatView: View {
                             .buttonStyle(.muesli(.primary, shape: .circle))
                             .accessibilityIdentifier("meeting-chat-send")
                             .help("Send question").accessibilityLabel("Send question")
-                            .disabled(coordinator.isUpdatingChat || coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(footerControlsDisabled || (coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && coordinator.composerFiles.isEmpty))
                     }
                 }
                 // The @ glyph stays optically aligned with the editor text; its target extends into the inset.
                 .padding(.leading, -6)
             })
+            if !coordinator.composerFiles.isEmpty {
+                Text("Originals stay in place. Image content and PDF text/OCR are sent to the selected AI provider when you send. Use a vision-capable model for images.")
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            }
             if !composerIsCompact {
                 Text("↵ Send · ⇧↵ New line")
                     .font(MuesliTheme.font(size: 10)).foregroundStyle(MuesliTheme.textSecondary)
@@ -392,6 +416,20 @@ struct MeetingChatView: View {
         }.frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
     }
+    private var fileChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(coordinator.composerFiles) { file in
+                    AIAttachment(title: file.name, icon: file.kind == .image ? .image : .fileText) {
+                        Task { await coordinator.removeFile(file.id) }
+                    }
+                    .help(file.name + " · " + ByteCountFormatter.string(fromByteCount: file.byteCount, countStyle: .file))
+                    .disabled(footerControlsDisabled)
+                }
+            }
+        }.frame(height: 30)
+    }
+
     private func attachmentChips(_ ids: [Int64]) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             if !ids.isEmpty {
@@ -537,6 +575,10 @@ struct MeetingChatView: View {
         VStack(alignment: .leading, spacing: 20) {
             AIMessage(role: .user) {
                 Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
+                if let files = turn.fileAttachments, !files.isEmpty {
+                    Text(files.map(\.name).joined(separator: " · "))
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                }
             }
             AIMessage(role: .assistant) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -579,7 +621,7 @@ struct MeetingChatView: View {
                         }
                         answerActions(turn)
                     } else if turn.state == .sourceDeleted {
-                        Label { Text("Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
+                        Label { Text(turn.error ?? "Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
                             .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
                     } else if !turn.state.isPending {
                         Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }

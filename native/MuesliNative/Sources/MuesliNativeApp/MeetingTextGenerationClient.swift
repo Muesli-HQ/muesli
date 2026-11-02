@@ -9,6 +9,7 @@ struct MeetingTextGenerationRequest {
     var sessionID: UUID = UUID()
     var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
     var outputTokenLimit: Int? = nil
+    var images: [ChatImageInput] = []
 }
 
 protocol MeetingTextGenerating: Sendable {
@@ -50,7 +51,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     var chatGPT: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ChatGPTResponsesClient.respond(systemPrompt: request.system, userPrompt: request.user,
             model: Self.model(request.config), maxOutputTokens: request.maxOutputTokens,
-            reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, logCategory: "meeting-chat")
+            reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, images: request.images, logCategory: "meeting-chat")
     }
     var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ClaudeCodeSummarizer.run(instructions: request.system, input: request.user,
@@ -75,9 +76,11 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         guard supportsNativeTools(config: request.base.config) else { throw MeetingTextGenerationError.invalidEndpoint }
         let credential = try await credentialResolver(request.base.config)
         try Task.checkCancellation()
-        var urlRequest = try Self.makeRequest(request.base, credential: credential)
+        var headerOnly = request.base
+        headerOnly.images = []
+        var urlRequest = try Self.makeRequest(headerOnly, credential: credential)
         if provider == .openRouter { urlRequest.url = URL(string: "https://openrouter.ai/api/v1/responses")! }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: MeetingNativeToolTransport.requestBody(request, stream: false))
+        urlRequest.httpBody = try ChatFileReader.requestData(MeetingNativeToolTransport.requestBody(request, stream: false))
         let (data, response) = try await load(urlRequest)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
@@ -91,6 +94,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             return try await chatGPT(request)
         }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .claudeCode {
+            guard request.images.isEmpty else { throw ChatFileError.unsupportedProvider }
             return try await claudeCode(request)
         }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .customLLM {
@@ -148,7 +152,8 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let model = model(config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
-        let messages = [["role": "system", "content": input.system], ["role": "user", "content": input.user]]
+        let content: Any = input.images.isEmpty || provider != .openRouter ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
+        let messages: [[String: Any]] = [["role": "system", "content": input.system], ["role": "user", "content": content]]
         var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": input.maxOutputTokens]
         let url: URL
         var anthropic = false
@@ -163,6 +168,9 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             let requestedBudget = effort != nil && effort != "none" ? max(input.maxOutputTokens, 32_768) : input.maxOutputTokens
             let budget = min(requestedBudget, max(1, input.outputTokenLimit ?? requestedBudget))
             body = ["model": model, "instructions": input.system, "input": input.user, "store": false, "max_output_tokens": budget]
+            if !input.images.isEmpty {
+                body["input"] = [["role": "user", "content": [["type": "input_text", "text": input.user]] + input.images.map(\.responsesContent)]]
+            }
             if let effort { body["reasoning"] = ["effort": effort] }
         case .openRouter:
             guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
@@ -194,16 +202,24 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             }
         default: throw MeetingTextGenerationError.invalidEndpoint
         }
+        if !input.images.isEmpty {
+            guard [.openAI, .openRouter, .anthropic].contains(provider) else { throw ChatFileError.unsupportedProvider }
+            if anthropic {
+                body["messages"] = [["role": "user", "content": [["type": "text", "text": input.user]] + input.images.map(\.anthropicContent)]]
+            }
+        }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = provider == .ollama || provider == .lmStudio || provider == .customLLM ? 300 : 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if anthropic { request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version") }
         if !credential.isEmpty { request.setValue(anthropic ? credential : "Bearer \(credential)", forHTTPHeaderField: anthropic ? "x-api-key" : "Authorization") }
         if provider == .openRouter { request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title") }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         if provider == .anthropic {
-            return try AnthropicAPIRequest.make(url: url, apiKey: credential,
+            let anthropicRequest = try AnthropicAPIRequest.make(url: url, apiKey: credential,
                 workspaceID: MeetingSummaryClient.resolvedAnthropicWorkspaceID(config: config), body: body, timeout: request.timeoutInterval)
+            guard (anthropicRequest.httpBody?.count ?? 0) <= ChatFileReader.maximumRequestBytes else { throw ChatFileError.tooLarge }
+            return anthropicRequest
         }
+        request.httpBody = try ChatFileReader.requestData(body)
         if provider == .customLLM { try CustomLLMRequestHeaders.apply(config.customLLMHeaders, to: &request) }
         return request
     }
