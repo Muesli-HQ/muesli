@@ -35,10 +35,8 @@ struct TimeTurnerPage: View {
                     Divider().overlay(MuesliTheme.surfaceBorder)
                 }
                 if appState.timeTurnerShowsRecap {
-                    TimeTurnerRecapView(day: appState.timeTurnerDay, controller: controller) { capture in
-                        appState.timeTurnerDay = capture.capturedAt
-                        appState.timeTurnerSelectedCapture = capture
-                        appState.timeTurnerShowsRecap = false
+                    TimeTurnerRecapView(day: appState.timeTurnerDay, selection: appState.timeTurnerSelectedRecap, controller: controller) { capture in
+                        appState.openTimeTurnerCapture(capture)
                     }
                     .frame(maxWidth: 820, alignment: .leading)
                 } else {
@@ -53,6 +51,7 @@ struct TimeTurnerPage: View {
                                 appState.timeTurnerSelectedCapture = moments[index]
                             }
                         })
+                        .id(appState.timeTurnerNavigationID)
                 }
             }.padding(MuesliTheme.pageInset)
         }.task(id: "\(appState.timeTurnerDay)|\(controller.visualMemory.catalogRevision)") {
@@ -94,17 +93,20 @@ struct TimeTurnerPage: View {
             Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day")
             Button { showsCalendar.toggle() } label: {
                 HStack(spacing: 8) {
-                    Text(appState.timeTurnerDay.formatted(.dateTime.day().month(.abbreviated).year()))
+                    Text(appState.timeTurnerShowsRecap ? (appState.timeTurnerSelectedRecap?.dayLabel ?? dayLabel) : dayLabel)
                     Image(systemName: "calendar")
                 }.font(MuesliTheme.body()).frame(width: 160, alignment: .center)
             }
             .accessibilityLabel("Choose history date")
             .popover(isPresented: $showsCalendar) {
-                DatePicker("Day", selection: $appState.timeTurnerDay, in: ...Date(), displayedComponents: .date)
+                DatePicker("Day", selection: Binding(get: { browsingDay }, set: {
+                    appState.timeTurnerSelectedRecap = nil
+                    appState.timeTurnerDay = $0
+                }), in: ...Date(), displayedComponents: .date)
                     .datePickerStyle(.graphical).labelsHidden().padding()
             }
             Button { moveDay(1) } label: { Image(systemName: "chevron.right") }
-                .accessibilityLabel("Next day").disabled(Calendar.current.isDateInToday(appState.timeTurnerDay))
+                .accessibilityLabel("Next day").disabled(Calendar.current.isDateInToday(browsingDay))
         }
         .onChange(of: appState.timeTurnerDay) { _, day in
             showsCalendar = false
@@ -113,8 +115,15 @@ struct TimeTurnerPage: View {
             }
         }
     }
+    private var dayLabel: String { appState.timeTurnerDay.formatted(.dateTime.day().month(.abbreviated).year()) }
+
+    private var browsingDay: Date {
+        appState.timeTurnerShowsRecap ? (appState.timeTurnerSelectedRecap?.browsingDay() ?? appState.timeTurnerDay) : appState.timeTurnerDay
+    }
+
     private func moveDay(_ offset: Int) {
-        if let day = Calendar.current.date(byAdding: .day, value: offset, to: appState.timeTurnerDay) {
+        if let day = Calendar.current.date(byAdding: .day, value: offset, to: browsingDay) {
+            appState.timeTurnerSelectedRecap = nil
             appState.timeTurnerDay = day
         }
     }

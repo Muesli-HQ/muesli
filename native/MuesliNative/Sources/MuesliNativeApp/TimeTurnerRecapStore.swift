@@ -19,17 +19,48 @@ struct SavedTimeTurnerRecap: Codable, Sendable {
     }
 }
 
+/// Navigation carries the persisted identity and day bounds, never a date rebuilt
+/// in the device's current timezone. No source content is cached in this target.
+struct TimeTurnerRecapSelection: Equatable, Sendable {
+    let key: String
+    let interval: DateInterval
+    let timeZone: String
+
+    init(_ recap: SavedTimeTurnerRecap) {
+        key = recap.key
+        interval = DateInterval(start: recap.dayStart, end: recap.dayEnd)
+        timeZone = recap.timeZone
+    }
+
+    // Date controls browse local calendar days; only presentation is converted.
+    // The persisted key and original generation interval remain untouched.
+    func browsingDay(in calendar: Calendar = .current) -> Date {
+        var original = calendar
+        original.timeZone = TimeZone(identifier: timeZone) ?? TimeZone(secondsFromGMT: 0)!
+        let parts = original.dateComponents([.era, .year, .month, .day], from: interval.start)
+        return calendar.date(from: parts) ?? interval.start
+    }
+
+    var dayLabel: String {
+        var style = Date.FormatStyle().day().month(.abbreviated).year()
+        style.timeZone = TimeZone(identifier: timeZone) ?? TimeZone(secondsFromGMT: 0)!
+        return interval.start.formatted(style)
+    }
+}
+
 /// Local-only, lazily migrated store in muesli.db. Call off the main actor.
 /// The versioned body owns its source snapshots; no CloudKit or export projection.
 final class TimeTurnerRecapStore {
     private var db: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    init(databaseURL: URL) throws {
-        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+    init(databaseURL: URL, readOnly: Bool = false) throws {
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             if db != nil { sqlite3_close(db); db = nil }
             throw Self.failure
         }
         sqlite3_busy_timeout(db, 5_000)
+        if readOnly { return }
         try execute("PRAGMA journal_mode=WAL")
         try execute("""
             CREATE TABLE IF NOT EXISTS time_turner_recaps (
@@ -69,7 +100,7 @@ final class TimeTurnerRecapStore {
         bind(recap.timeZone, to: s, at: 4)
         sqlite3_bind_double(s, 5, recap.generatedAt.timeIntervalSince1970)
         bind(body, to: s, at: 6)
-        guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
     }
     /// Delete derived text, including stored OCR snapshots, without needing to open its day.
     func delete(captureIDs: Set<String>) throws {
@@ -85,7 +116,7 @@ final class TimeTurnerRecapStore {
                 """)
             defer { sqlite3_finalize(s) }
             bind(ids, to: s, at: 1)
-            guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+            guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -106,7 +137,7 @@ final class TimeTurnerRecapStore {
         defer { sqlite3_finalize(s) }
         bind(key, to: s, at: 1)
         if let generatedAt { sqlite3_bind_double(s, 2, generatedAt.timeIntervalSince1970) }
-        guard sqlite3_step(s) == SQLITE_DONE else { throw Self.failure }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw Self.failure }
     }
 }
 

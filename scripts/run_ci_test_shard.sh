@@ -26,6 +26,9 @@ case "${shard}" in
       VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
+      GlobalSearchTests
+      GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
       GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests

@@ -56,15 +56,6 @@ struct SidebarView: View {
     @State private var draggingFolderID: Int64?
     @State private var dragOrderedFolders: [MeetingFolder]?
     @State private var collapsedFolderIDs: Set<Int64> = []
-    @FocusState private var isSearchFieldFocused: Bool
-
-    private var searchTextBinding: Binding<String> {
-        Binding(
-            get: { appState.searchQuery },
-            set: { controller.performSearch(query: $0) }
-        )
-    }
-
     private var userName: String {
         appState.config.userName
     }
@@ -110,6 +101,11 @@ struct SidebarView: View {
             sidebarToggleButton
                 .padding(.top, MuesliTheme.spacing16)
                 .padding(.bottom, MuesliTheme.spacing12)
+
+            Button { appState.globalSearchPresented = true } label: {
+                Image(systemName: "magnifyingglass").frame(width: 36, height: 32)
+            }.buttonStyle(.muesli(.quiet)).help("Search all history (⌘F)")
+                .accessibilityLabel("Search all history")
 
             ScrollView(.vertical) {
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -302,48 +298,24 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var searchBar: some View {
-        HStack(spacing: MuesliTheme.spacing12) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12))
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .frame(width: sidebarIconColumnWidth, alignment: .center)
-            TextField("Search...", text: searchTextBinding)
-                .textFieldStyle(.plain)
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textPrimary)
-                .focused($isSearchFieldFocused)
-            if !appState.searchQuery.isEmpty {
-                Button {
-                    controller.clearSearch()
-                    isSearchFieldFocused = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.muesli(.quiet, shape: .circle))
-                .padding(.trailing, -6)
-                .help("Clear search")
-                .accessibilityLabel("Clear search")
+        Button { appState.globalSearchPresented = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .frame(width: sidebarIconColumnWidth)
+                Text("Search…").font(MuesliTheme.callout())
+                Spacer()
+                Text("⌘F").font(MuesliTheme.caption())
             }
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, sidebarRowHorizontalPadding)
+            .frame(height: 32)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, sidebarRowHorizontalPadding)
-        .frame(height: 32)
-        .background(MuesliTheme.backgroundRaised)
-        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-        .overlay(
-            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-        )
+        .buttonStyle(.muesli(.quiet))
+        .accessibilityLabel("Search all history")
         .padding(.horizontal, sidebarRowOuterPadding)
         .padding(.bottom, MuesliTheme.spacing8)
-        .onChange(of: appState.focusSearchField) { _, shouldFocus in
-            if shouldFocus {
-                isSearchFieldFocused = true
-                appState.focusSearchField = false
-            }
-        }
     }
 
     @ViewBuilder

@@ -311,6 +311,7 @@ final class AppState {
     var timelineScrollAnchor: String?
 
     // Search
+    var globalSearchPresented = false
     var searchQuery: String = ""
     var searchResultDictations: [DictationRecord] = []
     var searchResultMeetings: [MeetingRecord] = []
@@ -318,9 +319,36 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
-    var timeTurnerDay = Date()
+    var timeTurnerDay = Date() {
+        didSet {
+            if timeTurnerDay != oldValue { timeTurnerSelectedRecap = nil }
+        }
+    }
+    var timeTurnerSelectedRecap: TimeTurnerRecapSelection?
     var timeTurnerShowsRecap = false
     var timeTurnerSelectedCapture: VisualMemoryItem?
+    // Explicit source navigation must reset the explorer's local scrub position,
+    // even when it is already mounted or the same result is opened again.
+    var timeTurnerNavigationID = UUID()
+
+    func openTimeTurnerCapture(_ capture: VisualMemoryItem) {
+        timeTurnerDay = capture.capturedAt
+        timeTurnerSelectedCapture = capture
+        timeTurnerSelectedRecap = nil
+        timeTurnerShowsRecap = false
+        timeTurnerNavigationID = UUID()
+        selectedTab = .timeTurner
+    }
+
+    func openTimeTurnerRecap(_ recap: SavedTimeTurnerRecap, calendar: Calendar = .current) {
+        let selection = TimeTurnerRecapSelection(recap)
+        timeTurnerDay = selection.browsingDay(in: calendar)
+        timeTurnerSelectedRecap = selection
+        timeTurnerShowsRecap = true
+        timeTurnerNavigationID = UUID()
+        selectedTab = .timeTurner
+    }
+
     var selectedTab: DashboardTab = .timeline
     var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?

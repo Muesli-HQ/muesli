@@ -323,3 +323,27 @@ selectable captured text rather than implying a corrupt screenshot.
 Time Turner retention and budget reductions show a confirmation before applying
 the policy. Manual Settings uses a sheet; voice uses the shared question UI. Keep
 current settings is the default action. Increasing limits needs no confirmation.
+
+## Global search
+
+Sidebar Search and the app's ⌘F command open a single search panel above the
+current dashboard. Keep the underlying page and chat draft mounted. Use a native
+text field for composition, paste, dictation and undo; Up/Down selects a result,
+Return opens it and Escape closes the panel. Type chips, date range and app
+filters narrow the same shared search service. Rows show their content class,
+source app, timestamp and excerpt. A bounded result list explicitly labels its
+100-match cap. Screen-history results whose media expired remain readable as text.
+Opening re-resolves the source: meetings and chats use their existing destinations,
+screen history and recaps use Time Turner, and short writing records have a
+selectable text preview with a Copy action. The panel refreshes its bounded query
+while visible and retains selection across incoming captures.
+
+### Search availability
+
+Global search keeps verified matches usable when another source cannot be read.
+A compact helper-text row names unavailable content types with a quiet Retry
+button; it does not replace the results list. Empty partial responses say no
+verified matches are available rather than claiming the history has no matches.
+Opening an unavailable or deleted item reports that state in the same row while
+preserving the other results. Use existing semantic text colors and 12pt helper
+typography for this row.
