@@ -473,6 +473,10 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func handleClick(atX x: CGFloat? = nil) {
+        if state == .preparing, microphoneStartupPending {
+            onCancelDictation?()
+            return
+        }
         // Meeting commands belong to the explicit buttons. The waveform/body
         // remains available for dragging without accidentally ending a meeting.
         guard !isMeetingRecording else { return }
@@ -581,7 +585,13 @@ final class FloatingIndicatorController: NSObject {
         ensureWaveformAnimation(in: targetSize, mode: .level)
     }
 
+    var microphoneStartupPending = false
+
     func setPreparingWaveformWaiting(config: AppConfig) {
+        if microphoneStartupPending {
+            setState(.preparing, config: config)
+            return
+        }
         recordingWaveformMode = .waiting
         guard state == .preparing else {
             setState(.preparing, config: config)
@@ -872,7 +882,7 @@ final class FloatingIndicatorController: NSObject {
             let title: String
             switch state {
             case .idle: title = "muesli"
-            case .preparing: title = "Preparing"
+            case .preparing: title = microphoneStartupPending ? "Connecting" : "Preparing"
             case .recording: title = insertionStopReason?.compactTitle ?? (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Quill" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
@@ -1067,7 +1077,8 @@ final class FloatingIndicatorController: NSObject {
             }
         case .preparing:
             hideShortcutPillChrome()
-            ensureWaveformAnimation(in: targetFrame.size, mode: .waiting)
+            if microphoneStartupPending { stopWaveformAnimation() }
+            else { ensureWaveformAnimation(in: targetFrame.size, mode: .waiting) }
         default:
             break
         }
@@ -2048,6 +2059,16 @@ final class FloatingIndicatorController: NSObject {
             quillIconView?.isHidden = true
             iconLabel?.isHidden = true
             micIconView?.isHidden = true
+            if microphoneStartupPending, let textLabel {
+                textLabel.isHidden = false
+                textLabel.alphaValue = 1
+                textLabel.stringValue = "Connecting…"
+                textLabel.alignment = .center
+                textLabel.font = AppFonts.font(size: 11, weight: .regular)
+                textLabel.frame = NSRect(x: 8, y: 3, width: frameSize.width - 16, height: 16)
+                textLabel.toolTip = "Microphone startup is still pending. Click or press Escape to cancel."
+                textLabel.setAccessibilityLabel(textLabel.toolTip)
+            }
         }
     }
 
@@ -2484,7 +2505,7 @@ final class FloatingIndicatorController: NSObject {
                     ? Self.idleHoverPillSize(hotkeyLabel: config.dictationHotkey.label, screenWidth: screen.width, isToggle: config.isDictationCombinationToggle)
                     : NSSize(width: 44, height: 28)
             }
-        case .preparing: size = NSSize(width: 76, height: 22)
+        case .preparing: size = NSSize(width: microphoneStartupPending ? 116 : 76, height: 22)
         case .recording:
             let textWidth = ((insertionStopReason?.title ?? "") as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .medium)]).width
             size = NSSize(width: cursorInsertionStopped ? ceil(textWidth) + 54 : 76, height: 22)

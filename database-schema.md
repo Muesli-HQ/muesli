@@ -53,6 +53,34 @@ History only after the insert succeeds. If persistence fails, it reports that
 History could not be saved and distinguishes whether the paste succeeded.
 Dictionary correction monitoring starts only after a successful paste.
 
+### Failed dictation recordings outside SQLite
+
+Failure-only recovery uses private `Dictation Recovery/<UUID>/` folders inside
+Application Support. Each contains `audio.wav` and `failure.json` with the ID,
+start time, duration, model label, and failure message. Streaming failures also
+save the available text in `transcript.txt` and the optional `partialTranscript`
+metadata field; records written without that field continue to decode. A recovery
+folder is published only after all its files are written, and a failed copy keeps
+the original WAV. Successful dictation and explicit cancellation create no backup.
+Older buffered-streaming recovery folders without `failure.json` are left intact.
+
+Recovery metadata and audio stay local and add no CloudKit, telemetry, export,
+or CLI fields. Explicit local retry lazily creates the local-only
+`dictation_recovery_history` table, mapping a recovery UUID primary key to a
+unique `dictation_id` foreign key with `ON DELETE CASCADE`. The history insert
+and retry key commit in one transaction before deleting recovery files. If
+archive deletion fails, another retry (including after relaunch) returns the
+already saved text instead of creating duplicate history. If the saved row was
+deleted or its text cleared, an explicit retry atomically saves a replacement and remaps the key;
+the old tombstone remains available to sync. Database writes run on a worker
+with an independent connection. Cancellation during a pending write keeps the
+archive even if that write commits; a later retry reuses its key. Ordinary
+successful dictations do not access this table. Recovered text follows the existing history
+sync policy; the retry key is never synced. Discard removes one recovery, and
+confirmed history clearing removes the recovery directory and clears history on a worker,
+reserving operation ownership until completion. Audio is retained until recovery,
+discard, or history clearing; no automatic expiry is implied.
+
 ### Appearance preferences outside SQLite
 
 Ultra Dark is stored as local AppConfig JSON key `ultra_dark_appearance`, defaulting
@@ -149,6 +177,13 @@ command that becomes history.
 `app_context` remains cleanup/correction context. Destination-app fields are
 separate local presentation metadata and are deliberately absent from the sync
 record and CLI JSON contract.
+
+#### `dictation_recovery_history`
+
+Local-only retry keys, created lazily by `insertRecoveredDictation` rather than
+the normal migration or successful-dictation path. `recovery_id` is the primary
+key; unique `dictation_id` references `dictations(id)` with cascading hard
+deletion. Its transaction commits the retry key and history text together.
 
 #### `meetings`
 
