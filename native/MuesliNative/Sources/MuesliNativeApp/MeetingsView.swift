@@ -775,6 +775,7 @@ struct MeetingsView: View {
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Import audio or meeting notes from Granola")
             .fixedSize()
+            .featureTourTarget(.granolaImport)
 
             sortButton
             dateFilterButton

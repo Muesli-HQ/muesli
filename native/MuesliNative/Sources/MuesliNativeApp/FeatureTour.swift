@@ -60,6 +60,7 @@ enum FeatureTourTarget: String, Hashable {
     case insightsEntry
     case dictionarySuggestions
     case meetingsSidebar
+    case granolaImport
     case liveCaptionsSetting
     case cloudCleanupSetting
     case streamingModels
@@ -93,7 +94,7 @@ enum FeatureTourTarget: String, Hashable {
             return .timelineApplications
         case .dictionarySuggestions:
             return .tab(.dictionary)
-        case .meetingsSidebar:
+        case .meetingsSidebar, .granolaImport:
             return .meetingsBrowser
         case .meetingPeople:
             return .meetingPeople
@@ -166,7 +167,7 @@ enum FeatureTourCatalog {
                 title: "Import your Granola conversations",
                 message: "Bring meeting notes, summaries and transcripts from a Granola ZIP or CSV export into muesli. Open Meetings → Import → Granola… to preview your meetings before importing.",
                 icon: .symbol("square.and.arrow.down"),
-                target: .meetingsSidebar
+                target: .granolaImport
             ),
             FeatureTourStep(
                 id: "ask-meetings",

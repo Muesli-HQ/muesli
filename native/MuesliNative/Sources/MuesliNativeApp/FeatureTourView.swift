@@ -87,7 +87,7 @@ struct FeatureTourCalloutLayout {
         switch target {
         case .timelineSidebar, .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .searchSidebar:
             return [.trailing, .leading, .below, .above]
-        case .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
+        case .granolaImport, .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
             return [.below, .above, .trailing, .leading]
         case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings, .cotypistSettings, .appFormatting, .cleanupModels, .liveDictation:
             return [.above, .below, .trailing, .leading]

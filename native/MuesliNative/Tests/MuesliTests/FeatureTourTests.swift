@@ -81,6 +81,14 @@ struct FeatureTourTests {
         #expect(calloutFrame.maxX <= container.width - 20)
         #expect(calloutFrame.minY >= 20)
         #expect(calloutFrame.maxY <= container.height - 20)
+
+        let importButton = CGRect(x: 700, y: 40, width: 100, height: 32)
+        let importPosition = FeatureTourCalloutLayout.position(
+            spotlight: importButton, containerSize: container,
+            calloutSize: callout, target: .granolaImport
+        )
+        #expect(importPosition.y - callout.height / 2 > importButton.maxY)
+        #expect(importPosition.x + callout.width / 2 <= container.width - 20)
     }
 
     @Test("tour background hit region leaves the real control interactive")
@@ -207,12 +215,13 @@ struct FeatureTourTests {
         #expect(tour.steps.count == 11)
         #expect(Set(tour.steps.map(\.id)).count == tour.steps.count)
         #expect(tour.steps.map(\.target) == [
-            .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
+            .granolaImport, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
             .cotypistSettings, .appFormatting, .meetingsSidebar, .searchSidebar,
             .modelLibrary, .cleanupModels,
         ])
         #expect(tour.steps.first?.id == "granola-import")
         #expect(tour.steps.first?.icon == .symbol("square.and.arrow.down"))
+        #expect(FeatureTourTarget.granolaImport.navigationRoute == .meetingsBrowser)
         #expect(tour.steps.first(where: { $0.id == "time-turner" })?.icon == .timeTurner)
         #expect(tour.steps.first(where: { $0.id == "quill-assistant" })?.icon == .quill)
         #expect(!tour.steps.contains { $0.id.contains("recovery") })
