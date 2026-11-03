@@ -1230,10 +1230,10 @@ struct CLISummaryConfig: Decodable {
         claudeCodeExecutablePath = try container.decodeIfPresent(String.self, forKey: .claudeCodeExecutablePath) ?? claudeCodeExecutablePath
     }
 
-    static func load(from supportDirectory: URL) -> CLISummaryConfig {
+    static func load(from supportDirectory: URL, vault: (any CredentialVault)? = nil) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
         var config = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(CLISummaryConfig.self, from: $0) } ?? CLISummaryConfig()
-        let vault = KeychainCredentialVault(supportDirectory: supportDirectory)
+        let vault = vault ?? KeychainCredentialVault(supportDirectory: supportDirectory)
         if let data = try? vault.read(ConfigCredentials.account),
            let secrets = try? JSONDecoder().decode(ConfigCredentials.self, from: data) {
             config.openAIAPIKey = secrets.openAI; config.anthropicAPIKey = secrets.anthropic
