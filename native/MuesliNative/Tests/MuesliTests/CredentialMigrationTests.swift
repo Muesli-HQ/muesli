@@ -123,6 +123,26 @@ struct CredentialMigrationTests {
         #expect(store.load().openAIAPIKey == original.openAIAPIKey)
     }
 
+    @Test func unavailableVaultPreservesLegacyUntilSuccessfulReload() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        var legacy = AppConfig(); legacy.openAIAPIKey = "synthetic-legacy"
+        let path = root.appendingPathComponent("config.json")
+        let original = try JSONEncoder().encode(legacy)
+        try original.write(to: path)
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        vault.failReads = true
+        let unavailable = store.load()
+        #expect(unavailable.openAIAPIKey == legacy.openAIAPIKey)
+        #expect(!store.save(unavailable))
+        #expect(try Data(contentsOf: path) == original)
+        vault.failReads = false
+        #expect(store.load().openAIAPIKey == legacy.openAIAPIKey)
+        #expect(store.credentialStorageError == nil)
+        #expect(try vault.read(ConfigCredentials.account) != nil)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: path)).openAIAPIKey.isEmpty)
+    }
+
     @Test func unhydratedSaveCannotOverwriteExistingOrMalformedCredentials() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault()

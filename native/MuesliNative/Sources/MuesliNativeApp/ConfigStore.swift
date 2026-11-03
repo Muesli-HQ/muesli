@@ -64,7 +64,7 @@ final class ConfigStore {
             credentialStorageError = nil
             return true
         } catch {
-            credentialStorageError = CredentialVaultError.unavailable.localizedDescription
+            credentialStorageError = "Changes could not be saved. " + CredentialVaultError.unavailable.localizedDescription
             return false
         }
     }
