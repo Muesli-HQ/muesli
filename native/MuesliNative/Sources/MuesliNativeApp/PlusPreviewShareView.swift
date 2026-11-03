@@ -105,7 +105,9 @@ struct PlusPreviewShareView: View {
                     Link("Sharing test terms", destination: URL(string: "https://notes.muesli.works/sharing-terms")!)
                         .font(.caption)
                     Text(
-                        "Test copies expire after seven days. Revoking access cannot erase copies a recipient already saved."
+                        session.subscriptionBacked
+                            ? "Shared copies stay available while subscribed, followed by a 30-day grace period. Local and cloud copies are independent."
+                            : "Preview copies expire after seven days. Local and cloud copies are independent."
                     )
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -121,6 +123,10 @@ struct PlusPreviewShareView: View {
                             .buttonStyle(SharingPrimaryButtonStyle())
                             .help("Sign in to Muesli Plus to check sharing access. Nothing is uploaded yet.")
                             .disabled(busy)
+                    } else if session.subscriptionTesting && !session.canShare {
+                        Button("Subscribe · $2.99/month", systemImage: "creditcard") { session.subscribe() }
+                            .buttonStyle(SharingPrimaryButtonStyle()).disabled(busy)
+                        Text("Test checkout · no charge").font(.caption).foregroundStyle(.secondary)
                     } else {
                         Button("Sign out", systemImage: "person.crop.circle.badge.xmark") { session.signOut() }.disabled(busy)
                         Spacer()
@@ -142,7 +148,7 @@ struct PlusPreviewShareView: View {
             .onDisappear { session.cancelSignIn() }
     }
     private func upload() {
-        guard Self.enabled, !busy, !attempted, accepted, validRecipients, let token, let termsVersion, account != nil else { return }
+        guard Self.enabled, !busy, !attempted, accepted, validRecipients, let token, let termsVersion, account != nil, session.canShare else { return }
         // This is the sole content-bearing network call, reachable only from the explicit button.
         uploading = true
         attempted = true

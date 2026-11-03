@@ -22,6 +22,9 @@ final class PlusPreviewAccount: ObservableObject {
     @Published private(set) var email: String?
     @Published private(set) var token: String?
     @Published private(set) var termsVersion: String?
+    @Published private(set) var canShare = false
+    @Published private(set) var subscriptionTesting = false
+    @Published private(set) var subscriptionBacked = false
     @Published private(set) var busy = false
     @Published private(set) var isSigningIn = false
     @Published private(set) var hasStoredSession = false
@@ -54,6 +57,9 @@ final class PlusPreviewAccount: ObservableObject {
         email = nil
         token = nil
         termsVersion = nil
+        canShare = false
+        subscriptionTesting = false
+        subscriptionBacked = false
     }
 
     private func accept(_ info: [String: Any], token: String) throws {
@@ -64,6 +70,58 @@ final class PlusPreviewAccount: ObservableObject {
         self.email = email
         self.token = token
         termsVersion = terms
+        canShare = info["eligible"] as? Bool ?? true // Compatibility with the existing test backend.
+        subscriptionTesting = info["subscriptionTesting"] as? Bool ?? false
+        subscriptionBacked = (info["subscription"] as? [String: Any])?["retentionPolicy"] as? String == "subscription"
+    }
+
+    /// Checkout carries identity and PKCE only. The sharing draft remains in its view.
+    @discardableResult
+    func subscribe() -> Task<Void, Never>? {
+        guard dependencies.enabled(), subscriptionTesting, let currentToken = token, !busy else { return nil }
+        busy = true
+        isSigningIn = true
+        message = ""
+        let current = UUID()
+        generation = current
+        operation = Task { @MainActor in
+            defer { if generation == current { busy = false; isSigningIn = false } }
+            do {
+                let pkce = try PlusPreviewPKCE()
+                let start = try await dependencies.call("billing/start", currentToken, ["challenge": pkce.challenge, "state": pkce.state])
+                try Task.checkCancellation()
+                guard generation == current else { return }
+                guard let link = start["url"] as? String, let url = URL(string: link),
+                      url.scheme == "https", url.host == "notes.muesli.works", url.path == "/subscribe",
+                      url.user == nil, url.password == nil, url.port == nil else {
+                    throw PlusPreviewClient.Failure(status: 0, message: "Could not start checkout safely.")
+                }
+                let callback = try await dependencies.authenticate(url)
+                try Task.checkCancellation()
+                guard generation == current else { return }
+                let code = try pkce.authorizationCode(from: callback)
+                let result = try await dependencies.call("auth/exchange", nil, ["code": code, "verifier": pkce.verifier])
+                guard let issued = result["token"] as? String else {
+                    throw PlusPreviewClient.Failure(status: 0, message: "Could not verify checkout return.")
+                }
+                let info = try await dependencies.call("account", issued, nil)
+                try Task.checkCancellation()
+                guard generation == current else { return }
+                guard info["eligible"] as? Bool == true,
+                      let email = info["email"] as? String, email == self.email,
+                      let terms = info["termsVersion"] as? String, !terms.isEmpty else {
+                    throw PlusPreviewClient.Failure(status: 0, message: "Payment is not verified for this account yet. Check your subscription.")
+                }
+                try dependencies.saveToken(issued)
+                try accept(info, token: issued)
+                hasStoredSession = true
+                message = "Your subscription is ready. Review your note, then choose Upload and invite."
+            } catch is CancellationError {
+            } catch {
+                if generation == current { message = error.localizedDescription }
+            }
+        }
+        return operation
     }
 
     private func connect(interactive: Bool) -> Task<Void, Never>? {
@@ -198,6 +256,10 @@ struct PlusPreviewAccountView: View {
             }
             if !account.message.isEmpty {
                 Text(account.message).font(.callout).foregroundStyle(.secondary)
+            }
+            if account.email != nil && account.subscriptionTesting {
+                Link("Manage subscription", destination: URL(string: "https://notes.muesli.works/subscribe")!)
+                    .font(.callout)
             }
         }
         .task { account.refresh() }

@@ -22,10 +22,13 @@ struct PlusPreviewPKCE {
         state = try random()
     }
 
-    var authorizationURL: URL {
-        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64EncodedString()
+    var challenge: String {
+        Data(SHA256.hash(data: Data(verifier.utf8))).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    var authorizationURL: URL {
         var url = URLComponents(string: "https://notes.muesli.works/auth/native")!
         url.queryItems = [URLQueryItem(name: "code_challenge", value: challenge),
                           URLQueryItem(name: "code_challenge_method", value: "S256"),

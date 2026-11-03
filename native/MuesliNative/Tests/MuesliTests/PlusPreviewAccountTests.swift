@@ -133,6 +133,47 @@ struct PlusPreviewAccountTests {
         #expect(!account.busy)
     }
 
+    @Test func subscriptionReturnChecksEntitlementWithoutUploading() async {
+        let fixture = AccountFixture()
+        fixture.saved = "saved-token"
+        var paid = false
+        fixture.handler = { path in
+            if path == "account" {
+                return ["email": "owner@example.com", "termsVersion": "test-terms", "eligible": paid,
+                        "subscriptionTesting": true, "subscription": ["retentionPolicy": paid ? "subscription" : "legacy"]]
+            }
+            if path == "billing/start" {
+                paid = true
+                return ["url": "https://notes.muesli.works/subscribe?flow=fixture"]
+            }
+            return AccountFixture.response(path)
+        }
+        let account = fixture.account()
+        await account.refresh()?.value
+        #expect(!account.canShare)
+        await account.subscribe()?.value
+        #expect(account.canShare)
+        #expect(account.subscriptionBacked)
+        #expect(fixture.requests == ["account", "billing/start", "auth/exchange", "account"])
+        #expect(!fixture.requests.contains("upload"))
+    }
+
+    @Test func subscriptionReturnCannotUnlockUnpaidAccount() async {
+        let fixture = AccountFixture()
+        fixture.saved = "saved-token"
+        fixture.handler = { path in
+            if path == "account" { return ["email": "owner@example.com", "termsVersion": "test-terms", "eligible": false, "subscriptionTesting": true] }
+            if path == "billing/start" { return ["url": "https://notes.muesli.works/subscribe?flow=fixture"] }
+            return AccountFixture.response(path)
+        }
+        let account = fixture.account()
+        await account.refresh()?.value
+        await account.subscribe()?.value
+        #expect(!account.canShare)
+        #expect(fixture.saved == "saved-token")
+        #expect(!account.message.isEmpty)
+    }
+
     @Test func nonPreviewBuildCannotStartAccountOperations() async {
         let fixture = AccountFixture()
         fixture.enabled = false
@@ -153,6 +194,7 @@ private final class AccountFixture {
     var failSave = false
     var cancelBrowser = false
     var callbackState: String?
+    var billingState: String?
     var requests: [String] = []
     var opened: [URL] = []
     var handler: ((String) async throws -> [String: Any])?
@@ -177,6 +219,13 @@ private final class AccountFixture {
         dependencies.call = { path, _, body in
             #expect(body?["summary"] == nil)
             #expect(body?["transcript"] == nil)
+            #expect(body?["title"] == nil)
+            #expect(body?["recipients"] == nil)
+            if path == "billing/start" {
+                self.billingState = body?["state"] as? String
+                #expect((body?["challenge"] as? String)?.count == 43)
+                #expect(body?["verifier"] == nil)
+            }
             self.requests.append(path)
             if let handler = self.handler { return try await handler(path) }
             return Self.response(path)
@@ -185,6 +234,9 @@ private final class AccountFixture {
             self.opened.append(url)
             if self.cancelBrowser { throw CancellationError() }
             #expect(url.host == "notes.muesli.works")
+            if url.path == "/subscribe" {
+                return URL(string: "com.muesli.plus://auth/callback?code=" + String(repeating: "a", count: 64) + "&state=" + self.billingState!)!
+            }
             #expect(url.path == "/auth/native")
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
             #expect(query.first(where: { $0.name == "code_challenge_method" })?.value == "S256")
