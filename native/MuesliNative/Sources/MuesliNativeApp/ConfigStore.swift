@@ -51,6 +51,12 @@ final class ConfigStore {
         return config
     }
 
+    /// Observers must not authorize writes from an independently held runtime
+    /// config. Only the owner's load() may hydrate this store's save baseline.
+    func loadForReading() -> AppConfig {
+        ConfigStore(supportDirectory: supportDirectory(), vault: credentialVault).load()
+    }
+
     @discardableResult
     func save(_ config: AppConfig) -> Bool {
         ensureDirectory()

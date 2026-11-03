@@ -21,13 +21,18 @@ causes an actionable storage/authentication failure. Normal updates with the sam
 signing identity are intended to preserve access; signing-identity changes must
 be validated separately. The ACL uses macOS's legacy login-Keychain API because
 local-only development lanes have no provisioned shared access group.
+The standalone CLI reads existing OpenRouter credentials without migrating or
+deleting the legacy file; only the bundled CLI may perform that migration.
 
 Migration is automatic. Existing config/auth JSON is read, the destination is
 written and read back, and only then is the old plaintext removed. A newer valid
 Keychain record wins over a stale file. Malformed destination auth data cannot
 delete a valid legacy file. If migration fails, the original remains usable and
-migration retries on subsequent loads. New saves and refreshes fail instead of
-writing new plaintext credentials. Sign-out removes the matching item and any
+migration retries on subsequent loads. New saves never write plaintext credentials.
+If ChatGPT rotates a refresh token while Keychain persistence fails, the refreshed
+session stays in memory and persistence retries on its next use. It is not written
+to disk; quitting before persistence succeeds can require signing in again.
+Sign-out removes the matching item and any
 remaining legacy file; deletion failure is not reported as successful sign-out.
 The old shared ChatGPT Keychain service can be claimed only by the production app.
 
@@ -35,7 +40,9 @@ An unsuccessful config credential read is not treated as an empty credential set
 An existing provider-config item must be successfully loaded into the runtime
 configuration before a save can replace or clear it. Unlocking Keychain alone
 does not make an earlier sanitized snapshot safe to save: reload the configuration
-first. A fresh store may save only after confirming that the item is absent.
+first. Indicator reads use a separate snapshot and cannot authorize saves from
+the owner's stale configuration. A fresh store may save only after confirming
+that the item is absent.
 Malformed or still-inaccessible items remain untouched and saves report failure.
 
 Settings API-key edits commit on Return or focus loss using the shared native

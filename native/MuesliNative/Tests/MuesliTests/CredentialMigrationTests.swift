@@ -123,6 +123,33 @@ struct CredentialMigrationTests {
         #expect(store.load().openAIAPIKey == original.openAIAPIKey)
     }
 
+    @Test func observerReloadCannotAuthorizeStaleOwnerCredentialWrites() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        var original = AppConfig(); original.openAIAPIKey = "synthetic-original"
+        #expect(ConfigStore(supportDirectory: root, vault: vault).save(original))
+        let record = try vault.read(ConfigCredentials.account)
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        vault.failReads = true
+        var owner = store.load()
+        #expect(owner.openAIAPIKey.isEmpty)
+        vault.failReads = false
+        #expect(store.loadForReading().openAIAPIKey == original.openAIAPIKey)
+        #expect(store.credentialStorageError != nil)
+        owner.openAIModel = "synthetic-model"
+        #expect(!store.save(owner))
+        #expect(try vault.read(ConfigCredentials.account) == record)
+        // Recovery is authorized only when the owner adopts the hydrated config.
+        owner = store.load()
+        owner.openAIModel = "synthetic-model"
+        #expect(store.save(owner))
+        #expect(store.loadForReading().openAIAPIKey == original.openAIAPIKey)
+        vault.failReads = true
+        _ = store.loadForReading()
+        vault.failReads = false
+        #expect(store.save(owner))
+    }
+
     @Test func unavailableVaultPreservesLegacyUntilSuccessfulReload() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault()
@@ -277,6 +304,61 @@ struct CredentialMigrationTests {
         vault.failDeletes = false
         try chatGPT.signOut(); try google.signOut()
         #expect(!chatGPT.isAuthenticated && !google.isAuthenticated)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func rotatedChatGPTSessionSurvivesFailedPersistenceAndCanSaveOrSignOut(signOut: Bool) async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let original = try JSONSerialization.data(withJSONObject: ["access_token": "synthetic-old", "refresh_token": "synthetic-old-refresh", "expires_at": "0"])
+        try vault.write(original, account: "chatgpt-auth")
+        var refreshes = 0
+        let auth = ChatGPTAuthManager(supportDirectory: root, vault: vault, load: { request in
+            refreshes += 1
+            #expect(String(data: request.httpBody!, encoding: .utf8)?.contains("synthetic-old-refresh") == true)
+            return (Data(#"{"access_token":"synthetic-new","refresh_token":"synthetic-rotated","expires_in":3600}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        vault.failWrites = true
+        #expect(try await auth.validAccessToken().token == "synthetic-new")
+        #expect(try vault.read("chatgpt-auth") == original)
+        #expect(try await auth.validAccessToken().token == "synthetic-new")
+        #expect(refreshes == 1)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("chatgpt-auth.json").path))
+        if signOut {
+            vault.failDeletes = true
+            #expect(throws: CredentialVaultError.self) { try auth.signOut() }
+            #expect(try await auth.validAccessToken().token == "synthetic-new")
+            vault.failDeletes = false
+            try auth.signOut()
+            #expect(!auth.isAuthenticated)
+            await #expect(throws: ChatGPTAuthError.self) { try await auth.validAccessToken() }
+            #expect(try vault.read("chatgpt-auth") == nil)
+        } else {
+            vault.failWrites = false
+            #expect(try await auth.validAccessToken().token == "synthetic-new")
+            let saved = try #require(try vault.read("chatgpt-auth"))
+            let tokens = try #require(try JSONSerialization.jsonObject(with: saved) as? [String: String])
+            #expect(tokens["refresh_token"] == "synthetic-rotated")
+            let restarted = ChatGPTAuthManager(supportDirectory: root, vault: vault)
+            #expect(try await restarted.validAccessToken().token == "synthetic-new")
+        }
+    }
+
+    @Test @MainActor func refreshCompletionCannotResurrectSignedOutSession() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        try vault.write(JSONSerialization.data(withJSONObject: ["access_token": "synthetic-old", "refresh_token": "synthetic-refresh", "expires_at": "0"]), account: "chatgpt-auth")
+        var auth: ChatGPTAuthManager!
+        defer { auth = nil }
+        auth = ChatGPTAuthManager(supportDirectory: root, vault: vault, load: { request in
+            try auth.signOut()
+            return (Data(#"{"access_token":"synthetic-late","refresh_token":"synthetic-rotated","expires_in":3600}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        await #expect(throws: ChatGPTAuthError.self) { try await auth.validAccessToken() }
+        #expect(!auth.isAuthenticated)
+        #expect(try vault.read("chatgpt-auth") == nil)
     }
 
 }

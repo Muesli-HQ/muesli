@@ -42,6 +42,10 @@ credentials are local-only, not SQLite rows, CloudKit fields, chat exports or
 telemetry. See [credential storage](docs/credential-storage.md).
 Failed config credential reads leave the stored item unmodified: an existing
 item must be successfully hydrated before a later save may replace or clear it.
+Observer reads cannot hydrate the owner's save baseline. The standalone CLI
+reads OpenRouter credentials without migrating or deleting legacy files; migration
+requires the app or its bundled CLI. Rotated ChatGPT tokens remain only in memory
+if Keychain persistence fails, with a retry on their next use.
 
 ### App formatting preferences outside SQLite
 

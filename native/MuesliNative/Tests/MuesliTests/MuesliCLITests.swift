@@ -307,8 +307,8 @@ struct MuesliCLITests {
         #expect(context.databaseURL.path == "/tmp/muesli-support/muesli.db")
     }
 
-    @Test("summary config reads the app's persisted OpenRouter selection and protected credential")
-    func summaryConfigReadsAppOpenRouterSettings() throws {
+    @Test("only the bundled CLI migrates OpenRouter credentials", arguments: [false, true])
+    func summaryConfigReadsAppOpenRouterSettings(bundled: Bool) throws {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-cli-openrouter-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -322,12 +322,29 @@ struct MuesliCLITests {
             .write(to: supportDirectory.appendingPathComponent("openrouter-auth.json"))
 
         let vault = TestCredentialVault()
-        let config = CLISummaryConfig.load(from: supportDirectory, vault: vault)
+        let config = CLISummaryConfig.load(from: supportDirectory, vault: vault,
+                                           appBundleURL: bundled ? URL(fileURLWithPath: "/synthetic/muesli.app") : nil)
         #expect(config.meetingSummaryBackend == "openrouter")
         #expect(config.openRouterModel == "openai/gpt-oss-120b:free")
         #expect(config.openRouterAPIKey == "sk-or-cli-test")
-        #expect(try vault.read("openrouter-auth") != nil)
-        #expect(!FileManager.default.fileExists(atPath: supportDirectory.appendingPathComponent("openrouter-auth.json").path))
+        #expect((try vault.read("openrouter-auth") != nil) == bundled)
+        #expect(FileManager.default.fileExists(atPath: supportDirectory.appendingPathComponent("openrouter-auth.json").path) == !bundled)
+    }
+
+    @Test("standalone CLI validates vault precedence without modifying either source", arguments: [false, true])
+    func standaloneCLIOpenRouterReadsWithoutMigration(malformedVault: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cli-readonly-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let record = malformedVault ? Data("invalid".utf8) : Data(#"{"api_key":"synthetic-newer"}"#.utf8)
+        try vault.write(record, account: "openrouter-auth")
+        let legacy = Data(#"{"api_key":"synthetic-legacy"}"#.utf8)
+        let path = root.appendingPathComponent("openrouter-auth.json"); try legacy.write(to: path)
+        let loaded = CLISummaryConfig.load(from: root, vault: vault, appBundleURL: nil)
+        #expect(loaded.openRouterAPIKey == (malformedVault ? "synthetic-legacy" : "synthetic-newer"))
+        #expect(try Data(contentsOf: path) == legacy)
+        #expect(try vault.read("openrouter-auth") == record)
     }
 
     @Test("CLI OpenRouter summaries use the free router when no model is configured")

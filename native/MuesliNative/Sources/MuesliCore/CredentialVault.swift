@@ -38,6 +38,12 @@ public struct KeychainCredentialVault: CredentialVault {
         service = "com.muesli.credentials." + digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    public static func enclosingAppBundle(from url: URL = Bundle.main.bundleURL) -> URL? {
+        var bundle = url
+        while bundle.path != "/", bundle.pathExtension != "app" { bundle.deleteLastPathComponent() }
+        return bundle.pathExtension == "app" ? bundle : nil
+    }
+
     private func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service, kSecAttrAccount as String: account,
@@ -67,9 +73,7 @@ public struct KeychainCredentialVault: CredentialVault {
             item[kSecAttrSynchronizable as String] = false
             // Give only this signed app and its signed bundled CLI access. A shell
             // helper or another dev lane is not a trusted application for this item.
-            var bundle = Bundle.main.bundleURL
-            while bundle.path != "/", bundle.pathExtension != "app" { bundle.deleteLastPathComponent() }
-            if bundle.pathExtension == "app" {
+            if let bundle = Self.enclosingAppBundle() {
                 let paths = [bundle.path, bundle.appendingPathComponent("Contents/MacOS/muesli-cli").path]
                 var applications: [SecTrustedApplication] = []
                 for path in paths where FileManager.default.fileExists(atPath: path) {

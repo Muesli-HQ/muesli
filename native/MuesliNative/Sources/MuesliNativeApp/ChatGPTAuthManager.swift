@@ -40,11 +40,16 @@ final class ChatGPTAuthManager {
 
     private let supportDirectory: URL
     private let tokenStorage: CredentialFileMigration
+    private let load: (URLRequest) async throws -> (Data, URLResponse)
     private var hasStoredTokens = false
+    private var pendingTokens: TokenResponse?
+    private var credentialGeneration = 0
     private var ownsLegacyKeychain: Bool { supportDirectory.standardizedFileURL == AppIdentity.supportDirectoryURL.standardizedFileURL && AppIdentity.supportDirectoryName == "Muesli" }
 
-    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil) {
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil,
+         load: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
         self.supportDirectory = supportDirectory
+        self.load = load
         self.tokenStorage = .init(legacyURL: supportDirectory.appendingPathComponent("chatgpt-auth.json"),
                                   account: "chatgpt-auth", vault: vault ?? KeychainCredentialVault(supportDirectory: supportDirectory))
         migrateFromKeychain()
@@ -62,6 +67,7 @@ final class ChatGPTAuthManager {
         let code = try await startCallbackServerAndOpenBrowser(codeChallenge: challenge)
         let tokens = try await exchangeCodeForTokens(code: code, codeVerifier: verifier)
         try saveTokens(tokens)
+        credentialGeneration += 1
         fputs("[chatgpt-auth] signed in successfully\n", stderr)
     }
 
@@ -73,6 +79,8 @@ final class ChatGPTAuthManager {
             }
         }
         try tokenStorage.delete()
+        credentialGeneration += 1
+        pendingTokens = nil
         hasStoredTokens = false
         fputs("[chatgpt-auth] signed out\n", stderr)
     }
@@ -96,8 +104,15 @@ final class ChatGPTAuthManager {
             guard let refreshToken = stored["refresh_token"] else {
                 throw ChatGPTAuthError.notAuthenticated
             }
+            let generation = credentialGeneration
             let tokens = try await refreshAccessToken(refreshToken: refreshToken)
-            try saveTokens(tokens)
+            guard generation == credentialGeneration else { throw ChatGPTAuthError.notAuthenticated }
+            do { try saveTokens(tokens) } catch {
+                // Rotation can invalidate the old refresh token. Keep the new
+                // session in memory and retry Keychain persistence on next use.
+                pendingTokens = tokens
+                fputs("[chatgpt-auth] refreshed session retained in memory; Keychain save will retry\n", stderr)
+            }
             return (tokens.accessToken, tokens.accountId)
         }
 
@@ -274,6 +289,11 @@ final class ChatGPTAuthManager {
         let refreshToken: String
         let expiresAtMs: Double
         let accountId: String
+
+        var storedValues: [String: String] {
+            ["access_token": accessToken, "refresh_token": refreshToken,
+             "expires_at": String(format: "%.0f", expiresAtMs), "account_id": accountId]
+        }
     }
 
     private func exchangeCodeForTokens(code: String, codeVerifier: String) async throws -> TokenResponse {
@@ -292,7 +312,7 @@ final class ChatGPTAuthManager {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await load(request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown error"
             throw ChatGPTAuthError.tokenExchangeFailed(errorBody)
@@ -330,7 +350,7 @@ final class ChatGPTAuthManager {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await load(request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown error"
             throw ChatGPTAuthError.refreshFailed(errorBody)
@@ -389,17 +409,16 @@ final class ChatGPTAuthManager {
     // MARK: - Keychain token storage with verified legacy-file migration
 
     private func saveTokens(_ tokens: TokenResponse) throws {
-        let dict: [String: String] = [
-            "access_token": tokens.accessToken,
-            "refresh_token": tokens.refreshToken,
-            "expires_at": String(format: "%.0f", tokens.expiresAtMs),
-            "account_id": tokens.accountId,
-        ]
-        try tokenStorage.save(JSONSerialization.data(withJSONObject: dict))
+        try tokenStorage.save(JSONSerialization.data(withJSONObject: tokens.storedValues))
+        pendingTokens = nil
         hasStoredTokens = true
     }
 
     private func readTokens() -> [String: String]? {
+        if let pendingTokens {
+            try? saveTokens(pendingTokens)
+            return pendingTokens.storedValues
+        }
         var tokens: [String: String]?
         do {
             _ = try tokenStorage.load(validating: { data in
