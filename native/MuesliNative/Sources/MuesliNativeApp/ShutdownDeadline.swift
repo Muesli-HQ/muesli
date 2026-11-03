@@ -11,14 +11,16 @@ enum ShutdownDeadline {
         seconds: TimeInterval,
         operation: @escaping @Sendable () async -> Void
     ) async -> Bool {
-        await withCheckedContinuation { continuation in
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(seconds))
+        return await withCheckedContinuation { continuation in
             let gate = ResumeOnce(continuation)
             Task {
                 await operation()
-                gate.resume(finished: true)
+                gate.resume(finished: clock.now < deadline)
             }
             Task {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                try? await clock.sleep(until: deadline)
                 gate.resume(finished: false)
             }
         }

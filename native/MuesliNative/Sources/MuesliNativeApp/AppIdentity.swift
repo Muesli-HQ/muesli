@@ -9,7 +9,8 @@ public enum AppIdentity {
     }
 
     static var displayName: String {
-        stringValue(for: "CFBundleDisplayName") ?? bundleName
+        stringValue(for: "CFBundleDisplayName") ?? (bundleName.hasPrefix("Muesli")
+            ? "muesli" + bundleName.dropFirst(6) : bundleName)
     }
 
     static var marketingVersion: String {
@@ -17,7 +18,9 @@ public enum AppIdentity {
     }
 
     static var supportDirectoryName: String {
-        stringValue(for: "MuesliSupportDirectoryName") ?? displayName
+        // Keep legacy data paths independent of display-name capitalization.
+        stringValue(for: "MuesliSupportDirectoryName") ?? (bundleName.hasPrefix("muesli")
+            ? "Muesli" + bundleName.dropFirst(6) : bundleName)
     }
 
     /// Public so App Intents (a separate module from the rest of the app)

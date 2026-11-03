@@ -12,7 +12,7 @@ enum MeetingMicHealthState: String, Codable, Equatable {
         case .healthy, .waitingForAudio:
             return nil
         case .micCallbacksMissing:
-            return "Microphone audio is not reaching Muesli. This meeting transcript may miss your side."
+            return "Microphone audio is not reaching muesli. This meeting transcript may miss your side."
         case .micAllZeroWhileSystemActive:
             return "Microphone audio is silent. This meeting transcript may miss your side."
         }

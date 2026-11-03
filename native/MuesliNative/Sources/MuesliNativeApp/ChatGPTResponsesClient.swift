@@ -86,7 +86,7 @@ enum ChatGPTResponsesTransport {
             // ChatGPT's Codex endpoint rejects this public Responses API field.
             supportedBody.removeValue(forKey: "max_output_tokens")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: supportedBody)
+        request.httpBody = try ChatFileReader.requestData(supportedBody)
         return request
     }
 }
@@ -172,6 +172,7 @@ enum ChatGPTResponsesClient {
         reasoningEffort: ReasoningEffort? = nil,
         sessionID: UUID = UUID(),
         onReasoningSummary: (@Sendable (String) async -> Void)? = nil,
+        images: [ChatImageInput] = [],
         logCategory: String
     ) async throws -> String {
         try Task.checkCancellation()
@@ -183,7 +184,7 @@ enum ChatGPTResponsesClient {
             model: model,
             maxOutputTokens: maxOutputTokens,
             reasoningEffort: reasoningEffort,
-            includeReasoningSummary: onReasoningSummary != nil
+            includeReasoningSummary: onReasoningSummary != nil, images: images
         )
 
         let request = try ChatGPTResponsesTransport.makeRequest(
@@ -251,7 +252,7 @@ enum ChatGPTResponsesClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw MeetingTextGenerationError.failed(status) }
         var summary = ChatGPTReasoningSummaryAccumulator()
-        var output = MeetingNativeResponseAccumulator()
+        var output = MeetingNativeResponseAccumulator(maximumArgumentBytes: input.maximumArgumentBytes)
         var received = 0
         for try await line in bytes.lines {
             try Task.checkCancellation()
@@ -277,7 +278,8 @@ enum ChatGPTResponsesClient {
         model: String,
         maxOutputTokens: Int? = nil,
         reasoningEffort: ReasoningEffort? = nil,
-        includeReasoningSummary: Bool = false
+        includeReasoningSummary: Bool = false,
+        images: [ChatImageInput] = []
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -286,7 +288,7 @@ enum ChatGPTResponsesClient {
             "instructions": systemPrompt,
             "input": [[
                 "role": "user",
-                "content": [["type": "input_text", "text": userPrompt]],
+                "content": [["type": "input_text", "text": userPrompt]] + images.map(\.responsesContent),
             ] as [String: Any]],
         ]
         if let effort = ReasoningEffortPolicy.apiValue(for: model, preferred: reasoningEffort) {

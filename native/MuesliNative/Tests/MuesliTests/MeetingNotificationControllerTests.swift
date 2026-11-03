@@ -39,7 +39,7 @@ struct MeetingNotificationControllerTests {
     @MainActor
     func singleActionPromptsUseAvailableTextWidth() {
         let subtitle = "Still transcribing. Stop if the meeting ended." as NSString
-        let subtitleWidth = subtitle.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+        let subtitleWidth = subtitle.size(withAttributes: [.font: AppFonts.regular(11)]).width
         let cardWidth = MeetingNotificationController.singleActionCardWidth(
             requiredTextWidth: subtitleWidth,
             textX: 14

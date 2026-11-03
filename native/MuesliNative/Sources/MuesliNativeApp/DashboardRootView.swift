@@ -92,7 +92,17 @@ struct DashboardRootView: View {
                 sidebarView
                 .frame(width: sidebarPresentation.isCollapsed ? 68 : 240)
             } detail: {
-                detailContent
+                VStack(spacing: 0) {
+                    detailContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        // One structural location across all three destinations preserves the
+                        // native editor, selection and undo stack while browsing.
+                        if showsPersistentChat {
+                            MeetingChatView(appState: appState, controller: controller,
+                                            coordinator: controller.meetingChatCoordinator, docked: true)
+                        }
+                    }
             }
         }
         .tint(MuesliTheme.accent)
@@ -144,8 +154,18 @@ struct DashboardRootView: View {
                 }
             }
         }
+        .sheet(isPresented: Binding(get: { appState.globalSearchPresented },
+                                    set: { appState.globalSearchPresented = $0 })) {
+            GlobalSearchPanel(controller: controller, appState: appState)
+        }
+        .onChange(of: appState.focusSearchField) { _, focus in
+            if focus {
+                appState.focusSearchField = false
+                appState.globalSearchPresented = true
+            }
+        }
         .alert(
-            appState.contributionMilestonePrompt?.title ?? "Muesli milestone",
+            appState.contributionMilestonePrompt?.title ?? "muesli milestone",
             isPresented: Binding(
                 get: { appState.contributionMilestonePrompt != nil },
                 set: { if !$0 { controller.dismissContributionMilestonePrompt() } }
@@ -162,12 +182,12 @@ struct DashboardRootView: View {
                 }
             }
             if appState.contributionMilestonePrompt?.showTweetAboutMuesli == true {
-                Button("Tweet about Muesli") {
+                Button("Tweet about muesli") {
                     controller.openContributionMilestoneAction(.tweetAboutMuesli)
                 }
             }
             if appState.contributionMilestonePrompt?.showPostOnLinkedIn == true {
-                Button("Post about Muesli on LinkedIn") {
+                Button("Post about muesli on LinkedIn") {
                     controller.openContributionMilestoneAction(.postOnLinkedIn)
                 }
             }
@@ -195,6 +215,11 @@ struct DashboardRootView: View {
                 onDismiss: { controller.dismissDiagnosticIncidentPrompt() }
             )
         }
+        .font(MuesliTheme.body())
+    }
+
+    private var showsPersistentChat: Bool {
+        [.timeline, .dictations, .meetings].contains(appState.selectedTab)
     }
 
     private var hasOpenMeeting: Bool {
@@ -237,6 +262,8 @@ struct DashboardRootView: View {
             switch appState.selectedTab {
             case .timeline:
                 TimelineView(appState: appState, controller: controller)
+            case .timeTurner:
+                TimeTurnerPage(appState: appState, controller: controller)
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
             case .insights:

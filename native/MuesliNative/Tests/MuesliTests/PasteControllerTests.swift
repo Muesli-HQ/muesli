@@ -105,6 +105,20 @@ struct PasteControllerTests {
 
     // MARK: - paste() clipboard restoration
 
+    @Test("paste dispatches on the next main-queue turn, with no fixed delay")
+    func pasteDispatchesWithoutFixedDelay() async {
+        let pasteboard = makePasteboard()
+        var dispatched = false
+        PasteController.paste(text: "dictated", pasteboard: pasteboard,
+            simulatePasteAction: { _ in dispatched = true; return true })
+        #expect(!dispatched)
+        // Queued right behind a next-turn dispatch; a delayed one would still be pending here.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(dispatched)
+    }
+
     @Test("custom shortcut reaches keyboard dispatch without changing clipboard safety")
     func customPasteShortcut() async throws {
         let pasteboard = makePasteboard()

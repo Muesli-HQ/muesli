@@ -35,7 +35,7 @@ public struct AIModelSelector: View {
                 if !choices.contains(where: { $0.id == selectedID }) {
                     VStack(alignment: .leading, spacing: 4) {
                         row(title: currentTitle ?? selectedID, selected: true)
-                        Text("Current custom model").font(.system(size: 11)).foregroundStyle(theme.muted)
+                        Text("Current custom model").font(theme.font(size: 11)).foregroundStyle(theme.muted)
                             .padding(.horizontal, 12).padding(.bottom, 6)
                     }
                 }
@@ -57,7 +57,7 @@ public struct AIModelSelector: View {
 
     private func row(title: String, selected: Bool) -> some View {
         HStack {
-            Text(title).font(.system(size: 12)).lineLimit(1)
+            Text(title).font(theme.font(size: 12)).lineLimit(1)
             Spacer()
             if selected { AIIcon(.check, size: 12).accessibilityHidden(true) }
         }

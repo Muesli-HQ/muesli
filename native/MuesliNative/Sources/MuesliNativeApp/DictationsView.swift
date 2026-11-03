@@ -90,6 +90,10 @@ struct DictationsView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
+            FailedDictationsView(appState: appState, controller: controller)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.bottom, appState.failedDictations.isEmpty ? 0 : MuesliTheme.spacing12)
+
             if appState.dictationRows.isEmpty {
                 Spacer()
                 VStack(spacing: MuesliTheme.spacing12) {
@@ -111,7 +115,7 @@ struct DictationsView: View {
                             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                                 HStack {
                                     Text(group.header)
-                                        .font(.system(size: 12, weight: .semibold))
+                                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                                         .foregroundStyle(MuesliTheme.textTertiary)
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
@@ -165,6 +169,7 @@ struct DictationsView: View {
                 }
             }
         }
+        .task { await controller.refreshFailedDictations() }
     }
 
     private var emptyStateInstruction: String {
@@ -222,17 +227,13 @@ struct DictationsView: View {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 12, weight: .semibold))
                 Text(isRecording ? "Stop Voice Note" : "Record Voice Note")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(height: 30)
-            .background(isRecording ? MuesliTheme.recording : MuesliTheme.accent)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isRecording ? .recording : .primary))
         .disabled(appState.dictationState == .transcribing)
-        .opacity(appState.dictationState == .transcribing ? 0.55 : 1)
     }
 
     @ViewBuilder
@@ -257,10 +258,10 @@ struct DictationsView: View {
                     .font(.system(size: 11))
                 if selectedFilter != .all {
                     Text(selectedFilter.label)
-                        .font(.system(size: 11))
+                        .font(MuesliTheme.font(size: 11))
                 }
             }
-            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accent : MuesliTheme.textTertiary)
+            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accentText : MuesliTheme.textTertiary)
             .padding(.horizontal, selectedFilter != .all ? 8 : 0)
             .padding(.vertical, 3)
             .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear)

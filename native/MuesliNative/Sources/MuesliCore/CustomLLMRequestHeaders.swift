@@ -47,7 +47,7 @@ public enum CustomLLMRequestHeaderError: LocalizedError, Equatable {
         case let .invalidName(name):
             return "\(name) is not a valid HTTP header name."
         case let .reservedName(name):
-            return "\(name) is managed by Muesli and cannot be overridden."
+            return "\(name) is managed by muesli and cannot be overridden."
         case let .duplicateName(name):
             return "\(name) is configured more than once."
         case let .invalidValue(name):

@@ -21,8 +21,15 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CredentialMigrationTests
+      TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
+      VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
+      GlobalSearchTests
+      GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
       GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -55,17 +62,19 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
-      VisualMemoryStoreTests
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
+      RecordingUXTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
@@ -82,6 +91,17 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
+      AppScopedDictationRecorderTests
+      DictationDevFaultTests
+      DictationCaptureHealthTests
+      DictationStartupWatchdogTests
+      DictationAudioSessionManagerTests
+      RouteAwareDictationRecorderTests
+      DictationStreamingRecoveryIntegrationTests
+      DictationRecoveryTests
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       BufferedTranscriptionContinuityTests
@@ -106,6 +126,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      CleanupModelUpdateTests
       QwenMLXDownloadTests
       GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
@@ -137,6 +158,7 @@ case "${shard}" in
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       DictationAppFormattingTests
+      QuillAssistantTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests
@@ -153,6 +175,7 @@ case "${shard}" in
       HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
+      DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
     )
     ;;
@@ -201,6 +224,10 @@ case "${shard}" in
       SettingsModelFieldTests
       MeetingSummaryClientTests
       MeetingChatStoreTests
+      GemmaMeetingChatTests
+      LocalChatToolTests
+      ChatPDFProcessingTests
+      ChatAttachmentTests
       MeetingChatRetrievalTests
       MeetingChatClientTests
       MeetingChatContextBudgetTests
@@ -209,7 +236,9 @@ case "${shard}" in
       MeetingChatExporterTests
       MeetingChatNotesActionTests
       MeetingChatReviewTests
+      MeetingChatHistoryLoadingTests
       MeetingChatPresentationTests
+      MuesliTypographyTests
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests

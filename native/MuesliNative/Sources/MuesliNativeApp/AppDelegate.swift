@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         settingsItem.target = self
         appMenu.addItem(settingsItem)
         let whatsNewItem = NSMenuItem(
-            title: "What's New in Muesli",
+            title: "What's New in muesli",
             action: #selector(AppDelegate.showWhatsNew(_:)),
             keyEquivalent: ""
         )
@@ -511,9 +511,9 @@ enum UpdateFailureGuidance {
     static let downloadPageURLString = "https://muesli-hq.github.io/muesli/"
 
     static let message = """
-    Please quit Muesli, reopen it from Applications, and try the update once more.
+    Please quit muesli, reopen it from Applications, and try the update once more.
 
-    If this keeps happening, download the latest DMG and replace Muesli manually. This can happen when the local updater cannot finish preparing or replacing the app.
+    If this keeps happening, download the latest DMG and replace muesli manually. This can happen when the local updater cannot finish preparing or replacing the app.
     """
 
     static func isNoUpdateError(_ error: NSError) -> Bool {

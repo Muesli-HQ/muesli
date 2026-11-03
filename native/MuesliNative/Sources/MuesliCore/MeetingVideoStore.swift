@@ -10,7 +10,6 @@ public final class MeetingVideoStore: @unchecked Sendable {
 
     public init(databaseURL: URL, root: URL) throws {
         self.root = root
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         guard sqlite3_open_v2(databaseURL.path, &db,
                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw failure()
@@ -98,6 +97,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     /// Persist ownership before capture/finalization; active files are never recovered mid-write.
     public func beginRecording(_ item: VisualMemoryItem) throws {
         lock.lock(); defer { lock.unlock() }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(item).write(to: url(for: item.path + ".recording.json"), options: .atomic)
         activeRecordings.insert(item.id)
     }
@@ -113,8 +113,13 @@ public final class MeetingVideoStore: @unchecked Sendable {
         return try journals().contains { $0.meetingID == meetingID }
     }
 
+    private func mediaFiles() throws -> [URL] {
+        do { return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) }
+        catch CocoaError.fileReadNoSuchFile { return [] }
+    }
+
     private func journals() throws -> [VisualMemoryItem] {
-        try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        try mediaFiles()
             .filter { $0.lastPathComponent.hasSuffix(".pending.json") || $0.lastPathComponent.hasSuffix(".recording.json") }
             .compactMap { try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: $0)) }
     }
@@ -123,6 +128,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     /// leaves both the MP4 and its owner metadata available for recovery on next launch.
     public func persistCompleted(_ item: VisualMemoryItem) throws {
         lock.lock(); defer { lock.unlock() }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let pending = try url(for: item.path + ".pending.json")
         try JSONEncoder().encode(item).write(to: pending, options: .atomic)
         try save([item])
@@ -134,7 +140,7 @@ public final class MeetingVideoStore: @unchecked Sendable {
     public func maintain(recoverRecording: ((URL) -> Double?)? = nil) throws {
         lock.lock(); defer { lock.unlock() }
         var firstError: Error?
-        for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        for file in try mediaFiles()
             where file.lastPathComponent.hasSuffix(".pending.json") || file.lastPathComponent.hasSuffix(".recording.json") {
             do {
                 guard var item = try? JSONDecoder().decode(VisualMemoryItem.self, from: Data(contentsOf: file)) else { continue }
@@ -216,34 +222,5 @@ public final class MeetingVideoStore: @unchecked Sendable {
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
         try maintain()
-    }
-}
-
-public extension MeetingVideoStore {
-    /// Copy, commit, retire. One invalid legacy owner must not block later clips.
-    func migrateLegacyVideos(from legacy: VisualMemoryStore) throws {
-        var firstError: Error?
-        for item in try legacy.items() where item.kind == .meetingVideo {
-            var copied: URL?
-            var committed = false
-            do {
-                let source = try legacy.url(for: item.path)
-                let destination = try url(for: item.path)
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    guard FileManager.default.contentsEqual(atPath: source.path, andPath: destination.path) else {
-                        throw NSError(domain: "MeetingVideoStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "Existing video differs; original retained."])
-                    }
-                } else {
-                    try FileManager.default.copyItem(at: source, to: destination)
-                    copied = destination
-                }
-                try save([item]); committed = true
-                try legacy.delete(ids: [item.id])
-            } catch {
-                if !committed, let copied { try? FileManager.default.removeItem(at: copied) }
-                if firstError == nil { firstError = error }
-            }
-        }
-        if let firstError { throw firstError }
     }
 }

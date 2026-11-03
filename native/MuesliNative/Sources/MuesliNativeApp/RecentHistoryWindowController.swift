@@ -135,6 +135,7 @@ final class RecentHistoryWindowController: NSObject, NSWindowDelegate {
     /// `syncAppState()`, so reading it here would apply the previous theme whenever the appearance
     /// is refreshed before that assignment.
     private func applyAppearance(to window: NSWindow) {
+        window.backgroundColor = MuesliTheme.backgroundDeepNSColor
         let name = controller.config.appearanceMode.appearanceName
         if window.appearance?.name != name {
             window.appearance = name.flatMap { NSAppearance(named: $0) }

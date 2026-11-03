@@ -6,11 +6,20 @@ struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var permissionMonitoringClientID = UUID()
+    @State private var activationDelayResetRevision = 0
     @State private var recorder = HotkeyShortcutRecorder()
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
     @State private var quilShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
+    @State private var pendingShortcut: PendingShortcut?
+
+    private struct PendingShortcut: Equatable {
+        let id = UUID()
+        let target: ShortcutAssignment
+        let config: HotkeyConfig
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+    }
 
     var body: some View {
         // Build once for this surface; Observation refreshes dynamic choices.
@@ -119,7 +128,7 @@ struct ShortcutsView: View {
         }
         .id(FeatureTourTarget.dictationRecordingMode.rawValue)
         .featureTourTarget(.dictationRecordingMode)
-        .disabled(!isPushToTalkEnabled || recordingTarget != nil)
+        .disabled(!isPushToTalkEnabled || recordingTarget != nil || pendingShortcut != nil)
         .opacity(isPushToTalkEnabled ? 1 : 0.55)
     }
 
@@ -156,7 +165,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "push_to_talk")
                     .toggleStyle(.switch)
-                    .tint(MuesliTheme.accent)
+                    .tint(MuesliTheme.toggleAccent)
                     .labelsHidden()
             }
 
@@ -210,7 +219,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "cua_shortcut")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
             .id(FeatureTourTarget.computerUseShortcut.rawValue)
@@ -257,7 +266,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "meeting_shortcut")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
 
@@ -310,7 +319,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "quill")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
 
@@ -337,7 +346,7 @@ struct ShortcutsView: View {
 
     private func hotkeyBadge(_ hotkey: HotkeyConfig) -> some View {
         Text(hotkey.displayLabel)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
+            .font(MuesliTheme.font(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
             .padding(.vertical, MuesliTheme.spacing4)
@@ -357,7 +366,7 @@ struct ShortcutsView: View {
         onThresholdChange: @escaping (Int) -> Void
     ) -> some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            hotkeyBadge(hotkey(for: target))
+            hotkeyBadge(displayedHotkey(for: target))
             // Keep assignment available while disabled so a saved conflict can
             // be repaired before enabling the feature.
             compactChangeButton(for: target)
@@ -373,7 +382,7 @@ struct ShortcutsView: View {
 
     private var pushToTalkControls: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            hotkeyBadge(appState.config.dictationHotkey)
+            hotkeyBadge(displayedHotkey(for: .dictation))
             compactChangeButton(for: .dictation)
             Spacer(minLength: MuesliTheme.spacing16)
             if isPushToTalkEnabled, !isDictationCombinationToggle {
@@ -400,14 +409,7 @@ struct ShortcutsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
-            TextField(
-                "",
-                value: Binding(
-                    get: { HotkeyTriggerTiming.clampedMilliseconds(value) },
-                    set: { onChange(HotkeyTriggerTiming.clampedMilliseconds($0)) }
-                ),
-                format: .number
-            )
+            ActivationDelayField(value: value, resetRevision: $activationDelayResetRevision, onCommit: onChange)
             .textFieldStyle(.plain)
             .font(.system(size: 13, weight: .semibold, design: .monospaced))
             .foregroundStyle(MuesliTheme.textPrimary)
@@ -448,7 +450,7 @@ struct ShortcutsView: View {
     private func shortcutMessage(_ message: String) -> some View {
         Text(message)
             .font(MuesliTheme.caption())
-            .foregroundStyle(MuesliTheme.transcribing)
+            .foregroundStyle(MuesliTheme.warningText)
     }
 
     private func compactChangeButton(for target: ShortcutTarget) -> some View {
@@ -459,11 +461,24 @@ struct ShortcutsView: View {
                 startRecording(target)
             }
         } label: {
-            Text(recordingTarget == target ? recordingPrompt(for: target) : "Change…")
-                .font(MuesliTheme.body())
-                .foregroundStyle(MuesliTheme.accent)
+            HStack(spacing: MuesliTheme.spacing8) {
+                if pendingShortcut?.target == target {
+                    ProgressView().controlSize(.small)
+                }
+                Text(pendingShortcut?.target == target ? "Saving…"
+                     : recordingTarget == target ? recordingPrompt(for: target) : "Change…")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.accentText)
+            }
+            .padding(.horizontal, MuesliTheme.spacing8)
+            .frame(minHeight: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        // The text keeps its column; the invisible padding extends the target into the gap.
+        .padding(.leading, -MuesliTheme.spacing8)
+        // A new capture cannot start until the previous assignment is saved, so commits
+        // cannot complete out of order.
+        .disabled(pendingShortcut != nil)
     }
 
 
@@ -549,7 +564,7 @@ struct ShortcutsView: View {
                 Spacer()
                 MuesliSettingControl(controller: controller, id: "double_tap_dictation")
                 .toggleStyle(.switch)
-                .tint(MuesliTheme.accent)
+                .tint(MuesliTheme.toggleAccent)
                 .labelsHidden()
             }
         }
@@ -564,6 +579,7 @@ struct ShortcutsView: View {
 
     private var resetButton: some View {
         Button {
+            activationDelayResetRevision += 1
             controller.resetShortcutDefaults()
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
@@ -573,9 +589,13 @@ struct ShortcutsView: View {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
                 .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, MuesliTheme.spacing8)
+                .frame(minHeight: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        .padding(.leading, -MuesliTheme.spacing8)
         .disabled(
+            pendingShortcut != nil ||
             appState.config.dictationHotkey == .default
                 && appState.config.dictationCombinationActivation == .pushToTalk
                 && appState.config.computerUseHotkey == .computerUseDefault
@@ -592,6 +612,7 @@ struct ShortcutsView: View {
     }
 
     private func startRecording(_ target: ShortcutTarget, activateToggle: Bool = false) {
+        guard pendingShortcut == nil else { return }
         stopRecording()
         clearShortcutMessage(for: target)
         let failure = recorder.start(
@@ -606,8 +627,13 @@ struct ShortcutsView: View {
         }
     }
 
+    /// The captured shortcut shows immediately as "Saving…" and blocks further captures and
+    /// Reset until the verified setter finishes; errors stay beside the shortcut.
     private func commitShortcut(_ config: HotkeyConfig, for target: ShortcutTarget, activateToggle: Bool = false) {
+        let commit = PendingShortcut(target: target, config: config)
+        pendingShortcut = commit
         Task { @MainActor in
+            defer { if pendingShortcut == commit { pendingShortcut = nil } }
             do {
                 if activateToggle {
                     try await controller.applySetting("dictation_activation", value: "toggle", dictationToggleShortcut: config)
@@ -619,6 +645,11 @@ struct ShortcutsView: View {
                 setShortcutMessage(error.localizedDescription, for: target)
             }
         }
+    }
+
+    private func displayedHotkey(for target: ShortcutTarget) -> HotkeyConfig {
+        if let pendingShortcut, pendingShortcut.target == target { return pendingShortcut.config }
+        return hotkey(for: target)
     }
 
     private func clearShortcutMessage(for target: ShortcutTarget) {
@@ -644,5 +675,69 @@ struct ShortcutsView: View {
 
     private func stopRecording() {
         recorder.cancel()
+    }
+}
+
+/// Keep an editable draft so intermediate values (including an empty field)
+/// never change the saved shortcut timing.
+struct ActivationDelayDraft {
+    var text: String
+
+    private(set) var resetRevision: Int
+
+    init(value: Int, resetRevision: Int = 0) {
+        text = String(value)
+        self.resetRevision = resetRevision
+    }
+
+    mutating func commit(fallback: Int, resetRevision: Int = 0) -> Int {
+        // A reset may remove this field before its onChange callback runs.
+        // Never let a late blur/disappearance commit undo that reset.
+        guard self.resetRevision == resetRevision else {
+            self = Self(value: fallback, resetRevision: resetRevision)
+            return fallback
+        }
+        let value = HotkeyTriggerTiming.clampedMilliseconds(
+            Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
+        )
+        text = String(value)
+        return value
+    }
+}
+
+private struct ActivationDelayField: View {
+    let value: Int
+    let onCommit: (Int) -> Void
+    @Binding var resetRevision: Int
+    @State private var draft: ActivationDelayDraft
+    @FocusState private var focused: Bool
+
+    init(value: Int, resetRevision: Binding<Int>, onCommit: @escaping (Int) -> Void) {
+        self.value = value
+        self.onCommit = onCommit
+        _resetRevision = resetRevision
+        _draft = State(initialValue: ActivationDelayDraft(value: value, resetRevision: resetRevision.wrappedValue))
+    }
+
+    var body: some View {
+        TextField("", text: $draft.text)
+            .focused($focused)
+            .accessibilityLabel("Activation delay in milliseconds")
+            .onSubmit(commit)
+            .onChange(of: focused) { _, focused in
+                if !focused { commit() }
+            }
+            .onChange(of: value) { _, value in
+                if !focused { draft = ActivationDelayDraft(value: value, resetRevision: resetRevision) }
+            }
+            .onChange(of: resetRevision) { _, revision in
+                draft = ActivationDelayDraft(value: value, resetRevision: revision)
+            }
+            .onDisappear { commit() }
+    }
+
+    private func commit() {
+        let committed = draft.commit(fallback: value, resetRevision: resetRevision)
+        if committed != value { onCommit(committed) }
     }
 }

@@ -22,7 +22,7 @@ struct DictationFormattingSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose a writing template for each app. Start with a built-in style, or customize one and save it to reuse.")
+            Text("Set a writing style for each app.")
                 .font(MuesliTheme.callout())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
@@ -31,9 +31,9 @@ struct DictationFormattingSettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         control("Template", id: "dictation_format_preset_" + rule.bundleID)
                         Text(templateDescription(rule.formatting))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("PREVIEW").font(.caption2).foregroundStyle(.secondary)
+                            Text("Preview").font(MuesliTheme.metadata()).foregroundStyle(MuesliTheme.textSecondary)
                             Text(rule.formatting.apply(to: DictationFormattingTemplate.previewText))
                                 .font(MuesliTheme.callout())
                                 .textSelection(.enabled)
@@ -44,10 +44,10 @@ struct DictationFormattingSettingsView: View {
 
                         DisclosureGroup("Customize style") {
                             VStack(alignment: .leading, spacing: 12) {
-                                control("Capitalization", id: "dictation_format_case_" + rule.bundleID)
-                                control("Final period", id: "dictation_format_period_" + rule.bundleID)
-                                Text("All lowercase includes names, acronyms and links. Removing a final period keeps other punctuation. Changes apply to this app only.")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                control("Capitalization", id: "dictation_format_case_" + rule.bundleID,
+                                    description: "Lowercase includes names, acronyms and links.")
+                                control("Final period", id: "dictation_format_period_" + rule.bundleID,
+                                    description: "Removing the final period keeps other punctuation.")
                                 Button("Save as Template…") { templateToSave = rule }
                                     .disabled(rule.formatting == .unchanged)
                             }
@@ -63,30 +63,30 @@ struct DictationFormattingSettingsView: View {
                     HStack(spacing: 10) {
                         TargetApplicationIconView(appName: rule.appName, bundleIdentifier: rule.bundleID, size: 28)
                             .accessibilityHidden(true)
-                        Text(rule.appName).font(.headline)
+                        Text(rule.appName).font(MuesliTheme.body())
                         Spacer()
                         Text(DictationFormattingTemplate.selected(for: rule,
                             saved: appState.config.dictationFormattingTemplates)?.name ?? "Custom")
                             .font(MuesliTheme.callout())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MuesliTheme.textSecondary)
                     }
                 }
                 Divider()
             }
 
             if !suggestions.isEmpty {
-                Text("Your most-used apps").font(.headline)
-                Text("Based on dictations from the last 30 days, stored on this Mac. Pick an app to customize; nothing is applied automatically.")
-                    .font(.caption).foregroundStyle(.secondary)
+                SettingsSectionHeading(title: "Your most-used apps")
+                Text("From your last 30 days of dictation on this Mac. Nothing changes until you customize.")
+                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                 ForEach(suggestions) { suggestion in
                     HStack(alignment: .top) {
                         TargetApplicationIconView(appName: suggestion.appName, bundleIdentifier: suggestion.bundleID, size: 28)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(suggestion.appName).font(.body.weight(.medium))
+                            Text(suggestion.appName).font(MuesliTheme.font(.body).weight(.medium))
                             Text("\(suggestion.sessions) dictations · " + (suggestion.suggestsLowercaseChat
                                 ? "Try lowercase chat, with no final period" : "Keep capitalization or customize punctuation"))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                         }
                         Spacer()
                         Button("Customize") {
@@ -97,21 +97,21 @@ struct DictationFormattingSettingsView: View {
             } else if visibleRules.isEmpty {
                 Text(loadFailed ? "App usage couldn't be loaded. You can still choose any installed app."
                     : "Choose an app to get started. Suggestions appear here as you dictate into more apps.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
             }
             Button("Add App…") { controller.chooseDictationFormattingApp(onChoose: beginEditing) }
 
             if !appState.config.dictationFormattingTemplates.isEmpty {
                 DisclosureGroup("My templates (\(appState.config.dictationFormattingTemplates.count))") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Choose these templates from any app's Template menu. Removing a template keeps the formatting already applied to apps.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Removing a template keeps the formatting already applied to apps.")
+                            .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                         ForEach(appState.config.dictationFormattingTemplates) { template in
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(template.name).font(.body.weight(.medium))
+                                    Text(template.name).font(MuesliTheme.font(.body).weight(.medium))
                                     Text(template.formatting.apply(to: DictationFormattingTemplate.previewText))
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                                 }
                                 Spacer()
                                 Button("Remove", role: .destructive) {
@@ -124,11 +124,11 @@ struct DictationFormattingSettingsView: View {
                 }
             }
 
-            Text("Templates format your words after transcription and optional cleanup. They do not rewrite your wording or tone. Browser rules apply to every website in that browser.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("Formatting changes capitalization and punctuation, not wording or tone. Browser rules apply to every website.")
+                .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
             if !DictationAppFormattingRule.activeRules(appState.config.dictationAppFormattingRules).isEmpty {
-                Text("Live dictation waits until you stop only when recording starts in an app with a formatting rule. Buffered text uses the receiving app's rule. Sessions started in other apps stay live and keep their original formatting, even if you switch apps.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Starting dictation in a formatted app delays insertion until you stop, using the receiving app’s rule. Sessions started elsewhere stay live and keep their original formatting, even if you switch apps.")
+                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
             }
         }
         .task {
@@ -174,11 +174,9 @@ struct DictationFormattingSettingsView: View {
         }
     }
 
-    private func control(_ label: String, id: String) -> some View {
-        HStack {
-            Text(label).font(MuesliTheme.callout())
-            Spacer()
-            MuesliSettingControl(controller: controller, id: id).frame(width: 200)
+    private func control(_ label: String, id: String, description: String? = nil) -> some View {
+        SettingsRow(label: label, description: description) {
+            MuesliSettingControl(controller: controller, id: id)
         }
     }
 }
@@ -192,19 +190,19 @@ private struct DictationFormattingTemplateSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Save a writing template").font(.title2.bold())
+            Text("Save a writing template").font(MuesliTheme.font(.title2).bold())
             Text("Reuse this style in other apps. Each app keeps its own copy of the formatting.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
             TextField("Template name", text: $name)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Template name")
             Text(rule.formatting.apply(to: DictationFormattingTemplate.previewText))
-                .font(.callout)
+                .font(MuesliTheme.font(.callout))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
                 .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                SettingsNote(errorMessage, tone: .error)
             }
             HStack {
                 Spacer()
@@ -235,9 +233,9 @@ struct DictationFormattingSetupCard: View {
            appState.config.dictationAppFormattingRules.isEmpty,
            appState.config.resolvedOnboardingUseCase.includesDictation {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Your words, formatted for each app").font(.headline)
+                Text("Your words, formatted for each app").font(MuesliTheme.font(.headline))
                 Text("Prefer lowercase messages or fewer final periods? Set up formatting for your most-used apps.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
                 HStack {
                     Button("Set Up App Formatting") { controller.openDictationFormattingSettings() }
                     Button("Skip") { controller.dismissDictationFormattingSetup() }
