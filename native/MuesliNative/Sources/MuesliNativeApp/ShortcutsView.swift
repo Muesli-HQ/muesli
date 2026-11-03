@@ -6,6 +6,7 @@ struct ShortcutsView: View {
     let appState: AppState
     let controller: MuesliController
     @State private var permissionMonitoringClientID = UUID()
+    @State private var activationDelayResetRevision = 0
     @State private var recorder = HotkeyShortcutRecorder()
     @State private var dictationShortcutMessage: String?
     @State private var computerUseShortcutMessage: String?
@@ -408,7 +409,7 @@ struct ShortcutsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
-            ActivationDelayField(value: value, onCommit: onChange)
+            ActivationDelayField(value: value, resetRevision: $activationDelayResetRevision, onCommit: onChange)
             .textFieldStyle(.plain)
             .font(.system(size: 13, weight: .semibold, design: .monospaced))
             .foregroundStyle(MuesliTheme.textPrimary)
@@ -578,6 +579,7 @@ struct ShortcutsView: View {
 
     private var resetButton: some View {
         Button {
+            activationDelayResetRevision += 1
             controller.resetShortcutDefaults()
             dictationShortcutMessage = nil
             computerUseShortcutMessage = nil
@@ -681,9 +683,20 @@ struct ShortcutsView: View {
 struct ActivationDelayDraft {
     var text: String
 
-    init(value: Int) { text = String(value) }
+    private(set) var resetRevision: Int
 
-    mutating func commit(fallback: Int) -> Int {
+    init(value: Int, resetRevision: Int = 0) {
+        text = String(value)
+        self.resetRevision = resetRevision
+    }
+
+    mutating func commit(fallback: Int, resetRevision: Int = 0) -> Int {
+        // A reset may remove this field before its onChange callback runs.
+        // Never let a late blur/disappearance commit undo that reset.
+        guard self.resetRevision == resetRevision else {
+            self = Self(value: fallback, resetRevision: resetRevision)
+            return fallback
+        }
         let value = HotkeyTriggerTiming.clampedMilliseconds(
             Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
         )
@@ -695,13 +708,15 @@ struct ActivationDelayDraft {
 private struct ActivationDelayField: View {
     let value: Int
     let onCommit: (Int) -> Void
+    @Binding var resetRevision: Int
     @State private var draft: ActivationDelayDraft
     @FocusState private var focused: Bool
 
-    init(value: Int, onCommit: @escaping (Int) -> Void) {
+    init(value: Int, resetRevision: Binding<Int>, onCommit: @escaping (Int) -> Void) {
         self.value = value
         self.onCommit = onCommit
-        _draft = State(initialValue: ActivationDelayDraft(value: value))
+        _resetRevision = resetRevision
+        _draft = State(initialValue: ActivationDelayDraft(value: value, resetRevision: resetRevision.wrappedValue))
     }
 
     var body: some View {
@@ -713,13 +728,16 @@ private struct ActivationDelayField: View {
                 if !focused { commit() }
             }
             .onChange(of: value) { _, value in
-                if !focused { draft = ActivationDelayDraft(value: value) }
+                if !focused { draft = ActivationDelayDraft(value: value, resetRevision: resetRevision) }
+            }
+            .onChange(of: resetRevision) { _, revision in
+                draft = ActivationDelayDraft(value: value, resetRevision: revision)
             }
             .onDisappear { commit() }
     }
 
     private func commit() {
-        let committed = draft.commit(fallback: value)
+        let committed = draft.commit(fallback: value, resetRevision: resetRevision)
         if committed != value { onCommit(committed) }
     }
 }

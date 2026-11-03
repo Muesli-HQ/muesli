@@ -256,7 +256,10 @@ struct LiveTranscriptView: View {
                     }
                     .background {
                         LiveTranscriptScrollObserver { top in
-                            if follow.updateTop(top) { refreshPresentation() }
+                            var next = follow
+                            let shouldRefresh = next.updateTop(top)
+                            if next != follow { follow = next }
+                            if shouldRefresh { refreshPresentation() }
                         }
                     }
                     .textSelection(.enabled)
@@ -377,7 +380,7 @@ private struct LiveTranscriptScrollObserver: NSViewRepresentable {
 
 /// Hold the visible snapshot while reading history. Prepending captions or
 /// growing partials cannot shift that snapshot; pending updates appear on return.
-struct LiveTranscriptFollowState {
+struct LiveTranscriptFollowState: Equatable {
     private(set) var isFollowing = true
     private(set) var hasPendingUpdates = false
 

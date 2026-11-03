@@ -120,11 +120,12 @@ final class HoverIndicatorView: NSView {
             to: currentScreenLocation
         ) else { return }
         if !didDrag {
-            owner?.pointerDragBegan()
-            // Collapsing the transcript changes the window origin, not the pill.
-            // Start the drag from that compact origin, preserving pointer delta.
-            windowOriginAtMouseDown = window.frame.origin
-            self.windowOriginAtMouseDown = windowOriginAtMouseDown
+            if owner?.pointerDragBegan() == true {
+                // Rebase only the transcript-collapse adjustment, not an idle
+                // hover animation that moved the panel after mouse-down.
+                windowOriginAtMouseDown = window.frame.origin
+                self.windowOriginAtMouseDown = windowOriginAtMouseDown
+            }
         }
         didDrag = true
         window.setFrameOrigin(
@@ -455,8 +456,10 @@ final class FloatingIndicatorController: NSObject {
         notchIndicator.screenFrame ?? indicatorScreenFrame
     }
 
-    func pointerDragBegan() {
+    func pointerDragBegan() -> Bool {
+        let originBeforeCollapse = panel?.frame.origin
         hideMeetingTranscript()
+        return panel?.frame.origin != originBeforeCollapse
     }
 
     func pointerInteractionBegan() {

@@ -24,6 +24,41 @@ struct RecordingUXTests {
         }
     }
 
+    @Test("reset invalidates an edited delay even if saved value is unchanged or blur arrives late",
+          arguments: [100, 250])
+    func activationDelayReset(savedValue: Int) {
+        var draft = ActivationDelayDraft(value: savedValue, resetRevision: 0)
+        draft.text = "700"
+        let result = draft.commit(fallback: 250, resetRevision: 1)
+        #expect(result == 250)
+        #expect(draft.text == "250")
+        draft.text = "120"
+        let editedAfterReset = draft.commit(fallback: 250, resetRevision: 1)
+        #expect(editedAfterReset == 120)
+    }
+
+    @Test("scroll ticks within the same following region leave state unchanged")
+    func transcriptFollowNoOp() {
+        var state = LiveTranscriptFollowState()
+        let atTop = state
+        for top in [CGFloat(0), -5, -20] {
+            let refresh = state.updateTop(top)
+            #expect(!refresh)
+            #expect(state == atTop)
+        }
+        _ = state.updateTop(-100)
+        _ = state.receiveUpdate()
+        let reading = state
+        for top in [CGFloat(-110), -150, -80] {
+            let refresh = state.updateTop(top)
+            #expect(!refresh)
+            #expect(state == reading)
+        }
+        let refresh = state.updateTop(0)
+        #expect(refresh)
+        #expect(state == atTop)
+    }
+
     @Test("new captions and partials wait while reading history and resume at the top")
     func transcriptFollow() {
         var follow = LiveTranscriptFollowState()
@@ -111,8 +146,8 @@ struct RecordingUXTests {
     }
 
     @MainActor
-    @Test("dragging an expanded meeting pill preserves its screen position", arguments: [false, true])
-    func expandedMeetingDrag(transcriptOnLeft: Bool) throws {
+    @Test("drag rebases transcript collapse but not unrelated panel movement", arguments: [false, true], [false, true])
+    func expandedMeetingDrag(transcriptOnLeft: Bool, expanded: Bool) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = ConfigStore(supportDirectory: directory)
         var config = AppConfig()
@@ -124,11 +159,11 @@ struct RecordingUXTests {
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         indicator.setMeetingRecording(true, config: config)
         let original = try #require(indicator.currentFrame)
-        indicator.setHovered(true)
+        if expanded { indicator.setHovered(true) }
         let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
             .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
         let window = try #require(pill.window)
-        #expect(window.frame.width > original.width)
+        #expect(expanded ? window.frame.width > original.width : window.frame.width == original.width)
         pointer = NSPoint(x: original.midX, y: original.midY)
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try #require(NSEvent.mouseEvent(with: type,
@@ -138,6 +173,11 @@ struct RecordingUXTests {
         pill.mouseDown(with: try event(.leftMouseDown))
         #expect(!window.isMovable)
         #expect(indicator.currentFrame == original)
+        if !expanded {
+            // Simulate a hover animation moving the panel between mouse-down
+            // and the first drag event; that offset must not enter drag math.
+            window.setFrameOrigin(NSPoint(x: window.frame.minX + 40, y: window.frame.minY + 20))
+        }
         pointer.x += 12
         pointer.y += 9
         pill.mouseDragged(with: try event(.leftMouseDragged))
