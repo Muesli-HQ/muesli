@@ -161,6 +161,14 @@ enum FeatureTourCatalog {
     static var latest: FeatureTour {
         FeatureTour(version: "0.8.6", steps: [
             FeatureTourStep(
+                id: "granola-import",
+                eyebrow: "GRANOLA IMPORT",
+                title: "Import your Granola conversations",
+                message: "Bring meeting notes, summaries and transcripts from a Granola ZIP or CSV export into muesli. Open Meetings → Import → Granola… to preview your meetings before importing.",
+                icon: .symbol("square.and.arrow.down"),
+                target: .meetingsSidebar
+            ),
+            FeatureTourStep(
                 id: "ask-meetings",
                 eyebrow: "CHAT",
                 title: "Ask your meetings",

@@ -204,13 +204,15 @@ struct FeatureTourTests {
     @Test("0.8.6 highlights cover the agreed features without promoting failure recovery")
     func catalogShape() {
         #expect(tour.version == "0.8.6")
-        #expect(tour.steps.count == 10)
+        #expect(tour.steps.count == 11)
         #expect(Set(tour.steps.map(\.id)).count == tour.steps.count)
         #expect(tour.steps.map(\.target) == [
-            .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
+            .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
             .cotypistSettings, .appFormatting, .meetingsSidebar, .searchSidebar,
             .modelLibrary, .cleanupModels,
         ])
+        #expect(tour.steps.first?.id == "granola-import")
+        #expect(tour.steps.first?.icon == .symbol("square.and.arrow.down"))
         #expect(tour.steps.first(where: { $0.id == "time-turner" })?.icon == .timeTurner)
         #expect(tour.steps.first(where: { $0.id == "quill-assistant" })?.icon == .quill)
         #expect(!tour.steps.contains { $0.id.contains("recovery") })
