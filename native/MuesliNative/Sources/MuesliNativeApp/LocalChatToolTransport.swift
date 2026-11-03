@@ -94,9 +94,12 @@ enum LocalChatToolTransport {
             metadata.httpBody = try ChatFileReader.requestData(["model": model, "verbose": false])
         } else {
             metadata.httpMethod = "GET"
-            metadata.url = provider == .lmStudio
-                ? try sibling(endpoint, removing: "v1/chat/completions", adding: "api/v1/models")
-                : try sibling(endpoint, removing: "chat/completions", adding: "models")
+            if provider == .lmStudio {
+                let suffix = endpoint.path.hasSuffix("/v1/chat/completions") ? "v1/chat/completions" : "chat/completions"
+                metadata.url = try sibling(endpoint, removing: suffix, adding: "api/v1/models")
+            } else {
+                metadata.url = try sibling(endpoint, removing: "chat/completions", adding: "models")
+            }
         }
         let (data, status) = try await checked(metadata, load: load)
         var tools: Bool?; var context: Int?

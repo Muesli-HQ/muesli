@@ -55,6 +55,32 @@ struct LocalChatToolTests {
         #expect(!client.supportsNativeTools(config: switched))
     }
 
+    @Test(arguments: [false, true])
+    func lmStudioExplicitEndpointsPreservePrefixesAndReachMetadataOrProbe(metadataAvailable: Bool) async throws {
+        for (path, metadataPath) in [
+            ("/chat/completions", "/api/v1/models"),
+            ("/v1/chat/completions", "/api/v1/models"),
+            ("/proxy/chat/completions", "/proxy/api/v1/models"),
+            ("/proxy/v1/chat/completions", "/proxy/api/v1/models"),
+            ("/proxy/myv1/chat/completions", "/proxy/myv1/api/v1/models"),
+        ] {
+            var c = config("lmstudio")
+            c.lmStudioURL = "http://localhost:1234" + path + "?tenant=example"
+            let fixture = LocalToolFixture(wire: .openAI, metadata: true)
+            let caps = try await LocalChatToolTransport.detect(config: c, credential: "", load: { req in
+                #expect(req.url?.query == "tenant=example")
+                #expect(req.url?.path == (req.httpMethod == "GET" ? metadataPath : path))
+                if !metadataAvailable, req.httpMethod == "GET" {
+                    return try response(req, ["error": "metadata route unavailable"], status: 404)
+                }
+                return try await fixture.load(req)
+            }, cache: LocalChatProbeCache())
+            #expect(caps.nativeTools)
+            #expect(caps.endpoint.path == path)
+            #expect(await fixture.probes == (metadataAvailable ? 0 : 1))
+        }
+    }
+
     @Test func explicitUnsupportedMetadataRetainsCompatibilityWithoutProbing() async throws {
         for backend in ["ollama", "lmstudio"] {
             let c = config(backend)
