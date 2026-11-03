@@ -52,6 +52,21 @@ Order tabs General, Dictations, Meetings, Appearance, Experimental. iCloud Sync
 lives in General; Computer Use, Quill and Cotypist live in Experimental. The
 meeting-chat destination is labeled Chat.
 
+### Recording interactions
+
+Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
+meeting headers move the status above the controls rather than compressing them.
+
+The meeting Live tab shows in-progress speech and newest captions at the top.
+While reading older captions, hold the displayed snapshot steady; show a small
+“New messages” action and apply queued updates when returning to the top.
+Copy includes the current full transcript. Shortcut activation-delay fields keep
+an editable draft and validate on Return or focus loss, never per keystroke.
+
+Manual recordings show a reminder after 45 seconds without new transcript text.
+It stays for 30 seconds, pauses its countdown on hover, and never stops recording
+automatically. Paused recordings do not prompt; resume starts a fresh quiet period.
+
 ### Ultra Dark and color roles
 
 Ultra Dark is an explicit local preference available only in Settings →

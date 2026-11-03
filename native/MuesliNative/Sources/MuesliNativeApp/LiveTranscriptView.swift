@@ -157,6 +157,7 @@ struct LiveTranscriptFeedView: View {
     var topPadding: CGFloat
     var bottomPadding: CGFloat
     var onOpen: (() -> Void)? = nil
+    var newestFirst = false
 
     private var trimmedPartialYou: String {
         partialYou.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -175,7 +176,8 @@ struct LiveTranscriptFeedView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, MuesliTheme.spacing8)
             } else {
-                ForEach(messages) { message in
+                if newestFirst { partials }
+                ForEach(newestFirst ? Array(messages.reversed()) : messages) { message in
                     LiveTranscriptBubble(
                         speaker: message.speaker,
                         timestamp: message.timestamp,
@@ -185,26 +187,7 @@ struct LiveTranscriptFeedView: View {
                         onOpen: onOpen
                     )
                 }
-                if !trimmedPartialOthers.isEmpty {
-                    LiveTranscriptBubble(
-                        speaker: "Others",
-                        timestamp: nil,
-                        lines: [trimmedPartialOthers],
-                        isUser: false,
-                        isPartial: true,
-                        onOpen: onOpen
-                    )
-                }
-                if !trimmedPartialYou.isEmpty {
-                    LiveTranscriptBubble(
-                        speaker: "You",
-                        timestamp: nil,
-                        lines: [trimmedPartialYou],
-                        isUser: true,
-                        isPartial: true,
-                        onOpen: onOpen
-                    )
-                }
+                if !newestFirst { partials }
                 Color.clear
                     .frame(height: 1)
                     .id(Self.bottomAnchorID)
@@ -214,16 +197,38 @@ struct LiveTranscriptFeedView: View {
         .padding(.top, topPadding)
         .padding(.bottom, bottomPadding)
     }
+    @ViewBuilder
+    private var partials: some View {
+        if !trimmedPartialOthers.isEmpty {
+            LiveTranscriptBubble(speaker: "Others", timestamp: nil,
+                lines: [trimmedPartialOthers], isUser: false, isPartial: true, onOpen: onOpen)
+        }
+        if !trimmedPartialYou.isEmpty {
+            LiveTranscriptBubble(speaker: "You", timestamp: nil,
+                lines: [trimmedPartialYou], isUser: true, isPartial: true, onOpen: onOpen)
+        }
+    }
+
 }
 
 struct LiveTranscriptView: View {
     let transcript: String
-    /// Provisional streaming tails render after committed captions and remain
+    /// Provisional streaming tails render above committed captions and remain
     /// outside the durable transcript until their chunk is committed.
     var partialYou: String = ""
     var partialOthers: String = ""
     @State private var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
+    @State private var follow = LiveTranscriptFollowState()
+    private let topID = "liveTranscriptTop"
+
+    private var input: LiveTranscriptInput {
+        .init(transcript: transcript, partialYou: partialYou, partialOthers: partialOthers)
+    }
+
+    private func refreshPresentation() {
+        presentation.update(transcript: transcript, partialYou: partialYou, partialOthers: partialOthers)
+    }
 
     private var copyText: String {
         LiveTranscriptCopyContent.text(
@@ -237,62 +242,48 @@ struct LiveTranscriptView: View {
         ZStack(alignment: .topTrailing) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LiveTranscriptFeedView(
-                        messages: presentation.messages,
-                        partialYou: presentation.partialYou,
-                        partialOthers: presentation.partialOthers,
-                        horizontalPadding: MuesliTheme.spacing16,
-                        topPadding: 44,
-                        bottomPadding: MuesliTheme.spacing8
-                    )
-                    .textSelection(.enabled)
-                }
-                .onChange(of: transcript) { _, newTranscript in
-                    presentation.update(
-                        transcript: newTranscript,
-                        partialYou: partialYou,
-                        partialOthers: partialOthers
-                    )
-                    DispatchQueue.main.async {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: 1).id(topID)
+                        LiveTranscriptFeedView(
+                            messages: presentation.messages,
+                            partialYou: presentation.partialYou,
+                            partialOthers: presentation.partialOthers,
+                            horizontalPadding: MuesliTheme.spacing16,
+                            topPadding: 44,
+                            bottomPadding: MuesliTheme.spacing8,
+                            newestFirst: true
+                        )
+                    }
+                    .background {
+                        LiveTranscriptScrollObserver { top in
+                            var next = follow
+                            let shouldRefresh = next.updateTop(top)
+                            if next != follow { follow = next }
+                            if shouldRefresh { refreshPresentation() }
                         }
                     }
+                    .textSelection(.enabled)
                 }
-                // Partials update every engine chunk; scrolling on each growth
-                // would yank a user who scrolled up back to the bottom every few
-                // seconds. Scroll only when a tail appears (empty → non-empty);
-                // committed captions keep their existing scroll behavior.
-                .onChange(of: partialYou) { old, new in
-                    presentation.update(
-                        transcript: transcript,
-                        partialYou: new,
-                        partialOthers: partialOthers
-                    )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        scrollToBottom(proxy)
-                    }
-                }
-                .onChange(of: partialOthers) { old, new in
-                    presentation.update(
-                        transcript: transcript,
-                        partialYou: partialYou,
-                        partialOthers: new
-                    )
-                    if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !new.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        scrollToBottom(proxy)
-                    }
+                .onChange(of: input) { _, _ in
+                    if follow.receiveUpdate() { refreshPresentation() }
                 }
                 .onAppear {
-                    presentation.update(
-                        transcript: transcript,
-                        partialYou: partialYou,
-                        partialOthers: partialOthers
-                    )
-                    DispatchQueue.main.async {
-                        proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
+                    follow.showLatest()
+                    refreshPresentation()
+                    proxy.scrollTo(topID, anchor: .top)
+                }
+                .overlay(alignment: .top) {
+                    if follow.hasPendingUpdates {
+                        Button {
+                            follow.showLatest()
+                            refreshPresentation()
+                            proxy.scrollTo(topID, anchor: .top)
+                        } label: {
+                            Label("New messages", systemImage: "arrow.up")
+                                .font(MuesliTheme.callout())
+                        }
+                        .buttonStyle(.bordered)
+                        .padding(.top, MuesliTheme.spacing8)
                     }
                 }
             }
@@ -330,12 +321,83 @@ struct LiveTranscriptView: View {
             didCopy = false
         }
     }
+}
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.15)) {
-                proxy.scrollTo(LiveTranscriptFeedView.bottomAnchorID, anchor: .bottom)
+private struct LiveTranscriptInput: Equatable {
+    let transcript: String
+    let partialYou: String
+    let partialOthers: String
+}
+
+/// Observe the actual clip view: SwiftUI geometry preferences on macOS do not
+/// reliably update when the native scroll view moves its content.
+private struct LiveTranscriptScrollObserver: NSViewRepresentable {
+    var onTopChanged: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ObserverView { ObserverView() }
+    func updateNSView(_ view: ObserverView, context: Context) {
+        view.onTopChanged = onTopChanged
+        view.attach()
+    }
+
+    final class ObserverView: NSView {
+        var onTopChanged: ((CGFloat) -> Void)?
+        private weak var clip: NSClipView?
+        private var observation: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attach() }
+        override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); attach() }
+
+        func attach() {
+            let next = window == nil ? nil : enclosingScrollView?.contentView
+            guard next !== clip else { return }
+            if let observation { NotificationCenter.default.removeObserver(observation) }
+            observation = nil
+            clip = next
+            guard let next else { return }
+            next.postsBoundsChangedNotifications = true
+            observation = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification, object: next, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.report() }
+            }
+            report()
+        }
+
+        private func report() {
+            // Deliver outside SwiftUI layout/update callbacks.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let clip = self.clip else { return }
+                self.onTopChanged?(-clip.bounds.minY)
             }
         }
+
+        deinit {
+            if let observation { NotificationCenter.default.removeObserver(observation) }
+        }
+    }
+}
+
+/// Hold the visible snapshot while reading history. Prepending captions or
+/// growing partials cannot shift that snapshot; pending updates appear on return.
+struct LiveTranscriptFollowState: Equatable {
+    private(set) var isFollowing = true
+    private(set) var hasPendingUpdates = false
+
+    mutating func updateTop(_ minY: CGFloat) -> Bool {
+        isFollowing = minY >= -24
+        guard isFollowing, hasPendingUpdates else { return false }
+        hasPendingUpdates = false
+        return true
+    }
+
+    mutating func receiveUpdate() -> Bool {
+        if !isFollowing { hasPendingUpdates = true }
+        return isFollowing
+    }
+
+    mutating func showLatest() {
+        isFollowing = true
+        hasPendingUpdates = false
     }
 }
