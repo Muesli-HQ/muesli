@@ -52,8 +52,8 @@ final class CotypistSetup: ObservableObject {
         model.isDownloaded ? .ready : (model.release == nil ? .unavailable : .missing)
     }
 
-    /// The build includes the input method (dev builds by default; see `MUESLI_INCLUDE_COTYPIST` in
-    /// build_native_app.sh). It's the one switch for the whole feature.
+    /// The build includes the input method (bundled by default; see `MUESLI_INCLUDE_COTYPIST` in
+    /// build_native_app.sh). Availability does not select or enable the input source.
     static var isAvailable: Bool { FileManager.default.fileExists(atPath: embeddedInputMethodURL.path) }
     nonisolated static var embeddedInputMethodURL: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Library/Input Methods/MuesliCotypist.app")
