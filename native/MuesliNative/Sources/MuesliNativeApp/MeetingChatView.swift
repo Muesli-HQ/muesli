@@ -73,7 +73,11 @@ struct MeetingChatView: View {
     }
 
     private var chatContent: some View {
-        VStack(spacing: 0) {
+        // Lazy rows can outlive the render that created them during navigation.
+        // Read neighboring turns from that same snapshot, never a newer list.
+        let turns = coordinator.turns
+        let scope = coordinator.scope
+        return VStack(spacing: 0) {
             if !docked || expanded || (!composerIsCompact && coordinator.selectedSessionID != nil) {
                 header
                     .background(docked ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
@@ -99,9 +103,9 @@ struct MeetingChatView: View {
                                     Text("Loading conversation…").font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
                                 }.accessibilityElement(children: .combine)
                             }
-                            ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
-                                if (index == 0 && turn.scope != coordinator.scope) ||
-                                    (index > 0 && coordinator.turns[index - 1].scope != turn.scope) {
+                            ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
+                                if (index == 0 && turn.scope != scope) ||
+                                    (index > 0 && turns[index - 1].scope != turn.scope) {
                                     Text(turn.scopeLabel ?? "Meeting context changed")
                                         .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                                 }

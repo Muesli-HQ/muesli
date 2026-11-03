@@ -35,12 +35,13 @@ struct GemmaChatCapabilities: Sendable, Equatable {
 }
 
 enum GemmaMeetingChatError: Error, LocalizedError {
-    case modelMissing, unsupportedModel, macOSRequired
+    case modelMissing, unsupportedModel, macOSRequired, timedOut
     var errorDescription: String? {
         switch self {
         case .modelMissing: "Download the Gemma 4 model selected for Chat from Models first."
         case .unsupportedModel: "This Gemma checkpoint does not support the native chat runtime. Select a downloaded general-purpose Gemma 4 model."
         case .macOSRequired: "On-device Gemma chat requires macOS 15 or later."
+        case .timedOut: "On-device Gemma took too long to respond. Please retry."
         }
     }
 }

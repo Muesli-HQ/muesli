@@ -289,7 +289,7 @@ actor GemmaNativeAudioTranscriber {
             await producer.value // Drain before releasing mutable model state.
         } onCancel: { producer.cancel() }
         try Task.checkCancellation()
-        if timedOut { throw URLError(.timedOut) }
+        if timedOut { throw GemmaMeetingChatError.timedOut }
         guard !rejected, processor?.failure == nil, processor?.terminated ?? true, completion?.stopReason == .stop else { throw GemmaNativeAudioError.invalidResponse }
         return try GemmaChatCodec.response(text: text, calls: calls, allowTools: request.allowTools)
     }
