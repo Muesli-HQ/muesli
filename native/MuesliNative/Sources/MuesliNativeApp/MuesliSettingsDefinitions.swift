@@ -608,9 +608,25 @@ extension MuesliController {
             }
         }
         add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.selectable(config: config, selected: appState.selectedMeetingSummaryBackend, claudeCodeAvailable: availability?.claudeCodeAvailable).map { .init(id: $0.backend, label: $0.label) },
-            read: { $0.meetingSummaryBackend }) { value in
+            read: { $0.meetingSummaryBackend }, voiceUnavailable: { value in
+                guard value == MeetingSummaryBackendOption.gemmaMLX.backend else { return nil }
+                let ids = availability?.gemmaIDs ?? self.appState.settingsModelAvailability.gemmaIDs
+                let model = Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == self.config.gemmaChatModel }
+                return model.map { ids.contains($0.repoID) } == true ? nil : "Select a downloaded Gemma chat model in Settings first."
+            }, unavailable: { value in
+                guard value == MeetingSummaryBackendOption.gemmaMLX.backend else { return nil }
+                if #available(macOS 15, *) { return nil }
+                return "On-device Gemma chat requires macOS 15 or later."
+            }) { value in
             if let option = MeetingSummaryBackendOption.all.first(where: { $0.backend == value }) { self.selectMeetingSummaryBackend(option) }
         }
+        add("summary_gemma_model", "On-device Gemma chat and summary model",
+            Gemma4LiteRTModel.generalPurpose.map { Choice(id: $0.nativeChatModelID, label: $0.label) },
+            read: { $0.gemmaChatModel }, unavailable: { value in
+                let ids = availability?.gemmaIDs ?? self.appState.settingsModelAvailability.gemmaIDs
+                let model = Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == value }
+                return model.map { ids.contains($0.repoID) } == true ? nil : "Download this Gemma model from Models first."
+            }) { value in self.updateConfig { $0.gemmaChatModel = value } }
         presets("summary_chatgpt_model", "ChatGPT meeting summary model", SummaryModelPreset.chatGPTModels, \.chatGPTModel)
         presets("summary_openai_model", "OpenAI meeting summary model", SummaryModelPreset.openAIModels, \.openAIModel)
         presets("summary_anthropic_model", "Anthropic meeting summary model", SummaryModelPreset.anthropicModels, \.anthropicModel)

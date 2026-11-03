@@ -72,6 +72,7 @@ public struct MeetingChatSession: Codable, Identifiable, Sendable {
     public var titleIsAutomatic: Bool? = nil
     public var generatedTitleTurnID: UUID? = nil
     public var rollingSummary: MeetingChatRollingSummary? = nil
+    public var fileAttachments: [ChatFileReference]? = nil
 }
 
 public struct MeetingChatTurn: Codable, Identifiable, Sendable {
@@ -91,6 +92,9 @@ public struct MeetingChatTurn: Codable, Identifiable, Sendable {
     public var isDraft: Bool = false
     public var attemptID: UUID?
     public var scopeLabel: String?
+    public var fileAttachments: [ChatFileReference]? = nil
+    public var fileDependencies: [ChatFileReference]? = nil
+    public var documentCoverage: [ChatDocumentCoverage]? = nil
 }
 
 public struct MeetingChatCoverage: Codable, Equatable, Sendable {

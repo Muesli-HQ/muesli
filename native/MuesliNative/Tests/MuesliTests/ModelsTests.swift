@@ -1063,7 +1063,7 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 8)
+        #expect(MeetingSummaryBackendOption.all.count == 9)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
         #expect(MeetingSummaryBackendOption.all.contains(.claudeCode))
@@ -1362,7 +1362,7 @@ struct AppConfigTests {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-openrouter-resolution-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         var config = AppConfig()
         config.openRouterAPIKey = ""
 

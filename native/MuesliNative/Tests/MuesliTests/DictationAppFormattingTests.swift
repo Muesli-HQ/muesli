@@ -64,7 +64,7 @@ struct DictationAppFormattingTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.enableDictionaryCorrectionPrompts = true
         config.dictationAppFormattingRules = [.init(bundleID: "start.app", appName: "Start", formatting: .lowercaseChat)]
@@ -340,7 +340,7 @@ struct DictationAppFormattingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         let source = DictationAppFormattingRule(bundleID: "one.app", appName: "One", formatting: .lowercaseChat)
         initial.dictationAppFormattingRules = [source, .init(bundleID: "two.app", appName: "Two")]
@@ -447,7 +447,7 @@ struct DictationAppFormattingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationAppFormattingRules = [.init(bundleID: "private.app", appName: "Private App")]
         store.save(initial)

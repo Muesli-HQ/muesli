@@ -118,6 +118,7 @@ struct SidebarView: View {
                 Image(systemName: "magnifyingglass").frame(width: 36, height: 32)
             }.buttonStyle(.muesli(.quiet)).help("Search all history (⌘F)")
                 .accessibilityLabel("Search all history")
+                .featureTourTarget(.searchSidebar)
 
             ScrollView(.vertical) {
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -191,11 +192,7 @@ struct SidebarView: View {
         .accessibilityAddTraits(appState.selectedTab == tab ? .isSelected : [])
         // Match the expanded rows so a tour targeting the sidebar keeps its
         // spotlight when the rail is collapsed mid-tour.
-        .featureTourTarget(
-            tab == .timeline ? .timelineSidebar
-            : tab == .meetings ? .meetingsSidebar
-            : nil
-        )
+        .featureTourTarget(tab.sidebarFeatureTourTarget)
     }
 
     private var expandedSidebar: some View {
@@ -339,6 +336,7 @@ struct SidebarView: View {
         }
         .buttonStyle(.muesli(.quiet))
         .accessibilityLabel("Search all history")
+        .featureTourTarget(.searchSidebar)
         .padding(.horizontal, sidebarRowOuterPadding)
         .padding(.bottom, MuesliTheme.spacing8)
     }
@@ -589,7 +587,7 @@ struct SidebarView: View {
         .buttonStyle(SidebarRowButtonStyle(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .padding(.horizontal, sidebarRowOuterPadding)
-        .featureTourTarget(tab == .timeline ? .timelineSidebar : nil)
+        .featureTourTarget(tab.sidebarFeatureTourTarget)
         .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
     }
 

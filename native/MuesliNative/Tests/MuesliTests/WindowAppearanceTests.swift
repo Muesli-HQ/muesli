@@ -159,7 +159,7 @@ struct WindowAppearanceTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store, configStore: configStore)
@@ -195,7 +195,7 @@ struct WindowAppearanceTests {
         try store.migrateIfNeeded()
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         // Avoid the Timeline's first-run bridge onboarding and its telemetry in this UI fixture.
         controller.appState.selectedTab = .shortcuts
         let dashboard = RecentHistoryWindowController(store: store, controller: controller)
@@ -302,7 +302,7 @@ struct WindowAppearanceTests {
         try store.migrateIfNeeded()
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: .temporaryDirectory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: support)
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support)
         )
         let coordinator = controller.meetingChatCoordinator
         let undoIdentity = coordinator.composerUndoIdentity
@@ -503,7 +503,7 @@ struct WindowAppearanceTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         // 40 visible folder rows are far taller than the minimum window.
         controller.appState.folders = (1...40).map { index in
@@ -536,7 +536,7 @@ struct WindowAppearanceTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         let meeting = MeetingRecord(
             id: 42,

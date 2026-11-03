@@ -24,7 +24,7 @@ struct MeetingChatNotesActionTests {
         }
         try store.updateMeetingManualNotes(id: id, manualNotes: manual)
         let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         return (controller, store, try #require(controller.meeting(id: id)))
     }
 

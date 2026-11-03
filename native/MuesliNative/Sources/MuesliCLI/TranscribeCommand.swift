@@ -1230,11 +1230,15 @@ struct CLISummaryConfig: Decodable {
         claudeCodeExecutablePath = try container.decodeIfPresent(String.self, forKey: .claudeCodeExecutablePath) ?? claudeCodeExecutablePath
     }
 
-    static func load(from supportDirectory: URL) -> CLISummaryConfig {
+    static func load(from supportDirectory: URL, vault: (any CredentialVault)? = nil,
+                     appBundleURL: URL? = KeychainCredentialVault.enclosingAppBundle()) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: url),
-              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
-            return CLISummaryConfig()
+        var config = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(CLISummaryConfig.self, from: $0) } ?? CLISummaryConfig()
+        let vault = vault ?? KeychainCredentialVault(supportDirectory: supportDirectory)
+        if let data = try? vault.read(ConfigCredentials.account),
+           let secrets = try? JSONDecoder().decode(ConfigCredentials.self, from: data) {
+            config.openAIAPIKey = secrets.openAI; config.anthropicAPIKey = secrets.anthropic
+            config.customLLMAPIKey = secrets.custom; config.customLLMHeaders = secrets.customHeaders
         }
         if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             struct StoredOpenRouterCredential: Decodable {
@@ -1245,8 +1249,20 @@ struct CLISummaryConfig: Decodable {
                 }
             }
             let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
-            if let credentialData = try? Data(contentsOf: credentialURL),
-               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+            let credential: StoredOpenRouterCredential? = {
+                if appBundleURL != nil {
+                    let migration = CredentialFileMigration(legacyURL: credentialURL, account: "openrouter-auth", vault: vault)
+                    guard let data = try? migration.load(validating: { _ = try JSONDecoder().decode(StoredOpenRouterCredential.self, from: $0) }) else { return nil }
+                    return try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data)
+                }
+                // A standalone CLI cannot create an item with the app/CLI ACL.
+                // Read without migrating or deleting the app's working copy.
+                if let data = try? vault.read("openrouter-auth"),
+                   let stored = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data) { return stored }
+                guard let data = try? Data(contentsOf: credentialURL) else { return nil }
+                return try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data)
+            }()
+            if let credential {
                 config.openRouterAPIKey = credential.apiKey
             }
         }

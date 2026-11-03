@@ -1199,27 +1199,29 @@ struct SummaryModelPreset {
     let id: String
     let label: String
     var contextWindowTokens: Int? = nil
+    var maximumInputTokens: Int? = nil
 
+    // Verified model metadata; see docs/meeting-chat-architecture.md.
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
-        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
-        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 500_000),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
         SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
         SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let anthropicModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
-        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
-        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
-        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindowTokens: 200000),
     ]
 
     static let claudeCodeModels: [SummaryModelPreset] = [
@@ -1411,6 +1413,7 @@ extension MeetingSummaryBackendOption {
         case .openRouter: return \.openRouterModel
         case .ollama: return \.ollamaModel
         case .lmStudio: return \.lmStudioModel
+        case .gemmaMLX: return \.gemmaChatModel
         case .claudeCode: return \.claudeCodeModel
         default: return \.customLLMModel
         }
@@ -1430,6 +1433,7 @@ extension MeetingSummaryBackendOption {
         case .chatGPT: presets = SummaryModelPreset.chatGPTModels
         case .openAI: presets = SummaryModelPreset.openAIModels
         case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .gemmaMLX: presets = Gemma4LiteRTModel.generalPurpose.map { SummaryModelPreset(id: $0.nativeChatModelID, label: $0.label, contextWindowTokens: 131_072) }
         case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
         case .openRouter:
             presets = [SummaryModelPreset.openRouterModels[0]]
@@ -1485,7 +1489,9 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let gemmaMLX = MeetingSummaryBackendOption(backend: "gemma_mlx", label: "Gemma 4 (on-device)")
+
+    static let all: [MeetingSummaryBackendOption] = [.gemmaMLX, .chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
 
     static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
         guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
@@ -2335,6 +2341,7 @@ struct AppConfig: Codable, Equatable {
     var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var gemmaChatModel: String = Gemma4LiteRTModel.e2b.nativeChatModelID
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
@@ -2516,6 +2523,7 @@ struct AppConfig: Codable, Equatable {
         case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case gemmaChatModel = "gemma_chat_model"
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
@@ -2759,6 +2767,7 @@ struct AppConfig: Codable, Equatable {
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
         )
+        gemmaChatModel = (try? c.decode(String.self, forKey: .gemmaChatModel)) ?? defaults.gemmaChatModel
         claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
         claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
         meetingSummaryReasoningEffort = try? c.decode(

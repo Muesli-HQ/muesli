@@ -12,7 +12,7 @@ struct DictionaryFileOperationsTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let database = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
         try database.migrateIfNeeded()
-        let config = ConfigStore(supportDirectory: root)
+        let config = makeTestConfigStore(supportDirectory: root)
         config.save(AppConfig())
         return (MuesliController(runtime: .init(repoRoot: root, menuIcon: nil, appIcon: nil, bundlePath: nil),
                                 dictationStore: database, configStore: config), root)

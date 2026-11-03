@@ -494,7 +494,8 @@ public final class MuesliController: NSObject {
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
-    private let chatGPTAuth = ChatGPTAuthManager.shared
+    private let chatGPTAuth: ChatGPTAuthManager
+    private var authCredentialError: String?
     private let openRouterAuth: OpenRouterAuthManager
     private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
     private var calendarCheckTimer: Timer?
@@ -790,7 +791,8 @@ public final class MuesliController: NSObject {
         self.downloadedBackendOptions = {
             BackendOption.compatibleOptions(downloadedBackendOptions(), currentOSVersion: modelOSVersion)
         }
-        self.openRouterAuth = openRouterAuth ?? .shared
+        self.chatGPTAuth = ChatGPTAuthManager(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault)
+        self.openRouterAuth = openRouterAuth ?? OpenRouterAuthManager(credentialStore: OpenRouterCredentialStore(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault))
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
         let repairedModelSelection = BackendOption.normalizeRestoredSelections(
@@ -1544,6 +1546,7 @@ public final class MuesliController: NSObject {
     }
 
     private func navigateToFeatureTourStep(_ step: FeatureTourStep) {
+        appState.globalSearchPresented = false
         if appState.isSearchActive {
             clearSearch()
         }
@@ -1553,7 +1556,11 @@ public final class MuesliController: NSObject {
             appState.selectedSettingsPane = pane
             appState.selectedTab = .settings
         case let .tab(tab):
-            appState.selectedTab = tab
+            if tab == .timeline {
+                showTimelineHome()
+            } else {
+                appState.selectedTab = tab
+            }
         case let .models(category):
             showModels(category: category)
         case .timelineApplications:
@@ -1645,6 +1652,10 @@ public final class MuesliController: NSObject {
 
     /// Observation publishes assignments even when their values have not changed.
     func publishConfig() {
+        let credentialError = configStore.credentialStorageError ?? authCredentialError
+        if appState.credentialStorageError != credentialError {
+            appState.credentialStorageError = credentialError
+        }
         guard appState.config != config else { return }
         let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
         appState.config = config
@@ -2609,6 +2620,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.refreshChatGPTAuthenticationStatus()
                 self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -4074,6 +4086,7 @@ public final class MuesliController: NSObject {
     func signInWithChatGPT(selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true) async -> String? {
         do {
             try await chatGPTAuth.signIn()
+            authCredentialError = nil
             if shouldSelectMeetingSummaryBackend {
                 selectMeetingSummaryBackend(.chatGPT)
             }
@@ -4086,8 +4099,18 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func refreshChatGPTAuthenticationStatus() {
+        chatGPTAuth.refreshCredentialStatus()
+        appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+    }
+
     func signOutChatGPT() {
-        chatGPTAuth.signOut()
+        do { try chatGPTAuth.signOut() } catch {
+            authCredentialError = CredentialVaultError.unavailable.localizedDescription
+            publishConfig()
+            return
+        }
+        authCredentialError = nil
         if selectedMeetingSummaryBackend == .chatGPT {
             selectMeetingSummaryBackend(.openAI)
         }
@@ -6259,6 +6282,7 @@ public final class MuesliController: NSObject {
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) else { return }
+        if option == .chatGPT { refreshChatGPTAuthenticationStatus() }
         if option == .chatGPT, !chatGPTAuth.isAuthenticated {
             Task { await signInWithChatGPT() }
             return
@@ -6269,6 +6293,9 @@ public final class MuesliController: NSObject {
     func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption, config summaryConfig: AppConfig? = nil) -> Bool {
         let summaryConfig = summaryConfig ?? config
         switch provider {
+        case .gemmaMLX:
+            guard #available(macOS 15, *) else { return false }
+            return Gemma4LiteRTModel.generalPurpose.contains { appState.settingsModelAvailability.gemmaIDs.contains($0.repoID) }
         case .chatGPT: return appState.isChatGPTAuthenticated
         case .openAI: return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: summaryConfig).isEmpty
         case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: summaryConfig).isEmpty

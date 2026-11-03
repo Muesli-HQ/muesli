@@ -630,7 +630,8 @@ struct GoogleCalendarTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let firstStart = date("2026-04-10T14:00:00Z")
         let firstOccurrence = CalendarOccurrenceReference(

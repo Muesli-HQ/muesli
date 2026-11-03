@@ -407,6 +407,13 @@ struct SettingsView: View {
     var body: some View {
         // Geometry, hover and permission updates reuse the same catalog.
         settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
+            .safeAreaInset(edge: .top) {
+                if let issue = appState.credentialStorageError {
+                    Text(issue).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.warningText)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MuesliTheme.backgroundRaised)
+                }
+            }
     }
 
     private var settingsContent: some View {
@@ -977,6 +984,8 @@ struct SettingsView: View {
                 ) {
                     settingsControl("buffered_live_dictation")
                 }
+                .id(FeatureTourTarget.liveDictation.rawValue)
+                .featureTourTarget(.liveDictation)
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1019,6 +1028,7 @@ struct SettingsView: View {
             PastableSecureField(
                 text: appState.config.openAIAPIKey,
                 placeholder: "sk-...",
+                commitsOnEndEditing: true,
                 onChange: { val in
                     openAITestState = .idle
                     controller.setOpenAIDictationAPIKey(val)
@@ -1313,6 +1323,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.openAIAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1322,6 +1333,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.anthropicAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1427,6 +1439,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1449,6 +1462,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1625,6 +1639,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.openAIAPIKey,
                         placeholder: "sk-...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1648,6 +1663,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.anthropicAPIKey,
                         placeholder: "sk-ant-api...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1673,6 +1689,10 @@ struct SettingsView: View {
                     .frame(height: 22)
                 }
                 keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
+            } else if appState.selectedMeetingSummaryBackend == .gemmaMLX {
+                settingsRow("Model", description: "Runs entirely on this Mac. Uses downloaded Gemma 4 models and supports meeting and document text.", controlWidth: meetingControlWidth) {
+                    settingsControl("summary_gemma_model")
+                }
             } else if appState.selectedMeetingSummaryBackend == .claudeCode {
                 settingsRow("Account", description: "Uses the Claude Code sign-in on this Mac.", controlWidth: meetingControlWidth) {
                     claudeCodeAccountControl()
@@ -1804,6 +1824,7 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "Required for Anthropic API"
                     : "Optional for local servers",
+                commitsOnEndEditing: true,
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
             )
             .frame(height: 22)
@@ -1933,6 +1954,8 @@ struct SettingsView: View {
             settingsSection("App Formatting") {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
+            .id(FeatureTourTarget.appFormatting.rawValue)
+            .featureTourTarget(.appFormatting)
 
             settingsSection("Advanced") {
                 settingsRow(
@@ -1982,6 +2005,8 @@ struct SettingsView: View {
                 cotypistOptions
             }
         }
+        .id(FeatureTourTarget.cotypistSettings.rawValue)
+        .featureTourTarget(.cotypistSettings)
     }
 
     /// Shown only while Cotypist is on: off, none of them do anything.
@@ -4112,6 +4137,7 @@ struct FixedWidthPopUp: NSViewRepresentable {
 struct PastableSecureField: NSViewRepresentable {
     let text: String
     let placeholder: String
+    var commitsOnEndEditing = false
     let onChange: (String) -> Void
 
     func makeNSView(context: Context) -> EditableNSSecureTextField {
@@ -4127,26 +4153,18 @@ struct PastableSecureField: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: EditableNSSecureTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
+        context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+    func makeCoordinator() -> PastableTextField.Coordinator {
+        PastableTextField.Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: false,
+                                     onBeginEditing: nil, onChange: onChange)
     }
 
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        let onChange: (String) -> Void
-
-        init(onChange: @escaping (String) -> Void) {
-            self.onChange = onChange
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            onChange(field.stringValue)
-        }
+    static func dismantleNSView(_ nsView: EditableNSSecureTextField, coordinator: PastableTextField.Coordinator) {
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 }
 
