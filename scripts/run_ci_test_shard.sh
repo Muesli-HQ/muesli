@@ -224,6 +224,7 @@ case "${shard}" in
       MeetingSummaryClientTests
       MeetingChatStoreTests
       GemmaMeetingChatTests
+      LocalChatToolTests
       ChatPDFProcessingTests
       ChatAttachmentTests
       MeetingChatRetrievalTests

@@ -46,21 +46,29 @@ enum MeetingTextGenerationError: Error, LocalizedError {
 
 struct MeetingTextGenerationClient: MeetingTextGenerating {
     var gemmaCapabilities: GemmaChatCapabilities?
+    var localChatCapabilities: LocalChatCapabilities?
+    var localChatProbeCache = LocalChatProbeCache.shared
     var gemmaNative: @Sendable (MeetingNativeToolRequest, GemmaChatCapabilities) async throws -> MeetingNativeToolResponse = { request, capabilities in
         guard #available(macOS 15, *) else { throw GemmaMeetingChatError.macOSRequired }
         return try await GemmaNativeAudioTranscriber.shared(for: capabilities.model).generateChat(request, capabilities: capabilities)
     }
     func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating {
-        guard MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX else { return self }
-        if gemmaCapabilities?.model.nativeChatModelID == Self.model(config) { return self }
-        let id = Self.model(config)
         var copy = self
-        copy.gemmaCapabilities = try await Task.detached { try GemmaChatCapabilities.detect(modelID: id) }.value
+        if MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX {
+            if gemmaCapabilities?.model.nativeChatModelID == Self.model(config) { return self }
+            let id = Self.model(config)
+            copy.gemmaCapabilities = try await Task.detached { try GemmaChatCapabilities.detect(modelID: id) }.value
+        } else if LocalChatToolTransport.supportsProvider(config) {
+            if localChatCapabilities?.matches(config) == true { return self }
+            copy.localChatCapabilities = try await LocalChatToolTransport.detect(config: config,
+                credential: credentialResolver(config), load: load, cache: localChatProbeCache)
+        } else { return self }
         try Task.checkCancellation()
         return copy
     }
     func chatContextTokens(config: AppConfig) -> Int? {
-        MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX && gemmaCapabilities?.model.nativeChatModelID == Self.model(config) ? gemmaCapabilities?.contextTokens : nil
+        if localChatCapabilities?.matches(config) == true { return localChatCapabilities?.contextTokens }
+        return MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX && gemmaCapabilities?.model.nativeChatModelID == Self.model(config) ? gemmaCapabilities?.contextTokens : nil
     }
 
     var credentialResolver: @Sendable (AppConfig) async throws -> String = { config in
@@ -82,6 +90,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
 
     func supportsNativeTools(config: AppConfig) -> Bool {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
+        if LocalChatToolTransport.supportsProvider(config) { return localChatCapabilities?.matches(config) == true && localChatCapabilities?.nativeTools == true }
         if provider == .gemmaMLX { return gemmaCapabilities?.model.nativeChatModelID == Self.model(config) && gemmaCapabilities?.nativeTools == true }
         if provider == .chatGPT || provider == .openAI { return true }
         guard provider == .openRouter else { return false }
@@ -98,6 +107,16 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         if provider == .gemmaMLX {
             guard let capabilities = gemmaCapabilities, supportsNativeTools(config: request.base.config) else { throw GemmaMeetingChatError.unsupportedModel }
             return try await gemmaNative(request, capabilities)
+        }
+        if LocalChatToolTransport.supportsProvider(request.base.config) {
+            guard let capabilities = localChatCapabilities, capabilities.matches(request.base.config), capabilities.nativeTools else { throw MeetingTextGenerationError.invalidEndpoint }
+            var urlRequest = capabilities.template
+            urlRequest.httpBody = try ChatFileReader.requestData(LocalChatToolTransport.body(request, capabilities: capabilities))
+            let (data, status) = try await LocalChatToolTransport.checked(urlRequest, load: load)
+            guard (200..<300).contains(status) else { throw MeetingTextGenerationError.failed(status) }
+            let response = try LocalChatToolTransport.parse(data, wire: capabilities.wire, maximumArgumentBytes: request.maximumArgumentBytes)
+            guard request.allowTools || response.calls.isEmpty else { throw MeetingChatHarnessError.toolProtocol }
+            return response
         }
         if provider == .chatGPT { return try await ChatGPTResponsesClient.respondNative(request) }
         guard supportsNativeTools(config: request.base.config) else { throw MeetingTextGenerationError.invalidEndpoint }

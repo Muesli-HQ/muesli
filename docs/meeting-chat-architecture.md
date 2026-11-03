@@ -2,7 +2,7 @@
 
 ## Retrieval harness
 
-Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Explicitly attached meetings also supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); native on-device Gemma uses the same bounded harness with the pinned MLX runtime. Other transports retain the compatibility protocol. Available retrieval operations:
+Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Explicitly attached meetings also supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); native on-device Gemma uses the same bounded harness with the pinned MLX runtime. Ollama, LM Studio and OpenAI-compatible custom endpoints use native HTTP tool calling after capability detection. Other transports retain the compatibility protocol. Available retrieval operations:
 
 - `search_meeting_sources(query)`: searches transcripts, written notes, and generated notes inside the immutable scope captured on the turn. Queries are limited to 300 characters.
 - `browse_meeting_sources()`: requests bounded representative passages for broad recaps without inventing a lexical query; partial coverage remains explicit.
@@ -19,13 +19,13 @@ Budgeting uses selected OpenRouter catalog context sizes and verified direct-mod
 
 The persistent “Partial recap” footer is removed. Source disclosures remain; coverage limitations belong in the answer only when material to the question, such as unfinished reads or incomplete requested comparisons.
 
-Provider capability selects the transport each turn. ChatGPT OAuth, OpenAI, and OpenRouter OpenAI GPT/o-series models register strict native function schemas in Responses `tools`, consume function-call events, and send results through `function_call_output`. Final answers use a native strict JSON response schema for status and Markdown; tool requests are never parsed from answer prose on this path. Gemma 4 (on-device) uses native MLX tool events after checkpoint capability detection. Anthropic, Claude Code, other OpenRouter models, and HTTP local/custom providers retain the existing JSON compatibility loop until their native adapters are implemented. There is no silent downgrade after a native-provider error. See the [official Responses function-calling guide](https://developers.openai.com/api/docs/guides/function-calling). ChatGPT reuses `ChatGPTAuthManager`, `ChatGPTResponsesClient`, and a stable session UUID. No new credential store, shell, arbitrary file reader, or web tool is required to answer questions over the local meeting archive. ChatGPT streams use an ephemeral session with a 120-second inactivity timeout and an absolute 180-second resource deadline; cancellation and bounded response accumulation also apply to stream events and HTTP error bodies.
+Provider capability selects the transport each turn. ChatGPT OAuth, OpenAI, and OpenRouter OpenAI GPT/o-series models register strict native function schemas in Responses `tools`, consume function-call events, and send results through `function_call_output`. Final answers use a native strict JSON response schema for status and Markdown; tool requests are never parsed from answer prose on this path. Gemma 4 (on-device) uses native MLX tool events after checkpoint capability detection. Ollama, LM Studio and OpenAI-compatible custom endpoints register native function tools when the selected endpoint/model advertises support or passes a synthetic API probe. Anthropic, Claude Code, other OpenRouter models, custom Anthropic-format endpoints and local models without native capability retain the JSON compatibility loop. There is no silent downgrade after a native-provider error. See the [official Responses function-calling guide](https://developers.openai.com/api/docs/guides/function-calling). ChatGPT reuses `ChatGPTAuthManager`, `ChatGPTResponsesClient`, and a stable session UUID. No new credential store, shell, arbitrary file reader, or web tool is required to answer questions over the local meeting archive. ChatGPT streams use an ephemeral session with a 120-second inactivity timeout and an absolute 180-second resource deadline; cancellation and bounded response accumulation also apply to stream events and HTTP error bodies.
 
 The composer exposes the configured provider's model catalog and supported thinking levels directly, using the canonical meeting-summary setting definitions and validated manual UI mutations. These settings are shared with meeting summaries; the selected model and reasoning effort pass through unchanged. The earlier Fast answers shortcut has been removed. Provider failures give specific configuration, authentication, rate-limit, or connectivity guidance without exposing raw server details.
 
 The design follows the repeated model/tool cycle and explicit context management described in [Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/) and the separation of tool specification and runtime dispatch in [Codex's tool registry](https://github.com/openai/codex/blob/5d1fbf26c43abc65a203928b2e31561cb039e06d/codex-rs/core/src/tools/spec_plan.rs).
 
-Current limits: lexical retrieval can miss paraphrases; results arrive as complete validated answers rather than streamed tokens; tool activity is transient rather than persisted; native adapters currently cover ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models. ChatGPT can stream provider-designated reasoning summaries into a transient disclosure when supplied; other providers currently show operational progress only. A future streaming implementation should preserve attempt ownership and deletion invalidation before exposing partial output.
+Current limits: lexical retrieval can miss paraphrases; results arrive as complete validated answers rather than streamed tokens; tool activity is transient rather than persisted; native adapters cover ChatGPT, OpenAI, OpenRouter OpenAI GPT/o-series models, on-device Gemma and capability-selected local HTTP endpoints. ChatGPT can stream provider-designated reasoning summaries into a transient disclosure when supplied; other providers currently show operational progress only. A future streaming implementation should preserve attempt ownership and deletion invalidation before exposing partial output.
 
 ## Threads and meeting relationships
 
@@ -243,3 +243,43 @@ answer schema. Existing scope, source, cancellation and persistence policies app
 
 The native framing follows [Google's Gemma function-calling format](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4)
 and the repository's pinned `mlx-swift-lm` Gemma4 parser and generation APIs.
+
+
+## Native local HTTP tool calling
+
+Ollama uses `/api/show` model capabilities and `/api/chat` function tools. Its
+configured `num_ctx` (bounded by architecture metadata) determines the effective
+window and is pinned on inference requests. Architecture maximum alone does not
+silently expand the allocated context. LM Studio uses `/api/v1/models`, matches
+both model keys and loaded instance IDs, and uses loaded-instance context lengths
+rather than the unloaded checkpoint maximum. Discovery preserves gateway path
+prefixes, query parameters and configured authentication/custom headers.
+
+OpenAI-format custom endpoints use model capability metadata when supplied. Missing
+metadata is resolved with a bounded synthetic `muesli_capability_probe` call carrying
+only a random token. The probe executes no app operation and contains no meeting,
+conversation or attachment content. A native API tool call with the matching token
+establishes support; prose/JSON printed in answer content does not. Synthetic probe
+verdicts are cached in bounded memory (five minutes positive, thirty seconds
+negative), keyed by endpoint, model and a hash of request headers. Live context
+metadata is refreshed per captured turn. Authentication, cancellation, rate limits
+and transient server failures propagate without switching protocols. Explicit
+unsupported-tool responses or non-native models select compatibility before the
+actual turn starts. Native failures never silently downgrade mid-turn.
+
+Both native HTTP adapters preserve call/result correlation and use the shared
+scoped twelve-call harness, including full-meeting reads and three document text
+operations. Ollama's ID-less calls receive attempt-local IDs once and replay results
+by tool name; OpenAI-compatible endpoints retain supplied call IDs and use `tool`
+messages with `tool_call_id`. Multiple calls and their results remain paired.
+Reasoning fields needed for native replay stay in bounded attempt memory; they are
+never displayed or saved as chat history. Incomplete/truncated responses, malformed
+arguments, duplicate IDs, oversized outputs and tools emitted during final-only
+inference are rejected. Final answer JSON still passes the shared citation, scope,
+source-revision and format checks. Image inputs/PDF page rendering retain their
+existing provider restrictions; local HTTP document tools read text/OCR.
+
+The wire contracts follow [Ollama tool calling](https://docs.ollama.com/capabilities/tool-calling),
+[Ollama model details](https://docs.ollama.com/api-reference/show-model-details),
+[LM Studio model capabilities](https://lmstudio.ai/docs/developer/rest/list) and
+[LM Studio OpenAI-compatible tools](https://lmstudio.ai/docs/developer/openai-compat/tools).
