@@ -81,6 +81,26 @@ enum LocalChatToolTransport {
         return n.intValue
     }
 
+    private static func metadataObject(_ request: URLRequest, provider: MeetingSummaryBackendOption, load: Load) async throws -> [String: Any]? {
+        do {
+            let (data, status) = try await checked(request, load: load)
+            guard (200..<300).contains(status) else {
+                if [404, 405, 501].contains(status) { return nil }
+                throw MeetingTextGenerationError.failed(status)
+            }
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MeetingNativeToolTransportError.invalidResponse }
+            return object
+        } catch {
+            try Task.checkCancellation()
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+            // A compatible chat gateway need not expose or authorize /models.
+            // Only optional discovery is bypassed; the native probe still must
+            // succeed or explicitly establish unsupported tools before the turn.
+            guard provider == .customLLM else { throw error }
+            return nil
+        }
+    }
+
     static func detect(config: AppConfig, credential: String, load: Load, cache: LocalChatProbeCache) async throws -> LocalChatCapabilities {
         let endpoint = try endpoint(config)
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
@@ -101,10 +121,8 @@ enum LocalChatToolTransport {
                 metadata.url = try sibling(endpoint, removing: "chat/completions", adding: "models")
             }
         }
-        let (data, status) = try await checked(metadata, load: load)
         var tools: Bool?; var context: Int?
-        if (200..<300).contains(status) {
-            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MeetingNativeToolTransportError.invalidResponse }
+        if let object = try await metadataObject(metadata, provider: provider, load: load) {
             if wire == .ollama {
                 if let capabilities = object["capabilities"] as? [String] { tools = capabilities.contains("tools") }
                 let info = object["model_info"] as? [String: Any] ?? [:]
@@ -137,7 +155,7 @@ enum LocalChatToolTransport {
                     if provider != .lmStudio { context = context ?? integer(entry["max_context_length"]) }
                 }
             }
-        } else if ![404, 405, 501].contains(status) { throw MeetingTextGenerationError.failed(status) }
+        }
         if tools == nil {
             let headers = template.allHTTPHeaderFields ?? [:]
             let identity = try JSONSerialization.data(withJSONObject: ["endpoint": endpoint.absoluteString, "model": model, "headers": headers], options: [.sortedKeys])

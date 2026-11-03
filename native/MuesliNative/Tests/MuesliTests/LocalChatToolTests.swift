@@ -118,7 +118,24 @@ struct LocalChatToolTests {
         #expect(await cache.value("positive-digest", now: start.addingTimeInterval(301)) == nil)
     }
 
-    @Test func metadataAuthenticationAndTransientFailuresDoNotDowngradeToCompatibility() async throws {
+    @Test(arguments: ["400", "401", "403", "429", "500", "html", "array", "transport"])
+    func unavailableCustomMetadataStillRequiresSuccessfulNativeProbe(failure: String) async throws {
+        let fixture = LocalToolFixture(wire: .openAI, metadata: nil)
+        let caps = try await LocalChatToolTransport.detect(config: config("custom_llm"), credential: "synthetic", load: { req in
+            if req.httpMethod == "GET" {
+                #expect(req.httpBody == nil)
+                if failure == "transport" { throw URLError(.timedOut) }
+                if let status = Int(failure) { return try response(req, ["error": "synthetic metadata failure"], status: status) }
+                return (Data((failure == "html" ? "<html>synthetic gateway</html>" : "[]").utf8),
+                        HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+            return try await fixture.load(req)
+        }, cache: LocalChatProbeCache())
+        #expect(caps.nativeTools)
+        #expect(await fixture.probes == 1)
+    }
+
+    @Test func probeAuthenticationAndTransientFailuresDoNotDowngradeToCompatibility() async throws {
         for status in [401, 403, 429, 500] {
             await #expect(throws: MeetingTextGenerationError.self) {
                 _ = try await LocalChatToolTransport.detect(config: config("custom_llm"), credential: "", load: { req in
@@ -126,8 +143,10 @@ struct LocalChatToolTests {
                 }, cache: LocalChatProbeCache())
             }
         }
-        await #expect(throws: CancellationError.self) {
-            _ = try await LocalChatToolTransport.detect(config: config(), credential: "", load: { _ in throw CancellationError() }, cache: LocalChatProbeCache())
+        for c in [config(), config("custom_llm")] {
+            await #expect(throws: CancellationError.self) {
+                _ = try await LocalChatToolTransport.detect(config: c, credential: "", load: { _ in throw CancellationError() }, cache: LocalChatProbeCache())
+            }
         }
     }
 

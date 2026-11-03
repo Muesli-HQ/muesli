@@ -258,12 +258,15 @@ prefixes, query parameters and configured authentication/custom headers.
 OpenAI-format custom endpoints use model capability metadata when supplied. Missing
 metadata is resolved with a bounded synthetic `muesli_capability_probe` call carrying
 only a random token. The probe executes no app operation and contains no meeting,
-conversation or attachment content. A native API tool call with the matching token
+conversation or attachment content. Custom gateways may deny or omit `/models`
+while allowing chat: metadata HTTP/transport failures and malformed responses
+therefore proceed to the same probe, without selecting compatibility on that
+failure alone. Cancellation still stops discovery. A native API tool call with the matching token
 establishes support; prose/JSON printed in answer content does not. Synthetic probe
 verdicts are cached in bounded memory (five minutes positive, thirty seconds
 negative), keyed by endpoint, model and a hash of request headers. Live context
-metadata is refreshed per captured turn. Authentication, cancellation, rate limits
-and transient server failures propagate without switching protocols. Explicit
+metadata is refreshed per captured turn. Probe and inference authentication,
+cancellation, rate limits and transient server failures propagate without switching protocols. Explicit
 unsupported-tool responses or non-native models select compatibility before the
 actual turn starts. Native failures never silently downgrade mid-turn.
 
