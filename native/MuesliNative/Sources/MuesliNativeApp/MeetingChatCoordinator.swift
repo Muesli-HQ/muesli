@@ -800,7 +800,7 @@ final class MeetingChatCoordinator {
         cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
         activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id; activitySessionID = turn.sessionID
-        let worker = worker; let generator = generator
+        let worker = worker; let unpreparedGenerator = generator
         tasks[requestID] = Task {
             defer {
                 tasks.removeValue(forKey: requestID)
@@ -808,7 +808,11 @@ final class MeetingChatCoordinator {
                 scheduleHistoryReload()
             }
             do {
-                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: contextWindowTokens)
+                phase = "Checking model capabilities"
+                let generator = try await unpreparedGenerator.preparedForChat(config: config)
+                try Task.checkCancellation()
+                guard activeRequestID == requestID else { return }
+                let budget = MeetingChatContextBudget(config: config, contextWindowTokens: generator.chatContextTokens(config: config) ?? contextWindowTokens)
                 var attachments: PreparedChatFiles
                 if let preparedAttachments { attachments = preparedAttachments }
                 else {
@@ -943,7 +947,7 @@ final class MeetingChatCoordinator {
     func waitForTitles() async { while let task = titleTasks.values.first { await task.value } }
 
     static func failureMessage(_ error: Error) -> String {
-        if error is ChatFileError || error is ChatPDFProcessingError { return error.localizedDescription }
+        if error is ChatFileError || error is ChatPDFProcessingError || error is GemmaMeetingChatError { return error.localizedDescription }
         if error is MeetingChatError || error is MeetingChatHarnessError || error is MeetingTextGenerationError || error is MeetingNativeToolTransportError { return error.localizedDescription }
         if error is MeetingChatContextBudget.SummaryError { return "Could not fit conversation memory into this model’s context budget. Try again or choose a model with a larger context window. Your conversation is still saved." }
         if error is ChatGPTAuthError { return "Your ChatGPT connection needs attention. Sign in again in AI Settings, then retry." }

@@ -1413,6 +1413,7 @@ extension MeetingSummaryBackendOption {
         case .openRouter: return \.openRouterModel
         case .ollama: return \.ollamaModel
         case .lmStudio: return \.lmStudioModel
+        case .gemmaMLX: return \.gemmaChatModel
         case .claudeCode: return \.claudeCodeModel
         default: return \.customLLMModel
         }
@@ -1432,6 +1433,7 @@ extension MeetingSummaryBackendOption {
         case .chatGPT: presets = SummaryModelPreset.chatGPTModels
         case .openAI: presets = SummaryModelPreset.openAIModels
         case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .gemmaMLX: presets = Gemma4LiteRTModel.generalPurpose.map { SummaryModelPreset(id: $0.nativeChatModelID, label: $0.label, contextWindowTokens: 131_072) }
         case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
         case .openRouter:
             presets = [SummaryModelPreset.openRouterModels[0]]
@@ -1487,7 +1489,9 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let gemmaMLX = MeetingSummaryBackendOption(backend: "gemma_mlx", label: "Gemma 4 (on-device)")
+
+    static let all: [MeetingSummaryBackendOption] = [.gemmaMLX, .chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
 
     static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
         guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
@@ -2337,6 +2341,7 @@ struct AppConfig: Codable, Equatable {
     var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var gemmaChatModel: String = Gemma4LiteRTModel.e2b.nativeChatModelID
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
@@ -2518,6 +2523,7 @@ struct AppConfig: Codable, Equatable {
         case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case gemmaChatModel = "gemma_chat_model"
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
@@ -2761,6 +2767,7 @@ struct AppConfig: Codable, Equatable {
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
         )
+        gemmaChatModel = (try? c.decode(String.self, forKey: .gemmaChatModel)) ?? defaults.gemmaChatModel
         claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
         claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
         meetingSummaryReasoningEffort = try? c.decode(

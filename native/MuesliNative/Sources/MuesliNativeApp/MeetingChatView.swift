@@ -362,7 +362,9 @@ struct MeetingChatView: View {
                     Spacer(minLength: 4)
                     Button { showModelPicker = true } label: {
                         HStack(spacing: 5) {
-                            Text(MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
+                            Text(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend) == .gemmaMLX
+                                ? (Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == requestConfig.gemmaChatModel }?.label ?? "Gemma 4")
+                                : MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
                             if let thinkingLabel { Text("· " + thinkingLabel).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1) }
                             AIIcon(.chevronDown, size: 10)
                         }.font(MuesliTheme.font(.caption)).padding(.horizontal, 6).frame(height: 28)
@@ -406,7 +408,9 @@ struct MeetingChatView: View {
                 .padding(.leading, -6)
             })
             if !coordinator.composerFiles.isEmpty {
-                Text("Originals stay in place. Your selected AI provider receives images and the document pages it requests. PDF page images need a vision-capable model.")
+                Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend) == .gemmaMLX
+                    ? "Originals stay in place. Gemma reads requested document text entirely on this Mac."
+                    : "Originals stay in place. Your selected AI provider receives images and the document pages it requests. PDF page images need a vision-capable model.")
                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                     .lineLimit(nil).layoutPriority(1)
             }
@@ -604,7 +608,7 @@ struct MeetingChatView: View {
                     }
                     if turn.id == coordinator.activityTurnID {
                         if !turn.state.isPending && !coordinator.activities.isEmpty {
-                            AIDisclosure(title: "Meeting research · \(coordinator.activities.count) steps", icon: .search) {
+                            AIDisclosure(title: "Research · \(coordinator.activities.count) steps", icon: .search) {
                                 activityRows
                             }
                         }

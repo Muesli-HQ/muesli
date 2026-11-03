@@ -256,6 +256,15 @@ unreleased direct Google OAuth integration does not import or persist meeting
 participants; Google calendars exposed through macOS Calendar use this EventKit
 path.
 
+### On-device chat model preference
+
+`AppConfig` adds optional `gemma_chat_model` in local `config.json`, with E2B as
+its backward-compatible default. The `gemma_mlx` chat/summary provider shares the
+existing managed Gemma checkpoint files; selecting it does not copy model weights
+or create a server. Native tool calls, results and KV caches are attempt-local,
+with existing chat answers and original-file dependencies persisted as before.
+There are no new SQLite columns, sync fields, telemetry or exported tool payloads.
+
 ### Chat threads, memory, and retrieval
 
 A thread is independent of a meeting: one meeting can have multiple chats, and a

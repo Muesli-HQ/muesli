@@ -1063,7 +1063,7 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 8)
+        #expect(MeetingSummaryBackendOption.all.count == 9)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
         #expect(MeetingSummaryBackendOption.all.contains(.claudeCode))

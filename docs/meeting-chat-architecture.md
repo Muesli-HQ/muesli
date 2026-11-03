@@ -2,7 +2,7 @@
 
 ## Retrieval harness
 
-Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Explicitly attached meetings also supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); other transports retain the three-call compatibility protocol. Available retrieval operations:
+Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Explicitly attached meetings also supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); native on-device Gemma uses the same bounded harness with the pinned MLX runtime. Other transports retain the compatibility protocol. Available retrieval operations:
 
 - `search_meeting_sources(query)`: searches transcripts, written notes, and generated notes inside the immutable scope captured on the turn. Queries are limited to 300 characters.
 - `browse_meeting_sources()`: requests bounded representative passages for broad recaps without inventing a lexical query; partial coverage remains explicit.
@@ -19,7 +19,7 @@ Budgeting uses selected OpenRouter catalog context sizes and verified direct-mod
 
 The persistent “Partial recap” footer is removed. Source disclosures remain; coverage limitations belong in the answer only when material to the question, such as unfinished reads or incomplete requested comparisons.
 
-Provider capability selects the transport each turn. ChatGPT OAuth, OpenAI, and OpenRouter OpenAI GPT/o-series models register strict native function schemas in Responses `tools`, consume function-call events, and send results through `function_call_output`. Final answers use a native strict JSON response schema for status and Markdown; tool requests are never parsed from answer prose on this path. Anthropic, Claude Code, other OpenRouter models, and local/custom providers retain the existing JSON compatibility loop until their native adapters are implemented. There is no silent downgrade after a native-provider error. See the [official Responses function-calling guide](https://developers.openai.com/api/docs/guides/function-calling). ChatGPT reuses `ChatGPTAuthManager`, `ChatGPTResponsesClient`, and a stable session UUID. No new credential store, shell, arbitrary file reader, or web tool is required to answer questions over the local meeting archive. ChatGPT streams use an ephemeral session with a 120-second inactivity timeout and an absolute 180-second resource deadline; cancellation and bounded response accumulation also apply to stream events and HTTP error bodies.
+Provider capability selects the transport each turn. ChatGPT OAuth, OpenAI, and OpenRouter OpenAI GPT/o-series models register strict native function schemas in Responses `tools`, consume function-call events, and send results through `function_call_output`. Final answers use a native strict JSON response schema for status and Markdown; tool requests are never parsed from answer prose on this path. Gemma 4 (on-device) uses native MLX tool events after checkpoint capability detection. Anthropic, Claude Code, other OpenRouter models, and HTTP local/custom providers retain the existing JSON compatibility loop until their native adapters are implemented. There is no silent downgrade after a native-provider error. See the [official Responses function-calling guide](https://developers.openai.com/api/docs/guides/function-calling). ChatGPT reuses `ChatGPTAuthManager`, `ChatGPTResponsesClient`, and a stable session UUID. No new credential store, shell, arbitrary file reader, or web tool is required to answer questions over the local meeting archive. ChatGPT streams use an ephemeral session with a 120-second inactivity timeout and an absolute 180-second resource deadline; cancellation and bounded response accumulation also apply to stream events and HTTP error bodies.
 
 The composer exposes the configured provider's model catalog and supported thinking levels directly, using the canonical meeting-summary setting definitions and validated manual UI mutations. These settings are shared with meeting summaries; the selected model and reasoning effort pass through unchanged. The earlier Fast answers shortcut has been removed. Provider failures give specific configuration, authentication, rate-limit, or connectivity guidance without exposing raw server details.
 
@@ -197,3 +197,49 @@ prior pages. Conversation-memory compaction remains a separate mechanism.
 Legacy `documentCoverage` records remain readable for previously completed answers.
 New on-demand turns do not populate the former “all pages inspected” metadata;
 actual operations and their ranges appear in the tool activity/result stream.
+
+## Native on-device Gemma chat
+
+The `gemma_mlx` provider uses the already pinned `mlx-swift-lm` runtime directly,
+with general-purpose Gemma 4 E2B/E4B weights from the existing managed model store.
+There is no Ollama server, HTTP bridge, new package, weight copy or automatic model
+download. Settings and the composer share canonical `summary_gemma_model`; the
+optional `gemma_chat_model` config key defaults compatibly to E2B. Presentation
+reads the existing cached model-availability snapshot; request preparation checks
+live metadata off the main actor. Cleanup-only checkpoints are not chat models.
+
+Each captured attempt resolves native capability from the checkpoint's architecture,
+context metadata and native call/response tokens. No model-name heuristic enables
+native mode. A prepared capability snapshot is tied to the selected model; switching
+providers/models creates a new snapshot. Valid checkpoints without native tool
+metadata use the explicit compatibility path; failed native generation does not
+silently downgrade. Missing/incompatible files report an actionable error.
+
+Gemma receives native function declarations and trained call/response delimiters.
+The MLX SDK uses `ToolCallFormat.gemma4`, disabled cross-dialect recovery, strict
+schema validation, and `.toolCall` / `.rejectedToolCall` events. Native decoding
+is constrained to a declared Gemma call or the final JSON answer schema. The
+allowed answer statuses reflect actual supplied meeting evidence, so a file-only
+answer cannot select meeting-only `answered` status. JSON objects printed
+in answer prose are never executed as native tools. Call IDs are retained when
+present and assigned once when the runtime provides none; harness replay correlates
+results by those IDs. Untrusted file/protocol delimiters are neutralized before
+framing. Rejected, incomplete, oversized, stopped or stale work cannot execute a
+late call or publish an answer. Raw reasoning is not displayed or persisted.
+
+The resident Gemma engine and its serialization gate are shared with existing
+Gemma text/audio tasks. Each generation owns fresh KV state; it drains/cancels its
+MLX producer before releasing the gate. Existing ASR/cleanup MTP paths are unchanged.
+Native chat uses standard SDK decoding, bounded output, chunked prefill and a
+180-second generation deadline. Exact tokenizer counts enforce the checkpoint's
+context ceiling before inference, in addition to the harness's conservative budget.
+
+This engine currently loads the language/audio backbone without the vision tower.
+It supports all four meeting tools and three document text/OCR tools; PDF rendering
+and image inputs stay unavailable. Other providers' image behavior is unchanged.
+Meeting summaries, rolling memory and generated titles use the same local provider
+without tool exposure; plain summary/title output does not pass through the chat
+answer schema. Existing scope, source, cancellation and persistence policies apply.
+
+The native framing follows [Google's Gemma function-calling format](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4)
+and the repository's pinned `mlx-swift-lm` Gemma4 parser and generation APIs.

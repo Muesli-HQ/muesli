@@ -6281,6 +6281,9 @@ public final class MuesliController: NSObject {
     func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption, config summaryConfig: AppConfig? = nil) -> Bool {
         let summaryConfig = summaryConfig ?? config
         switch provider {
+        case .gemmaMLX:
+            guard #available(macOS 15, *) else { return false }
+            return Gemma4LiteRTModel.generalPurpose.contains { appState.settingsModelAvailability.gemmaIDs.contains($0.repoID) }
         case .chatGPT: return appState.isChatGPTAuthenticated
         case .openAI: return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: summaryConfig).isEmpty
         case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: summaryConfig).isEmpty

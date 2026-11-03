@@ -67,7 +67,7 @@ enum MeetingChatHarnessError: Error, LocalizedError {
     var correction: String {
         switch self {
         case .invalidFormat: "The previous response did not match the final JSON schema."
-        case .missingCitations: "The previous answered response omitted source citations. If you are only transforming, explaining, or proposing suggestions from the supplied conversation, use conversation status instead. New meeting facts still require current source citations."
+        case .missingCitations: "The previous answered response omitted source citations. If you are answering from supplied file attachments, or transforming, explaining, or proposing suggestions from the supplied conversation, use conversation status instead. New meeting facts still require current source citations."
         case .unknownCitation: "The previous response cited a marker that is not in the current source packet."
         case .missingHistory: "No usable prior conversation was supplied. Do not use conversation status or invent previous context."
         case .toolProtocol: "The previous response requested an invalid, repeated, or unavailable retrieval tool."
@@ -175,7 +175,8 @@ enum MeetingChatClient {
         reasoningSummary: @escaping @MainActor @Sendable (Int, String) async -> Void = { _, _ in }
     ) async throws -> (MeetingChatAnswer, MeetingChatEvidence) {
         try Task.checkCancellation()
-        let budget = (contextBudget ?? MeetingChatContextBudget(config: config)).reservingImageTokens(attachments.images.count)
+        let generator = try await generator.preparedForChat(config: config)
+        let budget = (contextBudget ?? MeetingChatContextBudget(config: config, contextWindowTokens: generator.chatContextTokens(config: config))).reservingImageTokens(attachments.images.count)
         if attachments.isEmpty, initial.coverage.eligibleMeetingCount == 0, !hasUsableConversation(history, rollingSummary: rollingSummary) {
             return (.init(markdown: "There are no saved meeting sources in this scope. Select a meeting with a transcript or notes to start chatting.", citations: [], insufficientEvidence: true, coverage: initial.coverage), initial)
         }
@@ -318,7 +319,7 @@ enum MeetingChatClient {
     private static func promptHistory(_ history: [MeetingChatTurn]) -> [MeetingChatTurn] {
         history.filter { $0.state == .completed && !($0.originalAnswer ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
-    private static func hasUsableConversation(_ history: [MeetingChatTurn], rollingSummary: String? = nil) -> Bool {
+    static func hasUsableConversation(_ history: [MeetingChatTurn], rollingSummary: String? = nil) -> Bool {
         !promptHistory(history).isEmpty || !(rollingSummary ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

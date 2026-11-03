@@ -7,6 +7,7 @@ struct MeetingNativeToolRequest {
     let tools: Data
     let allowTools: Bool
     var requiresMeetingAnswerFormat: Bool = true
+    var allowedAnswerStatuses: [String] = ["conversation", "answered", "insufficient_evidence"]
     var maximumArgumentBytes: Int = MeetingNativeToolTransport.defaultMaximumArgumentBytes
 }
 
@@ -70,7 +71,7 @@ enum MeetingNativeToolTransport {
             "include": ["reasoning.encrypted_content"],
             "text": ["format": ["type": "json_schema", "name": "meeting_answer", "strict": true,
                 "schema": ["type": "object", "properties": [
-                    "status": ["type": "string", "enum": ["conversation", "answered", "insufficient_evidence"]],
+                    "status": ["type": "string", "enum": request.allowedAnswerStatuses],
                     "markdown": ["type": "string"]
                 ], "required": ["status", "markdown"], "additionalProperties": false]]]
         ]

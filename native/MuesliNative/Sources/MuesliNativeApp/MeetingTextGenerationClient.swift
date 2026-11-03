@@ -15,11 +15,15 @@ struct MeetingTextGenerationRequest {
 protocol MeetingTextGenerating: Sendable {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String
     func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String?
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating
+    func chatContextTokens(config: AppConfig) -> Int?
     func supportsNativeTools(config: AppConfig) -> Bool
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse
 }
 
 extension MeetingTextGenerating {
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating { self }
+    func chatContextTokens(config: AppConfig) -> Int? { nil }
     func supportsNativeTools(config: AppConfig) -> Bool { false }
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
         throw MeetingTextGenerationError.invalidEndpoint
@@ -41,6 +45,24 @@ enum MeetingTextGenerationError: Error, LocalizedError {
 }
 
 struct MeetingTextGenerationClient: MeetingTextGenerating {
+    var gemmaCapabilities: GemmaChatCapabilities?
+    var gemmaNative: @Sendable (MeetingNativeToolRequest, GemmaChatCapabilities) async throws -> MeetingNativeToolResponse = { request, capabilities in
+        guard #available(macOS 15, *) else { throw GemmaMeetingChatError.macOSRequired }
+        return try await GemmaNativeAudioTranscriber.shared(for: capabilities.model).generateChat(request, capabilities: capabilities)
+    }
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating {
+        guard MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX else { return self }
+        if gemmaCapabilities?.model.nativeChatModelID == Self.model(config) { return self }
+        let id = Self.model(config)
+        var copy = self
+        copy.gemmaCapabilities = try await Task.detached { try GemmaChatCapabilities.detect(modelID: id) }.value
+        try Task.checkCancellation()
+        return copy
+    }
+    func chatContextTokens(config: AppConfig) -> Int? {
+        MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX && gemmaCapabilities?.model.nativeChatModelID == Self.model(config) ? gemmaCapabilities?.contextTokens : nil
+    }
+
     var credentialResolver: @Sendable (AppConfig) async throws -> String = { config in
         if MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .customLLM {
             return try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
@@ -60,6 +82,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
 
     func supportsNativeTools(config: AppConfig) -> Bool {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
+        if provider == .gemmaMLX { return gemmaCapabilities?.model.nativeChatModelID == Self.model(config) && gemmaCapabilities?.nativeTools == true }
         if provider == .chatGPT || provider == .openAI { return true }
         guard provider == .openRouter else { return false }
         let model = Self.model(config).lowercased()
@@ -72,6 +95,10 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
         try Task.checkCancellation()
         let provider = MeetingSummaryBackendOption.resolved(request.base.config.meetingSummaryBackend)
+        if provider == .gemmaMLX {
+            guard let capabilities = gemmaCapabilities, supportsNativeTools(config: request.base.config) else { throw GemmaMeetingChatError.unsupportedModel }
+            return try await gemmaNative(request, capabilities)
+        }
         if provider == .chatGPT { return try await ChatGPTResponsesClient.respondNative(request) }
         guard supportsNativeTools(config: request.base.config) else { throw MeetingTextGenerationError.invalidEndpoint }
         let credential = try await credentialResolver(request.base.config)
@@ -90,6 +117,15 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
 
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         try Task.checkCancellation()
+        if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .gemmaMLX {
+            let client = try await preparedForChat(config: request.config)
+            guard let client = client as? MeetingTextGenerationClient, let capabilities = client.gemmaCapabilities else { throw GemmaMeetingChatError.unsupportedModel }
+            guard request.images.isEmpty else { throw ChatFileError.unsupportedProvider }
+            let items: [[String: Any]] = [["role": "user", "content": [["type": "input_text", "text": request.user]]]]
+            let response = try await client.gemmaNative(.init(base: request, inputItems: JSONSerialization.data(withJSONObject: items), tools: Data("[]".utf8), allowTools: false, requiresMeetingAnswerFormat: false), capabilities)
+            guard response.calls.isEmpty else { throw MeetingChatHarnessError.toolProtocol }
+            return response.text
+        }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .chatGPT {
             return try await chatGPT(request)
         }

@@ -1682,6 +1682,10 @@ struct SettingsView: View {
                     .frame(height: 22)
                 }
                 keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
+            } else if appState.selectedMeetingSummaryBackend == .gemmaMLX {
+                settingsRow("Model", description: "Runs entirely on this Mac. Uses downloaded Gemma 4 models and supports meeting and document text.", controlWidth: meetingControlWidth) {
+                    settingsControl("summary_gemma_model")
+                }
             } else if appState.selectedMeetingSummaryBackend == .claudeCode {
                 settingsRow("Account", description: "Uses the Claude Code sign-in on this Mac.", controlWidth: meetingControlWidth) {
                     claudeCodeAccountControl()

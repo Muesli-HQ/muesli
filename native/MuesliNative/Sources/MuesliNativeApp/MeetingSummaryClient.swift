@@ -294,6 +294,16 @@ enum MeetingSummaryClient {
     ) async throws -> String {
         let backend = (config.meetingSummaryBackend.isEmpty ? MeetingSummaryBackendOption.chatGPT.backend : config.meetingSummaryBackend).lowercased()
         let generatedNotes: String
+        if backend == MeetingSummaryBackendOption.gemmaMLX.backend {
+            generatedNotes = try await MeetingTextGenerationClient().generate(.init(
+                system: summaryInstructions(for: template, existingNotes: existingNotes,
+                    manualNotes: manualNotesToRetain, previousMeetingNotes: previousMeetingNotes),
+                user: summaryUserPrompt(transcript: transcript, meetingTitle: meetingTitle,
+                    existingNotes: existingNotes, manualNotes: manualNotesToRetain,
+                    participantNames: participantNames, visualContext: visualContext, previousMeetingNotes: previousMeetingNotes),
+                config: config, maxOutputTokens: min(config.meetingSummaryMaxOutputTokens ?? 4_096, 8_192)))
+            return notesByRetainingManualNotes(generatedNotes: generatedNotes, manualNotes: manualNotesToRetain)
+        }
         if backend == MeetingSummaryBackendOption.chatGPT.backend {
             generatedNotes = try await summarizeWithChatGPT(
                 transcript: transcript,
@@ -1604,6 +1614,10 @@ enum MeetingSummaryClient {
             )
         }
 
+        if backend == MeetingSummaryBackendOption.gemmaMLX.backend {
+            return try? await MeetingTextGenerationClient().generate(.init(system: titleInstructions,
+                user: excerpt, config: config, maxOutputTokens: 128))
+        }
         if backend == MeetingSummaryBackendOption.ollama.backend {
             return await generateTitleWithOllama(transcript: excerpt, config: config)
         }

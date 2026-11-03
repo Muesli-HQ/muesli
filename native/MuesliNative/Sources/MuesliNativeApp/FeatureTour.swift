@@ -164,7 +164,7 @@ enum FeatureTourCatalog {
                 id: "ask-meetings",
                 eyebrow: "CHAT",
                 title: "Ask your meetings",
-                message: "Ask questions across saved meetings in Chat. Attach meetings with @, add images, PDFs or text files, and follow meeting citations to their source. Your selected provider processes the context you send.",
+                message: "Chat with saved meetings and referenced documents. Use on-device Gemma 4 or your preferred AI provider, attach meetings with @, and follow meeting citations to their source.",
                 icon: .symbol("bubble.left.and.bubble.right"),
                 target: .chatSidebar
             ),
