@@ -111,6 +111,7 @@ struct ModelsView: View {
         nonmutating set { appState.modelLibrary.downloadTasksPostProc = newValue }
     }
     @State private var postProcModelToDelete: PostProcessorOption?
+    @State private var postProcModelToUpdate: PostProcessorOption?
 
     // Cotypist
     @ObservedObject private var cotypist = CotypistSetup.shared
@@ -184,6 +185,7 @@ struct ModelsView: View {
             controller.refreshSettingsModelAvailability(force: true)
             syncSelectionsFromActiveBackend()
             checkNemotron35Update()
+            controller.checkCleanupModelUpdates()
             loadAppleSpeechLanguageOptions()
         }
         .onChange(of: appState.modelLibrary.downloadedModels) { _, _ in
@@ -227,6 +229,24 @@ struct ModelsView: View {
             }
         } message: {
             Text(postProcessorDeleteMessage)
+        }
+        .alert(
+            postProcessorUpdateTitle,
+            isPresented: Binding(
+                get: { postProcModelToUpdate != nil },
+                set: { if !$0 { postProcModelToUpdate = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                postProcModelToUpdate = nil
+            }
+            Button("Update") {
+                guard let option = postProcModelToUpdate else { return }
+                startPostProcDownload(option)
+                postProcModelToUpdate = nil
+            }
+        } message: {
+            Text(postProcessorUpdateMessage)
         }
         .alert(
             "Delete \"\(MeetingLiveCaptionModelStore.label)\"?",
@@ -274,6 +294,20 @@ struct ModelsView: View {
             get: { appState.selectedModelsCategory },
             set: { appState.selectedModelsCategory = $0 }
         )
+    }
+
+    private var postProcessorUpdateTitle: String {
+        guard let option = postProcModelToUpdate else { return "" }
+        return "Update \(option.label)?"
+    }
+
+    private var postProcessorUpdateMessage: String {
+        guard let option = postProcModelToUpdate,
+              let update = appState.modelLibrary.cleanupModelUpdates[option.id] else { return "" }
+        let installed = appState.modelLibrary.installedCleanupReleases[option.id]
+        let size = ByteCountFormatter.string(fromByteCount: update.downloadByteCount(replacing: installed), countStyle: .file)
+        return (update.notes.map { $0 + "\n\n" } ?? "")
+            + "\(size) download. Cleanup keeps using the current model until the update finishes."
     }
 
     private var postProcessorDeleteMessage: String {
@@ -739,12 +773,20 @@ struct ModelsView: View {
             }
             .padding(.top, MuesliTheme.spacing8)
 
+            // Installed models with an update come first, so the action is easy to find.
+            let updatable = PostProcessorOption.all.filter {
+                downloadedPostProcModels.contains($0.id) && appState.modelLibrary.cleanupModelUpdates[$0.id] != nil
+            }
             VStack(spacing: MuesliTheme.spacing12) {
+                ForEach(updatable) { option in
+                    postProcModelCard(option)
+                }
+
                 ForEach(Gemma4LiteRTModel.allCases.filter { BackendOption.gemma4LiteRT($0).isCompatible() }) { model in
                     gemmaCleanupModelCard(model)
                 }
 
-                ForEach(PostProcessorOption.all) { option in
+                ForEach(PostProcessorOption.all.filter { !updatable.contains($0) }) { option in
                     postProcModelCard(option)
                 }
             }
@@ -963,10 +1005,11 @@ struct ModelsView: View {
         let isDownloaded = downloadedPostProcModels.contains(option.id)
         let isActive = isDownloaded && (forQuill
             ? appState.config.quilBackend == TranscriptCleanupBackendOption.local.backend && appState.config.quilModel == option.id
-            : appState.activePostProcessor.id == option.id)
+            : appState.selectedPostProcessorBackend == .local && appState.activePostProcessor.id == option.id)
         let isDownloading = downloadingPostProcModels.contains(option.id)
         let progress = downloadProgressPostProc[option.id] ?? 0
         let showsDownloadStatus = shouldShowDownloadStatus(for: option.id, isDownloading: isDownloading)
+        let availableUpdate = forQuill || !isDownloaded ? nil : appState.modelLibrary.cleanupModelUpdates[option.id]
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
@@ -1026,8 +1069,17 @@ struct ModelsView: View {
                     }
                     .disabled(appState.modelLibrary.cancellingDownloads.contains(option.id))
                 } else if isDownloaded {
+                    if let availableUpdate {
+                        modelCardButton("Update") {
+                            postProcModelToUpdate = option
+                        }
+                        .disabled(!controller.canModifyModelFiles)
+                        .help(availableUpdate.notes ?? "An improved version of this model is available.")
+                    }
                     if !isActive {
-                        modelCardButton(forQuill ? "Use for Quill" : "Use for Cleanup") {
+                        // Until updated, choosing this card runs the older model.
+                        modelCardButton(forQuill ? "Use for Quill"
+                                        : availableUpdate != nil ? "Use Legacy for Cleanup" : "Use for Cleanup") {
                             if forQuill {
                                 selectQuillModel(backend: .local, model: option.id)
                             } else {
@@ -1791,9 +1843,16 @@ struct ModelsView: View {
             defer { controller.refreshSettingsModelAvailability(force: true) }
             let fm = FileManager.default
             do {
-                try fm.createDirectory(at: option.cacheDirectory, withIntermediateDirectories: true)
+                if option.cleanupSlot == nil {
+                    try fm.createDirectory(at: option.cacheDirectory, withIntermediateDirectories: true)
+                }
 
-                try await downloadPostProcModel(option, generation: generation)
+                let replacedInstalledModel = try await downloadPostProcModel(option, generation: generation)
+                if replacedInstalledModel {
+                    // Loaded engines hold the previous weights; the next request loads the new build.
+                    // Unload even if paused meanwhile: the swap has already happened.
+                    await controller.transcriptionCoordinator.invalidateLocalPostProcessor(modelDirectory: option.cacheDirectory)
+                }
                 try Task.checkCancellation()
 
                 await MainActor.run {
@@ -1813,6 +1872,9 @@ struct ModelsView: View {
                     if !forQuill && appState.config.enablePostProcessor && !appState.activePostProcessor.isDownloaded {
                         controller.selectPostProcessor(option)
                         controller.preloadExperimentalTranscriptionFeatures()
+                    } else if replacedInstalledModel && appState.config.enablePostProcessor
+                                && appState.activePostProcessor.id == option.id {
+                        controller.preloadExperimentalTranscriptionFeatures()
                     }
                 }
             } catch {
@@ -1823,7 +1885,7 @@ struct ModelsView: View {
                         downloadingPostProcModels.remove(option.id)
                         downloadProgressPostProc.removeValue(forKey: option.id)
                         downloadMessages[option.id] = isCancelled
-                            ? "Paused — select Download to resume"
+                            ? (option.isDownloaded ? "Paused — select Update to resume" : "Paused — select Download to resume")
                             : error.localizedDescription
                         if let snapshot = downloadSnapshots[option.id] {
                             downloadSnapshots[option.id] = snapshot.replacing(
@@ -1845,8 +1907,13 @@ struct ModelsView: View {
         downloadTasksPostProc[option.id] = task
     }
 
-    private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws {
-        let manifest = option.managedModel?.manifest(id: option.id) ?? ModelDownloadManifest(
+    /// Returns true when an installed build was replaced by a newer one.
+    private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws -> Bool {
+        if let slot = option.cleanupSlot {
+            return try await installCleanupRelease(option,
+                release: appState.modelLibrary.latestCleanupReleases[option.id] ?? slot.bundled, generation: generation)
+        }
+        let manifest = ModelDownloadManifest(
             id: option.id,
             version: "main",
             files: [ModelDownloadFile(relativePath: option.filename, remoteURL: option.downloadURL)],
@@ -1871,6 +1938,35 @@ struct ModelsView: View {
             throw error
         }
         try Task.checkCancellation()
+        return false
+    }
+
+    /// Downloads a Muesli cleanup build beside the live folder and swaps it in only
+    /// after every file verifies, so the installed model keeps working until then.
+    private func installCleanupRelease(_ option: PostProcessorOption, release: CleanupModelRelease,
+                                       generation: UUID) async throws -> Bool {
+        let live = option.cacheDirectory
+        let staging = try await Task.detached(priority: .userInitiated) {
+            try CleanupModelInstallation.prepareStaging(for: release, liveDirectory: live, installed: option.installedRelease)
+        }.value
+        try await ModelDownloadCoordinator.shared.download(release.artifact.manifest(id: option.id), to: staging) { snapshot in
+            DispatchQueue.main.async {
+                guard downloadGenerations[option.id] == generation else { return }
+                downloadProgressPostProc[option.id] = max(snapshot.fractionCompleted ?? 0.02, 0.02)
+                downloadSnapshots[option.id] = snapshot
+            }
+        }
+        try Task.checkCancellation()
+        // A load of this model still validating its files would fail mid-swap.
+        await controller.transcriptionCoordinator.waitForLocalPostProcessorLoads(modelDirectory: live)
+        // Pause may have been pressed while waiting; it must still win over the swap.
+        try Task.checkCancellation()
+        // The coordinator verified every size and SHA-256 before returning.
+        return try await Task.detached(priority: .userInitiated) {
+            let replaced = option.installedRelease != nil
+            try CleanupModelInstallation.commit(release, staging: staging, liveDirectory: live)
+            return replaced
+        }.value
     }
 
     private func validateGGUFHeader(at url: URL) throws {
@@ -1904,12 +2000,17 @@ struct ModelsView: View {
             }
         }
         let directory = option.cacheDirectory
+        let isManaged = option.cleanupSlot != nil
         Task {
             var failure: String?
             defer { controller.endModelFileOperation(mutation, modelID: option.id, failure: failure) }
             do {
+                if isManaged { await ModelDownloadCoordinator.shared.cancelAndWait(modelID: option.id) }
                 try await Task.detached(priority: .userInitiated) {
                     try Self.removeItemIfPresent(at: directory, fileManager: .default)
+                    for auxiliary in CleanupModelInstallation.auxiliaryDirectories(of: directory) {
+                        try? FileManager.default.removeItem(at: auxiliary)
+                    }
                 }.value
             } catch {
                 fputs("[muesli-native] cleanup model delete failed for \(option.id): \(error)\n", stderr)

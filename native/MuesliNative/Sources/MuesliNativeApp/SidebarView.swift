@@ -67,6 +67,18 @@ struct SidebarView: View {
         let tooltip: String
     }
 
+    /// Cleanup models update outside app releases; surface them on the Models row.
+    private var modelsUpdateCTA: UpdateCTA? {
+        let count = appState.modelLibrary.cleanupModelUpdates.count
+        guard count > 0 else { return nil }
+        return UpdateCTA(
+            label: "Update",
+            icon: "arrow.down",
+            accessibilityLabel: count == 1 ? "Cleanup model update available" : "\(count) cleanup model updates available",
+            tooltip: "A newer cleanup model is ready to install"
+        )
+    }
+
     private var pendingUpdateCTA: UpdateCTA? {
         switch appState.sparkleUpdateStatus {
         case .available:
@@ -117,7 +129,18 @@ struct SidebarView: View {
             }
             .scrollIndicators(.hidden)
             Spacer(minLength: 0)
-            collapsedItem(tab: .models, icon: "cpu", label: "Models")
+            collapsedItem(tab: .models, icon: "cpu", label: "Models", tooltip: modelsUpdateCTA?.tooltip)
+                .overlay(alignment: .topTrailing) {
+                    if let modelsUpdateCTA {
+                        Circle()
+                            .fill(MuesliTheme.accent)
+                            .frame(width: 7, height: 7)
+                            .offset(x: -6, y: 6)
+                            .accessibilityLabel(modelsUpdateCTA.accessibilityLabel)
+                            // Decorative: clicks belong to the Models button underneath.
+                            .allowsHitTesting(false)
+                    }
+                }
             collapsedItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
             collapsedItem(tab: .settings, icon: "gearshape", label: "Settings")
             collapsedItem(tab: .about, icon: "info.circle", label: "About")
@@ -131,7 +154,7 @@ struct SidebarView: View {
         SidebarToggleButton(isCollapsed: isCollapsed, action: onToggleCollapsed)
     }
 
-    private func collapsedItem(tab: DashboardTab, icon: String, label: String) -> some View {
+    private func collapsedItem(tab: DashboardTab, icon: String, label: String, tooltip: String? = nil) -> some View {
         Button {
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
@@ -146,6 +169,8 @@ struct SidebarView: View {
                     controller.showMeetingsHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
+                } else if tab == .models, modelsUpdateCTA != nil, appState.selectedTab != .models {
+                    controller.showModels(category: .postProcessing)
                 } else {
                     appState.selectedTab = tab
                 }
@@ -161,7 +186,7 @@ struct SidebarView: View {
         }
         .buttonStyle(SidebarRowButtonStyle(isSelected: appState.selectedTab == tab))
         .modifier(OptionalSidebarReorderModifier(tab: tab, label: label, savedOrder: $savedSidebarOrder))
-        .help(label)
+        .help(tooltip ?? label)
         .accessibilityLabel(label)
         .accessibilityAddTraits(appState.selectedTab == tab ? .isSelected : [])
         // Match the expanded rows so a tour targeting the sidebar keeps its
@@ -214,7 +239,7 @@ struct SidebarView: View {
             .frame(maxHeight: .infinity)
 
             modelPreparationStatus
-            sidebarItem(tab: .models, icon: "cpu", label: "Models")
+            sidebarItem(tab: .models, icon: "cpu", label: "Models", updateCTA: modelsUpdateCTA)
             sidebarItem(tab: .shortcuts, icon: "command", label: "Shortcuts")
             sidebarItem(tab: .settings, icon: "gearshape", label: "Settings")
             sidebarItem(tab: .about, icon: "info.circle", label: "About", updateCTA: pendingUpdateCTA)
@@ -520,6 +545,8 @@ struct SidebarView: View {
                     controller.showTimelineHome()
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
+                } else if tab == .models, updateCTA != nil, appState.selectedTab != .models {
+                    controller.showModels(category: .postProcessing)
                 } else {
                     appState.selectedTab = tab
                 }
