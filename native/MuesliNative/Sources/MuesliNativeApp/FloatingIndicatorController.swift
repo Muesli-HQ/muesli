@@ -305,7 +305,7 @@ final class FloatingIndicatorController: NSObject {
          loadFeedbackConfiguration: (() -> AppConfig)? = nil) {
         self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
-        self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.load() }
+        self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.loadForReading() }
         self.pointerLocation = pointerLocation
         super.init()
         notchIndicator.onOpenMeetingNotes = { [weak self] in self?.onOpenMeetingNotes?() }
@@ -1204,7 +1204,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         lastLoadedConfig = config
         micIconView?.image = Self.idleIndicatorIcon(config: config)
         if config.indicatorAnchor == .notch, !isShowingLoading, !isComputerUseCursorMode {
@@ -1314,7 +1314,7 @@ final class FloatingIndicatorController: NSObject {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.state == .idle else { return }
-            self.setState(.idle, config: self.configStore.load())
+            self.setState(.idle, config: self.configStore.loadForReading())
         }
     }
 
@@ -1465,7 +1465,7 @@ final class FloatingIndicatorController: NSObject {
                 panel?.orderOut(nil)
                 return
             }
-            setState(.idle, config: configStore.load())
+            setState(.idle, config: configStore.loadForReading())
         }
     }
 
@@ -1478,7 +1478,7 @@ final class FloatingIndicatorController: NSObject {
                 return
             }
             guard !isMeetingTranscriptManuallyDismissed else { return }
-            let config = configStore.load()
+            let config = configStore.loadForReading()
             guard config.showMeetingTranscriptOnIndicatorHover, panel != nil else { return }
             hoverExitWorkItem?.cancel()
             showMeetingTranscript()
@@ -1487,7 +1487,7 @@ final class FloatingIndicatorController: NSObject {
         guard state == .idle, !isShowingLoading, !isDragging, isHovered != hovered else { return }
         hoverExitWorkItem?.cancel()
         isHovered = hovered
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         setState(.idle, config: config)
         contentView?.updateTrackingAreas()
         if hovered, config.indicatorHoverStyle == .shortcutPill {
@@ -1797,7 +1797,7 @@ final class FloatingIndicatorController: NSObject {
         if isShowingLoading { return bounds }
         // Cache: hit-testing runs on the pointer hot path; reading + decoding
         // config from disk per event would add avoidable main-thread latency.
-        let config = lastLoadedConfig ?? configStore.load()
+        let config = lastLoadedConfig ?? configStore.loadForReading()
         guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
         let placement = idleHoverPlacement(for: config.indicatorAnchor)
         if isHovered {
@@ -1925,7 +1925,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
@@ -2333,7 +2333,7 @@ final class FloatingIndicatorController: NSObject {
 
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         let idleImage = Self.idleIndicatorIcon(config: config)
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white

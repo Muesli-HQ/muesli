@@ -360,6 +360,7 @@ final class AppState {
     var selectedSettingsPane: SettingsPane = .general
     var requestsTimeTurnerSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
+    var credentialStorageError: String?
     var pendingFeatureTourInvitation: FeatureTour?
     var activeFeatureTour: FeatureTour?
     var featureTourStepIndex: Int = 0

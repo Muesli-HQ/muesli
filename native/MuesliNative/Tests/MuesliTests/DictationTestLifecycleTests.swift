@@ -22,7 +22,7 @@ struct DictationTestLifecycleTests {
             modelName: "Synthetic", failureMessage: "Synthetic failure")
         let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory,
             menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store,
-            configStore: ConfigStore(supportDirectory: directory))
+            configStore: makeTestConfigStore(supportDirectory: directory))
         controller.appState.failedDictations = [record]
         let clearing = try #require(controller.clearDictationHistory())
         #expect(controller.appState.activeAudioImportCount == 1)
@@ -43,7 +43,7 @@ struct DictationTestLifecycleTests {
         try store.migrateIfNeeded()
         let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory,
             menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store,
-            configStore: ConfigStore(supportDirectory: directory))
+            configStore: makeTestConfigStore(supportDirectory: directory))
         let old = UUID(), newer = UUID()
         controller.setDictationAudioSessionForTesting(newer)
         controller.appState.dictationState = .transcribing
@@ -74,7 +74,7 @@ struct DictationTestLifecycleTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
 
         #expect(!controller.stopDictationTestRecordingFeedback())

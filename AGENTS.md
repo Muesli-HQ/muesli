@@ -182,6 +182,11 @@ provider adapters, tool contracts, memory budgets, and source validation.
   explicit new-chat actions, accepted sends, or required source invalidation
   should reset the relevant draft.
   Busy-state recovery must not retarget a selected chat or a nonempty draft.
+  General new drafts start with no meetings selected. Only an unused implicit
+  draft follows the currently displayed meeting or meeting folder; explicit
+  selections (including empty), typed questions, files and existing chats retain
+  their scope. All saved meetings is opt-in. Date pickers and scope mutations
+  reject future ranges; empty individual selections never widen to the archive.
 
 ## Typography and design system
 

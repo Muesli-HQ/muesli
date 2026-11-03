@@ -170,13 +170,17 @@ struct ModelsView: View {
             .padding(.bottom, MuesliTheme.spacing32)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onAppear {
-                revealFeatureTourTargetIfNeeded(using: proxy)
-            }
-            .onChange(of: activeFeatureTourTarget) { _, _ in
-                // The reveal helper owns target filtering. A second allowlist here
-                // can miss model-to-model transitions while this view stays mounted.
-                revealFeatureTourTargetIfNeeded(using: proxy)
+            .task(id: ModelsTourScrollRequest(target: activeFeatureTourTarget, category: appState.selectedModelsCategory)) {
+                let request = ModelsTourScrollRequest(target: activeFeatureTourTarget, category: appState.selectedModelsCategory)
+                guard let target = request.scrollTarget else { return }
+                if target == .experimentalModels { showExperimental = true }
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo(target.rawValue, anchor: .center)
+                }
             }
         }
         .background(MuesliTheme.backgroundBase)
@@ -399,37 +403,6 @@ struct ModelsView: View {
 
     private var activeFeatureTourTarget: FeatureTourTarget? {
         appState.activeFeatureTourTarget
-    }
-
-    private func revealFeatureTourTargetIfNeeded(using proxy: ScrollViewProxy) {
-        let target: FeatureTourTarget
-        switch activeFeatureTourTarget {
-        case .modelLibrary:
-            target = .modelLibrary
-            appState.selectedModelsCategory = .dictation
-        case .appleSpeechCard:
-            target = .appleSpeechCard
-            appState.selectedModelsCategory = .dictation
-        case .parakeetFamilyCard:
-            target = .parakeetFamilyCard
-            appState.selectedModelsCategory = .dictation
-        case .bodhanFlexCard:
-            target = .bodhanFlexCard
-            appState.selectedModelsCategory = .dictation
-        case .streamingModels:
-            target = .streamingModels
-            appState.selectedModelsCategory = .streaming
-        case .experimentalModels:
-            target = .experimentalModels
-            appState.selectedModelsCategory = .dictation
-            showExperimental = true
-        default:
-            return
-        }
-        Task { @MainActor in
-            await Task.yield()
-            proxy.scrollTo(target.rawValue, anchor: .center)
-        }
     }
 
     private var streamingSection: some View {
@@ -772,6 +745,8 @@ struct ModelsView: View {
                     .padding(.leading, 2)
             }
             .padding(.top, MuesliTheme.spacing8)
+            .id(FeatureTourTarget.cleanupModels.rawValue)
+            .featureTourTarget(.cleanupModels)
 
             // Installed models with an update come first, so the action is easy to find.
             let updatable = PostProcessorOption.all.filter {

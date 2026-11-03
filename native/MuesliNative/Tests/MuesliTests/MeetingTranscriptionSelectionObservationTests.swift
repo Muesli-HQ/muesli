@@ -34,7 +34,7 @@ struct MeetingTranscriptionSelectionObservationTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = BackendOption.parakeetRedux.backend
         initial.sttModel = BackendOption.parakeetRedux.model
@@ -103,7 +103,7 @@ struct MeetingTranscriptionSelectionObservationTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory),
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory),
             downloadedBackendOptions: { downloaded }
         )
 

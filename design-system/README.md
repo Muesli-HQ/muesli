@@ -294,6 +294,24 @@ packaged app’s `UTExportedTypeDeclarations`, not just constructed in Swift.
 Without that declaration macOS can start a drag but fail to recognize its drop targets.
 Verify registration and actual pointer drops in the installed app, not only order logic.
 
+### What's New tour
+
+The 0.8.6 tour introduces Chat, Time Turner, live dictation, Quill, Cotypist,
+app formatting, meeting screen recording, global search, new ASR models, and
+cleanup model updates. Failure recovery stays out of the promotional tour.
+Use Quill's bundled feather and Time Turner's orbital hourglass; other cards use
+the corresponding feature's system symbol. Resolve custom artwork once rather
+than loading it during geometry updates. Both sidebar layouts expose the same
+Chat, Time Turner and Search spotlight targets.
+
+Tour navigation changes destinations only; it does not enable recording,
+download models, accept model terms, or alter settings. Missing controls retain
+a centered, navigable card. Activate after the dashboard's first ordered layout,
+retain subpixel geometry guards, and cancel Settings/Models scrolls when the
+target or destination changes. Scrolling is nonanimated, including with Reduce
+Motion. Verify cold presentation, rapid Next/Back, empty libraries, narrow
+windows, and all themes in the installed app.
+
 ## Quill conversation answers
 
 The Dashboard & Notch specimen includes Quill's content-sized answer state using
@@ -362,3 +380,16 @@ verified matches are available rather than claiming the history has no matches.
 Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
+
+### Chat meeting context
+
+The composer uses “Choose meetings” when no meeting is selected. The scope picker
+keeps All saved meetings, Folder and Specific meetings; general new drafts open
+on Specific meetings with no checked rows. Individual selections can be cleared
+without broadening to the archive. Optional date fields stay within saved history
+through today. An unused draft in a meeting document/folder shows that local
+context; explicit choices, typed drafts and existing chats remain stable.
+
+Attachment originals stay in place. The selected provider receives images and
+only the document pages requested through tools; on-device Gemma reads document
+text locally. Keep this disclosure at the shared 12pt helper-text size.

@@ -150,20 +150,18 @@ struct OpenRouterAuthTests {
         }
     }
 
-    @Test("credential store uses owner-only permissions and sign-out is local")
+    @Test("credential store uses the vault without a plaintext file and sign-out is local")
     @MainActor
     func credentialStorageAndLocalSignOut() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-openrouter-auth-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = OpenRouterCredentialStore(supportDirectory: root)
+        let store = makeTestOpenRouterCredentialStore(supportDirectory: root)
         let credential = OpenRouterCredential(apiKey: "sk-or-v1-local", userID: "user_local")
         try store.save(credential)
 
         #expect(try store.load() == credential)
-        let attributes = try FileManager.default.attributesOfItem(atPath: store.fileURL.path)
-        let permissions = try #require(attributes[.posixPermissions] as? NSNumber)
-        #expect(permissions.intValue == 0o600)
+        #expect(!FileManager.default.fileExists(atPath: store.fileURL.path))
 
         let auth = OpenRouterAuthManager(
             credentialStore: store,
@@ -185,7 +183,7 @@ struct OpenRouterAuthTests {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-openrouter-delete-failure-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = OpenRouterCredentialStore(supportDirectory: root)
+        let store = makeTestOpenRouterCredentialStore(supportDirectory: root)
         try store.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
         let auth = OpenRouterAuthManager(
             credentialStore: store,
@@ -230,7 +228,7 @@ struct OpenRouterAuthTests {
             .appendingPathComponent("muesli-openrouter-manual-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let auth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: root),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: root),
             loadData: openRouterUnusedLoader,
             openURL: { _ in false },
             environment: { [:] }
@@ -253,7 +251,7 @@ struct OpenRouterAuthTests {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("unused-openrouter-auth-\(UUID().uuidString)", isDirectory: true)
         return OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: loadData,
             openURL: { _ in false },
             environment: environment
