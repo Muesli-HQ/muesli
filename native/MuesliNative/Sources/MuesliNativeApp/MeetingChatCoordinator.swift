@@ -360,7 +360,9 @@ final class MeetingChatCoordinator {
             guard key == selectedSessionID, version == selectionVersion, !Task.isCancelled else { return }
             if let key { try await worker.setFiles(sessionID: key, files: files) }
             guard key == selectedSessionID, version == selectionVersion, !Task.isCancelled else { return }
-            fileDrafts[key] = files; errorMessage = nil
+            fileDrafts[key] = files
+            if key == nil, !files.isEmpty { draftScopeWasChosen = true }
+            errorMessage = nil
         } catch {
             if key == selectedSessionID, version == selectionVersion { errorMessage = error.localizedDescription }
         }
@@ -393,13 +395,17 @@ final class MeetingChatCoordinator {
     }
     var composerDraft: String {
         get { composerDrafts[selectedSessionID] ?? "" }
-        set { composerDrafts[selectedSessionID] = newValue; composerEditVersion = UUID() }
+        set {
+            composerDrafts[selectedSessionID] = newValue; composerEditVersion = UUID()
+            if selectedSessionID == nil, !newValue.isEmpty { draftScopeWasChosen = true }
+        }
     }
     var errorMessage: String?
     var scrollAnchors: [UUID: UUID] = [:]
     private(set) var sourceMutationVersion: Int64 = 0
     private(set) var sourceChoices: [MeetingChatSourceChoice] = []
-    private var draftScope = MeetingChatScope()
+    private var draftScope = MeetingChatScopePolicy.empty
+    private var draftScopeWasChosen = false
     var scope: MeetingChatScope { sessions.first { $0.id == selectedSessionID }?.scope ?? draftScope }
 
     /// Return to the index without discarding per-conversation drafts or stopping a response.
@@ -411,12 +417,13 @@ final class MeetingChatCoordinator {
     }
 
     /// Opening a composer is not a persisted conversation. The first send registers it.
-    func startDraft(scope: MeetingChatScope = .init()) {
+    func startDraft(scope: MeetingChatScope? = nil) {
         guard !isBusy, !isUpdatingChat else { return }
         selectionVersion = UUID()
         selectedSessionID = nil
         turns = []; turnsSessionID = nil
-        draftScope = scope
+        draftScope = scope ?? MeetingChatScopePolicy.empty
+        draftScopeWasChosen = scope != nil
         fileDrafts[nil] = []
         composerDraft = ""
         untitledComposerUndoIdentity = UUID()
@@ -427,6 +434,14 @@ final class MeetingChatCoordinator {
     func prepareMeetingDraft(id: Int64) {
         guard selectedSessionID == nil, composerDraft.isEmpty, composerFiles.isEmpty, !isBusy, !isUpdatingChat else { return }
         draftScope = .init(selection: .meetings([id]))
+        draftScopeWasChosen = true
+    }
+    /// Only an unused, implicit draft follows the visible page. Explicit picks,
+    /// typed questions, attached files and existing conversations keep their scope.
+    func prepareContextualDraft(scope: MeetingChatScope) {
+        guard selectedSessionID == nil, !draftScopeWasChosen, composerDraft.isEmpty,
+              composerFiles.isEmpty, !isBusy, !isUpdatingChat else { return }
+        draftScope = scope
     }
     var isBusy: Bool { activeRequestID != nil }
     private(set) var isUpdatingChat = false
@@ -539,6 +554,10 @@ final class MeetingChatCoordinator {
     }
     @discardableResult
     func setScope(_ newScope: MeetingChatScope) async -> UUID? {
+        guard MeetingChatScopePolicy.validDates(newScope) else {
+            errorMessage = MeetingChatScopePolicy.invalidDatesMessage
+            return nil
+        }
         if selectedSessionID == nil {
             guard let id = await createChat(scope: newScope) else { return nil }
             adoptUntitledComposerDraft(sessionID: id)
@@ -647,6 +666,10 @@ final class MeetingChatCoordinator {
         guard !question.isEmpty else { return }
         guard question.count <= 2_000 else { errorMessage = MeetingChatError.questionTooLong.localizedDescription; return }
         let requestScope = scope
+        guard MeetingChatScopePolicy.validDates(requestScope) else {
+            errorMessage = MeetingChatScopePolicy.invalidDatesMessage
+            return
+        }
         var explicitlyEmpty = false
         if case .meetings(let ids) = requestScope.selection, ids.isEmpty { explicitlyEmpty = true }
         // Turns decide whether an empty selection is a valid follow-up. When they have not

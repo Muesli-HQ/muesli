@@ -56,10 +56,16 @@ struct MeetingChatView: View {
         case .all: return "All saved meetings"
         case .folder(let id): return "\(appState.folders.first { $0.id == id }?.name ?? "Folder") · This folder only"
         case .meetings(let ids):
-            if ids.isEmpty { return "No meetings selected" }
+            if ids.isEmpty { return "Choose meetings" }
             if ids.count == 1, let source = coordinator.sourceChoices.first(where: { $0.id == ids[0] }) { return source.title }
             return "\(ids.count) selected meeting\(ids.count == 1 ? "" : "s")"
         }
+    }
+    private var suggestedScope: MeetingChatScope {
+        guard docked else { return MeetingChatScopePolicy.empty }
+        return MeetingChatScopePolicy.suggestedScope(tab: appState.selectedTab,
+            navigation: appState.meetingsNavigationState, returnDestination: appState.meetingDetailReturnDestination,
+            searchActive: appState.isSearchActive, folderID: appState.selectedFolderID)
     }
     var body: some View {
         // Share one canonical catalog across every setting control on this surface.
@@ -179,6 +185,10 @@ struct MeetingChatView: View {
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
         }
         .task { await coordinator.refreshChoices() }
+        .onChange(of: suggestedScope, initial: true) { _, scope in
+            guard scope == suggestedScope else { return }
+            coordinator.prepareContextualDraft(scope: scope)
+        }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -231,6 +241,7 @@ struct MeetingChatView: View {
             }
             Button {
                 coordinator.startDraft()
+                coordinator.prepareContextualDraft(scope: suggestedScope)
                 expanded = false
                 focusComposer()
             } label: {
@@ -354,7 +365,7 @@ struct MeetingChatView: View {
                     Button { showScope = true } label: {
                         HStack(spacing: 5) {
                             AIIcon(.slidersHorizontal)
-                            if attachedMeetingIDs == nil { Text(scopeLabel).font(MuesliTheme.font(.caption)).lineLimit(1) }
+                            if attachedMeetingIDs?.isEmpty != false { Text(scopeLabel).font(MuesliTheme.font(.caption)).lineLimit(1) }
                             if let dates = MeetingChatScopePresentation.dateLabel(coordinator.scope) {
                                 Text(dates).font(MuesliTheme.font(.caption)).lineLimit(1)
                             }

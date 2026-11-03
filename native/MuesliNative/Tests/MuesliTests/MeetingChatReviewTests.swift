@@ -254,6 +254,7 @@ struct MeetingChatReviewTests {
 
     @Test func implicitChatCreationDoesNotSendIntoANewSelection() async throws {
         let (store, coordinator) = try fixture()
+        coordinator.startDraft(scope: .init(selection: .all))
         // The writer lock must block chat creation, not startup recovery.
         await coordinator.waitForIdle()
         await coordinator.refreshChoices()
@@ -333,6 +334,7 @@ struct MeetingChatReviewTests {
     @Test func queuedImplicitCreationCannotRecreateWipedHistory() async throws {
         let probe = ReviewReplyProbe()
         let (store, coordinator) = try fixture(generator: probe)
+        coordinator.startDraft(scope: .init(selection: .all))
         await coordinator.waitForIdle()
         await coordinator.refreshChoices()
         coordinator.composerDraft = "Launch?"
@@ -355,6 +357,7 @@ struct MeetingChatReviewTests {
     @Test func stoppedImplicitCreationKeepsTextTypedWhileSaving() async throws {
         let probe = ReviewReplyProbe()
         let (store, coordinator) = try fixture(generator: probe)
+        coordinator.startDraft(scope: .init(selection: .all))
         await coordinator.waitForIdle()
         await coordinator.refreshChoices()
         coordinator.composerDraft = "Launch?"

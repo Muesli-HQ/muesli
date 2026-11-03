@@ -365,3 +365,12 @@ verified matches are available rather than claiming the history has no matches.
 Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
+
+### Chat meeting context
+
+The composer uses “Choose meetings” when no meeting is selected. The scope picker
+keeps All saved meetings, Folder and Specific meetings; general new drafts open
+on Specific meetings with no checked rows. Individual selections can be cleared
+without broadening to the archive. Optional date fields stay within saved history
+through today. An unused draft in a meeting document/folder shows that local
+context; explicit choices, typed drafts and existing chats remain stable.
