@@ -779,7 +779,10 @@ struct FloatingIndicatorPointerInteractionTests {
         // Interrupt expansion while its completion callback is still pending.
         switch presentation {
         case "loading": indicator.showLoading("Transcribing audio…")
-        case "notice": indicator.showWarning("Microphone unavailable", duration: 1.5)
+        case "notice":
+            // This checks hover ownership, not notice expiry. A busy runner can
+            // resume the observations after a short notice has legitimately expired.
+            indicator.showWarning("Microphone unavailable", duration: 60)
         default: indicator.setState(.recording, config: config)
         }
         pointer = NSPoint(x: -100_000, y: -100_000)
