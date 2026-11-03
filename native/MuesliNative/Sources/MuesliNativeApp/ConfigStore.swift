@@ -60,11 +60,16 @@ final class ConfigStore {
             try storeCredentials(credentials(in: persistedConfig))
             // Never write a new credential to plaintext after migration is introduced.
             guard persistedConfig.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
+        } catch {
+            credentialStorageError = "Changes could not be saved. " + CredentialVaultError.unavailable.localizedDescription
+            return false
+        }
+        do {
             try writeSanitized(persistedConfig)
             credentialStorageError = nil
             return true
         } catch {
-            credentialStorageError = "Changes could not be saved. " + CredentialVaultError.unavailable.localizedDescription
+            credentialStorageError = "Changes could not be saved to config.json. " + error.localizedDescription
             return false
         }
     }

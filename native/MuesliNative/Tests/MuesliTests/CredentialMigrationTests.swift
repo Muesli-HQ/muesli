@@ -155,6 +155,25 @@ struct CredentialMigrationTests {
         #expect(try vault.read(ConfigCredentials.account) == invalid)
     }
 
+    @Test func configFileFailureIsReportedSeparatelyFromVaultFailureAndCanRetry() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        // A directory at the destination deterministically prevents the JSON write.
+        try FileManager.default.createDirectory(at: store.configPath(), withIntermediateDirectories: true)
+        var config = AppConfig(); config.openAIAPIKey = "synthetic-original"
+        #expect(!store.save(config))
+        let error = try #require(store.credentialStorageError)
+        #expect(error.contains("config.json"))
+        #expect(!error.contains("Keychain"))
+        #expect(try vault.read(ConfigCredentials.account) != nil)
+        try FileManager.default.removeItem(at: store.configPath())
+        #expect(store.save(config))
+        #expect(store.credentialStorageError == nil)
+        #expect(store.load().openAIAPIKey == config.openAIAPIKey)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: store.configPath())).openAIAPIKey.isEmpty)
+    }
+
     @Test func fileMigrationVerifiesBeforeDeletingAndRetries() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault(); let path = root.appendingPathComponent("auth.json")
