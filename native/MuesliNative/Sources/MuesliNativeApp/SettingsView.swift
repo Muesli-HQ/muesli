@@ -4392,7 +4392,7 @@ private struct ChromeBrowserAccessRow: View {
     }
 }
 
-/// Shared geometry and typography for system permissions and browser consent.
+/// Browser consent follows the compact layout used by upstream system permissions.
 private struct PermissionStatusRow: View {
     let name: String
     let granted: Bool
@@ -4406,44 +4406,34 @@ private struct PermissionStatusRow: View {
     let settingsHelp: String
 
     var body: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(granted ? MuesliTheme.success : MuesliTheme.recording)
-                    .frame(width: 8, height: 8)
-                Text(name)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-            }
-            Spacer()
-            if granted {
-                Text(statusTitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.success)
-            } else {
-                Button(isBusy ? busyTitle : actionTitle) {
-                    action()
+        SettingsRow(label: name, controlWidth: nil) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                if granted {
+                    Label(statusTitle, systemImage: "checkmark.circle.fill")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.successText)
+                } else {
+                    Button(action: action) {
+                        Text(isBusy ? busyTitle : actionTitle)
+                            .lineLimit(1)
+                            .font(MuesliTheme.captionMedium())
+                            .padding(.horizontal, 10)
+                            .frame(height: 26)
+                    }
+                    .buttonStyle(.muesli(.tinted))
+                    .disabled(isBusy || actionDisabled)
                 }
-                .disabled(isBusy || actionDisabled)
+                Button(action: openSettings) {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(MuesliTheme.accentSubtle)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .help(settingsHelp)
+                .accessibilityLabel(settingsHelp)
             }
-            Button {
-                openSettings()
-            } label: {
-                Image(systemName: "arrow.up.forward.square")
-                    .font(.system(size: 11))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help(settingsHelp)
         }
-        .frame(minHeight: 32)
     }
-
 }
