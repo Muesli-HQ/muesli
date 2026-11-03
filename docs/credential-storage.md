@@ -31,6 +31,13 @@ writing new plaintext credentials. Sign-out removes the matching item and any
 remaining legacy file; deletion failure is not reported as successful sign-out.
 The old shared ChatGPT Keychain service can be claimed only by the production app.
 
+An unsuccessful config credential read is not treated as an empty credential set.
+An existing provider-config item must be successfully loaded into the runtime
+configuration before a save can replace or clear it. Unlocking Keychain alone
+does not make an earlier sanitized snapshot safe to save: reload the configuration
+first. A fresh store may save only after confirming that the item is absent.
+Malformed or still-inaccessible items remain untouched and saves report failure.
+
 This does not erase historical filesystem backups or guarantee secret zeroization
 in Swift memory. Provider requests necessarily hold credentials while in use.
 Keys and tokens are never included in chat exports, CloudKit or telemetry by this

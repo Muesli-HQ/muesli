@@ -40,6 +40,8 @@ plaintext. Existing valid Keychain data takes precedence over stale files.
 Credential writes fail visibly rather than silently losing a new key. These
 credentials are local-only, not SQLite rows, CloudKit fields, chat exports or
 telemetry. See [credential storage](docs/credential-storage.md).
+Failed config credential reads leave the stored item unmodified: an existing
+item must be successfully hydrated before a later save may replace or clear it.
 
 ### App formatting preferences outside SQLite
 

@@ -68,6 +68,73 @@ struct CredentialMigrationTests {
         #expect(ConfigStore(supportDirectory: root, vault: vault).load().openAIAPIKey.isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func failedInitialReadCannotDeleteOrReplaceUnreadCredentials(replaceKey: Bool) throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        var original = AppConfig()
+        original.openAIAPIKey = "synthetic-openai"
+        original.anthropicAPIKey = "synthetic-anthropic"
+        original.customLLMAPIKeyCommand = "synthetic-command"
+        original.customLLMHeaders = [.init(name: "Authorization", value: "synthetic-header")]
+        #expect(ConfigStore(supportDirectory: root, vault: vault).save(original))
+        let stored = try vault.read(ConfigCredentials.account)
+        let path = root.appendingPathComponent("config.json")
+        let persisted = try Data(contentsOf: path)
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        vault.failReads = true
+        var unavailable = store.load()
+        #expect(unavailable.openAIAPIKey.isEmpty)
+        #expect(store.credentialStorageError != nil)
+
+        // Unlocking alone does not hydrate the snapshot returned by the failed load.
+        vault.failReads = false
+        unavailable.openAIModel = "synthetic-model"
+        if replaceKey { unavailable.openAIAPIKey = "synthetic-replacement" }
+        #expect(!store.save(unavailable))
+        #expect(store.credentialStorageError != nil)
+        #expect(try vault.read(ConfigCredentials.account) == stored)
+        #expect(try Data(contentsOf: path) == persisted)
+
+        var hydrated = store.load()
+        #expect(store.credentialStorageError == nil)
+        #expect(hydrated.openAIAPIKey == original.openAIAPIKey)
+        hydrated.openAIAPIKey = "synthetic-replacement"
+        #expect(store.save(hydrated))
+        let restarted = ConfigStore(supportDirectory: root, vault: vault).load()
+        #expect(restarted.openAIAPIKey == hydrated.openAIAPIKey)
+        #expect(restarted.anthropicAPIKey == original.anthropicAPIKey)
+        #expect(restarted.customLLMAPIKeyCommand == original.customLLMAPIKeyCommand)
+        #expect(restarted.customLLMHeaders.map(\.name) == original.customLLMHeaders.map(\.name))
+        #expect(restarted.customLLMHeaders.map(\.value) == original.customLLMHeaders.map(\.value))
+    }
+
+    @Test func failedReloadInvalidatesPreviouslyHydratedSnapshot() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        var original = AppConfig(); original.openAIAPIKey = "synthetic-original"
+        #expect(store.save(original))
+        #expect(store.load().openAIAPIKey == original.openAIAPIKey)
+        vault.failReads = true
+        let unavailable = store.load()
+        vault.failReads = false
+        #expect(!store.save(unavailable))
+        #expect(store.load().openAIAPIKey == original.openAIAPIKey)
+    }
+
+    @Test func unhydratedSaveCannotOverwriteExistingOrMalformedCredentials() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let invalid = Data("synthetic-invalid-record".utf8)
+        try vault.write(invalid, account: ConfigCredentials.account)
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        #expect(!store.save(AppConfig()))
+        let unavailable = store.load()
+        #expect(!store.save(unavailable))
+        #expect(try vault.read(ConfigCredentials.account) == invalid)
+    }
+
     @Test func fileMigrationVerifiesBeforeDeletingAndRetries() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault(); let path = root.appendingPathComponent("auth.json")

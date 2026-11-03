@@ -20,6 +20,9 @@ final class ConfigStore {
 
     func load() -> AppConfig {
         ensureDirectory()
+        // A failed reload must not leave an earlier credential snapshot trusted
+        // while the caller receives a sanitized configuration without those keys.
+        savedCredentials = nil
         let data = try? Data(contentsOf: configURL)
         var config = data.flatMap { try? decoder.decode(AppConfig.self, from: $0) } ?? AppConfig()
         let hadLegacyOpenRouterKey = !config.openRouterAPIKey
@@ -67,6 +70,15 @@ final class ConfigStore {
     }
 
     private func storeCredentials(_ value: ConfigCredentials) throws {
+        if savedCredentials == nil {
+            // An unread item is not an empty item. Only initialize a new store
+            // after confirming absence; an existing item requires load() to
+            // hydrate the caller's config before it can be replaced or cleared.
+            guard try credentialVault.read(ConfigCredentials.account) == nil else {
+                throw CredentialVaultError.unavailable
+            }
+            savedCredentials = ConfigCredentials()
+        }
         guard savedCredentials != value else { return }
         if value.isEmpty {
             try credentialVault.remove(ConfigCredentials.account)
