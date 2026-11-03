@@ -786,8 +786,20 @@ struct FloatingIndicatorPointerInteractionTests {
         default: indicator.setState(.recording, config: config)
         }
         pointer = NSPoint(x: -100_000, y: -100_000)
-        try await Task.sleep(for: .milliseconds(300))
-        let presented = try #require(indicator.currentFrame)
+        // AppKit can still be moving the entrance frame after a fixed 300 ms
+        // delay on a busy runner. Establish a settled baseline before checking
+        // that the interrupted hover cannot move or retire this presentation.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        var presented = try #require(indicator.currentFrame)
+        var stableSamples = 0
+        while stableSamples < 5, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            let frame = try #require(indicator.currentFrame)
+            stableSamples = frame == presented ? stableSamples + 1 : 0
+            presented = frame
+        }
+        #expect(stableSamples == 5, "The presentation's entrance frame did not settle")
         #expect(presented.size != compact.size)
         try await Task.sleep(for: .milliseconds(400))
         #expect(indicator.currentFrame == presented)
