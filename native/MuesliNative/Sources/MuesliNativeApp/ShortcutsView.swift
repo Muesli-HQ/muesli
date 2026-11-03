@@ -408,14 +408,7 @@ struct ShortcutsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
 
-            TextField(
-                "",
-                value: Binding(
-                    get: { HotkeyTriggerTiming.clampedMilliseconds(value) },
-                    set: { onChange(HotkeyTriggerTiming.clampedMilliseconds($0)) }
-                ),
-                format: .number
-            )
+            ActivationDelayField(value: value, onCommit: onChange)
             .textFieldStyle(.plain)
             .font(.system(size: 13, weight: .semibold, design: .monospaced))
             .foregroundStyle(MuesliTheme.textPrimary)
@@ -680,5 +673,53 @@ struct ShortcutsView: View {
 
     private func stopRecording() {
         recorder.cancel()
+    }
+}
+
+/// Keep an editable draft so intermediate values (including an empty field)
+/// never change the saved shortcut timing.
+struct ActivationDelayDraft {
+    var text: String
+
+    init(value: Int) { text = String(value) }
+
+    mutating func commit(fallback: Int) -> Int {
+        let value = HotkeyTriggerTiming.clampedMilliseconds(
+            Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? fallback
+        )
+        text = String(value)
+        return value
+    }
+}
+
+private struct ActivationDelayField: View {
+    let value: Int
+    let onCommit: (Int) -> Void
+    @State private var draft: ActivationDelayDraft
+    @FocusState private var focused: Bool
+
+    init(value: Int, onCommit: @escaping (Int) -> Void) {
+        self.value = value
+        self.onCommit = onCommit
+        _draft = State(initialValue: ActivationDelayDraft(value: value))
+    }
+
+    var body: some View {
+        TextField("", text: $draft.text)
+            .focused($focused)
+            .accessibilityLabel("Activation delay in milliseconds")
+            .onSubmit(commit)
+            .onChange(of: focused) { _, focused in
+                if !focused { commit() }
+            }
+            .onChange(of: value) { _, value in
+                if !focused { draft = ActivationDelayDraft(value: value) }
+            }
+            .onDisappear { commit() }
+    }
+
+    private func commit() {
+        let committed = draft.commit(fallback: value)
+        if committed != value { onCommit(committed) }
     }
 }

@@ -1587,14 +1587,7 @@ struct MeetingDetailView: View {
             }
             controller.stopMeetingRecording()
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text("Stop")
-                    .font(MuesliTheme.font(size: 12, weight: .semibold))
-            }
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 7)
+            RecordingControlLabel(title: "Stop", systemImage: "stop.fill")
         }
         .buttonStyle(.muesli(.recording))
         .disabled(!appState.isMeetingRecording)

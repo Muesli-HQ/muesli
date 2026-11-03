@@ -69,6 +69,7 @@ case "${shard}" in
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
+      RecordingUXTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests

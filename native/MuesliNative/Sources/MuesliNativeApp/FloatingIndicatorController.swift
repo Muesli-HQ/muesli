@@ -103,7 +103,7 @@ final class HoverIndicatorView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         didDrag = false
-        mouseDownScreenLocation = NSEvent.mouseLocation
+        mouseDownScreenLocation = owner?.pointerLocation() ?? NSEvent.mouseLocation
         owner?.pointerInteractionBegan()
         windowOriginAtMouseDown = window?.frame.origin
     }
@@ -111,8 +111,8 @@ final class HoverIndicatorView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let window,
               let mouseDownScreenLocation,
-              let windowOriginAtMouseDown else { return }
-        let currentScreenLocation = NSEvent.mouseLocation
+              var windowOriginAtMouseDown else { return }
+        let currentScreenLocation = owner?.pointerLocation() ?? NSEvent.mouseLocation
         let deltaX = currentScreenLocation.x - mouseDownScreenLocation.x
         let deltaY = currentScreenLocation.y - mouseDownScreenLocation.y
         guard didDrag || FloatingIndicatorPointerIntent.isDrag(
@@ -121,6 +121,10 @@ final class HoverIndicatorView: NSView {
         ) else { return }
         if !didDrag {
             owner?.pointerDragBegan()
+            // Collapsing the transcript changes the window origin, not the pill.
+            // Start the drag from that compact origin, preserving pointer delta.
+            windowOriginAtMouseDown = window.frame.origin
+            self.windowOriginAtMouseDown = windowOriginAtMouseDown
         }
         didDrag = true
         window.setFrameOrigin(
@@ -236,7 +240,7 @@ final class FloatingIndicatorController: NSObject {
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
-    private let pointerLocation: () -> NSPoint
+    fileprivate let pointerLocation: () -> NSPoint
     private var isMeetingRecording = false
     private var isMeetingRecordingPaused = false
     private var isMeetingTranscriptManuallyDismissed = false
@@ -456,11 +460,15 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func pointerInteractionBegan() {
+        // Own this gesture exclusively; avoid WindowServer edge-tiling previews.
+        // Restore normal screen-reconfiguration behavior after the gesture.
+        panel?.isMovable = false
         isDragging = true
         hoverExitWorkItem?.cancel()
     }
 
     func pointerInteractionEnded() {
+        panel?.isMovable = true
         isDragging = false
         if let message = deferredLoadingMessage {
             deferredLoadingMessage = nil
@@ -667,6 +675,7 @@ final class FloatingIndicatorController: NSObject {
             in: containerView,
             frame: localFrame(transcriptFrame, in: expandedFrame)
         )
+        panel.invalidateShadow()
     }
 
     private func hideMeetingTranscript(reset: Bool = false) {
@@ -689,6 +698,8 @@ final class FloatingIndicatorController: NSObject {
         panel.setFrame(indicatorFrame, display: true)
         containerView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
         contentView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
+        containerView.needsDisplay = true
+        panel.invalidateShadow()
     }
 
     private func localFrame(_ screenFrame: NSRect, in windowFrame: NSRect) -> NSRect {
