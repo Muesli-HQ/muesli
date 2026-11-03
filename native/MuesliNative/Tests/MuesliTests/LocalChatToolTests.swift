@@ -135,7 +135,7 @@ struct LocalChatToolTests {
             #expect(messages[2]["thinking"] as? String == "opaque synthetic context")
             #expect(messages[3][wire == .ollama ? "tool_name" : "tool_call_id"] as? String == (wire == .ollama ? "inspect_document" : "first"))
             #expect(body["tools"] == nil)
-            if wire == .openAI { #expect(body["tool_choice"] as? String == "none") }
+            #expect(body["tool_choice"] == nil)
             #expect(throws: MeetingChatHarnessError.self) { try LocalChatToolTransport.body(request(c, items: initial + output), capabilities: caps) }
         }
     }
@@ -191,6 +191,26 @@ struct LocalChatToolTests {
         #expect(!client.supportsNativeTools(config: switched))
         switched = config("custom_llm"); switched.customLLMFormat = CustomLLMFormat.anthropic.rawValue
         #expect(!LocalChatToolTransport.supportsProvider(switched))
+    }
+
+    @Test(arguments: ["lmstudio", "custom_llm"])
+    func finalOnlyRequestsWorkWithStrictOpenAICompatibleEndpoints(backend: String) async throws {
+        let c = config(backend)
+        var client = MeetingTextGenerationClient()
+        let endpoint = try LocalChatToolTransport.endpoint(c)
+        client.localChatCapabilities = .init(wire: .openAI, provider: backend, model: "synthetic-model", endpoint: endpoint,
+            nativeTools: true, contextTokens: nil, template: URLRequest(url: endpoint), configuration: c)
+        client.load = { req in
+            let body = try #require(JSONSerialization.jsonObject(with: req.httpBody!) as? [String: Any])
+            if body["tools"] == nil, body["tool_choice"] != nil {
+                return try response(req, ["error": "tool_choice requires tools"], status: 400)
+            }
+            #expect(body["tools"] == nil && body["tool_choice"] == nil)
+            return try response(req, ["choices": [["finish_reason": "stop", "message": ["role": "assistant", "content": "synthetic final answer"]]]])
+        }
+        let result = try await client.generateNative(request(c, items: initial, tools: false))
+        #expect(result.text == "synthetic final answer")
+        #expect(result.calls.isEmpty)
     }
 }
 

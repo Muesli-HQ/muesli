@@ -190,6 +190,28 @@ struct CredentialMigrationTests {
         #expect(KeychainCredentialVault(supportDirectory: production).service == KeychainCredentialVault(supportDirectory: production).service)
         #expect(KeychainCredentialVault(supportDirectory: production).service != KeychainCredentialVault(supportDirectory: URL(fileURLWithPath: "/synthetic/MuesliDevA")).service)
     }
+
+    @Test @MainActor func chatGPTDisplayStateDoesNotReadVaultAndRequestsUseOneFreshSnapshot() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let tokens = try JSONSerialization.data(withJSONObject: ["access_token": "synthetic-access", "account_id": "synthetic-account", "expires_at": "9999999999999"])
+        try vault.write(tokens, account: "chatgpt-auth")
+        let auth = ChatGPTAuthManager(supportDirectory: root, vault: vault)
+        let reads = vault.readCallCount
+        for _ in 0..<20 { #expect(auth.isAuthenticated) }
+        #expect(vault.readCallCount == reads)
+        #expect(try await auth.validAccessToken().token == "synthetic-access")
+        #expect(vault.readCallCount == reads + 1)
+        vault.failReads = true
+        await #expect(throws: ChatGPTAuthError.self) { try await auth.validAccessToken() }
+        vault.failReads = false
+        vault.failDeletes = true
+        #expect(throws: CredentialVaultError.self) { try auth.signOut() }
+        #expect(auth.isAuthenticated)
+        vault.failDeletes = false
+        try auth.signOut()
+        #expect(!auth.isAuthenticated)
+    }
     @Test @MainActor func oauthFilesMigrateWithoutReauthenticationAndSignOutFailsHonestly() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault()

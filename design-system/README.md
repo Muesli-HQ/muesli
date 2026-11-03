@@ -374,3 +374,7 @@ on Specific meetings with no checked rows. Individual selections can be cleared
 without broadening to the archive. Optional date fields stay within saved history
 through today. An unused draft in a meeting document/folder shows that local
 context; explicit choices, typed drafts and existing chats remain stable.
+
+Attachment originals stay in place. The selected provider receives images and
+only the document pages requested through tools; on-device Gemma reads document
+text locally. Keep this disclosure at the shared 12pt helper-text size.

@@ -123,6 +123,27 @@ struct ChatPDFProcessingTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["diagram.pdf"])
     }
 
+    @Test func oversizedPageImagesReturnToolErrorsAndLeaveTextReadsAvailable() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("diagram.pdf"); try Self.pdf(at: url, pages: 1, linesPerPage: 30)
+        let refs = try ChatFileReader.references(urls: [url], existing: [])
+        let tools = ChatDocumentTools(files: refs, supportsVision: true, maximumImageBytes: 1)
+        // A failed render does not consume the successful-render budget.
+        for _ in 1...4 {
+            let result = try await tools.execute(.render(refs[0].id, 1))
+            #expect(try object(result)["error"] as? String == "render_too_large")
+            #expect(result.images.isEmpty)
+        }
+        let read = try object(await tools.execute(.read(refs[0].id, 1, 0)))
+        #expect((read["text"] as? String)?.contains("PAGE_1_LINE_0") == true)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await tools.execute(.render(refs[0].id, 1))
+        }
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["diagram.pdf"])
+    }
+
     @Test(arguments: [true, false]) @MainActor
     func fileOnlyChatInvokesDocumentToolsAndReplaysResults(_ native: Bool) async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }

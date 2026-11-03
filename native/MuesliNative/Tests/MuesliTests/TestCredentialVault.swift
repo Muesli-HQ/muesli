@@ -6,11 +6,17 @@ import MuesliCore
 final class TestCredentialVault: CredentialVault, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
+    private var reads = 0
+    var readCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return reads
+    }
     var failReads = false
     var failWrites = false
     var failDeletes = false
     func read(_ account: String) throws -> Data? {
         lock.lock(); defer { lock.unlock() }
+        reads += 1
         if failReads { throw CredentialVaultError.unavailable }
         return values[account]
     }

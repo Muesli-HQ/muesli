@@ -495,6 +495,7 @@ public final class MuesliController: NSObject {
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
     private let chatGPTAuth: ChatGPTAuthManager
+    private var authCredentialError: String?
     private let openRouterAuth: OpenRouterAuthManager
     private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
     private var calendarCheckTimer: Timer?
@@ -1651,8 +1652,9 @@ public final class MuesliController: NSObject {
 
     /// Observation publishes assignments even when their values have not changed.
     func publishConfig() {
-        if appState.credentialStorageError != configStore.credentialStorageError {
-            appState.credentialStorageError = configStore.credentialStorageError
+        let credentialError = configStore.credentialStorageError ?? authCredentialError
+        if appState.credentialStorageError != credentialError {
+            appState.credentialStorageError = credentialError
         }
         guard appState.config != config else { return }
         let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
@@ -4083,6 +4085,7 @@ public final class MuesliController: NSObject {
     func signInWithChatGPT(selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true) async -> String? {
         do {
             try await chatGPTAuth.signIn()
+            authCredentialError = nil
             if shouldSelectMeetingSummaryBackend {
                 selectMeetingSummaryBackend(.chatGPT)
             }
@@ -4097,9 +4100,11 @@ public final class MuesliController: NSObject {
 
     func signOutChatGPT() {
         do { try chatGPTAuth.signOut() } catch {
-            appState.credentialStorageError = CredentialVaultError.unavailable.localizedDescription
+            authCredentialError = CredentialVaultError.unavailable.localizedDescription
+            publishConfig()
             return
         }
+        authCredentialError = nil
         if selectedMeetingSummaryBackend == .chatGPT {
             selectMeetingSummaryBackend(.openAI)
         }

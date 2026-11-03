@@ -38,6 +38,12 @@ does not make an earlier sanitized snapshot safe to save: reload the configurati
 first. A fresh store may save only after confirming that the item is absent.
 Malformed or still-inaccessible items remain untouched and saves report failure.
 
+Settings API-key edits commit on Return or focus loss using the shared native
+editing coordinator, rather than writing Keychain on each keystroke. Transient
+onboarding/manual-key drafts remain live. ChatGPT's displayed sign-in state is
+cached; each API request reads and validates one fresh token snapshot. Successful
+sign-in/sign-out updates the display state, while failed sign-out preserves it.
+
 This does not erase historical filesystem backups or guarantee secret zeroization
 in Swift memory. Provider requests necessarily hold credentials while in use.
 Keys and tokens are never included in chat exports, CloudKit or telemetry by this

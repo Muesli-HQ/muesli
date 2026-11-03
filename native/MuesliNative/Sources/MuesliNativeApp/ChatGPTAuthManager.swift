@@ -40,6 +40,7 @@ final class ChatGPTAuthManager {
 
     private let supportDirectory: URL
     private let tokenStorage: CredentialFileMigration
+    private var hasStoredTokens = false
     private var ownsLegacyKeychain: Bool { supportDirectory.standardizedFileURL == AppIdentity.supportDirectoryURL.standardizedFileURL && AppIdentity.supportDirectoryName == "Muesli" }
 
     init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil) {
@@ -47,12 +48,13 @@ final class ChatGPTAuthManager {
         self.tokenStorage = .init(legacyURL: supportDirectory.appendingPathComponent("chatgpt-auth.json"),
                                   account: "chatgpt-auth", vault: vault ?? KeychainCredentialVault(supportDirectory: supportDirectory))
         migrateFromKeychain()
+        hasStoredTokens = readTokens() != nil
     }
 
     // MARK: - Public API
 
     var isAuthenticated: Bool {
-        tokenRead(key: "access_token") != nil
+        hasStoredTokens
     }
 
     func signIn() async throws {
@@ -71,17 +73,19 @@ final class ChatGPTAuthManager {
             }
         }
         try tokenStorage.delete()
+        hasStoredTokens = false
         fputs("[chatgpt-auth] signed out\n", stderr)
     }
 
     func validAccessToken() async throws -> (token: String, accountId: String) {
-        guard let accessToken = tokenRead(key: "access_token") else {
+        guard let stored = readTokens(), let accessToken = stored["access_token"] else {
             throw ChatGPTAuthError.notAuthenticated
         }
-        let accountId = tokenRead(key: "account_id") ?? ""
+        hasStoredTokens = true
+        let accountId = stored["account_id"] ?? ""
 
         // Check expiry with 30-second margin
-        if let expiresStr = tokenRead(key: "expires_at"),
+        if let expiresStr = stored["expires_at"],
            let expiresMs = Double(expiresStr) {
             let expiresAt = Date(timeIntervalSince1970: expiresMs / 1000.0)
             if expiresAt > Date().addingTimeInterval(30) {
@@ -89,7 +93,7 @@ final class ChatGPTAuthManager {
             }
             // Token expired or about to expire — refresh
             fputs("[chatgpt-auth] token expired, refreshing...\n", stderr)
-            guard let refreshToken = tokenRead(key: "refresh_token") else {
+            guard let refreshToken = stored["refresh_token"] else {
                 throw ChatGPTAuthError.notAuthenticated
             }
             let tokens = try await refreshAccessToken(refreshToken: refreshToken)
@@ -392,15 +396,19 @@ final class ChatGPTAuthManager {
             "account_id": tokens.accountId,
         ]
         try tokenStorage.save(JSONSerialization.data(withJSONObject: dict))
+        hasStoredTokens = true
     }
 
-    private func tokenRead(key: String) -> String? {
-        guard let data = try? tokenStorage.load(validating: { data in
-            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: String],
-                  dict["access_token"]?.isEmpty == false else { throw CredentialVaultError.verificationFailed }
-        }),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return nil }
-        return dict[key]
+    private func readTokens() -> [String: String]? {
+        var tokens: [String: String]?
+        do {
+            _ = try tokenStorage.load(validating: { data in
+                guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                      dict["access_token"]?.isEmpty == false else { throw CredentialVaultError.verificationFailed }
+                tokens = dict
+            })
+            return tokens
+        } catch { return nil }
     }
 
     // MARK: - Keychain Migration

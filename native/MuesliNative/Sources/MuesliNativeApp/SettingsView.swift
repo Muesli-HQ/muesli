@@ -1028,6 +1028,7 @@ struct SettingsView: View {
             PastableSecureField(
                 text: appState.config.openAIAPIKey,
                 placeholder: "sk-...",
+                commitsOnEndEditing: true,
                 onChange: { val in
                     openAITestState = .idle
                     controller.setOpenAIDictationAPIKey(val)
@@ -1322,6 +1323,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.openAIAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1331,6 +1333,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.anthropicAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1436,6 +1439,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1458,6 +1462,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1634,6 +1639,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.openAIAPIKey,
                         placeholder: "sk-...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1657,6 +1663,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.anthropicAPIKey,
                         placeholder: "sk-ant-api...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1817,6 +1824,7 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "Required for Anthropic API"
                     : "Optional for local servers",
+                commitsOnEndEditing: true,
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
             )
             .frame(height: 22)
@@ -4129,6 +4137,7 @@ struct FixedWidthPopUp: NSViewRepresentable {
 struct PastableSecureField: NSViewRepresentable {
     let text: String
     let placeholder: String
+    var commitsOnEndEditing = false
     let onChange: (String) -> Void
 
     func makeNSView(context: Context) -> EditableNSSecureTextField {
@@ -4144,26 +4153,18 @@ struct PastableSecureField: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: EditableNSSecureTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
+        context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+    func makeCoordinator() -> PastableTextField.Coordinator {
+        PastableTextField.Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: false,
+                                     onBeginEditing: nil, onChange: onChange)
     }
 
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        let onChange: (String) -> Void
-
-        init(onChange: @escaping (String) -> Void) {
-            self.onChange = onChange
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            onChange(field.stringValue)
-        }
+    static func dismantleNSView(_ nsView: EditableNSSecureTextField, coordinator: PastableTextField.Coordinator) {
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 }
 

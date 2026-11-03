@@ -99,6 +99,14 @@ struct FeatureTourTests {
         let path = shape.path(in: CGRect(x: 0, y: 0, width: 900, height: 600))
         #expect(!path.contains(CGPoint(x: 200, y: 130), eoFill: true))
         #expect(path.contains(CGPoint(x: 50, y: 50), eoFill: true))
+        let regions = FeatureTourHitRegions.background(around: shape.spotlight, in: CGRect(x: 0, y: 0, width: 900, height: 600))
+        #expect(!regions.contains { $0.contains(CGPoint(x: 200, y: 130)) })
+        for point in [CGPoint(x: 200, y: 50), CGPoint(x: 50, y: 130), CGPoint(x: 400, y: 130), CGPoint(x: 200, y: 300)] {
+            #expect(regions.filter { $0.contains(point) }.count == 1)
+        }
+        let clipped = FeatureTourHitRegions.background(around: CGRect(x: -20, y: -10, width: 80, height: 40), in: CGRect(x: 0, y: 0, width: 900, height: 600))
+        #expect(clipped.allSatisfy { $0.minX >= 0 && $0.minY >= 0 && $0.maxX <= 900 && $0.maxY <= 600 })
+        #expect(!clipped.contains { $0.contains(CGPoint(x: 20, y: 10)) })
     }
 
     @Test("missing meeting targets keep the callout centered and available")

@@ -28,6 +28,19 @@ struct FeatureTourFrameTracking {
     }
 }
 
+struct FeatureTourHitRegions {
+    static func background(around spotlight: CGRect, in bounds: CGRect) -> [CGRect] {
+        let hole = spotlight.intersection(bounds)
+        guard !hole.isNull, !hole.isEmpty else { return [bounds] }
+        return [
+            CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: hole.minY - bounds.minY),
+            CGRect(x: bounds.minX, y: hole.maxY, width: bounds.width, height: bounds.maxY - hole.maxY),
+            CGRect(x: bounds.minX, y: hole.minY, width: hole.minX - bounds.minX, height: hole.height),
+            CGRect(x: hole.maxX, y: hole.minY, width: bounds.maxX - hole.maxX, height: hole.height),
+        ].filter { !$0.isEmpty }
+    }
+}
+
 private struct FeatureTourCalloutSizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
 
@@ -200,9 +213,18 @@ struct FeatureTourOverlay: View {
             if let expandedSpotlight {
                 // Consume background clicks but let the real highlighted control
                 // receive input, including its native popup menu.
-                Color.clear
-                    .contentShape(FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10), eoFill: true)
-                    .onTapGesture {}
+                // Native popup controls need a real gap in the hit-test views;
+                // an even-odd content shape can still intercept them on macOS.
+                ForEach(Array(FeatureTourHitRegions.background(
+                    around: expandedSpotlight,
+                    in: CGRect(origin: .zero, size: containerSize)
+                ).enumerated()), id: \.offset) { _, rect in
+                    Color.clear
+                        .frame(width: rect.width, height: rect.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture {}
+                        .position(x: rect.midX, y: rect.midY)
+                }
 
                 FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10)
                     .fill(

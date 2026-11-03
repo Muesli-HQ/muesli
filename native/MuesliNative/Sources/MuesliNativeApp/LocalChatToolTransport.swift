@@ -216,7 +216,7 @@ enum LocalChatToolTransport {
             body["options"] = options
         } else {
             body["max_tokens"] = limit
-            body["tool_choice"] = request.allowTools ? "auto" : "none"
+            if request.allowTools { body["tool_choice"] = "auto" }
         }
         return body
     }

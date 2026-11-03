@@ -10,6 +10,78 @@ import Testing
 struct SettingsModelFieldTests {
     private let modelID = "unsloth/gemma-4-12B-it-qat-GGUF:Q4_K_XL"
 
+    @Test("secure credentials stay in the editor until Return or focus loss", arguments: [false, true])
+    func secureCredentialsCommitOnce(endWithReturn: Bool) throws {
+        _ = NSApplication.shared
+        var configured = "synthetic-old-key"; var saves = 0
+        let commit: (String) -> Void = { configured = $0; saves += 1 }
+        let (window, host, field) = try makeHost(
+            root: AnyView(PastableSecureField(text: configured, placeholder: "key", commitsOnEndEditing: true, onChange: commit)),
+            fieldType: EditableNSSecureTextField.self
+        )
+        defer { window.close() }
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        let replacement = "synthetic-replacement-key"
+        for character in replacement {
+            editor.insertText(String(character), replacementRange: editor.selectedRange())
+            host.rootView = AnyView(PastableSecureField(text: configured, placeholder: "key", commitsOnEndEditing: true, onChange: commit))
+            host.layoutSubtreeIfNeeded()
+            #expect(saves == 0)
+            #expect(configured == "synthetic-old-key")
+            #expect(field.currentEditor() === editor)
+        }
+        if endWithReturn { editor.insertNewline(nil) }
+        else { #expect(window.makeFirstResponder(nil)) }
+        #expect(configured == replacement)
+        #expect(saves == 1)
+        #expect(field.toolTip == nil)
+    }
+
+    @Test("transient secure drafts still publish edits immediately")
+    func transientSecureDraftsRemainLive() throws {
+        _ = NSApplication.shared
+        var value = ""
+        let (window, _, field) = try makeHost(
+            root: AnyView(PastableSecureField(text: value, placeholder: "key", onChange: { value = $0 })),
+            fieldType: EditableNSSecureTextField.self
+        )
+        defer { window.close() }
+        field.selectText(nil)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.insertText("synthetic-pasted-key", replacementRange: editor.selectedRange())
+        #expect(value == "synthetic-pasted-key")
+    }
+
+    @Test("failed ChatGPT sign-out stays visible across config publication until retry succeeds")
+    func failedSignOutSurvivesConfigRefresh() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let vault = TestCredentialVault()
+        let token = try JSONSerialization.data(withJSONObject: ["access_token": "synthetic-access", "refresh_token": "synthetic-refresh", "account_id": "synthetic-account", "expires_at": "9999999999999"])
+        try vault.write(token, account: "chatgpt-auth")
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: directory, vault: vault)
+        )
+        vault.failDeletes = true
+        controller.signOutChatGPT()
+        let error = try #require(controller.appState.credentialStorageError)
+        controller.publishConfig()
+        #expect(controller.appState.credentialStorageError == error)
+        controller.updateConfig { $0.customLLMModel = "synthetic-model" }
+        #expect(controller.appState.credentialStorageError == error)
+        #expect(try vault.read("chatgpt-auth") == token)
+        vault.failDeletes = false
+        controller.signOutChatGPT()
+        #expect(controller.appState.credentialStorageError == nil)
+        #expect(try vault.read("chatgpt-auth") == nil)
+    }
+
     @Test("typing a long ID survives stale SwiftUI refreshes and saves only on focus loss")
     func typingSurvivesRefresh() throws {
         _ = NSApplication.shared
@@ -200,14 +272,19 @@ struct SettingsModelFieldTests {
 
     private func makeHost(root: AnyView) throws
         -> (NSWindow, NSHostingView<AnyView>, EditableNSTextField) {
+        try makeHost(root: root, fieldType: EditableNSTextField.self)
+    }
+
+    private func makeHost<Field: NSTextField>(root: AnyView, fieldType: Field.Type) throws
+        -> (NSWindow, NSHostingView<AnyView>, Field) {
         let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: 275, height: 44)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
         host.layoutSubtreeIfNeeded()
-        func find(in view: NSView) -> EditableNSTextField? {
-            if let field = view as? EditableNSTextField { return field }
+        func find(in view: NSView) -> Field? {
+            if let field = view as? Field { return field }
             return view.subviews.lazy.compactMap { find(in: $0) }.first
         }
         return (window, host, try #require(find(in: host)))
