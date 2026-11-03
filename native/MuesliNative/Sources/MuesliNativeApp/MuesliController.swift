@@ -2620,6 +2620,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.refreshChatGPTAuthenticationStatus()
                 self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -4096,6 +4097,11 @@ public final class MuesliController: NSObject {
             fputs("[muesli-native] ChatGPT sign-in failed: \(error)\n", stderr)
             return error.localizedDescription
         }
+    }
+
+    func refreshChatGPTAuthenticationStatus() {
+        chatGPTAuth.refreshCredentialStatus()
+        appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
     }
 
     func signOutChatGPT() {
@@ -6276,6 +6282,7 @@ public final class MuesliController: NSObject {
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) else { return }
+        if option == .chatGPT { refreshChatGPTAuthenticationStatus() }
         if option == .chatGPT, !chatGPTAuth.isAuthenticated {
             Task { await signInWithChatGPT() }
             return

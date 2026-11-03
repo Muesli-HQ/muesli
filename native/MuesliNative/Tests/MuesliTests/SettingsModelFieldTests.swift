@@ -82,6 +82,33 @@ struct SettingsModelFieldTests {
         #expect(try vault.read("chatgpt-auth") == nil)
     }
 
+    @Test("ChatGPT provider availability recovers after a locked startup without OAuth or render reads")
+    func chatGPTAvailabilityRecoversAfterKeychainUnlock() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let vault = TestCredentialVault()
+        let token = try JSONSerialization.data(withJSONObject: ["access_token": "synthetic-access", "expires_at": "9999999999999"])
+        try vault.write(token, account: "chatgpt-auth")
+        vault.failingReadAccounts = ["chatgpt-auth"]
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: ConfigStore(supportDirectory: directory, vault: vault)
+        )
+        #expect(!controller.appState.isChatGPTAuthenticated)
+        #expect(!controller.canUseSummaryProvider(.chatGPT))
+        vault.failingReadAccounts = []
+        controller.refreshChatGPTAuthenticationStatus()
+        #expect(controller.appState.isChatGPTAuthenticated)
+        let reads = vault.readCallCount
+        for _ in 0..<20 { #expect(controller.canUseSummaryProvider(.chatGPT)) }
+        #expect(vault.readCallCount == reads)
+        #expect(try vault.read("chatgpt-auth") == token)
+    }
+
     @Test("typing a long ID survives stale SwiftUI refreshes and saves only on focus loss")
     func typingSurvivesRefresh() throws {
         _ = NSApplication.shared

@@ -361,4 +361,21 @@ struct CredentialMigrationTests {
         #expect(try vault.read("chatgpt-auth") == nil)
     }
 
+    @Test @MainActor func signOutFromAnotherManagerInvalidatesPendingRotatedSession() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        try vault.write(JSONSerialization.data(withJSONObject: ["access_token": "synthetic-old", "refresh_token": "synthetic-refresh", "expires_at": "0"]), account: "chatgpt-auth")
+        let requestAuth = ChatGPTAuthManager(supportDirectory: root, vault: vault, load: { request in
+            return (Data(#"{"access_token":"synthetic-new","refresh_token":"synthetic-rotated","expires_in":3600}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+        let settingsAuth = ChatGPTAuthManager(supportDirectory: root, vault: vault)
+        vault.failWrites = true
+        #expect(try await requestAuth.validAccessToken().token == "synthetic-new")
+        try settingsAuth.signOut()
+        vault.failWrites = false
+        await #expect(throws: ChatGPTAuthError.self) { try await requestAuth.validAccessToken() }
+        #expect(try vault.read("chatgpt-auth") == nil)
+    }
+
 }

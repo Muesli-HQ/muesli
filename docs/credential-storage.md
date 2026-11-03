@@ -50,6 +50,9 @@ editing coordinator, rather than writing Keychain on each keystroke. Transient
 onboarding/manual-key drafts remain live. ChatGPT's displayed sign-in state is
 cached; each API request reads and validates one fresh token snapshot. Successful
 sign-in/sign-out updates the display state, while failed sign-out preserves it.
+App activation and an explicit ChatGPT provider menu selection refresh credential
+status outside view rendering, allowing a session blocked at launch to recover
+after Keychain unlock without repeating OAuth.
 
 This does not erase historical filesystem backups or guarantee secret zeroization
 in Swift memory. Provider requests necessarily hold credentials while in use.

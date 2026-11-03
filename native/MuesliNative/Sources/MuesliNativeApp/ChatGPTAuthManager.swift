@@ -42,8 +42,14 @@ final class ChatGPTAuthManager {
     private let tokenStorage: CredentialFileMigration
     private let load: (URLRequest) async throws -> (Data, URLResponse)
     private var hasStoredTokens = false
-    private var pendingTokens: TokenResponse?
-    private var credentialGeneration = 0
+    private var pendingTokens: (generation: Int, tokens: TokenResponse)?
+    // The controller and request client can own separate managers for one lane.
+    // A successful sign-out/sign-in must invalidate both managers' pending work.
+    private static var credentialGenerations: [String: Int] = [:]
+    private var credentialGeneration: Int { Self.credentialGenerations[supportDirectory.standardizedFileURL.path, default: 0] }
+    private func advanceCredentialGeneration() {
+        Self.credentialGenerations[supportDirectory.standardizedFileURL.path] = credentialGeneration + 1
+    }
     private var ownsLegacyKeychain: Bool { supportDirectory.standardizedFileURL == AppIdentity.supportDirectoryURL.standardizedFileURL && AppIdentity.supportDirectoryName == "Muesli" }
 
     init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil,
@@ -62,12 +68,17 @@ final class ChatGPTAuthManager {
         hasStoredTokens
     }
 
+    /// Explicit lifecycle/user-action refresh; display-state getters do no I/O.
+    func refreshCredentialStatus() {
+        hasStoredTokens = readTokens() != nil
+    }
+
     func signIn() async throws {
         let (verifier, challenge) = generatePKCE()
         let code = try await startCallbackServerAndOpenBrowser(codeChallenge: challenge)
         let tokens = try await exchangeCodeForTokens(code: code, codeVerifier: verifier)
         try saveTokens(tokens)
-        credentialGeneration += 1
+        advanceCredentialGeneration()
         fputs("[chatgpt-auth] signed in successfully\n", stderr)
     }
 
@@ -79,7 +90,7 @@ final class ChatGPTAuthManager {
             }
         }
         try tokenStorage.delete()
-        credentialGeneration += 1
+        advanceCredentialGeneration()
         pendingTokens = nil
         hasStoredTokens = false
         fputs("[chatgpt-auth] signed out\n", stderr)
@@ -110,7 +121,7 @@ final class ChatGPTAuthManager {
             do { try saveTokens(tokens) } catch {
                 // Rotation can invalidate the old refresh token. Keep the new
                 // session in memory and retry Keychain persistence on next use.
-                pendingTokens = tokens
+                pendingTokens = (generation, tokens)
                 fputs("[chatgpt-auth] refreshed session retained in memory; Keychain save will retry\n", stderr)
             }
             return (tokens.accessToken, tokens.accountId)
@@ -415,10 +426,11 @@ final class ChatGPTAuthManager {
     }
 
     private func readTokens() -> [String: String]? {
-        if let pendingTokens {
-            try? saveTokens(pendingTokens)
-            return pendingTokens.storedValues
+        if let pendingTokens, pendingTokens.generation == credentialGeneration {
+            try? saveTokens(pendingTokens.tokens)
+            return pendingTokens.tokens.storedValues
         }
+        pendingTokens = nil
         var tokens: [String: String]?
         do {
             _ = try tokenStorage.load(validating: { data in
