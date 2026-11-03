@@ -12,12 +12,13 @@ final class TestCredentialVault: CredentialVault, @unchecked Sendable {
         return reads
     }
     var failReads = false
+    var failingReadAccounts: Set<String> = []
     var failWrites = false
     var failDeletes = false
     func read(_ account: String) throws -> Data? {
         lock.lock(); defer { lock.unlock() }
         reads += 1
-        if failReads { throw CredentialVaultError.unavailable }
+        if failReads || failingReadAccounts.contains(account) { throw CredentialVaultError.unavailable }
         return values[account]
     }
     func write(_ data: Data, account: String) throws {

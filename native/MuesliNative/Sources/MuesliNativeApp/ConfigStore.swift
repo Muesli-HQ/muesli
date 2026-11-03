@@ -31,7 +31,6 @@ final class ConfigStore {
         migrateLegacyOpenRouterCredential(in: &config)
         let legacy = credentials(in: config)
         do {
-            guard config.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
             if let data = try credentialVault.read(ConfigCredentials.account) {
                 let stored = try decoder.decode(ConfigCredentials.self, from: data)
                 apply(stored, to: &config)
@@ -43,6 +42,7 @@ final class ConfigStore {
             } else if hadLegacyOpenRouterKey, config.openRouterAPIKey.isEmpty {
                 try writeSanitized(config)
             }
+            guard config.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
             credentialStorageError = nil
         } catch {
             // Migration failure preserves the existing file and in-memory keys.
@@ -57,9 +57,9 @@ final class ConfigStore {
         var persistedConfig = config
         migrateLegacyOpenRouterCredential(in: &persistedConfig)
         do {
-            try storeCredentials(credentials(in: persistedConfig))
             // Never write a new credential to plaintext after migration is introduced.
             guard persistedConfig.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
+            try storeCredentials(credentials(in: persistedConfig))
         } catch {
             credentialStorageError = "Changes could not be saved. " + CredentialVaultError.unavailable.localizedDescription
             return false
@@ -110,6 +110,7 @@ final class ConfigStore {
     }
 
     private func writeSanitized(_ config: AppConfig) throws {
+        guard config.openRouterAPIKey.isEmpty else { throw CredentialVaultError.unavailable }
         var sanitized = config
         apply(ConfigCredentials(), to: &sanitized)
         let data = try encoder.encode(sanitized)

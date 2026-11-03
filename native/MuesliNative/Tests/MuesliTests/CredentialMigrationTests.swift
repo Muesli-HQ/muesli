@@ -174,6 +174,32 @@ struct CredentialMigrationTests {
         #expect(try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: store.configPath())).openAIAPIKey.isEmpty)
     }
 
+    @Test func failedOpenRouterMigrationDoesNotHideOtherStoredProviderCredentials() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        var stored = ConfigCredentials(); stored.openAI = "synthetic-openai"; stored.anthropic = "synthetic-anthropic"
+        let record = try JSONEncoder().encode(stored)
+        try vault.write(record, account: ConfigCredentials.account)
+        var legacy = AppConfig(); legacy.openRouterAPIKey = "synthetic-openrouter"
+        let original = try JSONEncoder().encode(legacy)
+        let path = root.appendingPathComponent("config.json"); try original.write(to: path)
+        vault.failingReadAccounts = ["openrouter-auth"]
+        let store = ConfigStore(supportDirectory: root, vault: vault)
+        let loaded = store.load()
+        #expect(loaded.openAIAPIKey == stored.openAI)
+        #expect(loaded.anthropicAPIKey == stored.anthropic)
+        #expect(store.credentialStorageError != nil)
+        #expect(!store.save(loaded))
+        #expect(try vault.read(ConfigCredentials.account) == record)
+        #expect(try Data(contentsOf: path) == original)
+        vault.failingReadAccounts = []
+        let recovered = store.load()
+        #expect(recovered.openAIAPIKey == stored.openAI)
+        #expect(recovered.openRouterAPIKey.isEmpty)
+        #expect(store.credentialStorageError == nil)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: Data(contentsOf: path)).openRouterAPIKey.isEmpty)
+    }
+
     @Test func fileMigrationVerifiesBeforeDeletingAndRetries() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let vault = TestCredentialVault(); let path = root.appendingPathComponent("auth.json")
