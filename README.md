@@ -41,8 +41,9 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 ## Features
 
 - **Dictation anywhere** — Hold a hotkey, double-tap for hands-free recording, or use Press to toggle. Text is pasted at your cursor, with optional filler removal and cleanup.
+- **Failed dictation recovery** — When dictation captures audio but transcription or buffered streaming finalization fails, keep the recording and any available partial text locally for playback and retry from Dictations. Retry uses your selected local model and saves text to history. Failed recordings remain until recovered or discarded; successful dictations keep no recovery audio.
+- **Microphone capture health** — Standard dictation, Quill, and voice-command capture show an advisory warning after 3 seconds while startup remains pending. Core Audio events report confirmed capture failures; slow startup and silent audio alone do not fail a session. Startup telemetry contains only fixed status labels and timing, never recording content or device identifiers.
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
-- **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
 - **Scrawl (experimental)** — Record the display under your pointer with microphone narration, then play the saved or recovered capture locally. Enable it in General settings. See [Scrawl](docs/feedback-capture.md).
@@ -52,9 +53,17 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Multilingual speech** — Choose among Parakeet, Nemotron, Whisper, Qwen3 ASR, SenseVoice, Cohere, Bodhan, and Apple Speech. Bodhan Flex offers Native, Mixed, and Romanized output for Indic languages and English.
 - **Calendar and meeting detection** — Show upcoming events from macOS Calendar accounts, choose calendars and time windows, and join or record from reminders. Optional camera and microphone activity detection recognizes meeting apps.
 - **Shortcuts and Siri** — Start or stop dictation and meetings, retrieve the last dictation or meeting notes, and connect these actions to your own automations.
-- **Voice commands** — Use the optional Computer Use planner for app and browser actions or supported Muesli settings. Choose on-device Gemma on macOS 15+ or a connected ChatGPT account. AI prompt settings remain manual-only.
 - **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
 - **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
+
+### Experimental features
+
+Opt in under **Settings → Experimental**; availability depends on your build and model setup.
+
+- **[Time Turner](docs/visual-memory.md)** — Search local screen history by text, app, and date, generate source-linked daily recaps with your selected meeting model, and retrieve OCR and screenshots through `muesli-cli time-turner`.
+- **Computer Use voice commands** — Control apps, browsers, and supported muesli settings with on-device Gemma on macOS 15+ or a connected ChatGPT account; AI prompt settings remain manual-only.
+- **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
+- **Cotypist typeahead (development builds)** — Get on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word.
 
 ---
 
@@ -148,12 +157,13 @@ Choose and download models in the **Models** tab. English defaults to Parakeet U
 | Gemma 4 E2B / E4B | On-device dictation, cleanup, Quill and Computer Use; macOS 15+ | 3.6 GB / 5.2 GB |
 | Muesli Cleanup Lite | Qwen 3.5 0.8B with extended fine-tuning and app and screen context; MLX 8-bit | 820 MB |
 | Muesli Pro Cleanup | Fine-tuned LFM 2.5, Qwen 3.5 or Gemma 4 with app and screen context | 731 MB–2.6 GB |
+| Cotypist | Qwen 3.5 0.8B base (default), Qwen 3.5 2B base, or Gemma 4 E2B base; MLX 4-bit | 424 MB / 1.06 GB / 3.6 GB |
 
 Download sizes are storage estimates, not RAM requirements. Gemma's optional MTP assistant adds about 190 MB per model family; E2B and Gemma Pro Cleanup share an assistant. Gemma cannot be selected for transcription and cleanup simultaneously.
 
 Gemma uses MLX Swift LM for generation and a native Swift/MLX audio encoder. Multi-token prediction (MTP) is on by default when verified assistant weights are available. If those weights cannot be downloaded or loaded, the main model remains usable with ordinary decoding. Computer Use keeps its tool-call grammar and validation in either mode. The app no longer packages LiteRT.
 
-Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. Cleanup Lite and Qwen Pro Cleanup use the same native MLX-Swift-LM integration with 8-bit weights. LFM and S1-mini retain LLM.swift's llama.cpp runtime.
+Gemma models prepare before recording, with progress shown in the recording indicator. First use and long idle periods can still take longer; further latency optimization is ongoing. Cleanup Lite and Qwen Pro Cleanup use the same native MLX-Swift-LM integration with 8-bit weights, as do Cotypist's base models (4-bit, no new runtime). LFM and S1-mini retain LLM.swift's llama.cpp runtime.
 
 Live transcription is off by default. Apple Speech and Nemotron provide live and final transcripts; Parakeet Realtime EOU provides an English preview alongside a separate final meeting model. Enable it under **Settings → Meetings → Transcription**.
 
@@ -198,6 +208,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development builds and tests, [AGENTS
 
 Contributions require a DCO sign-off and disclosure of material AI assistance, as described in the contribution guide.
 
+For manual watchdog and failed-streaming recovery QA, see [Dev C failure simulations](docs/dictation-recovery-dev-testing.md). The one-shot controls are Debug-only and do not alter microphone permissions or CoreAudio.
+
 ---
 
 ## Support
@@ -209,6 +221,8 @@ For help, use the [support guide](https://muesli.works/help) or [open an issue](
 ---
 
 ## Acknowledgements
+
+[Screenpipe](https://github.com/screenpipe/screenpipe) informed Time Turner’s local visual-memory architecture. Muesli implements capture, OCR, and media storage independently in Swift using Apple frameworks.
 
 Muesli has been possible because of the generosity of companies such as:
 
@@ -231,6 +245,7 @@ Muesli has been possible because of the generosity of companies such as:
 - [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) by Apple — system audio fallback capture
 - [Parakeet Redux by Moondream](https://huggingface.co/moondream/parakeet-redux), based on NVIDIA Parakeet v3, with the [Core ML conversion by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) — model weights under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Muesli uses the converted weights without further modification.
 - [Phonon-2.5 by Fermion Research](https://huggingface.co/FermionResearch/Phonon-2.5), with the [Muesli Core ML conversion](https://huggingface.co/Muesli-HQ/phonon-2.5-coreml) — [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Uses the GPU encoder on macOS 15+; original notices and conversion attribution are included.
+- [MedASR by Google](https://huggingface.co/google/medasr), with the [Muesli Core ML conversion](https://huggingface.co/Muesli-HQ/medasr-coreml) — English medical dictation under the HAI-DEF terms; see [setup and runtime details](docs/medasr.md).
 - [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — FastConformer TDT speech recognition model
 - [Cohere Transcribe](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) — 2B parameter autoregressive ASR (#1 Open ASR Leaderboard)
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) — Multilingual speech recognition (52 languages)

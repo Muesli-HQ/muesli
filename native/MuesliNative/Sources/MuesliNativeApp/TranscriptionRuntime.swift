@@ -121,7 +121,7 @@ actor TranscriptionCoordinator {
     private static let defaultDiarizerLoadOperationTimeout: Duration = .seconds(300)
 
     static let explicitlyRoutedBackendIdentifiers: Set<String> = [
-        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
+        "whisper", "nemotron35", "parakeet-unified", "qwen", "cohere", "medasr", "bodhan", "sensevoice", "gemma4-litert", "apple-speech",
     ]
 
     private let fluidTranscriber: FluidAudioTranscriber
@@ -132,7 +132,165 @@ actor TranscriptionCoordinator {
     private let libraryModelDownload: LibraryModelDownload
     private let libraryModelPreparation: ModelLibraryPreparation
     private let parakeetUnifiedTranscriber = ParakeetUnifiedTranscriber()
+    // Display-only Quill ASR must not depend on ANE availability while Gemma is running.
+    private let quillPreviewTranscriber = ParakeetUnifiedTranscriber(cpuOnly: true)
     private let whisperTranscriber = WhisperKitTranscriber()
+
+    /// Constructs a preview session over already-loaded models. No microphone,
+    /// download, cleanup, or durable transcript ownership belongs to this layer.
+    nonisolated func makeBufferedTranscriptionSession(
+        backend: BackendOption,
+        whisperLanguage: WhisperKitLanguage,
+        parakeetLanguage: ParakeetLanguage,
+        bodhanLanguage: BodhanLanguage = .defaultLanguage,
+        bodhanOutputMode: BodhanOutputMode = .mixed,
+        onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws -> BufferedTranscriptionSession {
+        guard backend.supportsBufferedLiveTranscription else {
+            throw NSError(domain: "MuesliBufferedTranscription", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Live previews require a supported Parakeet, WhisperKit, or Bodhan model."])
+        }
+        if backend.backend == "bodhan" {
+            let metadata = BodhanPreviewMetadata()
+            return BufferedTranscriptionSession(decodeWithoutTimings: { samples in
+                try await self.transcribeBufferedBodhan(samples: samples, modelID: backend.model,
+                    language: bodhanLanguage, outputMode: bodhanOutputMode,
+                    onLanguageSample: { metadata.append($0) })
+            }, measurement: { text in
+                metadata.measurement(text: text, modelID: backend.model, outputMode: bodhanOutputMode)
+            }, onSilentAudio: { metadata.advanceSilentAudio(samples: $0) }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        if backend.backend == "whisper" {
+            let transcriber = whisperTranscriber
+            let expectedModel = backend.model
+            return BufferedTranscriptionSession(configuration: .whisper, decode: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel
+                )
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(
+                    samples: samples, language: whisperLanguage, expectedModel: expectedModel,
+                    requiresWordTimings: false
+                ).text
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        if backend == .parakeetUnified {
+            let transcriber = parakeetUnifiedTranscriber
+            return BufferedTranscriptionSession(decode: { samples in
+                try await transcriber.transcribePreview(samples: samples)
+            }, decodeWithoutTimings: { samples in
+                try await transcriber.transcribePreview(samples: samples, requiresWordTimings: false).text
+            }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+        }
+        let transcriber = fluidTranscriber
+        let version = FluidAudioModel.version(for: backend.model)
+        return BufferedTranscriptionSession(decode: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: version
+            )
+        }, decodeWithoutTimings: { samples in
+            try await transcriber.transcribePreview(
+                samples: samples, language: parakeetLanguage == .auto ? nil : parakeetLanguage.rawValue,
+                expectedVersion: version, requiresWordTimings: false
+            ).text
+        }, onUpdate: onUpdate, onFailure: onFailure, onDiagnostic: onDiagnostic)
+    }
+    /// Quill observes the selected local dictation recognizer without inserting text.
+    nonisolated func makeQuillQuestionRecognition(backend: BackendOption, config: AppConfig,
+        directAudio: Bool, onUpdate: @escaping @Sendable (BufferedTranscriptionUpdate) -> Void,
+        onFailure: @escaping @Sendable (Error) -> Void) throws -> QuillQuestionRecognition {
+        let preparation = QuillRecognitionPreparation()
+        let session: BufferedTranscriptionSession?
+        if backend.supportsBufferedLiveTranscription {
+            session = try makeBufferedTranscriptionSession(backend: backend,
+                whisperLanguage: config.resolvedWhisperLanguage, parakeetLanguage: config.resolvedParakeetLanguage,
+                bodhanLanguage: config.resolvedBodhanLanguage, bodhanOutputMode: config.resolvedBodhanOutputMode,
+                onUpdate: onUpdate, onFailure: onFailure)
+        } else if backend.backend != "gemma4-litert" {
+            // File-oriented local recognizers use the same bounded, coalescing
+            // PCM windows as dictation. Only one decode runs at a time.
+            session = BufferedTranscriptionSession(decodeWithoutTimings: { samples in
+                let url = try WavWriter.writeTemporaryWAV(samples: samples)
+                defer { try? FileManager.default.removeItem(at: url) }
+                return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config, preparation: preparation, applyDictionary: false)
+            }, onUpdate: onUpdate, onFailure: onFailure)
+        } else {
+            // Do not run another Gemma decode alongside direct-audio reasoning.
+            session = nil
+        }
+        return QuillQuestionRecognition(session: session, finalizeBuffered: { text in
+            await self.finalizeQuillQuestion(text, backend: backend, config: config)
+        }, transcribeFile: { url in
+            if directAudio && backend.backend == "gemma4-litert" {
+                let text = try await self.transcribeQuilDisplayAudio(at: url, previewOnly: true)
+                return await self.finalizeQuillQuestion(text, backend: backend, config: config)
+            }
+            return try await self.transcribeQuillQuestionAudio(at: url, backend: backend, config: config, preparation: preparation)
+        })
+    }
+
+    private func transcribeQuillQuestionAudio(at url: URL, backend: BackendOption, config: AppConfig, preparation: QuillRecognitionPreparation, applyDictionary: Bool = true) async throws -> String {
+        try await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
+            try await transcribeQuillQuestionAudioWithoutLogging(at: url, backend: backend, config: config,
+                preparation: preparation, applyDictionary: applyDictionary)
+        }
+    }
+
+    private func transcribeQuillQuestionAudioWithoutLogging(at url: URL, backend: BackendOption, config: AppConfig,
+        preparation: QuillRecognitionPreparation, applyDictionary: Bool) async throws -> String {
+        try Task.checkCancellation()
+        // Never download an alternate recognizer for an optional display preview.
+        guard backend.isDownloaded else { throw QuilTransformationError.modelUnavailable }
+        do {
+            try await preparation.ensure {
+                try await self.preloadRequired(backend: backend, enablePostProcessor: false, includeMeetingHelpers: false,
+                    appleSpeechLanguage: config.resolvedAppleSpeechLanguage)
+            }
+            try Task.checkCancellation()
+            return try await transcribeDictation(at: url, backend: backend,
+                cohereLanguage: config.resolvedCohereLanguage,
+                bodhanLanguage: config.resolvedBodhanLanguage, bodhanOutputMode: config.resolvedBodhanOutputMode,
+                whisperLanguage: config.resolvedWhisperLanguage, qwen3AsrLanguage: config.resolvedQwen3AsrLanguage,
+                parakeetLanguage: config.resolvedParakeetLanguage, appleSpeechLanguage: config.resolvedAppleSpeechLanguage,
+                enablePostProcessor: false, customWords: applyDictionary ? quillCustomWords(config) : []).text
+        } catch {
+            try Task.checkCancellation()
+            guard backend == .parakeetUnified else { throw error }
+            // Recover the observed ANE failure using the same selected model on CPU.
+            let text = try await transcribeQuilDisplayAudio(at: url, previewOnly: true)
+            return await finalizeQuillQuestion(text, backend: backend, config: config)
+        }
+    }
+
+    private func quillCustomWords(_ config: AppConfig) -> [[String: Any]] {
+        config.customWords.map { word in
+            var entry: [String: Any] = ["word": word.word, "matchingThreshold": word.matchingThreshold]
+            entry["replacement"] = word.replacement
+            return entry
+        }
+    }
+
+    func finalizeQuillQuestion(_ text: String, backend: BackendOption, config: AppConfig) async -> String {
+        await TranscriptCleanupDebugLogger.$suppressContentLogging.withValue(true) {
+            await finalizeDictationTranscript(.init(text: text, segments: []), backend: backend,
+                enablePostProcessor: false, customWords: quillCustomWords(config)).text
+        }
+    }
+
+    private func transcribeBufferedBodhan(samples: [Float], modelID: String,
+                                         language: BodhanLanguage, outputMode: BodhanOutputMode,
+                                         onLanguageSample: @Sendable (BodhanLanguageSample) -> Void) async throws -> String {
+        guard #available(macOS 15, *) else {
+            throw NSError(domain: "BodhanASR", code: 32,
+                          userInfo: [NSLocalizedDescriptionKey: "Bodhan requires macOS 15 or later."])
+        }
+        return try await bodhanTranscriber.transcribePreview(samples: samples, modelID: modelID,
+                                                            language: language, outputMode: outputMode, onLanguageSample: onLanguageSample)
+    }
+
     private var _qwen3Transcriber: Any?
     private var _qwen3PostProcessor: Any?
     private var _cohereTranscriber: Any?
@@ -142,6 +300,7 @@ actor TranscriptionCoordinator {
     private var _appleSpeechTranscriber: Any?
     private let appleSpeechLifecycle = AppleSpeechUseLifecycle()
     private let senseVoiceTranscriber = SenseVoiceTranscriber()
+    private let medASRTranscriber = MedASRTranscriber()
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var isDiarizerLoadInProgress = false
@@ -219,6 +378,22 @@ actor TranscriptionCoordinator {
         }
     }
 
+    /// Drops loaded cleanup engines so the next request loads freshly installed weights.
+    /// In-flight requests keep the manager they already hold.
+    /// Waits for in-flight loads of the cleanup model in `directory` before an update replaces it.
+    func waitForLocalPostProcessorLoads(modelDirectory directory: URL) async {
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.waitForLoads(in: directory)
+        }
+    }
+
+    /// Drops cached engines for the cleanup model in `directory` after an update replaced it.
+    func invalidateLocalPostProcessor(modelDirectory directory: URL) async {
+        if #available(macOS 15, *), let postProcessor = _qwen3PostProcessor as? Qwen3PostProcessor {
+            await postProcessor.invalidateModels(in: directory)
+        }
+    }
+
     func unloadNemotron35Transcriber() async {
         if #available(macOS 15, *), let transcriber = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
             await transcriber.shutdown()
@@ -250,6 +425,7 @@ actor TranscriptionCoordinator {
 
     func unloadParakeetUnifiedTranscriber() async {
         await parakeetUnifiedTranscriber.shutdown()
+        await quillPreviewTranscriber.shutdown()
     }
 
     func unloadQwen3Transcriber() async {
@@ -355,16 +531,46 @@ actor TranscriptionCoordinator {
 
     /// Local ASR for short-audio display previews and required long-audio text fallback.
     /// Never downloads artifacts; callers decide whether failure is optional or fatal.
-    func transcribeQuilDisplayAudio(at url: URL) async throws -> String {
+    func transcribeQuilDisplayAudio(at url: URL, previewOnly: Bool = false) async throws -> String {
+        let transcriber = previewOnly ? quillPreviewTranscriber : parakeetUnifiedTranscriber
         guard BackendOption.parakeetUnified.isDownloaded else {
             throw ParakeetUnifiedTranscriber.TranscriberError.notLoaded
         }
         try Task.checkCancellation()
-        try await parakeetUnifiedTranscriber.loadModels(localOnly: true)
+        try await transcriber.loadModels(localOnly: true)
         try Task.checkCancellation()
-        let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
+        let result = try await transcriber.transcribe(wavURL: url)
         try Task.checkCancellation()
         return result.text
+    }
+
+    func respondToQuill(_ request: QuillAssistantRequest, audioURL: URL?, model: String,
+                        config: AppConfig) async throws -> QuillAssistantAction {
+        let backend = TranscriptCleanupBackendOption.resolved(config.quilBackend)
+        let request = request.bounded(for: backend)
+        try QuilModelPolicy.validate(selectedText: request.selectedText, backend: backend, model: model)
+        let prompt = try request.prompt()
+        if backend == .gemma4LiteRT {
+            guard #available(macOS 15, *) else { throw QuilTransformationError.unsupportedModel }
+            let gemma = Gemma4LiteRTModel.resolved(model)
+            guard Gemma4LiteRTModelStore.isAvailableLocally(model: gemma) else { throw QuilTransformationError.modelUnavailable }
+            let tools = request.tools.map { ["type": "function", "function": $0.filter { ["name", "description", "parameters"].contains($0.key) }] as [String: Any] }
+            let schema = String(decoding: try JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
+            let raw: String
+            if let audioURL {
+                let result = try await nativeGemma(for: gemma).transcribe(wavURL: audioURL, model: gemma,
+                    systemPrompt: QuillAssistantRequest.system + "\nThe attached audio is the current user request. Understand it directly; do not transcribe it.",
+                    userPrompt: prompt, maxOutputTokens: 4096, toolsJSON: schema)
+                guard !result.skippedSilence else { throw QuilTransformationError.emptyInstruction }
+                raw = result.text
+            } else {
+                raw = try await nativeGemma(for: gemma).generateToolResponse(systemPrompt: QuillAssistantRequest.system,
+                    userPrompt: prompt, model: gemma, toolsJSON: schema, maxOutputTokens: 4096)
+            }
+            try Task.checkCancellation()
+            return try request.decodeNative(raw)
+        }
+        return try await QuillAssistantClient.generate(request, config: config, model: model)
     }
 
     func transformAudioForQuil(
@@ -505,6 +711,8 @@ actor TranscriptionCoordinator {
 
     private func logPostProcPair(raw: String, processed: String, model: String, asr: String) {
         guard Qwen3PostProcessorLogging.isPairLoggingEnabled else { return }
+        do { try ContentPrivacy.shared.beginWrite() } catch { return }
+        defer { ContentPrivacy.shared.endWrite() }
         let logURL = AppIdentity.supportDirectoryURL.appendingPathComponent("postproc-pairs.jsonl")
         let iso8601 = ISO8601DateFormatter()
         iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -563,7 +771,7 @@ actor TranscriptionCoordinator {
             progress("Preparing \(entry.model.label)… Mic off")
             try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
         }, optionalFailure: { entry, error in
-            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         })
     }
 
@@ -646,7 +854,7 @@ actor TranscriptionCoordinator {
                 progressSnapshot: progressSnapshot
             )
         } catch {
-            fputs("[muesli-native] preload failed for \(backend.backend)/\(backend.model): \(error)\n", stderr)
+            fputs("[muesli-native] preload failed for \(backend.backend)/\(backend.model): \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         }
     }
 
@@ -659,6 +867,29 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        return try await AnalyticsAttempt.measure(
+            [.onboarding, .modelLibrary].contains(meetingHelperTrigger) ? .model_setup : nil,
+            fields: [.stage: .setup], model: .catalog(provider: backend.backend, model: backend.model)) {
+
+        if backend.backend == "medasr" { try MedASRLicense.shared.requireAcceptance() }
+        if backend.backend == "medasr", meetingHelperTrigger == .modelLibrary {
+            try await libraryModelPreparation.run {
+                _ = try await ManagedASRModelDownloader.downloadIfNeeded(MedASRModel.plan(),
+                    progress: progress, progressSnapshot: progressSnapshot)
+            } onQueued: {
+                progressSnapshot?(.preparing(modelID: backend.model, message: "Waiting to prepare MedASR..."))
+            } prepare: {
+                let transcriber = MedASRTranscriber()
+                do {
+                    try await transcriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
+                    await transcriber.shutdown()
+                } catch {
+                    await transcriber.shutdown()
+                    throw error
+                }
+            }
+            return
+        }
         if backend.backend == "fluidaudio", meetingHelperTrigger == .modelLibrary {
             // A library download is not a selection: validate in a disposable runtime
             // so independent downloads cannot cancel or replace the active manager.
@@ -742,6 +973,8 @@ actor TranscriptionCoordinator {
                     NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
                 ])
             }
+        case "medasr":
+            try await medASRTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
         case "cohere":
             if #available(macOS 15, *) {
                 try await cohereTranscriber.prepare(progress: progress, progressSnapshot: progressSnapshot)
@@ -791,6 +1024,7 @@ actor TranscriptionCoordinator {
         }
 
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
+        }
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
@@ -804,7 +1038,7 @@ actor TranscriptionCoordinator {
                 vadManager = try await vadLoader()
                 fputs("[muesli-native] Silero VAD loaded\n", stderr)
             } catch {
-                fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
+                fputs("[muesli-native] VAD load failed (non-critical): \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
@@ -1074,7 +1308,7 @@ actor TranscriptionCoordinator {
                         return SpeechTranscriptionResult(text: "", segments: [])
                     }
                 } catch {
-                    fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
+                    fputs("[muesli-native] VAD check failed, transcribing anyway: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 }
             }
             let asrStart = ProcessInfo.processInfo.systemUptime
@@ -1084,7 +1318,7 @@ actor TranscriptionCoordinator {
                     TranscriptCleanupDebugLogger.timing("asr_failed", since: asrStart, detail: backend.backend)
                 }
             }
-            var result = try await route(
+            let result = try await route(
                 url: url,
                 backend: backend,
                 cohereLanguage: cohereLanguage,
@@ -1097,16 +1331,38 @@ actor TranscriptionCoordinator {
             )
             asrSucceeded = true
             TranscriptCleanupDebugLogger.timing("asr_completed", since: asrStart, detail: backend.backend)
+            return await finalizeDictationTranscript(
+                result, backend: backend, enablePostProcessor: enablePostProcessor,
+                customWords: customWords, appContext: appContext,
+                timingRequestID: timingRequestID
+            )
+        }
+    }
+
+    /// Both full-recording ASR and a verified, drained stream use exactly the
+    /// same artifact removal, optional local cleanup, and custom dictionary.
+    func finalizeDictationTranscript(
+        _ transcript: SpeechTranscriptionResult,
+        backend: BackendOption,
+        enablePostProcessor: Bool = false,
+        customWords: [[String: Any]] = [],
+        appContext: String? = nil,
+        timingRequestID: String? = nil
+    ) async -> SpeechTranscriptionResult {
+        await TranscriptCleanupDebugLogger.$requestID.withValue(
+            timingRequestID ?? TranscriptCleanupDebugLogger.requestID ?? UUID().uuidString
+        ) {
             // WBCS describes the original Bodhan transcription of spoken words.
             // Cleanup and custom-word replacement can change displayed text, so
             // preserve the ASR measurement separately from that final text.
+            var result = transcript
             let rawASRText = result.text
             let bodhanMeasurement = result.bodhanMeasurement
             result = removeArtifacts(result)
             if !result.text.isEmpty {
                 Qwen3PostProcessorLogging.logVerbose("Dictation raw transcript after artifact cleanup: \(result.text)")
             }
-            // Capture this after ASR awaits. The snapshot is then passed through the
+            // Capture this after recognition finishes. The snapshot is then passed through the
             // complete cleanup path, so a model switch cannot change the model or
             // empty-output policy for this dictation.
             let postProcessorSnapshot = currentPostProcessorSnapshot()
@@ -1120,7 +1376,7 @@ actor TranscriptionCoordinator {
             ) ?? removeFillersWithLogging(result)
             TranscriptCleanupDebugLogger.timing("cleanup_total", since: cleanupStart,
                                                 detail: "enabled=\(enablePostProcessor) model=\(postProcessorSnapshot.modelId)")
-            let final = applyCustomWords(result, customWords: customWords)
+            let final = removeArtifacts(applyCustomWords(result, customWords: customWords), preservingLayout: true)
             TranscriptCleanupDebugLogger.append(
                 status: "dictation_final", cleanupBackend: postProcessorSnapshot.backend,
                 cleanupModel: postProcessorSnapshot.modelId, asrBackend: backend.backend,
@@ -1176,7 +1432,10 @@ actor TranscriptionCoordinator {
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
     ) async throws -> SpeechTranscriptionResult {
-        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
+        let analytics = AnalyticsAttempt(.meeting_transcription, fields: [.source: .postprocess],
+            model: .catalog(provider: backend.backend, model: backend.model))
+        defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
+        let result = try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
             try await self.transcribeMeetingChunk(
                 at: chunk,
                 backend: backend,
@@ -1189,6 +1448,8 @@ actor TranscriptionCoordinator {
                 appleSpeechLanguage: appleSpeechLanguage
             )
         }, progress: progress)
+        analytics.finish(.success)
+        return result
     }
 
     func transcribeMeetingChunk(
@@ -1213,7 +1474,7 @@ actor TranscriptionCoordinator {
                     return SpeechTranscriptionResult(text: "", segments: [])
                 }
             } catch {
-                fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
+                fputs("[muesli-native] VAD check failed, transcribing anyway: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
         return cleanMeetingTranscript(try await route(
@@ -1271,8 +1532,10 @@ actor TranscriptionCoordinator {
     func shutdown() async {
         await fluidTranscriber.shutdown()
         await parakeetUnifiedTranscriber.shutdown()
+        await quillPreviewTranscriber.shutdown()
         await whisperTranscriber.shutdown()
         await senseVoiceTranscriber.shutdown()
+        await medASRTranscriber.shutdown()
         if #available(macOS 15, *) {
             if let nemotron35 = _nemotron35Transcriber as? Nemotron35StreamingTranscriber {
                 await nemotron35.shutdown()
@@ -1308,9 +1571,11 @@ actor TranscriptionCoordinator {
         removeFillers(removeArtifacts(result))
     }
 
-    private func removeArtifacts(_ result: SpeechTranscriptionResult) -> SpeechTranscriptionResult {
-        let filtered = TranscriptionEngineArtifactsFilter.apply(result.text)
-        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments)
+    private func removeArtifacts(_ result: SpeechTranscriptionResult, preservingLayout: Bool = false) -> SpeechTranscriptionResult {
+        let filtered = preservingLayout
+            ? TranscriptionEngineArtifactsFilter.applyPreservingLayout(result.text)
+            : TranscriptionEngineArtifactsFilter.apply(result.text)
+        let segments = filtered.isEmpty ? [] : TranscriptionEngineArtifactsFilter.apply(to: result.segments, preservingLayout: preservingLayout)
         return SpeechTranscriptionResult(text: filtered, segments: segments)
     }
 
@@ -1333,21 +1598,28 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Cleanup skipped: incompatible transcription and cleanup models")
             return nil
         }
+        let analytics = AnalyticsAttempt(.cleanup, model: .catalog(provider: postProcessorSnapshot.backend.backend, model: postProcessorSnapshot.modelId))
+        var analyticsSucceeded = false
+        defer { analytics.finish(Task.isCancelled ? .cancelled : (analyticsSucceeded ? .success : .failed)) }
         if postProcessorSnapshot.backend.isGemma4LiteRT {
-            return await postProcessDictationWithGemma4(
+            let cleaned = await postProcessDictationWithGemma4(
                 result,
                 backend: backend,
                 postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             )
+            analyticsSucceeded = cleaned != nil
+            return cleaned
         }
         if postProcessorSnapshot.backend.llmBackend != nil {
-            return await postProcessDictationWithHostedBackend(
+            let cleaned = await postProcessDictationWithHostedBackend(
                 result,
                 backend: backend,
                 postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             )
+            analyticsSucceeded = cleaned != nil
+            return cleaned
         }
         guard #available(macOS 15, *) else {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: requires macOS 15+")
@@ -1402,6 +1674,7 @@ actor TranscriptionCoordinator {
                 cleanupOutputText: trimmed,
                 elapsedMs: elapsedMs
             )
+            analyticsSucceeded = true
             return SpeechTranscriptionResult(
                 text: trimmed,
                 // Original ASR segments describe pre-cleanup text. Keep them only for debug diagnostics.
@@ -1588,13 +1861,16 @@ actor TranscriptionCoordinator {
             let language = backend.supportsWhisperLanguageSelection
                 ? whisperLanguage
                 : WhisperKitLanguage.defaultLanguage
-            return try await transcribeWithWhisperKit(url: url, language: language)
+            return try await transcribeWithWhisperKit(url: url, language: language, expectedModel: backend.model)
         case "nemotron35":
             return try await transcribeWithNemotron35(url: url)
         case "parakeet-unified":
             return try await transcribeWithParakeetUnified(url: url)
         case "qwen":
             return try await transcribeWithQwen3(url: url, language: qwen3AsrLanguage)
+        case "medasr":
+            let result = try await medASRTranscriber.transcribe(wavURL: url)
+            return SpeechTranscriptionResult(text: result.text, segments: [])
         case "cohere":
             return try await transcribeWithCohere(url: url, language: cohereLanguage)
         case "bodhan":
@@ -1612,16 +1888,17 @@ actor TranscriptionCoordinator {
             }
             throw AppleSpeechAnalyzerError.unavailable
         default:
-            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage)
+            return try await transcribeWithFluidAudio(url: url, language: parakeetLanguage,
+                expectedModelID: backend.model)
         }
     }
 
     // MARK: - FluidAudio (Parakeet on ANE)
 
-    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage) async throws -> SpeechTranscriptionResult {
+    private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedModelID: String) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
-        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode)
-        fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedModelID: expectedModelID)
+        fputs("[muesli-native] FluidAudio result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
             SpeechSegment(start: timing.startTime, end: timing.endTime, text: timing.token)
@@ -1637,7 +1914,7 @@ actor TranscriptionCoordinator {
     private func transcribeWithParakeetUnified(url: URL) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with Parakeet Unified: \(url.lastPathComponent)\n", stderr)
         let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
-        fputs("[muesli-native] Parakeet Unified result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] Parakeet Unified result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1649,11 +1926,12 @@ actor TranscriptionCoordinator {
 
     private func transcribeWithWhisperKit(
         url: URL,
-        language: WhisperKitLanguage
+        language: WhisperKitLanguage,
+        expectedModel: String
     ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
-        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language)
-        fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        let result = try await whisperTranscriber.transcribe(wavURL: url, language: language, expectedModel: expectedModel)
+        fputs("[muesli-native] WhisperKit result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1667,7 +1945,7 @@ actor TranscriptionCoordinator {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
             let result = try await qwen3Transcriber.transcribe(wavURL: url, language: language.pinnedCode)
-            fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Qwen3 ASR result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,
@@ -1680,12 +1958,16 @@ actor TranscriptionCoordinator {
         }
     }
 
+    func unloadMedASRTranscriber() async {
+        await medASRTranscriber.shutdown()
+    }
+
     // MARK: - SenseVoiceSmall (FunASR via FluidAudio/CoreML)
 
     private func transcribeWithSenseVoice(url: URL) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with SenseVoice: \(url.lastPathComponent)\n", stderr)
         let result = try await senseVoiceTranscriber.transcribe(wavURL: url)
-        fputs("[muesli-native] SenseVoice result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] SenseVoice result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1731,7 +2013,7 @@ actor TranscriptionCoordinator {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Cohere Transcribe: \(url.lastPathComponent)\n", stderr)
             let result = try await cohereTranscriber.transcribe(wavURL: url, language: language)
-            fputs("[muesli-native] Cohere Transcribe result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Cohere Transcribe result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,
@@ -1781,7 +2063,7 @@ actor TranscriptionCoordinator {
             fputs("[muesli-native] transcribing with Nemotron 3.5: \(url.lastPathComponent)\n", stderr)
             let transcriber = try await getLoadedNemotron35Transcriber()
             let result = try await transcriber.transcribe(wavURL: url)
-            fputs("[muesli-native] Nemotron 3.5 result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Nemotron 3.5 result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,

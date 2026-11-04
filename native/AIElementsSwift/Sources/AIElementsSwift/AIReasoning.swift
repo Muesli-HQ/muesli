@@ -38,7 +38,7 @@ public struct AIReasoning: View {
     public var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             if !summary.isEmpty {
-                AIResponse(summary, inlineContent: Self.summaryInlineContent).font(.system(size: 12))
+                AIResponse(summary, inlineContent: Self.summaryInlineContent).font(theme.font(size: 12))
                     .foregroundStyle(theme.muted)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -54,10 +54,10 @@ public struct AIReasoning: View {
                     } else {
                         AIShimmer(state.label)
                     }
-                }.font(.system(size: 12, weight: .medium))
+                }.font(theme.font(size: 12, weight: .medium))
                 Spacer(minLength: 8)
                 if let duration = Self.durationLabel(elapsedSeconds) {
-                    Text(duration).font(.system(size: 11).monospacedDigit())
+                    Text(duration).font(theme.font(size: 11).monospacedDigit())
                         .foregroundStyle(theme.muted)
                         .accessibilityLabel("Elapsed \(duration)")
                 }

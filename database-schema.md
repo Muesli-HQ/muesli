@@ -7,7 +7,8 @@ way to evolve the schema. The executable source of truth remains
 That entry point also delegates to [MeetingChatSQL](native/MuesliNative/Sources/MuesliCore/MeetingChatSQL.swift)
 and [MeetingVideoStore](native/MuesliNative/Sources/MuesliCore/MeetingVideoStore.swift).
 Retrieval initializes its FTS index lazily, and `importGranola` creates import
-provenance on demand. Update this guide whenever these schemas change.
+provenance on demand. `TimeTurnerRecapStore` lazily creates the local daily-recap
+table when the Recap tab is first used. Update this guide whenever these schemas change.
 
 ## Where the database lives
 
@@ -22,11 +23,177 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### Anonymous analytics preference outside SQLite
+
+The About opt-out uses bundle-local UserDefaults keys
+`muesli.disableAnonymousAnalytics` (absent means false) and
+`muesli.analyticsConsentGeneration` (absent means the pre-opt-out generation).
+These are not AppConfig, SQLite, CloudKit, history, export or CLI fields. The
+consent generation is an internal queue-rejection token stripped before upload;
+it is not a transmitted user or session identifier.
+
+### Privacy mode and ephemeral activity
+
+The bundle-local UserDefaults flag `muesli.privateMode` defaults to false and is
+owned by `ContentPrivacy`, independently of anonymous-analytics consent. Enabling
+immediately revokes earlier session tokens. Writes admitted before the switch
+can finish in the background. Turning the flag off never makes a private
+or revoked session saveable. No token enters telemetry, exports or CloudKit.
+
+Normal dictations, recovery retries, Quill turns/late previews, CUA commands and
+traces, and Cotypist suggestions refuse local content writes under this policy.
+Already-saved records from other devices sync normally, including iPhone dictations.
+Meeting records, notes and audio/video retain their existing
+storage behavior. Existing history is not deleted. Settings/preferences remain
+persistent; this is an activity-retention policy, not a read-only application.
+
+Private meeting chat opens the main database read-only and shadows chat/history
+and retrieval-index tables in SQLite TEMP tables with `temp_store=MEMORY`.
+These tables never spill to disk. Saved meeting sources remain live/read-only;
+source-version changes invalidate affected answers and rolling memory. The
+in-memory workspace is isolated by privacy epoch and discarded on mode changes
+or process exit. Existing durable chat sessions are not copied into it. Chat
+source validation still applies; private answers must not reuse deleted evidence.
+
+Time Turner and Cotypist pause without changing their enablement preferences.
+Pending captures recheck admission before file/database writes. Recaps can be
+generated and displayed but are not saved. Dictation and Quill recovery backups
+are suppressed; temporary working audio follows normal completion/cancellation
+cleanup. Content-bearing debug logs stay suppressed for the rest of a process
+that has entered Privacy mode. Anonymous finite lifecycle events remain governed
+by the separate analytics switch; unsaved private dictations do not contribute
+to the saved-word baseline or daily word counts.
+
+### Local word analytics checkpoint outside SQLite
+
+`DictationWordAnalytics` owns `analytics-word-count.json` beside the active
+`muesli.db`. Version 1 stores only a baseline-attempted flag, local consent
+generation, UTC day number and pending word count. It is not synced, exported,
+or exposed through the CLI. Atomic writes run on a utility queue. Corrupt,
+unknown-version or unwritable checkpoints fail closed. Retain this file when
+reinstalling the app; deleting/restoring application support can invalidate the
+one-time baseline guarantee.
+
+`DictationStore.localDictationWordBaseline()` reads numeric columns only in one
+snapshot. It includes undeleted `source = dictation` rows with no cloud record
+name, or with local-only transcription backend provenance. Ambiguous old synced
+rows are excluded, including locally created old rows whose origin cannot be
+established. Other activity types and deleted history are excluded. This is a
+conservative recoverable baseline, not an exact all-time user total.
+
+The store's optional `onLocalDictationWords` observer receives only the saved row
+ID and the already computed word count after a successful normal local insert.
+It never runs for sync upserts or recovery retries. The app observer only queues
+work; it does no disk or network work on the insertion thread. The startup
+snapshot's maximum ID prevents a racing save from entering both baseline and
+delta. Row IDs stay in memory; the pending total survives history deletion.
+
+### Credentials outside SQLite
+
+`ConfigStore` retains hydrated provider credentials in memory but serializes empty
+credential fields to `config.json`. OpenAI, Anthropic, custom API keys, custom
+credential commands and request headers share a typed Keychain item. OpenRouter,
+ChatGPT OAuth and Google Calendar OAuth use separate items. The service namespace
+is derived from the standardized application-support directory, separating stable
+and development lanes while allowing the app and its bundled CLI to share access.
+Environment-provided keys remain external to this migration.
+
+Migration reads existing config/auth JSON, writes Keychain, verifies the stored
+bytes, then removes the old plaintext fields/file. A failed or locked Keychain
+leaves the legacy copy intact for retry; new secret saves never fall back to
+plaintext. Existing valid Keychain data takes precedence over stale files.
+Credential writes fail visibly rather than silently losing a new key. These
+credentials are local-only, not SQLite rows, CloudKit fields, chat exports or
+telemetry. See [credential storage](docs/credential-storage.md).
+Failed config credential reads leave the stored item unmodified: an existing
+item must be successfully hydrated before a later save may replace or clear it.
+Observer reads cannot hydrate the owner's save baseline. The standalone CLI
+reads OpenRouter credentials without migrating or deleting legacy files; migration
+requires the app or its bundled CLI. Rotated ChatGPT tokens remain only in memory
+if Keychain persistence fails, with a retry on their next use.
+
+### App formatting preferences outside SQLite
+
+`ConfigStore` saves dictation formatting preferences in the local `AppConfig`
+JSON, not in the history database. `dictation_app_formatting_rules` contains
+bundle IDs, display names and complete formatting snapshots. An optional
+`templateID` identifies the template from which a rule was copied; older rules
+without it still decode without changing their formatting. Combinations that
+do not match a built-in or saved template appear as Custom, including rules
+that previously used the retired Lowercase template.
+`dictation_formatting_templates` stores named user templates with stable IDs and
+formatting snapshots, defaulting to an empty list for older configurations.
+Entries decode independently: malformed entries or unsupported enum values are
+skipped without dropping valid neighboring rules/templates. Missing formatting
+objects or fields default to keeping capitalization and the final period.
+Applying a template copies its formatting into an app rule. Customizing that
+rule detaches its template identity; deleting a template preserves already
+applied app formatting. These preferences are local-only and add no SQLite,
+CloudKit or CLI fields.
+
+Streaming dictation buffers only when the app active at recording start has an
+active formatting rule. That delivery mode and the rule snapshots remain fixed
+for the session: buffered text uses the final recipient's rule, while live text
+is never rewritten after an app switch. On a buffered runtime failure, the
+available partial transcript goes through the same paste completion path.
+Successful dispatches store formatted text; failed dispatches save the original
+transcript without target-app attribution. The recovery message directs users to
+History only after the insert succeeds. If persistence fails, it reports that
+History could not be saved and distinguishes whether the paste succeeded.
+Dictionary correction monitoring starts only after a successful paste.
+
+### Failed dictation recordings outside SQLite
+
+Failure-only recovery uses private `Dictation Recovery/<UUID>/` folders inside
+Application Support. Each contains `audio.wav` and `failure.json` with the ID,
+start time, duration, model label, and failure message. Streaming failures also
+save the available text in `transcript.txt` and the optional `partialTranscript`
+metadata field; records written without that field continue to decode. A recovery
+folder is published only after all its files are written, and a failed copy keeps
+the original WAV. Successful dictation and explicit cancellation create no backup.
+Older buffered-streaming recovery folders without `failure.json` are left intact.
+
+Recovery metadata and audio stay local and add no CloudKit, telemetry, export,
+or CLI fields. Explicit local retry lazily creates the local-only
+`dictation_recovery_history` table, mapping a recovery UUID primary key to a
+unique `dictation_id` foreign key with `ON DELETE CASCADE`. The history insert
+and retry key commit in one transaction before deleting recovery files. If
+archive deletion fails, another retry (including after relaunch) returns the
+already saved text instead of creating duplicate history. If the saved row was
+deleted or its text cleared, an explicit retry atomically saves a replacement and remaps the key;
+the old tombstone remains available to sync. Database writes run on a worker
+with an independent connection. Cancellation during a pending write keeps the
+archive even if that write commits; a later retry reuses its key. Ordinary
+successful dictations do not access this table. Recovered text follows the existing history
+sync policy; the retry key is never synced. Discard removes one recovery, and
+confirmed history clearing removes the recovery directory and clears history on a worker,
+reserving operation ownership until completion. Audio is retained until recovery,
+discard, or history clearing; no automatic expiry is implied.
+
+### Appearance preferences outside SQLite
+
+Ultra Dark is stored as local AppConfig JSON key `ultra_dark_appearance`, defaulting
+to false for older configurations. Selecting it also sets `dark_mode` so older
+builds fall back to Dark. Switching to Light, Dark or System clears the flag.
+No SQLite schema or sync fields change.
+
+### Model license acknowledgements outside SQLite
+
+`MedASRLicense` owns `~/Library/Application Support/Muesli/ModelLicenses/medasr.json`,
+a per-Mac-user record shared by the app and CLI, including dev lanes. It contains
+only a terms `version` and an ISO-8601 `acceptedAt` date. Missing, malformed or
+unrecognized versions require explicit acceptance again. Removing model weights
+preserves this acknowledgement. It is local-only and does not enter SQLite,
+CloudKit, telemetry, transcripts or exports. Complete terms ship as resources;
+see [MedASR setup](docs/medasr.md).
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
   a five-second busy timeout.
-- `dictations` and `meetings` are the timeline history roots. Chat threads are
+- `dictations` and `meetings` are the timeline history roots, joined by
+  `cotypist_sessions` (experimental typeahead, dev builds) and local-only
+  `quill_conversations`. Chat threads are
   separate durable records in `meeting_chat_sessions`; Timeline remains a query,
   not a separate table.
 - History deletion is soft at first through `deleted_at`. Old tombstones are
@@ -36,8 +203,10 @@ Do not edit a user's database directly while Muesli is running.
   field.
 - People, folders, computer-use traces, live checkpoints, resume snapshots,
   media paths and video records, chat history and memory, import provenance,
-  destination-app attribution, and Insights data are local-only.
-- Global search uses parameterized `LIKE` queries. Ask Meetings has a separate
+  destination-app attribution, Cotypist typeahead history, and Insights data are
+  local-only.
+- Global search uses the local FTS5 projections described below; legacy scoped
+  searches may still use parameterized `LIKE` queries. Ask Meetings has a separate
   FTS5 index, `meeting_chat_fts`, over revisioned meeting passages. Its FTS shadow
   tables are SQLite-managed implementation details, not application records.
 - ISO-8601 strings are used for user-visible event times such as `timestamp` and
@@ -59,6 +228,8 @@ erDiagram
     meetings ||--o{ meeting_video_clips : "owns local video"
     meetings ||--o{ meeting_imports : "has import provenance"
     dictations ||--o| bodhan_wbcs_measurements : "has speech measurement"
+    cotypist_sessions ||--o{ cotypist_suggestions : "groups suggestions in one app"
+    quill_conversations ||--o{ quill_conversation_turns : "orders local exchanges"
 
     meeting_chat_sessions ||--o{ meeting_chat_turns : "orders exchanges"
     meeting_chat_sessions ||--o{ meeting_chat_session_meetings : "anchors or selects"
@@ -95,6 +266,13 @@ command that becomes history.
 `app_context` remains cleanup/correction context. Destination-app fields are
 separate local presentation metadata and are deliberately absent from the sync
 record and CLI JSON contract.
+
+#### `dictation_recovery_history`
+
+Local-only retry keys, created lazily by `insertRecoveredDictation` rather than
+the normal migration or successful-dictation path. `recovery_id` is the primary
+key; unique `dictation_id` references `dictations(id)` with cascading hard
+deletion. Its transaction commits the retry key and history text together.
 
 #### `meetings`
 
@@ -149,6 +327,15 @@ unreleased direct Google OAuth integration does not import or persist meeting
 participants; Google calendars exposed through macOS Calendar use this EventKit
 path.
 
+### On-device chat model preference
+
+`AppConfig` adds optional `gemma_chat_model` in local `config.json`, with E2B as
+its backward-compatible default. The `gemma_mlx` chat/summary provider shares the
+existing managed Gemma checkpoint files; selecting it does not copy model weights
+or create a server. Native tool calls, results and KV caches are attempt-local,
+with existing chat answers and original-file dependencies persisted as before.
+There are no new SQLite columns, sync fields, telemetry or exported tool payloads.
+
 ### Chat threads, memory, and retrieval
 
 A thread is independent of a meeting: one meeting can have multiple chats, and a
@@ -171,6 +358,37 @@ The JSON bodies are typed serialized records, not arbitrary extension fields.
 Keep SQL projections (`state`, `ordinal`, `updated_at`), relationship rows, and
 body encodings consistent through the store APIs. Adding model properties may
 require backward-compatible decoding even when no SQL column changes.
+
+Optional `fileAttachments` in session/turn bodies and `fileDependencies` in turn
+bodies decode as nil in older records. Each `ChatFileReference` stores a SHA-256
+content ID, basename, kind (`image`, `pdf`, `markdown` or `text`), original-file
+bookmark and original byte count. Sandboxed hosts create security-scoped bookmarks;
+the unsandboxed app uses ordinary bookmarks without needing an app-scope key.
+Both forms decode without a record migration. Existing image/PDF records decode unchanged.
+The bookmark contains original-location metadata; it is private local state.
+There are no attachment blobs, copied originals, thumbnails, extracted text or
+base64 payloads in SQLite, exports, sync or telemetry. Session references describe
+unsent composer selection; immutable turn references describe that request. An
+accepted send consumes only the matching session selection through the store API;
+a later selection cannot be erased by a delayed earlier send. The composer hides
+submitted references during preparation and restores them if preparation is stopped
+or fails. Successfully sent files remain on their original turn when reopening
+a chat, without repopulating the composer. Inherited
+file dependencies survive removing a composer attachment. The worker validates
+originals before context reuse and completion; missing/changed originals invalidate
+dependent answers, drafts, rolling memory and generated titles through store APIs.
+Deleting a chat removes references, never the user's original files.
+
+Optional `documentCoverage` in turn bodies decodes as nil in older records. Each
+legacy entry stores the attached PDF's `fileID`, `totalPages`, `pagesWithoutText`, and
+`wasCondensed`. New on-demand document turns leave this legacy whole-document
+coverage empty; page ranges and extracted content are transient tool results,
+not additional serialized fields. Completion validates legacy attachment identity and page counts; retries
+and file invalidation clear it. The UI shows coverage only alongside a surviving
+answer. This adds no SQL columns, CloudKit fields, telemetry or export/CLI data.
+Extracted document text and OCR/page images remain transient. Document tools can
+revisit valid original-file dependencies from earlier turns without copying files
+or persisting their contents; conversation-memory compaction is separate.
 
 Selection, anchoring, and evidence dependency are distinct. The anchor records
 where a chat started, selected rows describe explicit retrieval scope, and
@@ -195,6 +413,36 @@ when their evidence becomes invalid. Physical FK cascades alone are insufficient
 because citations and memory also live inside JSON bodies. Never bypass these
 paths with direct SQL writes to a user's database.
 
+### Quill conversations
+
+Quill assistant history is local-only and separate from meeting chat and synced
+text records. One expandable Timeline entry represents a conversation, including
+ordinary question/answer turns and follow-ups that never edit another app.
+
+- `quill_conversations`: integer primary key `id`, unique UUID `session_id`,
+  ISO-8601 first-turn `timestamp`, `source = 'quill'`, and nullable `deleted_at`.
+- `quill_conversation_turns`: integer `seq` for exchange order, unique UUID
+  `turn_id` (request identity), cascading `conversation_id` FK, and typed JSON
+  `body` (`QuillHistoryTurn`: id, optional question, answer, timestamp, backend,
+  model). Missing question text stays null until a matching late preview arrives.
+- `appendQuillTurn` atomically creates the session and inserts an idempotent turn.
+  `updateQuillQuestion` updates only a matching live turn. Neither operation can
+  restore a deleted conversation. Projected turn identity matches the JSON id.
+- `deleteQuillConversation` removes all turn bodies and keeps only the session
+  identity/timestamp tombstone to reject delayed callbacks. There is no sync or
+  tombstone-retention purge requirement for these small local identities.
+- Timeline date/origin filters and pagination include these entries. Questions
+  have no destination app, so app-filtered views exclude them. Existing text-edit
+  dictation records remain unchanged. Conversation deletion does not delete those
+  separate editing records.
+- Full exchanges survive restart; the six-turn model-context limit is unrelated
+  to durable history. Dismiss/New conversation rotates the in-memory session UUID
+  without deleting history. Writes and their Timeline refresh run off the main
+  actor, in order; shutdown drains queued writes. UI reports persistence errors.
+- No Quill history or provider metadata is added to CloudKit, Insights, general
+  search, exports, or CLI output. No recordings, selections, app context, or raw
+  provider tool payloads are stored in these tables.
+
 ### Local media and import provenance
 
 | Table | Purpose and deletion behavior |
@@ -202,6 +450,11 @@ paths with direct SQL writes to a user's database.
 | `meeting_video_clips` | Local video metadata: text `id`, kind, meeting FK with cascade, capture time, and JSON body containing media metadata/path. The video itself is a file. |
 | `meeting_video_cleanup` | Durable cleanup outbox (`id`, JSON body), intentionally independent of the meeting FK. Deletion triggers enqueue media metadata before the owning rows disappear, allowing deferred file cleanup. |
 | `meeting_imports` | Created lazily by `DictationStore.importGranola`. Key `(provider, document_id)` deduplicates imports; meeting FK cascades. Stores workspace, owner email, and import time locally. It need not exist in a database that has never imported Granola records. |
+
+Meeting videos are stored only in `meeting-recordings/videos/`, owned by
+`meeting_video_clips`. No migration or playback fallback reads meeting videos
+from the experimental `visual-memory` catalog. That catalog belongs to Time
+Turner; removing experimental compatibility does not delete its local files.
 
 Soft deletion queues video cleanup and removes clip rows; hard deletion queues
 cleanup before the meeting FK cascade. Import metadata is committed with its
@@ -215,6 +468,41 @@ Bodhan speech windows: a dictation primary/FK, version, language-sample BLOB, an
 optional run-length BLOB. It survives later text edits because it describes the
 original speech. Deletion removes it. Unlike the Insights token caches, it cannot
 be reconstructed from edited transcript text; older dictations are not backfilled.
+
+### Cotypist typeahead history
+
+Experimental, dev builds only. Written by `DictationStore.recordCotypistSuggestion`
+when the Cotypist input method reports what happened to a suggestion it showed.
+Local-only: neither table has sync identity or participates in iCloud sync.
+
+#### `cotypist_suggestions`
+
+- One row per suggestion shown: `suggestion_text` (model output), `accepted_text`
+  (what Tab or ⌥→ inserted, empty when not taken), `outcome`
+  (`accepted`/`partial`/`ignored`/`dismissed`), `trigger` (`boundary`/`mid-word`),
+  word counts, first-word log-probability, stage latencies, `context_source` and `model`
+- `context_before` is the user's own text: the sentence the suggestion continued,
+  at most about 120 characters. It is stored only for accepted and partial
+  suggestions, the ones the timeline shows; it is blank otherwise.
+- `target_app_name` and `target_app_bundle_id` are likewise stored only for accepted
+  and partial suggestions. A suggestion that wasn't taken keeps no app; one shown
+  while an app's session is open (started by an accepted suggestion) counts toward
+  that session's "shown" total through `session_id`.
+- `session_id` is set when an app's session is open (see below); `NULL` otherwise
+- Retention: rows with nothing accepted are pruned after 90 days and capped at the
+  newest 5,000. Accepted rows live as long as their session.
+
+#### `cotypist_sessions`
+
+- A run of Cotypist use in one app, the timeline record. An accepted suggestion
+  joins the app's open session or starts one; a suggestion that wasn't taken only
+  counts toward an open session. Ten minutes without a suggestion in that app
+  (`last_activity_at`, Unix time) closes it.
+- `timestamp` (ISO-8601 start), `target_app_name`, `target_app_bundle_id`, `source`
+  (`cotypist`) and `deleted_at` mirror the dictation columns so the timeline's date,
+  origin and app filters apply unchanged; `deleted_at` stays `NULL`.
+- Removing a session from the timeline hard-deletes it and its suggestions in one
+  transaction, text included. There are no tombstones to keep for sync.
 
 ### Organization and state
 
@@ -345,3 +633,292 @@ media and reconciles rows idempotently. Only an interrupted bundle proven
 empty is removed. Journal-backed captures remain openable after row publication
 fails. Deletion uses the store, removes files
 before its row, and leaves failures visible for retry. No ad hoc SQL cleanup.
+Quill Timeline reads isolate malformed `quill_conversation_turns.body` JSON:
+readable turns remain visible. When both preview endpoints are damaged but
+unchecked middle turns remain, the row stays available for background expansion;
+a full read with no readable turns returns unavailable. This read-time handling
+does not mutate or repair stored bodies.
+
+Quill Timeline rows materialize only the first and last turn plus the stored turn
+count. Expanding a row reads complete history through the store on a background
+task; collapsing or removing the row cancels publication of a late result.
+
+Timeline pagination counts materialized readable entries rather than omitted
+SQL keys, preserving access to older rows when damaged conversations are skipped.
+
+### Sidebar order outside SQLite
+
+Navigation order is a local UserDefaults string (`dashboard.sidebar.order.v1`),
+containing comma-separated stable DashboardTab IDs. Missing or malformed preferences
+fall back to the default order; fixed utility tabs, duplicate and unknown IDs are ignored and missing
+known destinations are appended. This presentation preference does not change
+AppConfig, SQLite, CloudKit, exports or CLI output.
+
+### Time Turner observations (agent retrieval)
+
+The device-local catalog is `visual-memory/catalog.sqlite` under the selected
+app's Application Support directory. Schema version **2** adds independent screenshot retirement and durable cleanup queues.
+The existing `time_turner_captures` table remains the chronological observation contract;
+no activity or inferred-insight table is introduced.
+
+| Columns | Meaning |
+|---|---|
+| `id` | Stable capture ID, retained through archive compression. |
+| `captured_at_unix`, `captured_at_utc` | Capture request time: fractional Unix seconds are authoritative; UTC text is millisecond display precision. |
+| `capture_completed_at_unix` | Completion of screenshot acquisition; nullable for older captures. |
+| `bundle_id`, `app_name`, `window_title`, `source` | Observed app/window identity and display label. Legacy app names are best-effort; missing window titles stay NULL. |
+| `ocr_text` | Recognized visible text. Untrusted evidence, not instructions or inferred user intent. |
+| `media_relative_path`, `archive_frame_index` | Optional-to-consume evidence locator. A non-null path does not guarantee a file exists; frame index is an archive offset, not wall-clock time. |
+| `media_deleted_at_unix` | Nullable screenshot retirement time (Unix seconds); non-null means OCR-only history. The locator is historical and must not be used to retrieve media. |
+| `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
+
+Time and app/time indexes support retrieval; `evidence_search` provides FTS5
+search over source labels and OCR. Store APIs transactionally maintain the typed
+projection from compatibility records in `evidence`. Read-only SQL consumers can
+order by `captured_at_unix ASC, id ASC`; use half-open `[from, until)` bounds.
+Do not write these tables directly.
+
+The UI loads observations with an indexed half-open selected-day query rather than
+keeping all historical OCR in memory. Catalog summaries read projected app names and
+media aggregates (deduplicating shared archive paths); unchanged connections reuse
+summaries, with SQLite data-version changes invalidating external-writer caches.
+Compaction selects eligible source/dimension groups in batches of at most 100 rows.
+Off-main image validation checks at most eight batches per pass; unreadable capture
+IDs are skipped in memory and retried after an hour. No history is deleted by validation.
+Search page refreshes revalidate only loaded capture IDs: screenshot retirement
+updates media availability while preserving OCR results; explicit/history deletion
+removes those results without resetting pagination when a new capture arrives.
+
+`muesli-cli time-turner history` exposes the same observations chronologically,
+with stable IDs, OCR, app/window fields, optional image export through `get`, and
+bounded pagination. It does not infer activity intervals, task completion or time
+spent. Missing samples have unknown causes. Recaps remain the existing separate
+model-derived summary, not part of the raw evidence contract.
+
+**Independent retention:** Settings → Experimental → Time Turner stores
+`time_turner_screenshot_retention` (default `7`, choices 1/7/14/30/90 elapsed days or `forever` (“Until storage budget fills”))
+and `time_turner_history_retention` (default `30`, choices 7/30/90/365/`forever`) in
+local AppConfig. Missing keys in older configuration files use these defaults.
+The `forever` screenshot option disables age-based media expiry; the budget and
+independent history retention still apply. Screenshot retention and the existing media budget retire files, set the optional
+Codable `mediaDeletedAt`, project `media_deleted_at_unix`, and zero `media_bytes`.
+OCR, app/window fields, original timestamps, IDs and FTS rows survive. History
+retention removes the observation, FTS row and unreferenced media. A shorter
+history limit therefore also bounds screenshot lifetime. Shared archive media
+is evicted as a unit when its oldest frame expires or its bytes exceed budget;
+this may retire newer screenshots early, without deleting their OCR.
+
+Age is measured from `capturedAt`, not last use, pause or restart. Maintenance runs
+at initial configuration, policy changes and every 30 seconds while the app is
+running, even when capture is off, paused, locked or inactive. Suspended/closed
+apps cannot clean disk; overdue work is performed when execution resumes. Shortening
+a limit applies to existing data. Increasing a limit cannot restore deleted data.
+The media budget excludes OCR/database/WAL bytes; indefinite history may grow.
+
+Version 2 migration retains v1 records, rebuilds the projection triggers with
+explicit columns, and adds `pending_capture_deletions(id PRIMARY KEY)` and
+`pending_media_deletions(path PRIMARY KEY)`. Store deletion writes capture IDs
+in the same transaction that removes evidence/FTS/projection rows. Recap cleanup
+in muesli.db acknowledges these IDs only after successful deletion, retrying after
+restart or storage errors. Media unlinking is also retried; an active file reference
+prevents unlinking. Cross-database deletion is recoverable, not globally atomic.
+Recap publication and source deletion share an in-process lock and source validation
+so generation cannot re-save explicitly deleted evidence. Read-only CLI opens never
+migrate or expire history; the app owns maintenance.
+
+Explicit **Forget** deletes every observation sharing the selected archive and
+all recaps referencing those IDs, regardless of either retention setting.
+Screenshot expiry alone preserves recaps because OCR remains valid evidence.
+These rules apply only to ambient moments, never meeting-video retention.
+
+Version 3 aligns `evidence_search.rowid` with `evidence.rowid` and uses in-place
+upserts to keep that identity stable. FTS updates and deletion use indexed rowid
+lookups rather than scanning the unindexed ID column. Existing indexes are rebuilt
+transactionally on upgrade. Legacy read-only catalogs without FTS use a temporary
+in-memory FTS table; reading does not change the catalog on disk.
+
+### Time Turner daily recaps
+
+`TimeTurnerRecapStore` lazily creates `time_turner_recaps` in **muesli.db**.
+This is separate from the capture catalog (`visual-memory/catalog.sqlite`), whose
+`time_turner_captures` projection and OCR FTS are documented in
+[visual-memory.md](docs/visual-memory.md). Opening an older database safely adds
+the recap table without rewriting meeting or capture history. No recap table
+before first use is valid.
+
+| Column | Contract |
+|---|---|
+| `day_key` | Primary key: time-zone identifier plus local day-start Unix timestamp. One current recap per day/zone. |
+| `day_start`, `day_end` | REAL Unix seconds, half-open calendar interval; supports 23/25-hour DST days. |
+| `time_zone` | Calendar time-zone identifier captured when generating. |
+| `generated_at` | REAL Unix seconds for this generation, also guards late cancellation cleanup. |
+| `body` | Versioned JSON (`version = 1`) containing matching day bounds/zone, generation time, provider/model, insights and all supplied sources. |
+
+Insights contain a section (`work`, `decisions`, `followUps`), text and source IDs.
+Source snapshots include the source ID, title, date, excerpt, and either a typed
+capture snapshot (stable capture ID, original timestamp/OCR and media locator)
+or a revisioned `MeetingChatCitation` (meeting ID, source kind, offsets and
+revision). These logical references cross database boundaries; there are no
+cross-database foreign keys. All supplied sources are dependencies, including
+those not cited in the final text. The body uses Codable; future additions must
+be backward compatible or explicitly migrate the version. Unsupported versions
+and malformed records fail visibly rather than silently resetting history.
+
+The store owns parameterized reads, atomic single-row replacement and deletion;
+call it off the main actor. Regeneration replaces the day's saved record only
+after valid generation. Provider changes do not alter already-saved attribution.
+Source validation runs on load, before navigation and every five seconds while
+visible. Removed/missing captures or revised/deleted meetings invalidate the
+whole recap, remove its saved record and require explicit regeneration. Capture
+deletion and history expiry additionally purge affected recaps without opening
+them, using the durable cleanup queue above. Cleanup binds capture IDs as one JSON
+array and deletes matching recaps in a single statement per batch, avoiding a
+full recap-source scan for each expired capture. Meeting revision changes still use
+read-time revalidation. Screenshot expiry alone does not invalidate OCR evidence.
+Temporary storage errors hide unverified content but preserve the saved record
+for retry; only confirmed stale evidence removes it. Media
+compaction alone does not invalidate unchanged source content. New captures do
+not regenerate an existing recap or imply complete coverage.
+
+These records are local-only: no CloudKit, telemetry, CLI export or agent-memory
+ingestion is added. Valid recap insight text participates in global search below. Recaps survive app restarts but do not extend
+capture retention. They are model-derived summaries of sampled evidence, not
+an authoritative diary or a record of time spent.
+
+### Global search
+
+`GlobalSearchIndex` lazily installs a local, rebuildable index in `muesli.db`
+on the first query that requests main-database content. It does not change source ownership,
+CloudKit serialization, exports, or meeting-agent retrieval scope.
+
+- `global_search_documents`: integer `rowid`, unique namespaced `identity`, typed
+  `kind`, original `source_id`, Unix `timestamp`, `title`, searchable `text`,
+  `app_name`, and `bundle_id`. These are derived projections, never writable
+  history APIs. Source IDs are used to navigate back to the authoritative store.
+- `global_search_fts`: external-content FTS5 over title/text, maintained by
+  insert/update/delete triggers on `global_search_documents`.
+- `global_search_<source>_v1` (or `_v2` for Quill, Chat and recap): versioned
+  projection views and source-table triggers. Each available source is backfilled transactionally once. Subsequent
+  writes refresh only the affected parent document. Schema-version checks discover
+  Chat and Recap tables created after first search without reindexing all history.
+  Installation checks every source trigger as well as its view. Missing triggers
+  (including after a source or child table is recreated) rebuild that source's
+  missing schema objects and documents atomically, removing obsolete indexed text.
+  The v2 projections guard JSON reads so malformed bodies cannot block index
+  backfill or source writes. Installation removes v1 JSON-source views/triggers
+  and rebuilds those projections in the same transaction; source records are
+  unchanged.
+
+Prepared source writes in `DictationStore`, `MeetingChatSQL`, and
+`TimeTurnerRecapStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
+is retried only for `SQLITE_CORRUPT_VTAB` after a separate FTS integrity check
+confirms corruption of **global_search_fts**. A savepoint rebuilds its tokens from
+`global_search_documents` (recreating the virtual table only if the rebuild itself
+reports virtual-table corruption) and retries the aborted statement once.
+The repair and retry remain within the caller's transaction; caller rollback
+still rolls back both. It never replays a whole operation, changes source rows
+as part of repair, or treats busy, constraint, I/O, or another index's errors as
+permission to rebuild. Unrecoverable corruption remains an explicit save error.
+
+Sources are dictations, CUA **input commands only**, meetings (title, transcript,
+manual/generated notes as one result), Quill conversations, accepted Cotypist
+text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
+Cotypist suggestions, chat drafts/provider fields, rolling model memory, and
+recap source snapshots are deliberately excluded.
+
+Source deletion/soft deletion updates the index in the same SQLite transaction.
+Chat `sourceDeleted` turns are excluded and invalidated answers disappear through
+existing source-owner updates. Validation and destination resolution inspect only
+surviving searchable turns, so deleting one source does not hide unrelated answers
+or later turns in the same conversation. Because edited evidence can invalidate otherwise
+persisted derived text, Chat and Recap hits additionally require a current-source
+validator; the core API excludes these kinds before the SQL limit without one.
+With a validator, ranked candidates are read in batches of at most 200. Rejected
+stale Chat/recap candidates do not consume result slots: the index continues until
+the requested valid-result limit is filled or all matching candidates are exhausted.
+Each read statement is finalized before validation; data-version checks between
+batches restart the whole query after concurrent main-database changes.
+`GlobalSearchWorker` supplies
+existing meeting dependency and recap evidence validation. Main-database mutation
+during validation retries the complete query and source validation once, so an
+unrelated concurrent save does not immediately fail search. If the second attempt
+also overlaps a write, it throws `GlobalSearchError.changedSources`; callers must
+retry or discard that request rather than publish stale excerpts. This does not replace
+source retention/cleanup. In particular, cross-database recap invalidation remains
+recoverable through Time Turner's existing deletion queue.
+
+`GlobalSearchService` federates the source-owned Time Turner OCR FTS rather than
+copying OCR into `muesli.db`. Screenshot expiry therefore preserves searchable text;
+observation deletion removes it. Search and destination retrieval share the
+`GlobalSearchRead` contract: verified data, confirmed absence, or temporary
+unavailability. Read errors never count as proof of deletion. Cancellation and
+`changedSources` escape this boundary rather than publishing superseded/stale data.
+
+`GlobalSearchResponse` returns verified matches plus `unavailableKinds`, including
+when there are zero verified matches. Each failed Chat/recap evidence check excludes
+only that candidate; other verified candidates of the same kind remain eligible.
+The refill loop still fills result slots after excluded candidates. An unavailable
+main index excludes its kinds but does not prevent readable OCR results; an OCR
+query/open failure does not discard main-index matches. Queries scoped to unrelated
+kinds do not read the failing optional source. The legacy array-returning `search`
+API returns available matches, but throws `unavailableSources` when there are no
+matches and completeness cannot be established. New UI callers use the response
+API so a partial result is never presented as an exhaustive absence of matches.
+A never-created optional catalog is empty; disappearance of a catalog observed by
+the worker is unavailable. Recap evidence is verified independently in either case.
+
+Destination resolution uses the same read boundary and revalidates source content:
+missing/stale evidence returns `missing`, failed verification returns `unavailable`,
+and only verified destinations may open. Neither outcome wipes unrelated search
+results. Destination and evidence lookups use read-only source-store connections,
+which cannot recreate a missing database or run store migrations. These policies
+do not repair or mutate source records; the rebuildable search index retains its
+existing separate initialization/repair lifecycle.
+
+The worker keeps one main search service across filter changes
+and retains the optional catalog while its file identity is unchanged. Its
+persistent monitor uses SQLite data versions plus file identity to detect writes,
+removal and replacement; a corrupt optional catalog produces a stable unavailable
+revision, with open retries when its database/WAL fingerprint changes. Healthy
+catalog writes do not require reopening the store. If a readable catalog's store
+initialization fails, retries use an exponential 5–60 second backoff so transient
+failures recover without requiring another write. Results use a shared `GlobalSearchResult` envelope
+with kind, source ID, date, title, excerpt, app identity, and media availability.
+Queries apply type, exact app/bundle, and half-open date filters before limits;
+an empty type selection returns nothing. Text is escaped as a literal FTS phrase.
+
+This first implementation returns a bounded first page (at most 200 validated hits
+per store, at most 200 results; invalid derived candidates may require additional
+SQL batches), not a complete export. Independent BM25 corpus
+scores are not directly compared: title-match tiers, recency and stable IDs order
+the merged candidates. The dashboard sidebar and ⌘F now open a shared search panel
+with typed filters, calendar-based date ranges and exact app-name/bundle filters.
+The panel displays up to 100 matches and labels that cap; a shared pagination
+cursor remains follow-up work. Existing destination-specific search tools remain
+available in their own views.
+
+`GlobalSearchPresentation` discards superseded requests and preserves the selected
+source identity during live refresh. While visible, the panel checks persistent
+read connections' SQLite `data_version` every five seconds and reruns only the
+bounded current query when either source database changes. Partial responses show
+a compact availability notice and Retry action alongside usable results. Partial
+queries also retry every 30 seconds without requiring a source write; changing the
+query cancels that polling task. Empty partial responses are distinguished from
+complete zero-match responses. Navigation resolves
+fresh records through source-owned APIs on `GlobalSearchWorker`; deleted sources
+cannot open from old snippets. Short writing records open as selectable text,
+while meetings, chats, captures and recaps open their existing destinations.
+Captures navigate by stable capture ID, never by a formatted date or image hash;
+identical screen content captured at different instants remains distinct history.
+Recaps navigate by the persisted `day_key` and retain their original day bounds
+and timezone, including for explicit regeneration. Travel does not re-key a saved
+recap in the current timezone. The shared History date uses the saved recap's
+calendar date in the current timezone, so switching tabs keeps the displayed day.
+Choosing another date resumes current-calendar day
+browsing. Source validation still runs when opening either kind of result.
+An open text preview distinguishes confirmed source absence from transient read
+failure. Read failures retain the displayed text, show a retry status, disable the
+Copy action until verification succeeds, and retry on the next poll. Closing or
+replacing the preview invalidates in-flight reads.
+The search panel does not mutate source content. “Copy text” copies the displayed
+text preview to the system clipboard at the user's request.

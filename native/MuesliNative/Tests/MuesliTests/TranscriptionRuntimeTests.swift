@@ -365,6 +365,51 @@ struct CohereTranscribeUtilsTests {
 @Suite("TranscriptionEngineArtifactsFilter")
 struct TranscriptionEngineArtifactsFilterTests {
 
+    @Test(arguments: ["*crickets*", "*cheers*", "**APPLAUSE**", "[Cheering]", "(laughter)",
+                      "<music>", "[background_music]", "*crickets chirping*", "(audience laughing)",
+                      "* cheers and applause! *"])
+    func removesDecoratedSoundCues(cue: String) {
+        #expect(TranscriptionEngineArtifactsFilter.apply(cue).isEmpty)
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello \(cue) world.") == "Hello world.")
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello \(cue), world.") == "Hello, world.")
+        let segments = TranscriptionEngineArtifactsFilter.apply(to: [
+            SpeechSegment(start: 0, end: 1, text: cue),
+            SpeechSegment(start: 1, end: 2, text: "Hello \(cue) world.")])
+        #expect(segments.map(\.text) == ["Hello world."])
+        #expect(segments.map(\.start) == [1])
+    }
+
+    @Test(arguments: ["Cheers, everyone!", "I heard crickets and cheers.", "Thank you.",
+                      "We study music and laughter.", "*music theory*", "(cheers from my friends)",
+                      "[a useful note]", "a * b", "a < b > c"])
+    func preservesSpokenWordsAndUnrelatedMarkup(text: String) {
+        #expect(TranscriptionEngineArtifactsFilter.apply(text) == text)
+    }
+
+    @Test(arguments: ["Hello *crickets* world.", "Hello **cheers** world.",
+                      "Hello [crickets chirping], world.", "Hello (laughter) again.",
+                      "Hello *music theory* again.", "Hello *bold* [cheers] again.",
+                      "வணக்கம் *crickets* நண்பர்களே."])
+    func cueSplitAcrossUpdatesNeverRevisesAnEmittedPrefix(text: String) {
+        var raw = ""
+        var prior = ""
+        for character in text {
+            raw.append(character)
+            let visible = TranscriptionEngineArtifactsFilter.applyToCommittedText(raw)
+            #expect(visible.hasPrefix(prior), "Revised visible prefix: \(prior) -> \(visible)")
+            prior = visible
+        }
+        #expect(prior == TranscriptionEngineArtifactsFilter.apply(text))
+    }
+
+    @Test func incompleteCueStaysInternalUntilRecognizedOrDisambiguated() {
+        #expect(TranscriptionEngineArtifactsFilter.applyToCommittedText("Hello *cric") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.applyToPartialText("Hello [cheer") == "Hello")
+        #expect(TranscriptionEngineArtifactsFilter.applyToCommittedText("Hello *cricket bat*") == "Hello *cricket bat*")
+        // Final cleanup preserves unmatched markup rather than guessing away speech.
+        #expect(TranscriptionEngineArtifactsFilter.apply("Hello *cricket bat") == "Hello *cricket bat")
+    }
+
     @Test("returns empty string for known artifact")
     func blankAudioArtifact() {
         #expect(TranscriptionEngineArtifactsFilter.apply("[blank_audio]") == "")

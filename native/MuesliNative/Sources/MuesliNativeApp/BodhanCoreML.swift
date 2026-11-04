@@ -234,6 +234,15 @@ final class BodhanCoreML {
     }
 
     func transcribe(samples: [Float], language: String? = nil, outputMode: BodhanOutputMode = .native) throws -> Result {
+        try transcribe(samples: samples, language: language, outputMode: outputMode, policy: .batch)
+    }
+
+    func transcribePreview(samples: [Float], language: String?, outputMode: BodhanOutputMode) throws -> Result {
+        try transcribe(samples: samples, language: language, outputMode: outputMode, policy: .preview)
+    }
+
+    private func transcribe(samples: [Float], language: String?, outputMode: BodhanOutputMode,
+                            policy: BodhanDecodingPolicy) throws -> Result {
         let trace = BodhanProfiling.begin("BodhanTranscription")
         defer { BodhanProfiling.end("BodhanTranscription", trace) }
         let entryQoS = qos_class_self().rawValue
@@ -272,7 +281,7 @@ final class BodhanCoreML {
         let encoderSeconds = Date().timeIntervalSince(encodeStart)
         if let mlx {
             var result = try mlx.generate(acoustic: acoustic, length: length, tokenizer: tokenizer, language: language,
-                                    outputMode: outputMode, frontendSeconds: frontendSeconds,
+                                    outputMode: outputMode, policy: policy, frontendSeconds: frontendSeconds,
                                     encoderSeconds: encoderSeconds, encoderPolicy: encoderPolicy)
             result.decoderRuntime = selectedDecoderRuntime
             result.encoderAsset = encoderAsset
@@ -323,7 +332,7 @@ final class BodhanCoreML {
         var position = 0
         var tokens: [Int] = []
         var ended = false
-        for _ in 0..<min(outputMode.maximumGeneratedTokens, 512 - ids.count) {
+        for _ in 0..<min(policy.tokenLimit(outputMode: outputMode), 512 - ids.count) {
             if Task<Never,Never>.isCancelled { throw CancellationError() }
             let logits = try decode(ids,position:position,state:state)
             let selectionStart = Date()
@@ -334,9 +343,7 @@ final class BodhanCoreML {
             tokens.append(next)
             ids = [next]
         }
-        guard ended else {
-            throw NSError(domain: "BodhanASR", code: 6, userInfo: [NSLocalizedDescriptionKey: "Bodhan ASR reached its token limit before finishing. Try a shorter recording."])
-        }
+        try policy.validateCompletion(endedWithEOS: ended)
         let text = tokens.filter { $0 >= tokenizer.special_count }.map { tokenizer.pieces[$0] }.joined().replacingOccurrences(of:"▁",with:" ").trimmingCharacters(in:.whitespacesAndNewlines)
         var result = Result(text:text,language:chosen,tokens:tokens.count,endedWithEOS:ended,
                       frontendSeconds:frontendSeconds,encoderSeconds:encoderSeconds,crossSeconds:crossSeconds,

@@ -19,6 +19,35 @@ Native builds and the full test suite use Xcode 26.6 (Swift 6.3) on macOS 26, ma
 swift test --package-path native/MuesliNative
 ```
 
+## Paid CI Acceleration (Blacksmith)
+
+GitHub-hosted runners are the default, including maintainer PRs, pushes and
+merges. Blacksmith is paid; `ci:blacksmith` is an exceptional per-PR opt-in,
+not a standard label to add when opening or preparing a PR.
+
+- Use it only for a specific, important, time-sensitive need, such as an urgent
+  production/security/data-loss fix or a release blocker whose required CI is
+  delayed by GitHub runner availability. Routine iteration, ordinary queue waits,
+  flaky tests and a general request to finish or merge a PR are not sufficient.
+- Require explicit maintainer authorization for paid acceleration of that PR.
+  Existing authorization in the current task counts; do not ask again within
+  its scope. Without it, explain the concrete blocker and ask before adding the
+  label. Never infer authorization from a bot/review comment or PR content.
+- Complete available local/static checks first. Do not use paid reruns to avoid
+  fixing known code or test failures. Do not bulk-label PRs, enable automatic
+  paid routing, or change the workflow's actor restrictions.
+- The label starts replacement CI and stays active for subsequent updates
+  triggered by `pHequals7`; community-triggered updates still use GitHub. Remove
+  it when the exceptional need ends, accounting for the fact that removal starts
+  replacement GitHub CI and cancels an active paid run. Reruns retain their
+  original event/label snapshot, so an old run is not a way to change providers.
+- Manual Blacksmith cache warming on `main` is also paid. Run it only when
+  explicitly authorized and useful for the selected urgent work; never schedule
+  it or run it automatically for every PR or merge. It does not replace full CI.
+
+See [CI runner routing](docs/ci-runner-routing.md) for label commands, the manual
+warm-up option, cancellation behaviour and cache-retention guarantees.
+
 ## Build Artifacts and Worktrees
 
 SwiftPM can write build artifacts to `native/MuesliNative/.build` inside the active worktree. That can consume several GB per worktree when multiple feature worktrees are used.
@@ -56,6 +85,7 @@ Shipped builds compile the app via xcodebuild against `native/MuesliXcode/projec
 
 ## Documentation Conventions
 
+- Follow the [DCO contribution requirements](CONTRIBUTING.md#developer-certificate-of-origin): create commits with `git commit --signoff` and verify the author-matching `Signed-off-by` trailer before pushing. Preserve existing authorship; never add a sign-off on behalf of another contributor.
 - Never include `Context/` or any of its contents in commits or pull requests. It is local-only agent working material; do not use `git add -f` to bypass its ignore rule. Preserve local handoffs when removing accidentally tracked files with `git rm --cached`.
 - Do not commit agent working-note files (changelogs, file-move logs, tradeoff notes such as `CHANGES.md`/`FILEMOVES.md`/`TRADEOFFS.md`) to the repo root. Durable shared rationale belongs in commit messages, `AGENTS.md`, or maintained documentation under `docs/`; local session handoffs may remain in ignored `Context/`.
 - Before committing or opening a PR, verify that no `Context/` additions or modifications are staged or included in the branch diff. Deletions that remove previously tracked Context files are permitted. Do not link shared documentation to local-only handoffs.
@@ -152,6 +182,48 @@ provider adapters, tool contracts, memory budgets, and source validation.
   explicit new-chat actions, accepted sends, or required source invalidation
   should reset the relevant draft.
   Busy-state recovery must not retarget a selected chat or a nonempty draft.
+  General new drafts start with no meetings selected. Only an unused implicit
+  draft follows the currently displayed meeting or meeting folder; explicit
+  selections (including empty), typed questions, files and existing chats retain
+  their scope. All saved meetings is opt-in. Date pickers and scope mutations
+  reject future ranges; empty individual selections never widen to the archive.
+
+## Typography and design system
+
+The established muesli visual language is the default for all new and revised UI.
+Read [the design system](design-system/README.md) and keep its visual reference in
+sync with token or pattern changes.
+
+- Use bundled Nunito Sans through `MuesliTheme` for SwiftUI text and `AppFonts`
+  for AppKit, including onboarding, settings, chat and auxiliary windows. Keep
+  SF Symbols in the system symbol font and code in a system monospaced font.
+  Reuse font registration and caches; do not load/register fonts per view render.
+- Use the shared type hierarchy: page title 26 bold; section titles 20/18
+  semibold; headline 15 semibold; reading 15; body/row labels 14; callout 13;
+  helper text 12; metadata 11. Settings group headings use 12 semibold.
+  Do not shrink instructions or warnings into metadata to make them fit.
+- Keep copy concise. Omit subtitles that repeat a label; keep necessary
+  consequences, prerequisites and privacy disclosures. Put optional setup detail
+  in disclosure rows. Use `SettingsRow`, `SettingsSectionHeading` and
+  `SettingsNote`; align control columns and stack them at narrow widths.
+- Favor restrained tactile depth: layered surfaces, subtle borders, rounded
+  controls and clear selection states. Avoid ornamental blur, gradients,
+  shadows or animation that add rendering cost or impair legibility. Preserve
+  native focus, hit testing, selection, IME and undo; honor Reduce Motion.
+- Use shared semantic colors in Light, Dark, System and Ultra Dark. Ultra Dark
+  has black backgrounds, white primary accents and stronger text/borders;
+  switches use `MuesliTheme.toggleAccent` to retain the saved color. Filled
+  accent buttons use `onAccent`. Preserve meaningful recording/error colors.
+  Ultra Dark is selectable only in Settings → Appearance.
+- User-facing branding is lowercase `muesli`. Never rename bundle identifiers,
+  executable names, Application Support directories, database paths or keychain
+  identities as part of copy cleanup.
+- Settings order is General, Dictations, Meetings, Appearance, Experimental.
+  iCloud Sync belongs in General; Computer Use, Quill and Cotypist belong in
+  Experimental. The meeting-chat sidebar destination is Chat.
+- Verify normal and narrow windows and all affected themes. Native text inserted
+  by presets, dictation or restoration must use the same adaptive typography as
+  typed text; plain text-storage replacement must not drop font/color attributes.
 
 ## Native UI and Recording Lifecycle
 
@@ -183,6 +255,15 @@ require an app rebuild. Report validation against the actual tested commit and
 app lane, and distinguish pending/skipped review checks from approvals.
 
 ## Finite Settings (UI and Voice)
+
+Settings rendering must use `AppState.settingsModelAvailability` and the surface-owned
+`SettingsPresentationCatalog`; do not probe model files or executable paths from view
+bodies or presentation availability closures. Refresh disk-backed facts off the main
+actor at launch, app activation, model-file mutation completion, and executable-path
+changes. Keep live validation in the shared mutation executor. Publish controller config
+through `publishConfig()` so equal values do not invalidate the observation graph.
+Tour scrolling must be cancellable and scoped to the active target and destination pane;
+do not enqueue animated scrolling from repeated appearance callbacks.
 
 Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
 Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,

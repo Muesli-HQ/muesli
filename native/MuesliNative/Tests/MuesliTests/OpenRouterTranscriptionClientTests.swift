@@ -292,6 +292,23 @@ struct OpenRouterTranscriptionClientTests {
         )
     }
 
+    @Test("Direct-audio Quill tolerates unavailable cloud previews; required ASR does not")
+    func optionalQuestionTranscriptionReadiness() {
+        for provider in [DictationProvider.openAI, .openRouter] {
+            for key in ["", "key"] {
+                for model in ["", "provider/model"] {
+                    let required = HostedDictationActivationPolicy.blockingMessage(
+                        provider: provider, openAIAPIKey: key, openRouterAPIKey: key,
+                        openRouterModel: model)
+                    #expect((required == nil) == (!key.isEmpty && (provider == .openAI || !model.isEmpty)))
+                    #expect(HostedDictationActivationPolicy.blockingMessage(
+                        provider: provider, openAIAPIKey: key, openRouterAPIKey: key,
+                        openRouterModel: model, requiresTranscript: false) == nil)
+                }
+            }
+        }
+    }
+
     @Test("activation requires OpenRouter authentication and an explicit model")
     func activationPolicy() {
         #expect(HostedDictationActivationPolicy.blockingMessage(

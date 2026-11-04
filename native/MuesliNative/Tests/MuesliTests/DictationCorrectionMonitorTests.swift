@@ -84,4 +84,15 @@ struct DictationCorrectionMonitorTests {
             }
         }
     }
+
+    @Test("an unchanged multi-line paste is not treated as an edit")
+    func unchangedMultiLinePasteIsNotAnEdit() {
+        let pasted = "For the trip I need three things:\n1. The passport\n2. The charger\n3. The tickets"
+        let readBack = "For the trip I need three things: 1. The passport 2. The charger 3. The tickets"
+        #expect(DictationCorrectionMonitor.normalizedSnapshot(readBack, originalText: pasted) == nil)
+        #expect(DictationCorrectionMonitor.normalizedSnapshot(pasted, originalText: pasted) == nil)
+        // A real edit to the same list is still observed.
+        let edited = readBack.replacingOccurrences(of: "charger", with: "chargers")
+        #expect(DictationCorrectionMonitor.normalizedSnapshot(edited, originalText: pasted) == edited)
+    }
 }

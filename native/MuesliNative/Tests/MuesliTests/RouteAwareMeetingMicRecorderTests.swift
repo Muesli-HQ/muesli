@@ -1145,6 +1145,399 @@ struct RouteAwareMeetingMicRecorderTests {
         recorder.waitForQuiescence()
     }
 
+    @Test("a system default change hands off the unchosen microphone even though its preference stays nil")
+    func systemDefaultChangeHandsOffUnchosenMicrophone() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        let samples = OSAllocatedUnfairLock(initialState: [[Int16]]())
+        recorder.onRawPCMSamples = { audio in samples.withLock { $0.append(audio.samples) } }
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+
+        try await waitUntil { replacement.startCalls == 1 }
+        initial.emit([1])
+        replacement.emit([2])
+        try await waitUntil { initial.stopCalls == 1 }
+        try await waitUntil { samples.withLock { $0.count == 2 } }
+        #expect(samples.withLock { $0 } == [[1], [2]])
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("repeating the same default input does not restart the unchosen microphone")
+    func unchangedDefaultInputDoesNotRestart() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var created = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: {
+                created += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        // Inventory and output events re-notify the controller's unchanged preference.
+        for _ in 0..<5 { recorder.preferredInputDeviceID = nil }
+        recorder.waitForQuiescence()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(created == 0)
+        #expect(initial.stopCalls == 0)
+        #expect(initial.cancelCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("repeated notifications for one new default input start a single handoff")
+    func repeatedNotificationsForOneDefaultChangeStartOneHandoff() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var created = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: {
+                created += 1
+                return replacement
+            },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        for _ in 0..<5 { recorder.preferredInputDeviceID = nil }
+
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([3])
+        try await waitUntil { initial.stopCalls == 1 }
+        // Settled: more notifications for the default that is already captured stay quiet.
+        for _ in 0..<5 { recorder.preferredInputDeviceID = nil }
+        recorder.waitForQuiescence()
+
+        #expect(created == 1)
+        #expect(replacement.startCalls == 1)
+        #expect(replacement.cancelCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("a default change while a handoff is pending retargets to the newest default")
+    func defaultChangeDuringPendingHandoffRetargets() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let first = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let second = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [first, second]
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        try await waitUntil { first.startCalls == 1 }
+        route.defaultInputDeviceID = 92
+        recorder.preferredInputDeviceID = nil
+
+        try await waitUntil { second.startCalls == 1 }
+        second.emit([4])
+        try await waitUntil { initial.stopCalls == 1 }
+        #expect(first.cancelCalls == 1)
+        #expect(first.stopCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("a system default change while paused hands off on resume")
+    func defaultChangeWhilePausedHandsOffOnResume() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+        recorder.pause()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        recorder.waitForQuiescence()
+        #expect(replacement.startCalls == 0)
+
+        recorder.resume()
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([5])
+        try await waitUntil { initial.stopCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("a system default change between prepare and start hands off once capture is live")
+    func defaultChangeBetweenPrepareAndStartHandsOffOnStart() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.prepare()
+
+        // AirPods connect while system audio is starting: the recorder is not live yet.
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        recorder.waitForQuiescence()
+        #expect(replacement.startCalls == 0)
+
+        try recorder.start()
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([6])
+        try await waitUntil { initial.stopCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("start and resume read the default only after capture is live")
+    func defaultIsSnapshottedAfterTheLifecycleGoesLive() async throws {
+        // A route notification that lands while the recorder is not live is ignored, so a snapshot
+        // taken before the transition can be stale by the time it is compared.
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let observedLive = LockedLiveObservations()
+        var recorderRef: RouteAwareMeetingMicRecorder?
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            routeSnapshotProvider: {
+                if initial.startCalls == 1 || observedLive.isResuming {
+                    observedLive.record(recorderRef?.isLiveForDebug() ?? false)
+                }
+                return route.snapshot()
+            },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        recorderRef = recorder
+        try recorder.start()
+        #expect(observedLive.values.contains(true), "no default snapshot was taken once capture was live")
+        #expect(!observedLive.values.contains(false), "a default snapshot was taken before capture was live: \(observedLive.values)")
+
+        recorder.pause()
+        observedLive.isResuming = true
+        observedLive.reset()
+        recorder.resume()
+        #expect(observedLive.values.contains(true))
+        #expect(!observedLive.values.contains(false), "resume snapshotted the default before going live: \(observedLive.values)")
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("an unchanged default between prepare and start does not hand off")
+    func unchangedDefaultBetweenPrepareAndStartStaysQuiet() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacement },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.prepare()
+        try recorder.start()
+        recorder.waitForQuiescence()
+        #expect(replacement.startCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("pausing before the replacement delivers audio still hands off on resume")
+    func pauseBeforeReplacementAudioStillHandsOffOnResume() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let abandoned = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [abandoned, replacement]
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        try await waitUntil { abandoned.startCalls == 1 }
+        // The candidate has started but not produced audio when the user pauses.
+        recorder.pause()
+        try await waitUntil { abandoned.cancelCalls == 1 }
+        recorder.preferredInputDeviceID = nil
+        #expect(replacement.startCalls == 0)
+
+        recorder.resume()
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([6])
+        try await waitUntil { initial.stopCalls == 1 }
+        #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("a failed default-input handoff is retried by the next notification")
+    func failedDefaultInputHandoffIsRetried() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let failing = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        failing.startError = NSError(domain: "test", code: 7)
+        let replacement = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var replacements = [failing, replacement]
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: { replacements.removeFirst() },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = nil
+        try await waitUntil { failing.cancelCalls == 1 }
+        recorder.waitForQuiescence()
+        // The old graph is still the one capturing, so the same default is still unserved.
+        recorder.preferredInputDeviceID = nil
+
+        try await waitUntil { replacement.startCalls == 1 }
+        replacement.emit([7])
+        try await waitUntil { initial.stopCalls == 1 }
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("resuming with an unchanged default input does not restart the microphone")
+    func resumeWithUnchangedDefaultInputDoesNotRestart() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var created = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: {
+                created += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+        recorder.pause()
+        recorder.preferredInputDeviceID = nil
+        recorder.resume()
+        recorder.waitForQuiescence()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(created == 0)
+        #expect(initial.stopCalls == 0)
+        #expect(initial.resumeCalls == 1)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("an explicitly chosen microphone ignores system default changes")
+    func chosenMicrophoneIgnoresSystemDefaultChange() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        let appScoped = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+        var created = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: system,
+            appScopedRecorder: appScoped,
+            systemDefaultRecorderFactory: {
+                created += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            appScopedRecorderFactory: {
+                created += 1
+                return FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
+            },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        recorder.preferredInputDeviceID = 82
+        try recorder.start()
+
+        route.defaultInputDeviceID = 91
+        recorder.preferredInputDeviceID = 82
+        recorder.waitForQuiescence()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(created == 0)
+        #expect(appScoped.stopCalls == 0)
+        #expect(appScoped.cancelCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
+    @Test("an unknown default input never triggers a handoff")
+    func unknownDefaultInputDoesNotTriggerHandoff() async throws {
+        let route = DefaultInputRoute(defaultInputDeviceID: 90)
+        let initial = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+        var created = 0
+        let recorder = RouteAwareMeetingMicRecorder(
+            systemDefaultRecorder: initial,
+            systemDefaultRecorderFactory: {
+                created += 1
+                return FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
+            },
+            routeSnapshotProvider: { route.snapshot() },
+            handoffTimeout: 1,
+            handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
+        )
+        try recorder.start()
+
+        route.defaultInputDeviceID = nil
+        recorder.preferredInputDeviceID = nil
+        recorder.waitForQuiescence()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(created == 0)
+        #expect(initial.stopCalls == 0)
+        recorder.cancel()
+        recorder.waitForQuiescence()
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(5),
         condition: @escaping () -> Bool
@@ -1163,6 +1556,37 @@ struct RouteAwareMeetingMicRecorderTests {
 
 private let disabledMeetingMicHandoffTimeoutScheduler: RouteAwareMeetingMicRecorder.HandoffTimeoutScheduler = {
     _, _ in
+}
+
+/// A mutable stand-in for the route controller's cached snapshot: only the
+/// system default input moves, as when AirPods connect mid-meeting.
+private final class DefaultInputRoute: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: AudioObjectID?
+
+    init(defaultInputDeviceID: AudioObjectID?) {
+        value = defaultInputDeviceID
+    }
+
+    var defaultInputDeviceID: AudioObjectID? {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+
+    func snapshot() -> MeetingMicRouteDiagnosticsSnapshot {
+        MeetingMicRouteDiagnosticsSnapshot(
+            outputRouteKind: "speaker-like",
+            outputIsAmbiguousBluetooth: false,
+            selectedInputDeviceUID: nil,
+            selectedInputDeviceResolved: true,
+            preferredInputDeviceID: nil,
+            preferredInputDeviceName: nil,
+            defaultInputDeviceID: defaultInputDeviceID,
+            defaultInputDeviceName: nil,
+            builtInInputDeviceID: 82,
+            systemDefaultInputIsBuiltIn: defaultInputDeviceID == 82
+        )
+    }
 }
 
 private final class ManualMeetingMicHandoffTimeoutScheduler {
@@ -1186,7 +1610,7 @@ private final class ManualMeetingMicHandoffTimeoutScheduler {
     }
 }
 
-private final class FakeMeetingMicRecorder: MeetingMicRecording {
+final class FakeMeetingMicRecorder: MeetingMicRecording {
     private static let clock = OSAllocatedUnfairLock(initialState: Int64(1_000))
     var preferredInputDeviceID: AudioObjectID?
     var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)?
@@ -1271,4 +1695,17 @@ private final class FakeMeetingMicRecorder: MeetingMicRecording {
             route: nil
         )
     }
+}
+
+private final class LockedLiveObservations: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Bool] = []
+    private var resuming = false
+    var values: [Bool] { lock.withLock { storage } }
+    var isResuming: Bool {
+        get { lock.withLock { resuming } }
+        set { lock.withLock { resuming = newValue } }
+    }
+    func record(_ live: Bool) { lock.withLock { storage.append(live) } }
+    func reset() { lock.withLock { storage.removeAll() } }
 }

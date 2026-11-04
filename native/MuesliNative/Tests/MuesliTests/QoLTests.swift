@@ -36,20 +36,19 @@ struct DictationBackendReadinessTests {
 @Suite("ChatGPT Token Storage")
 struct ChatGPTTokenStorageTests {
 
-    @Test("isAuthenticated returns false when no token file exists")
+    @Test("isAuthenticated returns false for an empty synthetic vault")
     @MainActor
     func notAuthenticatedByDefault() {
-        // Shared singleton may have tokens from a prior test or real usage,
-        // so just verify the property is accessible and returns a Bool
-        let auth = ChatGPTAuthManager.shared
-        let _ = auth.isAuthenticated  // Should not crash
+        let auth = makeTestChatGPTAuthManager()
+        #expect(!auth.isAuthenticated)
     }
 
     @Test("signOut does not crash even when not signed in")
     @MainActor
-    func signOutSafe() {
-        let auth = ChatGPTAuthManager.shared
-        auth.signOut()  // Should not crash
+    func signOutSafe() throws {
+        let auth = makeTestChatGPTAuthManager()
+        try auth.signOut()
+        #expect(!auth.isAuthenticated)
     }
 }
 
@@ -617,10 +616,33 @@ struct FloatingMeetingTranscriptTests {
 @Suite("Floating indicator pointer interaction", .serialized)
 struct FloatingIndicatorPointerInteractionTests {
     @MainActor
+    @Test("connecting pill cancels pending startup instead of acting like an active recording")
+    func connectingPillCancels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = makeTestConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .bottomLeading
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var cancels = 0, stops = 0
+        indicator.onCancelDictation = { cancels += 1 }
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.microphoneStartupPending = true
+        indicator.setPreparingWaveformWaiting(config: config)
+        indicator.handleClick(atX: 60)
+        #expect(cancels == 1)
+        #expect(stops == 0)
+        indicator.microphoneStartupPending = false
+        indicator.setState(.recording, config: config)
+        indicator.handleClick(atX: 60)
+        #expect(stops == 1)
+    }
+
+    @MainActor
     @Test("closing and reopening an expanded idle pill clears its hover state")
     func idleHoverCloseReopen() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         config.indicatorHoverStyle = .classic
@@ -657,7 +679,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("idle hover reconciles resize and preserves subsequent exit delivery", arguments: [false, true])
     func idleHoverTrackingSurvivesResize(leavesDuringExpansion: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         config.indicatorHoverStyle = .classic
@@ -702,7 +724,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("idle hover stays expanded during drag and resumes checking after release inside")
     func idleHoverDragRecovery() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         store.save(config)
@@ -740,7 +762,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("idle hover checks do not retire other pill presentations", arguments: ["loading", "notice", "recording"])
     func idleHoverPresentationChange(presentation: String) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         config.indicatorHoverStyle = .classic
@@ -762,39 +784,30 @@ struct FloatingIndicatorPointerInteractionTests {
         switch presentation {
         case "loading": indicator.showLoading("Transcribing audio…")
         case "notice":
-            // This test covers hover callback ownership, not notice expiry.
-            // Keep the notice alive through delayed UI scheduling in CI.
-            indicator.showWarning("Microphone unavailable", duration: 5.0)
+            // This checks hover ownership, not notice expiry. A busy runner can
+            // resume the observations after a short notice has legitimately expired.
+            indicator.showWarning("Microphone unavailable", duration: 60)
         default: indicator.setState(.recording, config: config)
         }
         pointer = NSPoint(x: -100_000, y: -100_000)
-        // Notice and loading presentations recenter from the 220-point
-        // expanded hover pill to their own widths. Wait for that visible
-        // geometry instead of sampling the old origin while AppKit is still
-        // animating the frame.
-        let expandedPresentationCenter = CGPoint(x: compact.minX + 110, y: compact.minY + 18)
-        if presentation == "notice" || presentation == "loading" {
-            let clock = ContinuousClock()
-            let deadline = clock.now.advanced(by: .seconds(2))
-            var reachedExpandedCenter = false
-            while clock.now < deadline {
-                if let frame = indicator.currentFrame,
-                   frame.width > compact.width, frame.width < 220,
-                   abs(frame.midX - expandedPresentationCenter.x) <= 1,
-                   abs(frame.midY - expandedPresentationCenter.y) <= 1 {
-                    reachedExpandedCenter = true
-                    break
-                }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            #expect(reachedExpandedCenter)
-        } else {
-            try await Task.sleep(for: .milliseconds(300))
+        // AppKit can still be moving the entrance frame after a fixed 300 ms
+        // delay on a busy runner. Establish a settled baseline before checking
+        // that the interrupted hover cannot move or retire this presentation.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        var presented = try #require(indicator.currentFrame)
+        var stableSamples = 0
+        while stableSamples < 5, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            let frame = try #require(indicator.currentFrame)
+            stableSamples = frame == presented ? stableSamples + 1 : 0
+            presented = frame
         }
-        let presented = try #require(indicator.currentFrame)
+        #expect(stableSamples == 5, "The presentation's entrance frame did not settle")
         #expect(presented.size != compact.size)
         try await Task.sleep(for: .milliseconds(400))
         let current = try #require(indicator.currentFrame)
+        let expandedPresentationCenter = CGPoint(x: compact.minX + 110, y: compact.minY + 18)
         if presentation == "notice" || presentation == "loading" {
             #expect(current.width > compact.width && current.width < 220)
             #expect(abs(current.midX - expandedPresentationCenter.x) <= 1)
@@ -808,7 +821,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("transparent shortcut canvas does not keep the idle hint hovered")
     func idleHoverShortcutCanvas() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         config.indicatorHoverStyle = .shortcutPill
@@ -847,7 +860,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("geometry completion reconciles a stationary pointer without an exit event")
     func idleHoverGeometryCompletion() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         store.save(config)
@@ -877,7 +890,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("stationary idle hover performs no recurring pointer checks", arguments: [IndicatorHoverStyle.classic, .shortcutPill])
     func idleHoverDoesNotPoll(style: IndicatorHoverStyle) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
         config.indicatorHoverStyle = style
@@ -934,7 +947,7 @@ struct FloatingIndicatorPointerInteractionTests {
           [false, true])
     func meetingControlsWithTranscript(anchor: IndicatorAnchor, paused: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = anchor
         config.showMeetingTranscriptOnIndicatorHover = true
@@ -997,10 +1010,29 @@ struct FloatingIndicatorPointerInteractionTests {
     }
 
     @MainActor
+    @Test("a new meeting pill has matching window and content geometry before animation")
+    func newMeetingPillGeometryIsSynchronous() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = makeTestConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
+        store.save(config)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.setMeetingRecording(true, config: config)
+        let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
+            .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        let window = try #require(pill.window)
+        #expect(window.frame.size == NSSize(width: 76, height: 22))
+        #expect(indicator.currentFrame == window.frame)
+    }
+
+    @MainActor
     @Test("pause and resume retain meeting controls despite late dictation updates", arguments: [false, true])
     func pauseResumeRetainsPill(showIdleIndicator: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .custom
         config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
@@ -1060,7 +1092,7 @@ struct FloatingIndicatorPointerInteractionTests {
     @Test("visibility refresh preserves the expanded transcript and its pause control", arguments: [false, true])
     func visibilityRefreshPreservesTranscript(paused: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .custom
         config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
@@ -1161,7 +1193,7 @@ struct FloatingIndicatorPointerInteractionTests {
     private func makeIndicator() -> FloatingIndicatorController {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        return FloatingIndicatorController(configStore: ConfigStore(supportDirectory: supportDirectory))
+        return FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: supportDirectory))
     }
 }
 

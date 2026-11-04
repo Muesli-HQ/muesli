@@ -62,7 +62,7 @@ struct FluidAudioModelLoadTests {
         private let loader: Loader
         init(loader: Loader) { self.loader = loader }
         func make() -> FluidAudioTranscriber {
-            let transcriber = FluidAudioTranscriber { [loader] modelID, _, _ in
+            let transcriber = FluidAudioTranscriber { [loader] modelID, _, _, _ in
                 try await loader.load(modelID)
             }
             lock.lock()
@@ -134,7 +134,7 @@ struct FluidAudioModelLoadTests {
         let firstProgress = ProgressLog()
         let secondProgress = ProgressLog()
         let joined = AsyncStream<Void>.makeStream()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         let first = Task {
             try await transcriber.loadModels(modelID: Self.phonon,
@@ -173,7 +173,7 @@ struct FluidAudioModelLoadTests {
     func newestLoadWins() async throws {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let older = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }
@@ -195,7 +195,7 @@ struct FluidAudioModelLoadTests {
     func staleCompletionCannotHidePendingLoadFromDeletion() async {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let older = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }
@@ -219,7 +219,7 @@ struct FluidAudioModelLoadTests {
     func selectingCachedModelInvalidatesPendingLoad() async throws {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let first = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }
@@ -242,7 +242,7 @@ struct FluidAudioModelLoadTests {
     func deletingPendingModel() async throws {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let first = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }
@@ -265,7 +265,7 @@ struct FluidAudioModelLoadTests {
     @Test("Deleting a loaded or unrelated model leaves a different pending load intact", arguments: [true, false])
     func deletionIsScopedToModel(_ deleteLoaded: Bool) async throws {
         let loader = Loader()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         let first = Task { try await transcriber.loadModels(modelID: Self.phonon) }
         defer { first.cancel(); Task { await loader.releaseAll() } }
@@ -286,7 +286,7 @@ struct FluidAudioModelLoadTests {
     func shutdownBeforeFirstLoadCompletes() async {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let pending = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }
@@ -304,7 +304,7 @@ struct FluidAudioModelLoadTests {
     func callerCancellationReachesPreparation() async {
         let loader = Loader()
         let progress = ProgressLog()
-        let transcriber = FluidAudioTranscriber { modelID, _, _ in try await loader.load(modelID) }
+        let transcriber = FluidAudioTranscriber { modelID, _, _, _ in try await loader.load(modelID) }
         var started = loader.started.stream.makeAsyncIterator()
         var cancelled = loader.cancelled.stream.makeAsyncIterator()
         let pending = Task { try await transcriber.loadModels(modelID: Self.phonon, progressSnapshot: { progress.record($0) }) }

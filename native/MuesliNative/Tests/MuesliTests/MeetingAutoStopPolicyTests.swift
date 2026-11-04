@@ -76,11 +76,45 @@ struct MeetingAutoStopPolicyTests {
         let explicit = MeetingAutoStopSource(candidate: candidate())
         let recent = MeetingAutoStopSource(candidate: candidate(id: "recent", url: nil))
         let tracksSource = origin != .manual
-        let expectedSignalLoss: MeetingSignalLossResponse = tracksSource ? .warnOnly : .none
+        let expectedSignalLoss: MeetingSignalLossResponse = tracksSource ? .warnOnly : .transcriptInactivity
         #expect(origin.tracksMeetingSource == tracksSource)
         #expect(origin.signalLossResponse == expectedSignalLoss)
         #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (tracksSource ? explicit : nil))
         #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (tracksSource ? recent : nil))
+    }
+
+    @Test("manual reminder waits a full quiet period, including an initially empty transcript")
+    func manualReminderDeadline() {
+        var state = MeetingSignalLossPromptState()
+        #expect(state.inactivityDeadline == nil) // Still preparing.
+        state.noteTranscriptActivity(now: now) // Recording became active.
+        #expect(state.inactivityDeadline == now.addingTimeInterval(45))
+        #expect(state.hasRecentTranscriptActivity(now: now.addingTimeInterval(44.9), quietPeriod: 45))
+        #expect(!state.hasRecentTranscriptActivity(now: now.addingTimeInterval(45), quietPeriod: 45))
+        state.noteTranscriptActivity(now: now.addingTimeInterval(30))
+        #expect(state.inactivityDeadline == now.addingTimeInterval(75))
+        state.resetForRecording() // Stop/discard or a different recording.
+        #expect(state.inactivityDeadline == nil)
+    }
+
+    @Test("manual reminders do not repeat until activity resumes, and explicit dismissal lasts for the recording")
+    func manualReminderSuppression() {
+        var state = MeetingSignalLossPromptState()
+        state.noteTranscriptActivity(now: now)
+        state.markPromptPresented()
+        state.markAutoDismissed()
+        #expect(state.inactivityDeadline == nil)
+        state.markSourceRecovered()
+        state.noteTranscriptActivity(now: now.addingTimeInterval(100))
+        #expect(state.inactivityDeadline == now.addingTimeInterval(145))
+        state.markDismissedByUser()
+        state.markSourceRecovered()
+        state.noteTranscriptActivity(now: now.addingTimeInterval(200))
+        #expect(state.inactivityDeadline == nil)
+        state.resetForRecording()
+        state.noteTranscriptActivity(now: now.addingTimeInterval(300))
+        #expect(state.inactivityDeadline == now.addingTimeInterval(345))
+        #expect(MeetingSignalLossPromptState.notificationDuration == 30)
     }
 
     @Test("recent transcript activity defers a signal-loss warning")

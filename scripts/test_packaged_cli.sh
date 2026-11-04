@@ -73,6 +73,8 @@ if ! grep -q 'USAGE: muesli-cli transcribe' "$TRANSCRIBE_HELP_OUTPUT"; then
   exit 1
 fi
 
+python3 "$ROOT/scripts/test_time_turner_cli.py" "$CLI_BIN"
+
 echo "Packaged CLI smoke test passed."
 echo "Verified:"
 echo "  - $APP_BIN"

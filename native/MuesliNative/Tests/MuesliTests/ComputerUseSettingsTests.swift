@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import os
 import SwiftUI
 import MuesliCore
 import Testing
@@ -38,6 +40,378 @@ struct ComputerUseSettingsTests {
             controller.resetShortcutDefaults()
             #expect(config.load().feedbackCaptureHotkey == .feedbackCaptureDefault)
             #expect(!config.load().enableFeedbackCapture)
+        }
+    }
+
+    @Test("Time Turner reductions require confirmation but remain voice discoverable")
+    func timeTurnerDeletionPolicy() async throws {
+        try await withShortcutSettings { controller, _ in
+            let definitions = controller.settingsDefinitions()
+            for (id, lower, higher) in [
+                ("time_turner_budget", "2", "20"),
+                ("time_turner_screenshot_retention", "1", "30"),
+                ("time_turner_history_retention", "7", "forever")
+            ] {
+                let setting = try #require(definitions.first { $0.id == id })
+                #expect(setting.voiceRestriction == nil)
+                #expect(setting.deletionConfirmation(controller.config, lower) != nil)
+                #expect(setting.deletionConfirmation(controller.config, higher) == nil)
+                #expect(setting.deletionConfirmation(controller.config, setting.read(controller.config)) == nil)
+            }
+            var unlimited = controller.config
+            unlimited.timeTurnerHistoryRetention = "forever"
+            unlimited.timeTurnerScreenshotRetention = "forever"
+            let screenshots = try #require(definitions.first { $0.id == "time_turner_screenshot_retention" })
+            #expect(screenshots.deletionConfirmation(unlimited, "90") != nil)
+            #expect(screenshots.deletionConfirmation(controller.config, "forever") == nil)
+            #expect(unlimited.timeTurnerRetentionPolicy.screenshotDays == nil)
+            var malformed = controller.config
+            malformed.timeTurnerHistoryRetention = "invalid"
+            malformed.timeTurnerScreenshotRetention = "invalid"
+            malformed.timeTurnerBudget = "invalid"
+            for (id, value) in [("time_turner_history_retention", "7"), ("time_turner_screenshot_retention", "1"), ("time_turner_budget", "2")] {
+                let definition = try #require(definitions.first { $0.id == id })
+                #expect(definition.deletionConfirmation(malformed, value) != nil)
+            }
+            malformed.timeTurnerBudget = String(Int64.max)
+            #expect(malformed.timeTurnerRetentionPolicy.mediaBudgetBytes > 0)
+            let history = try #require(definitions.first { $0.id == "time_turner_history_retention" })
+            #expect(history.deletionConfirmation(unlimited, "365") != nil)
+        }
+    }
+
+    @Test("deletion confirmation is enforced for every mutation source and revalidates after waiting")
+    func deletionConfirmationExecutor() async throws {
+        for source in [MuesliSettings.ApplySource.voice, .manualUI, .confirmedPreference] {
+            var config = AppConfig()
+            var writes = 0
+            var setting = MuesliSetting(id: "history", label: "History", choices: [.init(id: "7", label: "7 days")],
+                read: { $0.timeTurnerHistoryRetention }, unavailable: { _ in nil }, apply: { value in
+                    writes += 1; config.timeTurnerHistoryRetention = value
+                })
+            setting.deletionConfirmation = { _, _ in "Delete older history?" }
+            let snapshots = [setting.snapshot(config: config)]
+            let selection = MuesliSettings.Selection(setting: "history", value: "7")
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config })
+            }
+            await #expect(throws: CancellationError.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config }, confirmDeletion: { _ in false })
+            }
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await MuesliSettings.apply(selection, settings: [setting], snapshots: snapshots, source: source,
+                    config: { config }, persistedConfig: { config }, confirmDeletion: { _ in
+                        config.timeTurnerHistoryRetention = "90"; return true
+                    })
+            }
+            #expect(writes == 0)
+            _ = try await MuesliSettings.apply(selection, settings: [setting], snapshots: [setting.snapshot(config: config)], source: source,
+                config: { config }, persistedConfig: { config }, confirmDeletion: { _ in true })
+            #expect(writes == 1)
+        }
+    }
+
+    @Test("voice deletion asks locally and cannot accept a model-supplied confirmation flag")
+    func voiceDeletionConfirmation() async throws {
+        for answer in ["Keep current settings", "Change and allow deletion", "yes", "ambiguous"] {
+            var config = AppConfig()
+            var writes = 0, calls = 0, questions = 0
+            var setting = MuesliSetting(id: "history", label: "History", choices: [.init(id: "7", label: "7 days")],
+                read: { $0.timeTurnerHistoryRetention }, unavailable: { _ in nil }, apply: { value in
+                    writes += 1; config.timeTurnerHistoryRetention = value
+                })
+            setting.deletionConfirmation = { _, _ in "Delete older history?" }
+            let result = await ComputerUseSettings.run(command: "Keep seven days", settings: [setting],
+                config: { config }, persistedConfig: { config }, ask: { question in
+                    questions += 1
+                    #expect(writes == 0)
+                    #expect(question.options.first == "Keep current settings")
+                    return answer
+                }, plan: { _, _ in
+                    calls += 1
+                    return calls == 1 ? ("inspect_muesli_setting", #"{"setting":"history"}"#)
+                        : ("set_muesli_setting", #"{"setting":"history","value":"7","confirmed":true}"#)
+                })
+            #expect(questions == 1)
+            let approved = answer == "Change and allow deletion" || answer == "yes"
+            #expect(writes == (approved ? 1 : 0))
+            #expect(result?.status == (approved ? .done : .cancelled))
+        }
+    }
+
+    @Test("unchanged config publication does not invalidate observed settings")
+    func unchangedConfigPublication() async throws {
+        try await withShortcutSettings { controller, _ in
+            controller.publishConfig()
+            let changed = OSAllocatedUnfairLock(initialState: false)
+            withObservationTracking {
+                _ = controller.appState.config
+            } onChange: {
+                changed.withLock { $0 = true }
+            }
+            controller.publishConfig()
+            controller.publishConfig()
+            #expect(!changed.withLock { $0 })
+            var different = controller.config
+            different.userName += " changed"
+            controller.appState.config = different
+            #expect(changed.withLock { $0 })
+        }
+    }
+
+    @Test("presentation catalog reuses definitions and refreshes availability without disk probes")
+    func presentationCatalogCaching() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            controller.appState.settingsModelAvailability = .init()
+            let first = catalog.definitions(for: controller)
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 1)
+            let cleanup = try #require(first.first { $0.id == "cleanup_on_device_model" })
+            let snapshot = cleanup.snapshot(config: controller.config, source: .manualUI)
+            #expect(snapshot.choices.allSatisfy { snapshot.unavailable[$0.id] != nil })
+            controller.appState.settingsModelAvailability.claudeCodeAvailable = true
+            let refreshed = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            let summary = try #require(refreshed.first { $0.id == "summary_source" })
+            #expect(summary.snapshot(config: controller.config).choices.contains { $0.id == "claude_code" })
+            controller.appState.config.userName += " changed"
+            _ = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+        }
+    }
+
+    @Test("availability refresh coalesces completion events without blocking the main actor")
+    func availabilityRefreshCoalescing() async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = OSAllocatedUnfairLock(initialState: (calls: 0, onMain: false))
+            let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }
+            controller.settingsAvailabilityScan = { _ in
+                let call = state.withLock { value in
+                    value.calls += 1
+                    value.onMain = value.onMain || Thread.isMainThread
+                    return value.calls
+                }
+                if call == 1 { _ = release.wait(timeout: .now() + 5) }
+                return SettingsModelAvailability(backendIDs: ["scan-\(call)"])
+            }
+            controller.refreshSettingsModelAvailability(force: true)
+            for _ in 0..<500 where state.withLock({ $0.calls }) == 0 {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(state.withLock { $0.calls } == 1)
+            // A slow filesystem scan cannot block UI work, and many completion
+            // notifications request only one follow-up scan, not one per render.
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability(force: true) }
+            #expect(state.withLock { $0.calls } == 1)
+            #expect(controller.appState.settingsModelAvailability.backendIDs != ["scan-1"])
+            release.signal()
+            for _ in 0..<500 where controller.appState.settingsModelAvailability.backendIDs != ["scan-2"] {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailability.backendIDs == ["scan-2"])
+            #expect(!state.withLock { $0.onMain })
+            for _ in 0..<20 { controller.refreshSettingsModelAvailability() }
+            try await Task.sleep(for: .milliseconds(20))
+            #expect(state.withLock { $0.calls } == 2)
+        }
+    }
+
+    @Test("deletion completion reconciles remounted model views even when cached availability is unchanged")
+    func deletionPublishesAvailabilityRevision() async throws {
+        try await withShortcutSettings { controller, _ in
+            // The cached Settings snapshot can already be empty while a Models view
+            // mounted during deletion has read the files as still installed.
+            controller.appState.settingsModelAvailability = .init()
+            let scannedOnMain = OSAllocatedUnfairLock(initialState: false)
+            controller.settingsAvailabilityScan = { _ in
+                scannedOnMain.withLock { $0 = Thread.isMainThread }
+                return SettingsModelAvailability()
+            }
+            for modelID in ["synthetic-cleanup", MeetingLiveCaptionModelStore.modelID] {
+                let mutation = try #require(controller.beginModelFileOperation(.deleting, modelID: modelID))
+                let revision = controller.appState.settingsModelAvailabilityRevision
+                let notified = OSAllocatedUnfairLock(initialState: false)
+                // A newly mounted view observes the controller, not the old view's state.
+                withObservationTracking {
+                    _ = controller.appState.settingsModelAvailabilityRevision
+                } onChange: {
+                    notified.withLock { $0 = true }
+                }
+                controller.endModelFileOperation(mutation, modelID: modelID)
+                for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                    try await Task.sleep(for: .milliseconds(2))
+                }
+                #expect(notified.withLock { $0 })
+                #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+                #expect(controller.appState.settingsModelAvailability.postProcessorIDs.isEmpty)
+                #expect(controller.appState.settingsModelAvailability.liveCaptionIDs.isEmpty)
+                #expect(controller.appState.pendingModelFileOperations[modelID] == nil)
+            }
+            #expect(!scannedOnMain.withLock { $0 })
+        }
+    }
+
+    @Test("model snapshots reconcile every family without invalidating equal state")
+    func modelLibrarySnapshots() throws {
+        let state = ModelLibraryState()
+        let backend = BackendOption.whisper
+        let cleanupGemma = Gemma4LiteRTModel.allCases.first { $0.isCleanupOnly }
+        let gemma = try #require(cleanupGemma)
+        let snapshot = SettingsModelAvailability(
+            backendIDs: [backend.backend + ":" + backend.model],
+            postProcessorIDs: ["synthetic-cleanup"],
+            liveCaptionIDs: [MeetingLiveCaptionBackend.parakeetRealtimeEOU.rawValue],
+            gemmaIDs: [gemma.rawValue])
+        state.reconcile(snapshot)
+        #expect(state.downloadedModels.contains(backend.model))
+        #expect(state.downloadedModels.contains(gemma.rawValue))
+        #expect(state.downloadedPostProcModels == ["synthetic-cleanup"])
+        #expect(state.isLiveCaptionModelDownloaded)
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = state.downloadedModels
+            _ = state.downloadedPostProcModels
+            _ = state.isLiveCaptionModelDownloaded
+        } onChange: { changed.withLock { $0 = true } }
+        state.reconcile(snapshot)
+        #expect(!changed.withLock { $0 })
+        state.reconcile(.init())
+        #expect(changed.withLock { $0 })
+        #expect(state.downloadedModels.isEmpty)
+        #expect(state.downloadedPostProcModels.isEmpty)
+        #expect(!state.isLiveCaptionModelDownloaded)
+    }
+
+    @Test("pause survives navigation and blocks restart until transfer and caller settle", arguments: [false, true])
+    func modelPauseOwnership(postProcessor: Bool) async throws {
+        try await withShortcutSettings { controller, _ in
+            let state = controller.appState.modelLibrary
+            let kind: ModelLibraryState.DownloadKind = postProcessor ? .postProcessor : .backend
+            let id = "synthetic-model"
+            var callerRelease: CheckedContinuation<Void, Never>?
+            var transferRelease: CheckedContinuation<Void, Never>?
+            let caller = Task { await withCheckedContinuation { callerRelease = $0 } }
+            if postProcessor {
+                state.downloadingPostProcModels.insert(id)
+                state.downloadTasksPostProc[id] = caller
+                state.downloadProgressPostProc[id] = 0.5
+            } else {
+                state.downloadingModels.insert(id)
+                state.downloadTasks[id] = caller
+                state.downloadProgress[id] = 0.5
+            }
+            for _ in 0..<500 where callerRelease == nil { await Task.yield() }
+            let releaseCaller = try #require(callerRelease)
+            var finished = false
+            let pause = try #require(state.pauseDownload(id, kind: kind) {
+                await withCheckedContinuation { transferRelease = $0 }
+            } completion: { finished = true })
+            for _ in 0..<500 where transferRelease == nil { await Task.yield() }
+            let releaseTransfer = try #require(transferRelease)
+            // Every new Models view reads the same shared progress and pause gate.
+            let remounted = controller.appState.modelLibrary
+            #expect(remounted === state)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            #expect((postProcessor ? remounted.downloadProgressPostProc[id] : remounted.downloadProgress[id]) == 0.5)
+            #expect(remounted.pauseDownload(id, kind: kind, cancelTransfer: {}, completion: {}) == nil)
+            releaseTransfer.resume()
+            await Task.yield()
+            #expect(!finished)
+            #expect(!remounted.canStartDownload(id, kind: kind))
+            releaseCaller.resume()
+            await pause.value
+            #expect(finished)
+            #expect(remounted.canStartDownload(id, kind: kind))
+            #expect(remounted.downloadTasks[id] == nil)
+            #expect(remounted.downloadTasksPostProc[id] == nil)
+        }
+    }
+
+    @Test("failed model deletion preserves installed snapshot and publishes error")
+    func failedModelDeletionSnapshot() async throws {
+        try await withShortcutSettings { controller, _ in
+            let backend = BackendOption.whisper
+            let snapshot = SettingsModelAvailability(backendIDs: [backend.backend + ":" + backend.model])
+            controller.settingsAvailabilityScan = { _ in snapshot }
+            controller.appState.modelLibrary.reconcile(snapshot)
+            let token = try #require(controller.beginModelFileOperation(.deleting, modelID: backend.model))
+            let revision = controller.appState.settingsModelAvailabilityRevision
+            controller.endModelFileOperation(token, modelID: backend.model, failure: "Synthetic failure")
+            for _ in 0..<500 where controller.appState.settingsModelAvailabilityRevision == revision {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            #expect(controller.appState.settingsModelAvailabilityRevision > revision)
+            #expect(controller.appState.modelLibrary.downloadedModels.contains(backend.model))
+            #expect(controller.appState.modelFileOperationErrors[backend.model] == "Synthetic failure")
+        }
+    }
+
+    @Test("running-app reads reuse the snapshot and unchanged refreshes do not invalidate views")
+    func runningAppCache() {
+        var scans = 0
+        var apps = [CotypistQuietApps.App(bundleID: "synthetic.app", name: "Synthetic")]
+        let cache = CotypistRunningAppsCache(observeWorkspace: false) {
+            scans += 1
+            return apps
+        }
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking { _ = cache.apps } onChange: { changed.withLock { $0 = true } }
+        for _ in 0..<20 { #expect(cache.apps == apps) }
+        #expect(scans == 1)
+        cache.refresh()
+        #expect(!changed.withLock { $0 })
+        apps = []
+        cache.refresh()
+        #expect(cache.apps.isEmpty)
+        #expect(changed.withLock { $0 })
+    }
+
+    @Test("manual model selection revalidates files instead of trusting presentation availability")
+    func stalePresentationDoesNotAuthorizeMissingModel() async throws {
+        try await withShortcutSettings { controller, store in
+            let missing = try #require(PostProcessorOption.all.first { !$0.isDownloaded })
+            controller.appState.settingsModelAvailability.postProcessorIDs.insert(missing.id)
+            let original = controller.config
+            do {
+                try await controller.applySetting("cleanup_on_device_model", value: missing.id)
+                Issue.record("A missing model must not be activated from a stale presentation snapshot")
+            } catch {
+                #expect(controller.config == original)
+                #expect(store.load() == original)
+            }
+        }
+    }
+
+    @Test("presentation catalog follows asynchronous model and language choices")
+    func asynchronousPresentationChoices() async throws {
+        try await withShortcutSettings { controller, _ in
+            let catalog = SettingsPresentationCatalog()
+            _ = catalog.definitions(for: controller)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Summary test")]
+            let summaries = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 2)
+            #expect(summaries.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "summary-test" } == true)
+            controller.appState.openRouterTranscriptionModels = [.init(id: "asr-test", label: "ASR test")]
+            let dictation = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 3)
+            #expect(dictation.first { $0.id == "openrouter_dictation_model" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "asr-test" } == true)
+            controller.appState.settingsAppleSpeechLanguages = [.init(id: "fr-FR", label: "French")]
+            let languages = catalog.definitions(for: controller)
+            #expect(catalog.rebuildCount == 4)
+            #expect(languages.first { $0.id == "apple_speech_language" }?
+                .snapshot(config: controller.config).choices.contains { $0.id == "fr-FR" } == true)
+            controller.appState.openRouterSummaryModels = [.init(id: "summary-test", label: "Renamed")]
+            let renamed = catalog.definitions(for: controller)
+            #expect(renamed.first { $0.id == "summary_openrouter_model" }?
+                .snapshot(config: controller.config).choices.first { $0.id == "summary-test" }?.label == "Renamed")
+            for _ in 0..<20 { _ = catalog.definitions(for: controller) }
+            #expect(catalog.rebuildCount == 5)
         }
     }
 
@@ -284,7 +658,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "bodhan"
         initial.sttModel = model.rawValue
@@ -457,6 +831,54 @@ struct ComputerUseSettingsTests {
             return ("continue_desktop_task", "{}")
         }
     }
+    @Test("settings updateConfig closures never read self.config while it is exclusively borrowed")
+    func settingsUpdateConfigClosuresAvoidExclusivityConflicts() throws {
+        // updateConfig passes `config` inout to its closure, so reading
+        // `self.config` inside it traps at runtime with an exclusivity
+        // violation (e.g. selecting local models as the Quill source).
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MuesliNativeApp/MuesliSettingsDefinitions.swift"), encoding: .utf8)
+        let characters = Array(source)
+        let marker = Array("updateConfig")
+        var offenders: [String] = []
+        var index = 0
+        while index + marker.count <= characters.count {
+            guard Array(characters[index..<index + marker.count]) == marker else { index += 1; continue }
+            // Find the closure that belongs to this call, wherever it sits: skip whitespace
+            // and newlines, then a balanced argument list (which may span lines), then
+            // more whitespace, and require the trailing closure's opening brace.
+            var cursor = index + marker.count
+            func skipWhitespace() { while cursor < characters.count, characters[cursor].isWhitespace { cursor += 1 } }
+            skipWhitespace()
+            if cursor < characters.count, characters[cursor] == "(" {
+                let argumentsStart = cursor
+                var parens = 0
+                repeat {
+                    if characters[cursor] == "(" { parens += 1 } else if characters[cursor] == ")" { parens -= 1 }
+                    cursor += 1
+                } while parens > 0 && cursor < characters.count
+                // A closure passed inside the argument list runs under the same exclusive
+                // access. Plain arguments are evaluated before the access begins, so only
+                // flag an argument list that contains a closure.
+                let arguments = String(characters[argumentsStart..<cursor])
+                if arguments.contains("{"), arguments.contains("self.config") { offenders.append(arguments) }
+                skipWhitespace()
+            }
+            guard cursor < characters.count, characters[cursor] == "{" else { index = cursor; continue }
+            var depth = 0
+            var end = cursor
+            repeat {
+                if characters[end] == "{" { depth += 1 } else if characters[end] == "}" { depth -= 1 }
+                end += 1
+            } while depth > 0 && end < characters.count
+            let body = String(characters[cursor..<end])
+            if body.contains("self.config") { offenders.append(body) }
+            index = end
+        }
+        #expect(offenders.isEmpty, "updateConfig closures must read the inout config, not self.config: \(offenders)")
+    }
+
     @Test("real controller catalog has unique choices and applies UI settings with persistence")
     func controllerCatalog() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -464,7 +886,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.maraudersMapUnlocked = true
         initial.postProcessorBackend = TranscriptCleanupBackendOption.hosted(.chatGPT).backend
@@ -540,7 +962,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "whisper"
         initial.sttModel = BackendOption.whisperLargeTurbo.model
@@ -583,7 +1005,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.sttBackend = "whisper"
         initial.sttModel = BackendOption.whisperLargeTurbo.model
@@ -630,7 +1052,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableComputerUseHotkey = true
         configStore.save(initial)
@@ -686,7 +1108,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableMeetingRecordingHotkey = true
         configStore.save(initial)
@@ -732,7 +1154,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationHotkey = HotkeyConfig(keyCode: 59, label: "Left Ctrl")
         initial.computerUseHotkey = .combination(modifiers: .control, keyCode: 2)
@@ -781,7 +1203,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationHotkey = HotkeyConfig(keyCode: 54, label: "Right Cmd")
         initial.computerUseHotkey = initial.dictationHotkey
@@ -930,7 +1352,7 @@ struct ComputerUseSettingsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let database = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
         try database.migrateIfNeeded()
-        let config = ConfigStore(supportDirectory: root)
+        let config = makeTestConfigStore(supportDirectory: root)
         config.save(AppConfig())
         let runtime = RuntimePaths(repoRoot: root, menuIcon: nil, appIcon: nil, bundlePath: nil)
         let subject = MuesliController(runtime: runtime, dictationStore: database, configStore: config)
@@ -1283,7 +1705,7 @@ struct ComputerUseSettingsTests {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.selectRecordingIndicatorStyle(style)

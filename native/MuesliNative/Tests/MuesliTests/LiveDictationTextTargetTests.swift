@@ -1,0 +1,2114 @@
+import Foundation
+import Testing
+@testable import MuesliNativeApp
+
+@Suite("Live dictation text target", .serialized)
+@MainActor
+struct LiveDictationTextTargetTests {
+    private final class Editor {
+        var text: String
+        var selection: NSRange
+        var focused = true
+        var focusUnavailable = false
+        var snapshotUnavailable = false
+        var afterPasteDispatch: (() -> Void)?
+        var selectionSucceeds = true
+        var replacementSucceeds = true
+        var corruptReadback = false
+        var afterSelect: (() -> Void)?
+        var afterReplacement: (() -> Void)?
+        var delaySelection = false
+        var delayRedundantSelection = false
+        var delayReplacement = false
+        var pendingSelection: NSRange?
+        var pendingReplacement: String?
+        var replacementTextFirst = false
+        var replacementCaretFirst = false
+        var pendingText: String?
+        var pendingCaret: NSRange?
+        var replacements = 0
+        var selections = 0
+        var selectedRanges: [NSRange] = []
+        var transport: LiveDictationTextTarget.Transport = .axSelectedText
+        var keyboardSteps: [String] = []
+        var keyboardNoOp = false
+        var keyboardFailureAt: Int?
+        var afterKeyboard: (() -> Void)?
+        var beforeKeyboardValidation: (() -> Void)?
+        var allowsEmptyLineSentinelRemoval = false
+        var removesInitialNewline = false
+        var placeholderEvidence = LiveDictationTextTarget.PlaceholderEvidence()
+        var removesInitialPlaceholder = false
+        var onPlaceholderEvidence: (() -> Void)?
+        var keyboardBurstSize = 1
+        var useAcknowledgedWordGroups = false
+        var delayKeyboardSeparators = false
+        var finalPasteEnabled = false
+        var finalPastes: [String] = []
+        var beforeFinalPaste: (() -> Void)?
+        var finalPasteSucceeds = true
+        var delayPaste = false
+        var afterFinalAcknowledgement: (() -> Void)?
+
+        init(_ text: String = "Before  after", selection: NSRange = NSRange(location: 7, length: 0)) {
+            self.text = text
+            self.selection = selection
+        }
+
+        func flushSelection() {
+            if let pendingSelection { selection = pendingSelection }
+            pendingSelection = nil
+        }
+
+        func flushReplacement() {
+            if let pendingReplacement { applyReplacement(pendingReplacement) }
+            pendingReplacement = nil
+        }
+
+        private func applyReplacement(_ replacement: String) {
+            var nextText = (text as NSString).replacingCharacters(in: selection, with: replacement)
+            if removesInitialNewline, text.utf16.elementsEqual("\n".utf16),
+               selection == NSRange(location: 0, length: 0) {
+                nextText = replacement
+            }
+            if removesInitialPlaceholder,
+               placeholderEvidence.value == text || placeholderEvidence.structurallyVerifiedRawValue == text,
+               selection == NSRange(location: 0, length: 0) {
+                nextText = replacement
+            }
+            let nextCaret = NSRange(location: selection.location + (replacement as NSString).length, length: 0)
+            if replacementCaretFirst { pendingText = nextText } else { text = nextText }
+            if replacementTextFirst { pendingCaret = nextCaret } else { selection = nextCaret }
+            if corruptReadback { text += "!" }
+        }
+
+        func flushSplitReplacement() {
+            if let pendingText { text = pendingText }
+            if let pendingCaret { selection = pendingCaret }
+            pendingText = nil
+            pendingCaret = nil
+        }
+
+        var access: LiveDictationTextTarget.Access {
+            let paste: LiveDictationTextTarget.Access.Paste? = finalPasteEnabled ? { [self] text, validate, acknowledge, _ in
+                beforeFinalPaste?()
+                guard await validate(), finalPasteSucceeds else { return false }
+                finalPastes.append(text)
+                if delayPaste { pendingReplacement = text } else { applyReplacement(text) }
+                afterPasteDispatch?()
+                let acknowledged = await acknowledge()
+                afterFinalAcknowledgement?()
+                return acknowledged
+            } : nil
+            return .init(snapshot: { [self] in snapshotUnavailable ? nil : .init(text: text, selection: selection) },
+                  isFocused: { [self] in focused },
+                  select: { [self] range in
+                      selections += 1
+                      selectedRanges.append(range)
+                      guard selectionSucceeds else { return false }
+                      if delaySelection || (delayRedundantSelection && range == selection) {
+                          pendingSelection = range
+                      } else { selection = range }
+                      afterSelect?()
+                      return true
+                  }, replaceSelection: { [self] replacement in
+                      replacements += 1
+                      // Simulate an IPC call whose error does not prove no mutation.
+                      if delayReplacement {
+                          pendingReplacement = replacement
+                      } else {
+                          applyReplacement(replacement)
+                      }
+                      afterReplacement?()
+                      return replacementSucceeds
+                  }, transport: transport, keyboardPlan: { [self] text in
+                      guard LiveDictationKeyboardInput.isSupported(text) else { return nil }
+                      let values: [String]
+                      if useAcknowledgedWordGroups {
+                          guard let plan = LiveDictationKeyboardInput.makePlan(text: text, translate: { _, _ in nil }) else { return nil }
+                          values = LiveDictationKeyboardInput.acknowledgmentGroups(plan).map { $0.map(\.text).joined() }
+                      } else {
+                          let characters = text.map(String.init)
+                          values = stride(from: 0, to: characters.count, by: keyboardBurstSize).map { start in
+                              characters[start..<min(start + keyboardBurstSize, characters.count)].joined()
+                          }
+                      }
+                      return values.map { value in
+                          .init(text: value, send: { [self] validate, onFailure in
+                              beforeKeyboardValidation?()
+                              guard validate() else {
+                                  onFailure(.targetValidationFailed)
+                                  return false
+                              }
+                              keyboardSteps.append(value)
+                              if keyboardFailureAt == keyboardSteps.count {
+                                  onFailure(.eventCreation)
+                                  return false
+                              }
+                              if !keyboardNoOp {
+                                  if delayKeyboardSeparators, value.contains(where: { $0.isWhitespace || $0.isPunctuation }) {
+                                      pendingReplacement = value
+                                  } else {
+                                      applyReplacement(value)
+                                  }
+                              }
+                              afterKeyboard?()
+                              return true
+                          })
+                      }
+                  }, allowsEmptyLineSentinelRemoval: allowsEmptyLineSentinelRemoval, paste: paste,
+                    focusStatus: { [self] in
+                        if !focused { return .departed("focus_changed") }
+                        return focusUnavailable ? .unavailable("test_ax_unavailable") : .focused
+                    }, placeholderEvidence: { [self] in
+                        let evidence = placeholderEvidence
+                        onPlaceholderEvidence?()
+                        return evidence
+                    })
+        }
+    }
+
+    @Test func audioCapturedBeforeTargetIsHandedOffInExactSampleOrder() {
+        let audio = BufferedDictationCaptureAudio()
+        let received = CapturedAudioSamples()
+        audio.append([1, 2])
+        audio.append([3])
+        #expect(audio.attach { received.append($0) })
+        audio.append([4, 5])
+        #expect(received.values == [1, 2, 3, 4, 5])
+    }
+
+    @Test func captureAudioOverflowDisablesLiveSessionWithoutPassingAPartialPrefix() {
+        let audio = BufferedDictationCaptureAudio()
+        let received = CapturedAudioSamples()
+        audio.append([Float](repeating: 1, count: 48_000))
+        audio.append([2])
+        #expect(!audio.attach { received.append($0) })
+        #expect(received.values.isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func slowAccessibilityReadDoesNotBlockMainActorAndHasWallDeadline() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let started = AsyncStream<Void>.makeStream()
+        let read = Task {
+            await worker.run(timeout: 0.04) {
+                started.continuation.yield(())
+                gate.wait()
+                return 42
+            }
+        }
+        for await _ in started.stream { break }
+        // This line runs on MainActor while the AX worker is still blocked.
+        let mainActorProgress = true
+        deadline.expire()
+        let value = await read.value
+        #expect(mainActorProgress)
+        #expect(value == nil)
+        let queued = Task { await worker.run(timeout: 0.02) { 17 } }
+        while !deadline.hasPending { await Task.yield() }
+        deadline.expire()
+        #expect(await queued.value == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func expiredAccessibilityOperationCannotAuthorizeALateSetter() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        let started = AsyncStream<Void>.makeStream()
+        let finished = AsyncStream<Bool>.makeStream()
+        let operation = Task {
+            await worker.run(timeout: 0.04) { mayProceed in
+                started.continuation.yield(())
+                gate.wait()
+                let canWrite = mayProceed()
+                finished.continuation.yield(canWrite)
+                return canWrite
+            }
+        }
+        for await _ in started.stream { break }
+        deadline.expire()
+        #expect(await operation.value == nil)
+        gate.signal()
+        for await canWrite in finished.stream { #expect(!canWrite); break }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancelledAccessibilityOperationRevokesSetterBeforeReadReturns() async {
+        let deadline = ManualAXDeadline()
+        let worker = LiveDictationAXWorker(now: { deadline.now }, scheduleDeadline: { _, operation in deadline.schedule(operation) })
+        let gate = DispatchSemaphore(value: 0)
+        let started = AsyncStream<Void>.makeStream()
+        let finished = AsyncStream<Bool>.makeStream()
+        let operation = Task {
+            await worker.run(timeout: 30) { mayProceed in
+                started.continuation.yield(())
+                gate.wait()
+                let canWrite = mayProceed()
+                finished.continuation.yield(canWrite)
+                return canWrite
+            }
+        }
+        for await _ in started.stream { break }
+        operation.cancel()
+        #expect(await operation.value == nil)
+        gate.signal()
+        for await canWrite in finished.stream { #expect(!canWrite); break }
+    }
+
+    @Test(arguments: [false, true])
+    func asyncReadCannotAuthorizeWritesAfterCancellationOrFocusDeparture(cancel: Bool) async throws {
+        let editor = Editor()
+        var access = editor.access
+        let synchronous = access
+        var resumeRead: CheckedContinuation<Void, Never>?
+        access.asyncOperations = .init(snapshot: {
+            await withCheckedContinuation { resumeRead = $0 }
+            return synchronous.snapshot()
+        }, focusStatus: { synchronous.focusStatus() },
+        select: { range, _ in synchronous.select(range) },
+        replaceSelection: { text, _ in synchronous.replaceSelection(text) },
+        placeholderEvidence: { synchronous.placeholderEvidence() })
+        access.asyncOperations?.currentProcessStatus = { editor.focused ? .focused : .departed("focus_changed") }
+        let target = try #require(LiveDictationTextTarget(access: access))
+        let update = Task { await target.update(text: "late words") }
+        while resumeRead == nil { await Task.yield() }
+        if cancel { target.cancel() } else { editor.focused = false }
+        resumeRead?.resume()
+        #expect(await update.value == false)
+        #expect(editor.selections == 0)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func asynchronousSnapshotStillRejectsChangedCaretBeforePaste() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        var access = editor.access
+        let synchronous = access
+        access.asyncOperations = .init(snapshot: {
+            await Task.yield()
+            editor.selection = NSRange(location: 0, length: 0)
+            return synchronous.snapshot()
+        }, focusStatus: { synchronous.focusStatus() },
+        select: { range, _ in synchronous.select(range) },
+        replaceSelection: { text, _ in synchronous.replaceSelection(text) },
+        placeholderEvidence: { synchronous.placeholderEvidence() })
+        let target = try #require(LiveDictationTextTarget(access: access))
+        #expect(await target.update(text: "words") == false)
+        #expect(target.isSuspended)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func temporaryAccessibilityPausesWithoutWritingThenVerifiesOriginalSnapshot(snapshotFailure: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        editor.focusUnavailable = !snapshotFailure
+        editor.snapshotUnavailable = snapshotFailure
+        target.focusTargetDidChange()
+        #expect(target.isPaused)
+        #expect(!target.isSuspended)
+        clock.onWait = {
+            #expect(editor.selections == 0)
+            #expect(editor.finalPastes.isEmpty)
+            editor.focusUnavailable = false
+            editor.snapshotUnavailable = false
+        }
+        #expect(await target.update(committedText: "hello", tail: " world"))
+        #expect(editor.finalPastes == ["hello world"])
+        #expect(!target.isPaused)
+        #expect(diagnostics.contains("accessibility_resumed"))
+        #expect(await target.finish(text: "Hello world."))
+        #expect(editor.text == "Before Hello world. after")
+    }
+
+    @Test func unavailableBeforeWriteDefersAndNextPreviewContinuesWithoutRecapture() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.focusUnavailable = true
+        #expect(await target.update(committedText: "hello", tail: " old"))
+        #expect(target.isPaused)
+        #expect(!target.isSuspended)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        editor.focusUnavailable = false
+        #expect(await target.update(committedText: "hello", tail: " latest"))
+        #expect(editor.finalPastes == ["hello latest"])
+        #expect(!target.isPaused)
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func accessibilityRecoveryNeverReanchorsAfterEditCaretFocusOrCancellation(change: Int) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        editor.focusUnavailable = true
+        clock.onWait = {
+            editor.focusUnavailable = false
+            if change == 0 { editor.text += "user edit" }
+            if change == 1 { editor.selection = NSRange(location: 2, length: 0) }
+            if change == 2 { target.focusTargetDidDepart() } // Known departure remains fatal even after return.
+            if change == 3 { target.cancel() }
+        }
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(await target.finish(text: "must not clean up") == false)
+    }
+
+    @Test(arguments: [false, true])
+    func accessibilityLossBeforePasteOrDuringAckWaitsWithoutResending(afterDispatch: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        if afterDispatch {
+            editor.afterPasteDispatch = { editor.focusUnavailable = true; editor.snapshotUnavailable = true }
+        } else {
+            editor.beforeFinalPaste = { editor.focusUnavailable = true }
+        }
+        clock.onWait = {
+            #expect(editor.finalPastes.count == (afterDispatch ? 1 : 0))
+            editor.focusUnavailable = false
+            editor.snapshotUnavailable = false
+        }
+        #expect(await target.update(text: "one exact paste"))
+        #expect(editor.finalPastes == ["one exact paste"])
+        #expect(!target.isSuspended)
+        #expect(!target.isPaused)
+    }
+
+    @Test func persistentUnknownAfterDispatchStopsWithoutRetryOrFinalFallback() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.afterPasteDispatch = { editor.snapshotUnavailable = true }
+        #expect(await target.update(text: "uncertain delivery") == false)
+        #expect(target.isSuspended)
+        #expect(editor.finalPastes.count == 1)
+        editor.snapshotUnavailable = false
+        #expect(await target.finish(text: "late cleanup") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func accessibilityBudgetIsSharedAcrossChunks() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.025
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.afterPasteDispatch = { editor.focusUnavailable = true }
+        clock.onWait = { editor.focusUnavailable = false }
+        #expect(await target.update(text: String(repeating: "word ", count: 200)) == false)
+        #expect(clock.ticks <= 3)
+        #expect(editor.finalPastes.count <= 4)
+        #expect(target.isSuspended)
+    }
+
+    @Test func unavailableFinalWithoutPasteNeverClaimsDelivery() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.02
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        editor.focusUnavailable = true
+        #expect(await target.finish(text: "not delivered") == false)
+        #expect(editor.selections == 0)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func correctionMonitoringWaitsForFinalCleanedTextAcknowledgment() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        var baselines: [String] = []
+        for preview in ["draft", "draft words"] {
+            #expect(await target.update(text: preview))
+            #expect(baselines.isEmpty)
+        }
+        editor.delayPaste = true
+        clock.onWait = {
+            #expect(baselines.isEmpty)
+            editor.flushReplacement()
+        }
+        let delivered = try await BufferedDictationFinalizer.deliver(
+            text: "Cleaned words.", target: target, isCurrent: { true },
+            correctionMonitoringEnabled: { true }, onDelivered: { text in
+                #expect(editor.text == "Before Cleaned words.  after")
+                baselines.append(text)
+            }
+        )
+        #expect(delivered)
+        #expect(clock.ticks > 0)
+        #expect(baselines == ["Cleaned words."])
+    }
+
+    @Test(arguments: [false, true])
+    func failedFinalDeliveryNeverStartsCorrectionMonitoring(stopped: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        if stopped { target.cancel() } else { editor.finalPasteSucceeds = false }
+        var starts = 0
+        let delivered = try await BufferedDictationFinalizer.deliver(
+            text: "Cleaned words.", target: target, isCurrent: { true },
+            correctionMonitoringEnabled: { true }, onDelivered: { _ in starts += 1 }
+        )
+        #expect(!delivered)
+        #expect(starts == 0)
+    }
+
+    @Test(arguments: ["disabled", "superseded", "cancelled"])
+    func correctionMonitoringRechecksLifecycleAfterAcknowledgment(change: String) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        var current = true
+        var enabled = true
+        var starts = 0
+        editor.afterFinalAcknowledgement = {
+            if change == "disabled" { enabled = false }
+            if change == "superseded" { current = false }
+            if change == "cancelled" { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        // A separate task keeps intentional cancellation out of the test runner.
+        let delivery = Task { @MainActor in
+            try await BufferedDictationFinalizer.deliver(
+                text: "Cleaned words.", target: target, isCurrent: { current },
+                correctionMonitoringEnabled: { enabled }, onDelivered: { _ in starts += 1 }
+            )
+        }
+        do {
+            let delivered = try await delivery.value
+            #expect(change == "disabled")
+            #expect(delivered)
+        } catch is CancellationError {
+            #expect(change != "disabled")
+        }
+        #expect(starts == 0)
+    }
+
+    @Test func finalCleanupWaitsForAccessibilityAndStillChecksExactSnapshot() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "draft"))
+        editor.focusUnavailable = true
+        clock.onWait = {
+            #expect(editor.finalPastes == ["draft"])
+            editor.focusUnavailable = false
+        }
+        #expect(await target.finish(text: "Draft."))
+        #expect(editor.finalPastes == ["draft", "Draft."])
+    }
+
+    @Test(arguments: [false, true])
+    func appendPasteCannotQueueAnOldCaretAfterAcknowledgment(afterReturn: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.delayRedundantSelection = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !afterReturn { editor.afterFinalAcknowledgement = { editor.flushSelection() } }
+        for text in ["hello", "hello world", "hello world " + String(repeating: "more words ", count: 40)] {
+            #expect(await target.update(text: text))
+            editor.flushSelection() // A delayed AX setter may arrive after update returns.
+            target.textTargetDidChange()
+            #expect(editor.selection == NSRange(location: 7 + text.utf16.count, length: 0))
+            #expect(!target.isSuspended)
+        }
+        #expect(editor.selections == 0)
+        #expect(editor.pendingSelection == nil)
+        #expect(editor.finalPastes.count > 3) // Includes multiple acknowledged chunks.
+        let finalText = "hello world " + String(repeating: "more words ", count: 40) + "."
+        #expect(await target.finish(text: finalText))
+        editor.flushSelection()
+        #expect(editor.selections == 0)
+        #expect(editor.text == "Before " + finalText + " after")
+        #expect(editor.selection == NSRange(location: 7 + finalText.utf16.count, length: 0))
+    }
+
+    @Test func actualPasteRevisionStillWaitsForSelectionAndFinalCleanup() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "hello wrong"))
+        editor.delaySelection = true
+        clock.onWait = {
+            // No revision may be pasted while the original caret is still exposed.
+            #expect(editor.finalPastes == ["hello wrong"])
+            editor.flushSelection()
+        }
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.selectedRanges == [NSRange(location: 14, length: 4)])
+        #expect(editor.finalPastes == ["hello wrong", "orld"])
+        clock.onWait = { editor.flushSelection() }
+        #expect(await target.finish(text: "Hello world."))
+        #expect(editor.text == "Before Hello world. after")
+        #expect(editor.selections == 2)
+    }
+
+    @Test(arguments: [false, true])
+    func postPasteExternalChangeStillStopsAndReportsStructuralMismatch(changesText: Bool) async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        #expect(await target.update(text: "private words"))
+        if changesText { editor.text += "secret" } else { editor.selection.location = 7 }
+        target.textTargetDidChange()
+        #expect(target.isSuspended)
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(await target.finish(text: "must not replace") == false)
+        #expect(editor.finalPastes == ["private words"])
+        #expect(diagnostics.contains { $0.contains("snapshot_mismatch:stage=notification,textMatches=\(!changesText),caretMatches=\(changesText)") && $0.contains("sincePasteAckMs=0") })
+        #expect(!diagnostics.contains { $0.contains("private words") || $0.contains("secret") })
+    }
+
+    @Test func codexLivePastePreservesSpacesAndOnlyReplacesChangedSuffix() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "This works", tail: " but this"))
+        #expect(await target.update(committedText: "This works", tail: " but this also works"))
+        #expect(editor.finalPastes == ["This works but this", " also works"])
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(editor.text == "Before This works but this also works after")
+        #expect(await target.finish(text: "This works, but this also works."))
+        #expect(editor.finalPastes.count == 3)
+        #expect(editor.text == "Before This works, but this also works. after")
+    }
+
+    @Test func livePasteChunksPreserveUnicodeAndSurroundingDocument() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        let text = String(repeating: "வணக்கம் 👩🏽‍💻 e\u{301}  ", count: 30) + "done"
+        #expect(await target.update(text: text))
+        #expect(editor.finalPastes.count > 2)
+        #expect(editor.finalPastes.allSatisfy { !$0.isEmpty && $0.utf16.count <= 128 })
+        #expect(editor.finalPastes.joined().utf16.elementsEqual(text.utf16))
+        #expect(editor.text.utf16.elementsEqual(("Before " + text + " after").utf16))
+        #expect(editor.selection == NSRange(location: 7 + text.utf16.count, length: 0))
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func livePastePreservesEmptyComposerSentinelContract() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "This time"))
+        #expect(await target.update(text: "This time it works"))
+        #expect(editor.text == "This time it works")
+        #expect(editor.finalPastes == ["This time", " it works"])
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    private static func placeholderTree() -> LiveDictationTextTarget.PlaceholderNode {
+        .init(role: "AXTextArea", classes: ["ProseMirror"], children: [
+            .init(role: "AXGroup", classes: ["placeholder"], children: [
+                .init(role: "AXStaticText", text: "Work with Codex"),
+                .init(role: "AXStaticText", text: "\n")
+            ])
+        ])
+    }
+
+    @Test func codexGeneratedPlaceholderRequiresExactCompleteStructure() {
+        let raw = "Work with Codex\n"
+        let evidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: Self.placeholderTree())
+        #expect(raw.utf16.count == 16)
+        #expect(evidence.confirmsEmptyValue(raw))
+        #expect(evidence.value == nil)
+        #expect(evidence.characterCount == nil)
+        #expect(evidence.source == "codex_structure")
+        #expect(evidence.structuralStatus == "verified")
+        #expect(!evidence.confirmsEmptyValue("Work with Codex"))
+        #expect(!LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: nil).confirmsEmptyValue(raw))
+    }
+
+    @Test(arguments: Array(0...12))
+    func codexPlaceholderRejectsRealMixedOrIncompleteContent(reason: Int) {
+        var tree = Self.placeholderTree()
+        var raw = "Work with Codex\n"
+        switch reason {
+        case 0: tree.classes = ["NotProseMirror"]
+        case 1: tree.children[0].classes = [] // Literally typed same hint.
+        case 2: tree.children[0].classes = ["placeholder-other"]
+        case 3: tree.children.append(.init(role: "AXStaticText", text: "Actual text"))
+        case 4: tree.children[0].children.append(.init(role: "AXImage", text: "Attachment"))
+        case 5: tree.children[0].children.append(.init(role: "AXStaticText", text: "Actual text"))
+        case 6: tree.children[0].children[0].complete = false // Failed/unsupported read.
+        case 7: tree.children[0].children[0].text = nil
+        case 8: tree.children[0].children[0].children = [.init(role: "AXStaticText", text: "Hidden")]
+        case 9: raw = " Work with Codex\n" // Never trim user whitespace.
+        case 10: tree.children[0].children.append(.init(role: "AXParagraph", children: [.init(role: "AXStaticText", text: "\n")]))
+        case 11: tree.children[0].children = [.init(role: "AXStaticText", text: "Work with Codex\nOther")]
+        default: tree.complete = false
+        }
+        #expect(!LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: tree).confirmsEmptyValue(raw))
+    }
+
+    @Test func codexPlaceholderRejectsTraversalCaps() {
+        let raw = "Work with Codex\n"
+        var many = Self.placeholderTree()
+        many.children[0].children += Array(repeating: .init(role: "AXStaticText", text: "\n"), count: 20)
+        #expect(LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: many).structuralStatus == "node_limit")
+        var deep = Self.placeholderTree()
+        var content = deep.children[0].children[0]
+        for _ in 0..<6 { content = .init(role: "AXGroup", children: [content]) }
+        deep.children[0].children = [content]
+        #expect(LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: raw, root: deep).structuralStatus == "depth_limit")
+    }
+
+    @Test(arguments: [false, true])
+    func structuralPlaceholderSupportsFirstPasteThenNormalCleanup(finalOnly: Bool) async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        editor.placeholderEvidence.characterCount = 16 // Rendered text count isn't DOM content.
+        editor.removesInitialPlaceholder = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !finalOnly {
+            #expect(await target.update(text: "This"))
+            editor.placeholderEvidence = .init() // Decoration disappears after insertion.
+            #expect(await target.update(text: "This works"))
+        }
+        #expect(await target.finish(text: "This works."))
+        #expect(editor.text == "This works.")
+        #expect(editor.selection == NSRange(location: 11, length: 0))
+        #expect(!target.isSuspended)
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func structuralPlaceholderRevalidatesEvidenceAndTargetBeforeDispatch(change: Int) async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if change == 0 {
+            editor.beforeFinalPaste = { editor.placeholderEvidence = .init(structuralStatus: "no_placeholder") }
+        } else {
+            editor.onPlaceholderEvidence = {
+                if change == 1 { editor.focused = false }
+                if change == 2 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 3 { editor.text = "External content" }
+            }
+        }
+        #expect(await target.update(text: "This") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func structuralPlaceholderAlternateIsOneShotEvenIfHostRetainsHint() async throws {
+        let editor = Editor("Work with Codex\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = LiveDictationTextTarget.generatedPlaceholderEvidence(rawValue: editor.text, root: Self.placeholderTree())
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "This"))
+        #expect(editor.text == "ThisWork with Codex\n")
+        editor.afterPasteDispatch = { editor.text = "This works" }
+        #expect(await target.update(text: "This works") == false)
+        #expect(target.isSuspended)
+    }
+
+    @Test(arguments: [false, true])
+    func verifiedEmptyPlaceholderSupportsLiveUpdatesAndFinalCleanup(finalOnly: Bool) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        editor.removesInitialPlaceholder = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        if !finalOnly {
+            #expect(await target.update(text: "Okay, I"))
+            #expect(await target.update(text: "Okay, I am speaking"))
+        }
+        #expect(await target.finish(text: "Okay, I am speaking."))
+        #expect(editor.text == "Okay, I am speaking.")
+        #expect(editor.selection == NSRange(location: editor.text.utf16.count, length: 0))
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(!target.isSuspended)
+    }
+
+    @Test(arguments: [0, 1, 2, 3, 4, 5])
+    func unprovenPlaceholderRemovalStillFailsClosed(reason: Int) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = reason != 0
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        editor.removesInitialPlaceholder = true
+        if reason == 1 { editor.placeholderEvidence.characterCount = nil }
+        if reason == 2 { editor.placeholderEvidence.characterCount = 16 }
+        if reason == 3 { editor.placeholderEvidence.characterCount = 0.25 }
+        if reason == 4 { editor.placeholderEvidence.value = "Different placeholder" }
+        if reason == 5 { editor.selection = NSRange(location: 1, length: 0) }
+        // Simulate removal even for inconsistent evidence; no accepted alternate
+        // may be inferred merely because the resulting text looks like ours.
+        editor.afterPasteDispatch = { editor.text = "Okay, I"; editor.selection = NSRange(location: 7, length: 0) }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I") == false)
+        #expect(target.isSuspended)
+        #expect(await target.finish(text: "Never overwrite this") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func placeholderEvidenceMustStillHoldAtFirstDispatch(unknown: Bool) async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.beforeFinalPaste = { editor.placeholderEvidence.characterCount = unknown ? nil : 16 }
+        #expect(await target.update(text: "Okay, I") == false)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(editor.text == "Message Codex...")
+        #expect(target.isSuspended)
+    }
+
+    @Test func realTextEqualToPlaceholderIsPreserved() async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 16)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I"))
+        #expect(editor.text == "Okay, IMessage Codex...")
+        #expect(await target.finish(text: "Okay, I."))
+        #expect(editor.text == "Okay, I.Message Codex...")
+    }
+
+    @Test func placeholderRemovalPermissionIsConsumedByFirstPaste() async throws {
+        let editor = Editor("Message Codex...", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.placeholderEvidence = .init(value: editor.text, characterCount: 0)
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "Okay, I")) // host retained the initial value
+        editor.afterPasteDispatch = { editor.text = "Okay, I continue" }
+        #expect(await target.update(text: "Okay, I continue") == false)
+        #expect(target.isSuspended)
+    }
+
+    @Test func livePasteStillDefersLargeDraftRewritesAndProtectsFrozenWords() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        let draft = String(repeating: "a", count: 90)
+        #expect(await target.update(committedText: "hello", tail: " " + draft))
+        let writes = editor.finalPastes.count
+        #expect(await target.update(committedText: "hello", tail: " replacement"))
+        #expect(editor.finalPastes.count == writes)
+        #expect(editor.text == "Before hello " + draft + " after")
+        #expect(await target.update(committedText: "different", tail: " words") == false)
+        #expect(editor.finalPastes.count == writes)
+        #expect(await target.finish(text: "must not overwrite") == false)
+    }
+
+    @Test func oversizedLivePasteGraphemeRejectsBeforeSelectionOrClipboardWrite() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "prefix " + "a" + String(repeating: "\u{301}", count: 128)) == false)
+        #expect(editor.selections == 0)
+        #expect(editor.finalPastes.isEmpty)
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func livePasteFailedLaterChunkNeverRetriesOrFallsBack() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.beforeFinalPaste = {
+            if editor.finalPastes.count == 1 { editor.finalPasteSucceeds = false }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: String(repeating: "word ", count: 60)) == false)
+        #expect(editor.finalPastes.count == 1)
+        #expect(editor.text == "Before " + editor.finalPastes[0] + " after")
+        #expect(editor.keyboardSteps.isEmpty)
+        #expect(await target.finish(text: "late cleanup") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func livePasteRejectsChangedReadbackWithoutAnotherChunkOrFinalFallback() async throws {
+        for change in 0..<5 {
+            let editor = Editor()
+            editor.transport = .targetedPaste
+            editor.finalPasteEnabled = true
+            editor.delayPaste = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = {
+                if change == 4 { return } // A missing ACK must time out, not repeat the paste.
+                editor.flushReplacement()
+                if change == 0 { editor.text += "user edit" }
+                if change == 1 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 2 { editor.focused = false }
+                if change == 3 { target.cancel() }
+            }
+            #expect(await target.update(text: String(repeating: "word ", count: 60)) == false)
+            #expect(editor.finalPastes.count == 1)
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(await target.finish(text: "late cleanup") == false)
+        }
+    }
+
+    @Test func livePasteFinalWaitsForPendingChunkAndPerformsCleanupOnce() async throws {
+        let editor = Editor()
+        editor.transport = .targetedPaste
+        editor.finalPasteEnabled = true
+        editor.delayPaste = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let text = String(repeating: "word ", count: 60) + "done"
+        let preview = Task { @MainActor in await target.update(text: text) }
+        while waiting == nil { await Task.yield() }
+        var finalStarted = false
+        let final = Task { @MainActor in
+            finalStarted = true
+            return await target.finish(text: text + ".")
+        }
+        while !finalStarted { await Task.yield() }
+        #expect(editor.finalPastes.count == 1)
+        #expect(await target.update(text: "late preview") == false)
+        editor.delayPaste = false
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value)
+        #expect(await final.value)
+        #expect(editor.finalPastes.dropLast().joined() == text)
+        #expect(editor.finalPastes.last == ".")
+        #expect(editor.text == "Before " + text + ". after")
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test(arguments: [" ", ",", "\u{00A0}"])
+    func wordGroupsWaitForSeparatorTextAndCaretBeforeContinuing(separator: String) async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        let clock = PollClock()
+        var waitingForCaret = false
+        var expectedGroupCount = 0
+        clock.onWait = {
+            if waitingForCaret {
+                #expect(editor.keyboardSteps.count == expectedGroupCount, "No following word before the separator caret ACK")
+                editor.flushSplitReplacement()
+                waitingForCaret = false
+            } else {
+                #expect(editor.pendingReplacement == separator)
+                expectedGroupCount = editor.keyboardSteps.count
+                editor.replacementTextFirst = true
+                editor.flushReplacement()
+                editor.replacementTextFirst = false
+                waitingForCaret = true
+            }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        let text = "Can" + separator + "you" + separator + "check"
+        #expect(await target.update(text: text))
+        #expect(editor.keyboardSteps == ["C", "an", separator, "you", separator, "check"])
+        #expect(editor.text == text)
+        #expect(editor.selection == NSRange(location: 13, length: 0))
+        #expect(clock.ticks == 4)
+        #expect(!target.isSuspended)
+    }
+
+    @Test func wordGroupWaitStillRejectsEditsCaretMovementFocusLossAndCancellation() async throws {
+        for change in 0..<4 {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.useAcknowledgedWordGroups = true
+            editor.delayKeyboardSeparators = true
+            editor.finalPasteEnabled = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = {
+                editor.flushReplacement()
+                if change == 0 { editor.text = "Cat " } // Same length still cannot pass exact readback.
+                if change == 1 { editor.selection = NSRange(location: 1, length: 0) }
+                if change == 2 { editor.focused = false }
+                if change == 3 { target.cancel() }
+            }
+            #expect(await target.update(text: "Can you check") == false)
+            #expect(editor.keyboardSteps == ["C", "an", " "])
+            #expect(await target.finish(text: "Can you check?") == false)
+            #expect(editor.finalPastes.isEmpty)
+        }
+    }
+
+    @Test func punctuationTransformationCannotAuthorizeTheFollowingWord() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.finalPasteEnabled = true
+        editor.afterKeyboard = {
+            if editor.keyboardSteps.last == "," { editor.text = "Can." }
+        }
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "Can,you check") == false)
+        #expect(diagnostics.last == "keyboard_text_readback_changed")
+        #expect(editor.keyboardSteps == ["C", "an", ","])
+        #expect(await target.finish(text: "Can you check?") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func unacknowledgedSeparatorTimesOutWithoutRetryOrFollowingWord() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        editor.finalPasteEnabled = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        #expect(await target.update(text: "Can you check") == false)
+        #expect(diagnostics.last == "keyboard_text_readback_timeout")
+        #expect(editor.keyboardSteps == ["C", "an", " "])
+        editor.flushReplacement() // A late ACK must not revive the suspended target.
+        #expect(await target.update(text: "Can you check") == false)
+        #expect(await target.finish(text: "Can you check?") == false)
+        #expect(editor.finalPastes.isEmpty)
+    }
+
+    @Test func finalCleanupWaitsForWordGroupAcknowledgmentAndPastesOnlyOnce() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.delayKeyboardSeparators = true
+        editor.finalPasteEnabled = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let preview = Task { @MainActor in await target.update(committedText: "Can", tail: " you check") }
+        while waiting == nil { await Task.yield() }
+        var finalStarted = false
+        let final = Task { @MainActor in
+            finalStarted = true
+            return await target.finish(text: "Can you check?")
+        }
+        while !finalStarted { await Task.yield() }
+        #expect(editor.keyboardSteps == ["C", "an", " "])
+        #expect(editor.finalPastes.isEmpty)
+        #expect(await target.update(text: "late preview") == false)
+        editor.delayKeyboardSeparators = false
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value)
+        #expect(await final.value)
+        #expect(editor.keyboardSteps == ["C", "an", " ", "you", " ", "check"])
+        #expect(editor.finalPastes == ["?"])
+        #expect(editor.text == "Can you check?")
+    }
+
+    @Test func finalCleanupPastesChangedMiddleOnceAndPreservesContext() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.useAcknowledgedWordGroups = true
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "hello", tail: " old world"))
+        let oldSteps = editor.keyboardSteps
+        #expect(await target.finish(text: "Hello new world"))
+        #expect(editor.finalPastes == ["Hello new"])
+        #expect(editor.keyboardSteps == oldSteps)
+        #expect(editor.text == "Before Hello new world after")
+        #expect(editor.selection == NSRange(location: 7 + "Hello new world".utf16.count, length: 0))
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func finalPasteShorteningAndUnicodePreserveExactBoundaries() async throws {
+        for (old, final) in [("hello extra", "hello"), ("extra hello", "hello"), ("👩🏽‍💻 old e\u{301}", "👩🏽‍💻 new e\u{301}")] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: old))
+            #expect(await target.finish(text: final))
+            #expect(editor.finalPastes.count == 1)
+            #expect(editor.finalPastes[0].isEmpty == false)
+            #expect(editor.text.utf16.elementsEqual(("Before " + final + " after").utf16))
+        }
+    }
+
+    @Test func finalPasteRejectsLateEditsAndNeverFallsBackToTyping() async throws {
+        for change in 0..<3 {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "draft"))
+            let oldSteps = editor.keyboardSteps
+            editor.beforeFinalPaste = {
+                if change == 0 { editor.text += "user edit" }
+                if change == 1 { editor.focused = false }
+                if change == 2 { editor.finalPasteSucceeds = false }
+            }
+            #expect(await target.finish(text: "Clean final.") == false)
+            #expect(editor.finalPastes.isEmpty)
+            #expect(editor.keyboardSteps == oldSteps)
+            #expect(target.isSuspended)
+        }
+    }
+
+    @Test func identicalFinalAndEmptyFinalNeverTouchClipboard() async throws {
+        for final in ["draft", ""] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "draft"))
+            #expect(await target.finish(text: final))
+            #expect(editor.finalPastes.isEmpty)
+            #expect(editor.text == "Before draft after")
+        }
+    }
+
+    @Test func finalPasteCanBeFirstInsertionIntoEmptyCodexComposer() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.finalPasteEnabled = true
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.finish(text: "Complete text."))
+        #expect(editor.text == "Complete text.")
+        #expect(editor.finalPastes == ["Complete text."])
+        #expect(editor.keyboardSteps.isEmpty)
+    }
+
+    @Test func unacknowledgedFinalPasteNeverRetriesOrTypesFallback() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.finalPasteEnabled = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "draft"))
+        let steps = editor.keyboardSteps
+        editor.corruptReadback = true
+        #expect(await target.finish(text: "Clean final.") == false)
+        #expect(editor.finalPastes.count == 1)
+        #expect(editor.keyboardSteps == steps)
+        #expect(await target.finish(text: "Retry") == false)
+        #expect(editor.finalPastes.count == 1)
+    }
+
+    @Test func burstReadbackWaitsForWholeBatchAndRejectsUnrelatedText() async throws {
+        for unrelated in [false, true] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.keyboardBurstSize = 8
+            var ticks = 0
+            editor.afterKeyboard = {
+                if editor.keyboardSteps.count == 1 {
+                    editor.text = unrelated ? "user" : "abc"
+                    editor.selection = NSRange(location: unrelated ? 4 : 3, length: 0)
+                }
+            }
+            let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 0.5, now: { Double(ticks) * 0.1 }, wait: {
+                ticks += 1
+                #expect(editor.keyboardSteps == ["abcdefgh"])
+                editor.text = "abcdefgh"
+                editor.selection = NSRange(location: 8, length: 0)
+            })
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+            #expect(await target.update(text: "abcdefghijklmnop") == !unrelated)
+            #expect(editor.keyboardSteps.count == (unrelated ? 1 : 2))
+            #expect(ticks == (unrelated ? 0 : 1))
+            if !unrelated { #expect(editor.text == "abcdefghijklmnop") }
+        }
+    }
+
+    @Test func cancellationDuringBurstAcknowledgementNeverSendsNextBurst() async throws {
+        let editor = Editor("", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.keyboardBurstSize = 8
+        editor.afterKeyboard = {
+            editor.text = "abc"
+            editor.selection = NSRange(location: 3, length: 0)
+        }
+        var target: LiveDictationTextTarget?
+        let timing = LiveDictationTextTarget.ReadbackTiming(wait: { target?.cancel() })
+        target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        #expect(await target?.update(text: "abcdefghijklmnop") == false)
+        #expect(editor.keyboardSteps == ["abcdefgh"])
+    }
+
+    @Test func finalCaretMoveNeverOverwritesLateUserChanges() async throws {
+        for change in 0..<3 {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.finalPasteEnabled = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "old ending"))
+            editor.afterFinalAcknowledgement = {
+                if change == 0 { editor.text += " user" }
+                if change == 1 { target.cancel() }
+                if change == 2 { editor.selectionSucceeds = false }
+            }
+            #expect(await target.finish(text: "New ending") == false)
+            #expect(editor.finalPastes == ["New"])
+            #expect(editor.text.hasPrefix("Before New ending after"))
+            #expect(editor.selection == NSRange(location: 10, length: 0))
+        }
+    }
+
+    @Test func revisesOnlyOwnedRangeAndFinishes() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "yellow"))
+        #expect(await target.update(text: "hello world"))
+        #expect(await target.finish(text: "Hello, world. "))
+        #expect(editor.text == "Before Hello, world.  after")
+        #expect(target.hasInsertedText)
+        #expect(target.hasAttemptedWrite)
+        #expect(await target.update(text: "late") == false)
+        #expect(editor.replacements == 3)
+    }
+
+    @Test func structuredPreviewsFreezeCommittedPrefixForBothTransports() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(committedText: "Hello ", tail: "wrld"))
+            editor.selectedRanges.removeAll()
+            #expect(await target.update(committedText: "Hello ", tail: "world"))
+            #expect(await target.update(committedText: "Hello world", tail: " again"))
+            #expect(editor.text == "Before Hello world again after")
+            #expect(editor.selectedRanges.allSatisfy { $0.location >= 13 })
+            let selections = editor.selections
+            #expect(await target.update(committedText: "HELLO world", tail: " again") == false)
+            #expect(target.isSuspended)
+            #expect(editor.selections == selections)
+        }
+    }
+
+    @Test func finalCleanupCanReviseFrozenCommittedText() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(committedText: "hello ", tail: "world"))
+            #expect(await target.finish(text: "Hello, world. "))
+            #expect(editor.text == "Before Hello, world.  after")
+            #expect(!target.isSuspended)
+        }
+    }
+
+    @Test func structuredCommitmentsUseExactUTF16AndWholeGraphemeBoundaries() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "é ", tail: "tail"))
+        #expect(await target.update(committedText: "e\u{301} ", tail: "tail") == false)
+        #expect(editor.replacements == 1)
+        let splitEditor = Editor()
+        let splitTarget = try #require(LiveDictationTextTarget(access: splitEditor.access))
+        #expect(await splitTarget.update(committedText: "e", tail: "\u{301}") == false)
+        #expect(splitEditor.selections == 0)
+    }
+
+    @Test func clearingTailNeverRewritesFrozenKeyboardGrapheme() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(committedText: "Stable", tail: " tail"))
+            let selections = editor.selections
+            #expect(await target.update(committedText: "Stable", tail: ""))
+            if transport == .targetedKeyboard {
+                #expect(editor.selections == selections)
+                #expect(editor.text == "Before Stable tail after")
+                #expect(diagnostics.last == "preview_deferred_committed_boundary")
+            } else {
+                #expect(editor.text == "Before Stable after")
+                #expect(editor.selectedRanges.last == NSRange(location: 13, length: 5))
+            }
+            #expect(await target.update(committedText: "Stable", tail: " text"))
+            #expect(editor.text == "Before Stable text after")
+            #expect(!target.isSuspended)
+            target.cancel()
+        }
+    }
+
+    @Test func longLiveRewriteIsDeferredWithoutAdvancingCommitment() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            editor.transport = transport
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            let tail = String(repeating: "a", count: 81)
+            // Initial append remains unrestricted even when it exceeds the cap.
+            #expect(await target.update(committedText: "Stable ", tail: tail))
+            let selections = editor.selections
+            #expect(await target.update(committedText: "Stable changed ", tail: "replacement"))
+            #expect(editor.selections == selections)
+            #expect(editor.text == "Before Stable " + tail + " after")
+            #expect(diagnostics.last == "preview_deferred_rewrite_limit")
+            // The deferred incoming commitment was never frozen.
+            #expect(await target.update(committedText: "Stable ", tail: tail + " append"))
+            #expect(editor.text == "Before Stable " + tail + " append after")
+            #expect(await target.finish(text: "A clean final sentence. "))
+            #expect(editor.text == "Before A clean final sentence.  after")
+        }
+    }
+
+    @Test func liveRewriteLimitAllowsEightyGraphemesAndLegacyRemainsUnrestricted() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(committedText: "", tail: String(repeating: "🦊", count: 80)))
+        #expect(await target.update(committedText: "", tail: "short"))
+        #expect(editor.text == "Before short after")
+        #expect(await target.update(text: String(repeating: "x", count: 100)))
+        #expect(await target.update(text: "legacy revision"))
+        #expect(editor.text == "Before legacy revision after")
+    }
+
+    @Test func keyboardDispatchFailureReportsExactReasonWithoutRetry() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.keyboardFailureAt = 1
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "hello") == false)
+        #expect(diagnostics == ["keyboard_dispatch_event_creation", "keyboard_dispatch_failed"])
+        #expect(await target.finish(text: "hello") == false)
+        #expect(editor.keyboardSteps == ["h"])
+    }
+
+    @Test func keyboardLastMomentValidationReportsTextAndCaretMismatch() async throws {
+        for changesText in [true, false] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            editor.beforeKeyboardValidation = {
+                if changesText { editor.text += "user" }
+                else { editor.selection.location = 0 }
+            }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(text: "hello") == false)
+            #expect(diagnostics.first == "keyboard_validation_snapshot_changed:textMatches=\(!changesText),caretMatches=\(changesText)")
+            #expect(diagnostics.contains("keyboard_dispatch_target_validation_failed"))
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func replacesInitialSelectionAndHandlesUTF16() async throws {
+        let editor = Editor("🦊 old fin", selection: NSRange(location: 3, length: 3))
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "👩🏽‍💻 नमस्ते"))
+        #expect(editor.text == "🦊 👩🏽‍💻 नमस्ते fin")
+        #expect(await target.update(text: "😀 café"))
+        #expect(editor.text == "🦊 😀 café fin")
+        #expect(editor.selection == NSRange(location: 3 + ("😀 café" as NSString).length, length: 0))
+    }
+
+    @Test func emptyInitialHypothesisPreservesSelection() async throws {
+        let editor = Editor("selected", selection: NSRange(location: 0, length: 8))
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: ""))
+        #expect(editor.text == "selected")
+        #expect(!target.hasAttemptedWrite)
+        #expect(editor.selections == 0)
+    }
+
+    @Test func rejectsInvalidAndSplitSurrogateRanges() {
+        for range in [NSRange(location: 100, length: 0), NSRange(location: 0, length: 100), NSRange(location: 1, length: 0)] {
+            let editor = Editor("😀", selection: range)
+            #expect(LiveDictationTextTarget(access: editor.access) == nil)
+        }
+    }
+
+    @Test("Permanent cursor loss announces immediately, even without another preview", arguments: [false, true])
+    func announcesPermanentOwnershipLoss(changesFocus: Bool) async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        var notices = 0
+        target.onSuspended = { notices += 1 }
+        #expect(await target.update(text: "first"))
+        if changesFocus {
+            target.focusTargetDidDepart()
+        } else {
+            editor.selection.location = 0
+            target.textTargetDidChange()
+        }
+        #expect(notices == 1)
+        #expect(target.isSuspended)
+        target.focusTargetDidDepart()
+        #expect(await target.update(text: "late preview") == false)
+        #expect(await target.finish(text: "Final cleanup.") == false)
+        #expect(notices == 1)
+        #expect(editor.text == "Before first after")
+    }
+
+    @Test("Temporary AX loss and ordinary completion never announce stopped insertion")
+    func transientAvailabilityDoesNotAnnounceStop() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        var timing = clock.timing
+        timing.availabilityTimeout = 0.03
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        var notices = 0
+        target.onSuspended = { notices += 1 }
+        editor.focusUnavailable = true
+        #expect(await target.update(text: "first"))
+        #expect(target.isPaused)
+        #expect(notices == 0)
+        editor.focusUnavailable = false
+        #expect(await target.update(text: "first"))
+        #expect(await target.finish(text: "First."))
+        #expect(editor.text == "Before First. after")
+        #expect(notices == 0)
+    }
+
+    @Test func focusLossPermanentlySuspends() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "first"))
+        editor.focused = false
+        #expect(await target.update(text: "wrong app") == false)
+        editor.focused = true
+        #expect(await target.finish(text: "back again") == false)
+        #expect(target.isSuspended)
+        #expect(editor.text == "Before first after")
+    }
+
+    @Test func userEditOrCaretMoveStopsWrites() async throws {
+        for changesText in [true, false] {
+            let editor = Editor()
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "first"))
+            if changesText { editor.text += "user edit" } else { editor.selection.location = 0 }
+            let before = editor.text
+            #expect(await target.update(text: "overwrite") == false)
+            #expect(target.isSuspended)
+            #expect(editor.text == before)
+            #expect(editor.replacements == 1)
+        }
+    }
+
+    @Test func canonicallyEquivalentUserEditStillRevokesOwnership() async throws {
+        let editor = Editor("é ", selection: NSRange(location: 2, length: 0))
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.text = "e\u{301} "
+        #expect(await target.update(text: "hello") == false)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func ownReentrantAndDelayedNotificationsDoNotSuspend() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.afterSelect = { target.textTargetDidChange() }
+        editor.afterReplacement = { target.textTargetDidChange() }
+        #expect(await target.update(text: "first"))
+        target.textTargetDidChange()
+        #expect(await target.update(text: "revision"))
+        #expect(!target.isSuspended)
+        #expect(editor.text == "Before revision after")
+        // A later external change is observed even without another ASR update.
+        editor.selection.location = 0
+        target.textTargetDidChange()
+        #expect(target.isSuspended)
+    }
+
+    @Test func cancellationDuringSelectionPreventsTextWrite() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.afterSelect = { target.cancel() }
+        #expect(await target.update(text: "late") == false)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func redundantFocusNotificationKeepsSameFieldOwned() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        target.focusTargetDidChange()
+        editor.afterSelect = { target.focusTargetDidChange() }
+        editor.afterReplacement = { target.focusTargetDidChange() }
+        #expect(await target.update(text: "live text"))
+        #expect(await target.finish(text: "Cleaned text."))
+        #expect(editor.text == "Before Cleaned text. after")
+        #expect(!target.isSuspended)
+    }
+
+    @Test func focusNotificationForDifferentFieldPermanentlyRevokesOwnership() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.focused = false
+        target.focusTargetDidChange()
+        editor.focused = true
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func focusLossBetweenSelectionAndTextPreventsReplacement() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.afterSelect = { editor.focused = false }
+        #expect(await target.update(text: "unsafe") == false)
+        #expect(target.hasAttemptedWrite)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func failedOrMismatchedWritesAreNeverRetried() async throws {
+        for readbackFailure in [true, false] {
+            let editor = Editor()
+            editor.corruptReadback = readbackFailure
+            editor.replacementSucceeds = readbackFailure
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "possibly inserted") == false)
+            #expect(target.hasAttemptedWrite)
+            #expect(target.isSuspended)
+            #expect(await target.finish(text: "duplicate") == false)
+            #expect(editor.replacements == 1)
+        }
+    }
+
+    @Test func failedSelectionStopsBeforeReplacement() async throws {
+        let editor = Editor()
+        editor.selectionSucceeds = false
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello") == false)
+        #expect(target.hasAttemptedWrite)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func cancellationLeavesInsertedTextAndRejectsLateOutput() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "keep"))
+        target.cancel()
+        #expect(await target.update(text: "late") == false)
+        #expect(await target.finish(text: "later") == false)
+        #expect(editor.text == "Before keep after")
+    }
+
+    @Test func newSessionRetiresOldOwnership() async throws {
+        let first = Editor()
+        let old = try #require(LiveDictationTextTarget(access: first.access))
+        let second = Editor()
+        let new = try #require(LiveDictationTextTarget(access: second.access))
+        #expect(await old.update(text: "old") == false)
+        #expect(await new.update(text: "new"))
+        #expect(first.replacements == 0)
+    }
+
+    private final class PollClock {
+        var ticks = 0
+        var onWait: () -> Void = {}
+        var timing: LiveDictationTextTarget.ReadbackTiming {
+            .init(timeout: 0.05, now: { [self] in Double(ticks) * 0.01 }, wait: { [self] in
+                ticks += 1
+                onWait()
+                await Task.yield()
+            })
+        }
+    }
+
+    @Test func delayedSelectionReadbackWaitsWithoutRepeatingWrite() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "first"))
+        editor.delaySelection = true
+        clock.onWait = { if clock.ticks == 2 { editor.flushSelection() } }
+        #expect(await target.update(text: "revision"))
+        #expect(editor.text == "Before revision after")
+        #expect(editor.selections == 2)
+        #expect(editor.replacements == 2)
+        #expect(clock.ticks == 2)
+    }
+
+    @Test func delayedTextReadbackWaitsWithoutRepeatingWrite() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        editor.delayReplacement = true
+        clock.onWait = { if clock.ticks == 2 { editor.flushReplacement() } }
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "hello"))
+        #expect(editor.text == "Before hello after")
+        #expect(editor.replacements == 1)
+        #expect(clock.ticks == 2)
+    }
+
+    @Test func readbackTimeoutPermanentlySuspendsWithoutRetry() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        editor.delayReplacement = true
+        var reasons: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { reasons.append($0) }, readbackTiming: clock.timing))
+        #expect(await target.update(text: "late") == false)
+        #expect(target.isSuspended)
+        #expect(reasons.last == "text_readback_timeout")
+        editor.flushReplacement()
+        #expect(await target.finish(text: "do not retry") == false)
+        #expect(editor.replacements == 1)
+    }
+
+    @Test func splitTextAndCaretReadbacksWaitForCompleteAcknowledgement() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            for textFirst in [true, false] {
+                let editor = Editor("", selection: NSRange(location: 0, length: 0))
+                editor.transport = transport
+                editor.replacementTextFirst = textFirst
+                editor.replacementCaretFirst = !textFirst
+                let clock = PollClock()
+                var diagnostics: [String] = []
+                let target = try #require(LiveDictationTextTarget(access: editor.access,
+                    onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+                clock.onWait = {
+                    // A second key must not be sent while the first key's text
+                    // and caret still disagree. Own notifications must not revoke us.
+                    #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? clock.ticks : 0))
+                    #expect(!target.hasInsertedText || clock.ticks > 1)
+                    target.textTargetDidChange()
+                    editor.flushSplitReplacement()
+                    target.textTargetDidChange()
+                }
+                #expect(await target.update(text: "I🦊"))
+                #expect(editor.text == "I🦊")
+                #expect(editor.selection == NSRange(location: 3, length: 0))
+                #expect(target.hasInsertedText)
+                #expect(!target.isSuspended)
+                #expect(clock.ticks == (transport == .targetedKeyboard ? 2 : 1))
+                #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+                #expect(diagnostics.contains { $0.contains(textFirst ? "text=new" : "text=old") && $0.contains(textFirst ? "caret=old" : "caret=new") })
+                target.cancel()
+            }
+        }
+    }
+
+    @Test func splitReadbackTimeoutNeverSendsNextKeyOrRetries() async throws {
+        for textFirst in [true, false] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.replacementTextFirst = textFirst
+            editor.replacementCaretFirst = !textFirst
+            let clock = PollClock()
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+            #expect(await target.update(text: "I am speaking") == false)
+            #expect(target.isSuspended)
+            #expect(!target.hasInsertedText)
+            #expect(clock.ticks == 5)
+            #expect(diagnostics.last == "keyboard_text_readback_timeout")
+            #expect(diagnostics.count == 2) // One mixed-state diagnostic, then timeout.
+            editor.flushSplitReplacement()
+            #expect(await target.finish(text: "I am speaking.") == false)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func unrelatedTextOrCaretDuringSplitReadbackStopsImmediately() async throws {
+        for changeText in [true, false] {
+            let editor = Editor("private", selection: NSRange(location: 7, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.replacementTextFirst = true
+            let clock = PollClock()
+            clock.onWait = {
+                if changeText { editor.text += " user edit" }
+                else { editor.selection = NSRange(location: 0, length: 0) }
+            }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+            #expect(await target.update(text: "I am speaking") == false)
+            #expect(clock.ticks == 1)
+            #expect(target.isSuspended)
+            #expect(diagnostics.last == "keyboard_text_readback_changed")
+            #expect(diagnostics.contains { $0.contains(changeText ? "text=other" : "caret=other") })
+            #expect(diagnostics.allSatisfy { !$0.contains("private") && !$0.contains("user edit") && !$0.contains("I am speaking") })
+            #expect(await target.update(text: "retry") == false)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func diagnosticOnlyTextDifferencesAreNeverAccepted() async throws {
+        for observed in ["i", "I\n"] {
+            let editor = Editor("", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.afterKeyboard = { editor.text = observed }
+            var diagnostics: [String] = []
+            let target = try #require(LiveDictationTextTarget(access: editor.access,
+                onDiagnostic: { diagnostics.append($0) }))
+            #expect(await target.update(text: "I speak") == false)
+            #expect(target.isSuspended)
+            #expect(diagnostics.contains { $0.contains(observed == "i" ? "caseOnly=true" : "trailingNewlineOnly=true") })
+            #expect(diagnostics.last == "keyboard_text_readback_changed")
+            #expect(editor.keyboardSteps == ["I"])
+        }
+    }
+
+    @Test func codexEmptyLineSentinelPolicyIsExplicitAndExact() {
+        #expect(LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(for: "com.openai.codex"))
+        for bundle in [nil, "com.openai.codex.beta", "com.apple.TextEdit", "COM.OPENAI.CODEX"] {
+            #expect(!LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(for: bundle))
+        }
+    }
+
+    @Test func removedInitialSentinelSupportsFullPreviewRevisionAndFinalCleanup() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }))
+        #expect(await target.update(text: "I am talking"))
+        #expect(editor.text == "I am talking")
+        #expect(await target.update(text: "I am speaking clearly"))
+        #expect(editor.text == "I am speaking clearly")
+        #expect(await target.finish(text: "I am speaking clearly. "))
+        #expect(editor.text == "I am speaking clearly. ")
+        #expect(editor.selection == NSRange(location: editor.text.utf16.count, length: 0))
+        #expect(diagnostics == ["keyboard_empty_line_sentinel_removed"])
+        #expect(editor.replacements == 0)
+        #expect(!target.isSuspended)
+    }
+
+    @Test func initialSentinelAlternateWaitsForCaretAndUsesUTF16() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.removesInitialNewline = true
+        editor.replacementTextFirst = true
+        let clock = PollClock()
+        var diagnostics: [String] = []
+        let target = try #require(LiveDictationTextTarget(access: editor.access,
+            onDiagnostic: { diagnostics.append($0) }, readbackTiming: clock.timing))
+        clock.onWait = {
+            #expect(editor.keyboardSteps.count == clock.ticks)
+            editor.flushSplitReplacement()
+            target.textTargetDidChange()
+        }
+        #expect(await target.update(text: "🦊 hi"))
+        #expect(editor.text == "🦊 hi")
+        #expect(editor.selection == NSRange(location: 5, length: 0))
+        #expect(diagnostics.contains { $0.contains("text=alternate") && $0.contains("caret=old") })
+        #expect(diagnostics.filter { $0 == "keyboard_empty_line_sentinel_removed" }.count == 1)
+        #expect(await target.finish(text: "🦊 Hi. "))
+        #expect(editor.text == "🦊 Hi. ")
+    }
+
+    @Test func retainedInitialNewlineIsPreservedAcrossPreviewAndFinal() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "I speak"))
+        #expect(editor.text == "I speak\n")
+        #expect(await target.finish(text: "I speak. "))
+        #expect(editor.text == "I speak. \n")
+    }
+
+    @Test func sentinelCompatibilityRequiresEligibleCaptureAndKeyboardTransport() async throws {
+        let cases: [(String, NSRange, LiveDictationTextTarget.Transport, Bool)] = [
+            ("\n", NSRange(location: 0, length: 0), .targetedKeyboard, false),
+            ("\n", NSRange(location: 0, length: 0), .axSelectedText, true),
+            ("\n", NSRange(location: 1, length: 0), .targetedKeyboard, true),
+            ("\n", NSRange(location: 0, length: 1), .targetedKeyboard, true),
+            ("\r\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+            ("\n\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+            ("existing\n", NSRange(location: 0, length: 0), .targetedKeyboard, true),
+        ]
+        for (initial, selection, transport, capability) in cases {
+            let editor = Editor(initial, selection: selection)
+            editor.transport = transport
+            editor.allowsEmptyLineSentinelRemoval = capability
+            // Simulate removal of preexisting content. Selected newline replacement
+            // is naturally valid, so use an unrelated edit for that one case.
+            let mutate = { editor.text = selection.length == 1 ? "unexpected" : "I" }
+            editor.afterKeyboard = mutate
+            editor.afterReplacement = mutate
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: "I speak") == false)
+            #expect(target.isSuspended)
+            #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? 1 : 0))
+            #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+        }
+    }
+
+    @Test func retainedSentinelCannotDisappearOnLaterKey() async throws {
+        let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+        editor.transport = .targetedKeyboard
+        editor.allowsEmptyLineSentinelRemoval = true
+        editor.afterKeyboard = {
+            if editor.keyboardSteps.count == 2 { editor.text.removeLast() }
+        }
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "I speak") == false)
+        #expect(target.isSuspended)
+        #expect(editor.keyboardSteps == ["I", " "])
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func alternateSentinelReadbackTimeoutOrCancellationSendsNoMoreKeys() async throws {
+        for cancel in [false, true] {
+            let editor = Editor("\n", selection: NSRange(location: 0, length: 0))
+            editor.transport = .targetedKeyboard
+            editor.allowsEmptyLineSentinelRemoval = true
+            editor.removesInitialNewline = true
+            editor.replacementTextFirst = true
+            let clock = PollClock()
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            clock.onWait = { if cancel { target.cancel() } }
+            #expect(await target.update(text: "I speak") == false)
+            editor.flushSplitReplacement()
+            #expect(await target.finish(text: "I speak.") == false)
+            #expect(!target.hasInsertedText)
+            #expect(editor.keyboardSteps == ["I"])
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func unexpectedEditDuringReadbackRevokesOwnership() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "first"))
+        editor.delaySelection = true
+        clock.onWait = { editor.text += " user edit" }
+        #expect(await target.update(text: "revision") == false)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 1)
+    }
+
+    @Test func cancelDuringReadbackRejectsLateAcknowledgement() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        #expect(await target.update(text: "first"))
+        editor.delaySelection = true
+        clock.onWait = { target.cancel(); editor.flushSelection() }
+        #expect(await target.update(text: "revision") == false)
+        #expect(editor.replacements == 1)
+        #expect(await target.finish(text: "late final") == false)
+    }
+
+    @Test func knownAppDepartureRevokesEvenAfterFocusReturned() async throws {
+        let editor = Editor()
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        // The foreign-activation event arrived after the user returned here.
+        #expect(editor.focused)
+        target.focusTargetDidDepart()
+        #expect(await target.update(text: "must not insert") == false)
+        #expect(target.isSuspended)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func finalWaitsForPreviewAndRejectsLaterPreview() async throws {
+        let editor = Editor()
+        editor.delayReplacement = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let preview = Task { @MainActor in await target.update(text: "preview") }
+        while waiting == nil { await Task.yield() }
+        var finishStarted = false
+        let final = Task { @MainActor in
+            finishStarted = true
+            return await target.finish(text: "Final.")
+        }
+        while !finishStarted { await Task.yield() }
+        #expect(await target.update(text: "late preview") == false)
+        #expect(editor.replacements == 1)
+        editor.delayReplacement = false
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value)
+        #expect(await final.value)
+        #expect(editor.text == "Before Final. after")
+        #expect(editor.replacements == 2)
+    }
+
+
+    @Test func focusLossDuringReadbackRejectsLateText() async throws {
+        let editor = Editor()
+        let clock = PollClock()
+        editor.delayReplacement = true
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+        clock.onWait = { editor.focused = false; editor.flushReplacement() }
+        #expect(await target.update(text: "possibly delivered") == false)
+        editor.focused = true
+        #expect(target.isSuspended)
+        #expect(await target.finish(text: "do not overwrite") == false)
+        #expect(editor.replacements == 1)
+    }
+
+    @Test func cancellationDrainsQueuedFinalAndActivePreview() async throws {
+        let editor = Editor()
+        editor.delayReplacement = true
+        var waiting: CheckedContinuation<Void, Never>?
+        let timing = LiveDictationTextTarget.ReadbackTiming(timeout: 1, now: { 0 }, wait: {
+            await withCheckedContinuation { waiting = $0 }
+        })
+        let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: timing))
+        let preview = Task { @MainActor in await target.update(text: "preview") }
+        while waiting == nil { await Task.yield() }
+        var finishStarted = false
+        let final = Task { @MainActor in
+            finishStarted = true
+            return await target.finish(text: "Final.")
+        }
+        while !finishStarted { await Task.yield() }
+        target.cancel()
+        #expect(await final.value == false)
+        editor.flushReplacement()
+        waiting?.resume()
+        waiting = nil
+        #expect(await preview.value == false)
+        #expect(editor.text == "Before preview after")
+        #expect(editor.replacements == 1)
+    }
+
+
+    @Test func transportPolicyOnlyOptsExactCodexBundleIntoKeyboard() {
+        #expect(LiveDictationTextTarget.transport(for: "com.openai.codex") == .targetedPaste)
+        for id in [nil, "com.openai.codex.beta", "com.openai.chat", "com.apple.TextEdit"] as [String?] {
+            #expect(LiveDictationTextTarget.transport(for: id) == .axSelectedText)
+        }
+    }
+
+    @Test func chosenKeyboardNeverUsesAcceptedButIneffectiveAXTextSetter() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.delayReplacement = true // AX setter would accept but not update its value.
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello"))
+        #expect(editor.text == "Before hello after")
+        #expect(editor.keyboardSteps == ["h", "e", "l", "l", "o"])
+        #expect(editor.replacements == 0)
+        #expect(target.hasInsertedText)
+    }
+
+    @Test func keyboardAppendPreservesPrefixAndTypesOnlyNewSuffix() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello"))
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.keyboardSteps.joined() == " world")
+        #expect(editor.selectedRanges.last == NSRange(location: 12, length: 0))
+        #expect(editor.text == "Before hello world after")
+    }
+
+    @Test func keyboardRevisionAndShorteningRetypeOneRetainedGraphemeWithoutDeletes() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello wrong"))
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "hello world"))
+        #expect(editor.keyboardSteps.joined() == "orld")
+        editor.keyboardSteps.removeAll()
+        #expect(await target.finish(text: "hello"))
+        #expect(editor.keyboardSteps == ["o"])
+        #expect(editor.selectedRanges.last == NSRange(location: 11, length: 7))
+        #expect(editor.text == "Before hello after")
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func keyboardInitialSelectionAndUnicodeUseWholeExactGraphemes() async throws {
+        let editor = Editor("🦊 old fin", selection: NSRange(location: 3, length: 3))
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "👩🏽‍💻 café"))
+        #expect(editor.keyboardSteps.first == "👩🏽‍💻")
+        editor.keyboardSteps.removeAll()
+        #expect(await target.update(text: "👩🏽‍💻 cafe\u{301}"))
+        // Canonical equality must not hide the different UTF-16 representation.
+        #expect(editor.keyboardSteps.count == 1)
+        #expect(editor.keyboardSteps[0].utf16.elementsEqual("e\u{301}".utf16))
+        #expect(editor.text.utf16.elementsEqual("🦊 👩🏽‍💻 cafe\u{301} fin".utf16))
+    }
+
+    @Test func keyboardPreflightsAllControlsBeforeAnyMutation() async throws {
+        for value in ["safe\nsubmit", "safe\tother", "safe\rsubmit", "safe\u{1B}", "safe\u{7F}", "safe\u{F700}"] {
+            let editor = Editor()
+            editor.transport = .targetedKeyboard
+            let target = try #require(LiveDictationTextTarget(access: editor.access))
+            #expect(await target.update(text: value) == false)
+            #expect(!target.hasAttemptedWrite)
+            #expect(editor.selections == 0)
+            #expect(editor.keyboardSteps.isEmpty)
+            #expect(editor.replacements == 0)
+        }
+    }
+
+    @Test func multilineKeyboardFinalPreservesAcknowledgedPreview() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "preview"))
+        let priorSelections = editor.selections
+        let priorSteps = editor.keyboardSteps
+        #expect(await target.finish(text: "Cleaned\nparagraph") == false)
+        #expect(editor.text == "Before preview after")
+        #expect(editor.selections == priorSelections)
+        #expect(editor.keyboardSteps == priorSteps)
+    }
+
+    @Test func keyboardDispatchFailurePreservesAcknowledgedPrefixAndStops() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        editor.keyboardFailureAt = 3
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "hello") == false)
+        #expect(editor.text == "Before he after")
+        #expect(editor.keyboardSteps == ["h", "e", "l"])
+        #expect(target.hasInsertedText)
+        #expect(target.isSuspended)
+        #expect(await target.finish(text: "final") == false)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func keyboardCancellationAfterDispatchPreventsAnyLaterCharacter() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        editor.afterKeyboard = { target.cancel() }
+        #expect(await target.update(text: "hello") == false)
+        #expect(editor.keyboardSteps == ["h"])
+        #expect(editor.text == "Before h after")
+        #expect(!target.hasInsertedText) // A dispatched event was not acknowledged.
+        #expect(await target.finish(text: "final") == false)
+        #expect(editor.replacements == 0)
+    }
+
+    @Test func failedAcknowledgementNeverClaimsInsertionOrSwitchesTransport() async throws {
+        for transport in [LiveDictationTextTarget.Transport.axSelectedText, .targetedKeyboard] {
+            let editor = Editor()
+            let clock = PollClock()
+            editor.transport = transport
+            editor.delayReplacement = true
+            editor.keyboardNoOp = true
+            let target = try #require(LiveDictationTextTarget(access: editor.access, readbackTiming: clock.timing))
+            #expect(await target.update(text: "hello") == false)
+            #expect(!target.hasInsertedText)
+            #expect(target.hasAttemptedWrite)
+            #expect(target.isSuspended)
+            #expect(await target.finish(text: "final") == false)
+            #expect(editor.replacements == (transport == .axSelectedText ? 1 : 0))
+            #expect(editor.keyboardSteps.count == (transport == .targetedKeyboard ? 1 : 0))
+        }
+    }
+
+    @Test func emptyHypothesisPreservesAlreadyInsertedKeyboardText() async throws {
+        let editor = Editor()
+        editor.transport = .targetedKeyboard
+        let target = try #require(LiveDictationTextTarget(access: editor.access))
+        #expect(await target.update(text: "retain"))
+        #expect(await target.update(text: ""))
+        #expect(editor.text == "Before retain after")
+        #expect(editor.selections == 1)
+    }
+
+}
+
+private final class ManualAXDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time: TimeInterval = 0
+    private var pending: [@Sendable () -> Void] = []
+    var now: TimeInterval { lock.withLock { time } }
+    var hasPending: Bool { lock.withLock { !pending.isEmpty } }
+    func schedule(_ operation: @escaping @Sendable () -> Void) { lock.withLock { pending.append(operation) } }
+    func expire() {
+        let operations = lock.withLock {
+            time += 60
+            let operations = pending
+            pending.removeAll()
+            return operations
+        }
+        operations.forEach { $0() }
+    }
+}
+
+private final class CapturedAudioSamples: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Float] = []
+    var values: [Float] { lock.withLock { storage } }
+    func append(_ values: [Float]) { lock.withLock { storage.append(contentsOf: values) } }
+}

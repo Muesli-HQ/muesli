@@ -324,7 +324,7 @@ struct MeetingSummaryClientTests {
     func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
         let config = AppConfig()
         let selected = provider.summaryConfiguration(from: config, model: "chosen/model")
-        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
+        let fields = ["gemma_mlx": "gemma_chat_model", "chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
                       "claude_code": "claude_code_model",
                       "openrouter": "openrouter_model", "ollama": "ollama_model",
                       "lmstudio": "lmstudio_model", "custom_llm": "custom_llm_model"]
@@ -896,8 +896,8 @@ struct MeetingSummaryClientTests {
         #expect(regeneratedFailure.contains("### Earlier written-note text (preserved; may be outdated)\n\n- Old written note"))
 
         let editedPrefix = previousFailure.replacingOccurrences(
-            of: "Muesli could not generate structured meeting notes.",
-            with: "My saved edit. Muesli could not generate structured meeting notes."
+            of: "muesli could not generate structured meeting notes.",
+            with: "My saved edit. muesli could not generate structured meeting notes."
         )
         let regeneratedWithEdit = MeetingSummaryClient.notesAfterFailedRegeneration(
             existingNotes: editedPrefix,

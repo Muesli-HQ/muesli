@@ -15,7 +15,7 @@ struct DictationContext {
 }
 
 enum DictationContextCapture {
-    struct FocusedWindowSnapshot {
+    struct FocusedWindowSnapshot: Sendable {
         let documentIdentifier: String?
         let title: String
         let frame: CGRect?
@@ -31,9 +31,10 @@ enum DictationContextCapture {
     static func capture(
         includeScreenOCR: Bool,
         shouldCaptureScreenOCR: (@Sendable () async -> Bool)? = nil,
-        allowTitleFallback: Bool = true
+        allowTitleFallback: Bool = true,
+        maxDocumentChars: Int = 200
     ) async -> DictationContext {
-        let base = capture(allowTitleFallback: allowTitleFallback)
+        let base = capture(allowTitleFallback: allowTitleFallback, maxDocumentChars: maxDocumentChars)
         guard includeScreenOCR, CGPreflightScreenCaptureAccess() else { return base }
         let screenContext = await ScreenContextCapture.captureVisibleScreen(
             shouldCapture: shouldCaptureScreenOCR,
@@ -56,8 +57,9 @@ enum DictationContextCapture {
     }
 
     /// Captures focused app name + text context via Accessibility API.
-    /// Lightweight and deterministic — no screenshots, no OCR.
-    static func capture(allowTitleFallback: Bool = true) -> DictationContext {
+    /// Lightweight and deterministic — no screenshots, no OCR. `maxDocumentChars` bounds the
+    /// text read before the cursor (dictation keeps 200; typeahead reads further back).
+    static func capture(allowTitleFallback: Bool = true, maxDocumentChars: Int = 200) -> DictationContext {
         let app = NSWorkspace.shared.frontmostApplication
         let appName = app?.localizedName ?? "Unknown"
         let bundleID = app?.bundleIdentifier ?? ""
@@ -66,7 +68,7 @@ enum DictationContextCapture {
         var selectedText = ""
 
         if let app, AXIsProcessTrusted(), let focusedElement = focusedUIElement(for: app) {
-            docContext = textBeforeCursor(focusedElement, maxChars: 200)
+            docContext = textBeforeCursor(focusedElement, maxChars: maxDocumentChars)
             selectedText = selectedTextValue(in: focusedElement)
         }
 
@@ -140,8 +142,9 @@ enum DictationContextCapture {
 
     // MARK: - Accessibility helpers
 
-    static func focusedUIElement(for app: NSRunningApplication) -> AXUIElement? {
+    static func focusedUIElement(for app: NSRunningApplication, messagingTimeout: Float? = nil) -> AXUIElement? {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(axApp, messagingTimeout) }
         var focusedElement: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement)
         guard result == .success, let element = focusedElement,
@@ -270,15 +273,18 @@ enum DictationContextCapture {
 
     static func focusedWindowSnapshot(
         for app: NSRunningApplication?,
-        allowTitleFallback: Bool = true
+        allowTitleFallback: Bool = true,
+        messagingTimeout: Float? = nil
     ) -> FocusedWindowSnapshot? {
         guard let app else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(axApp, messagingTimeout) }
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
               let windowRef,
               CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
         let window = windowRef as! AXUIElement
+        if let messagingTimeout { AXUIElementSetMessagingTimeout(window, messagingTimeout) }
         let title = axStringValue(window, attribute: kAXTitleAttribute as String)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let attributes = allowTitleFallback
@@ -330,6 +336,8 @@ final class QuilSelectionSnapshot {
     private let element: AXUIElement
     private let selectedRange: CFRange?
     private let usesClipboardFallback: Bool
+    let isEditable: Bool
+    private let capturedValue: String?
     let contextDocumentIdentifier: String?
 
     private init(
@@ -341,11 +349,35 @@ final class QuilSelectionSnapshot {
         contextDocumentIdentifier: String?
     ) {
         self.text = text
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        var writable = DarwinBoolean(false)
+        let valueWritable = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &writable) == .success && writable.boolValue
+        var editable: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, "AXEditable" as CFString, &editable)
+        var selectedTextWritable = DarwinBoolean(false)
+        let canWriteSelection = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString,
+            &selectedTextWritable) == .success && selectedTextWritable.boolValue
+        self.isEditable = QuillAssistantTargetPolicy.isEditable(role: role as? String ?? "",
+            valueWritable: valueWritable, selectionWritable: canWriteSelection, explicitlyEditable: editable as? Bool == true,
+            usesClipboardFallback: usesClipboardFallback, hasSelectionRange: selectedRange != nil)
+        self.capturedValue = Self.boundedValue(of: element)
         self.application = application
         self.element = element
         self.selectedRange = selectedRange
         self.usesClipboardFallback = usesClipboardFallback
         self.contextDocumentIdentifier = contextDocumentIdentifier
+    }
+
+    /// Avoid copying large or unknown-size documents over synchronous Accessibility IPC.
+    private static func boundedValue(of element: AXUIElement) -> String? {
+        var count: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &count) == .success,
+              let length = count as? Int, (0...5000).contains(length) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
+              let text = value as? String, text.utf16.count <= 5000 else { return nil }
+        return text
     }
 
     static func capture() throws -> QuilSelectionSnapshot {
@@ -355,6 +387,9 @@ final class QuilSelectionSnapshot {
               let element = DictationContextCapture.focusedUIElement(for: application) else {
             throw QuilTransformationError.noTextTarget
         }
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        guard subrole as? String != kAXSecureTextFieldSubrole else { throw QuilTransformationError.noTextTarget }
         var text = DictationContextCapture.selectedTextValue(in: element)
         var usesClipboardFallback = false
         if text.isEmpty, DictationContextCapture.isBrowserApplication(application) {
@@ -378,9 +413,14 @@ final class QuilSelectionSnapshot {
         guard isTargetStillFocused(),
               let focused = DictationContextCapture.focusedUIElement(for: application) else { return false }
         if usesClipboardFallback {
-            // Google Docs does not expose its selection through AX. Re-copy once,
-            // immediately before replacement, rather than at every lifecycle guard.
-            return true
+            // Clipboard contents cannot be re-read after staging a replacement.
+            // Still enforce any cursor/selection range the browser does expose.
+            guard let selectedRange else { return true }
+            guard let current = DictationContextCapture.selectedTextRange(focused) else { return false }
+            return current.location == selectedRange.location && current.length == selectedRange.length
+        }
+        if let capturedValue {
+            guard Self.boundedValue(of: focused) == capturedValue else { return false }
         }
         guard DictationContextCapture.selectedTextValue(in: focused) == text else { return false }
         guard let selectedRange else { return true }
@@ -392,6 +432,7 @@ final class QuilSelectionSnapshot {
     func isStillCurrentForReplacement() -> Bool {
         guard isStillCurrent() else { return false }
         if usesClipboardFallback {
+            guard selectedRange != nil else { return false }
             return PasteController.copySelectedText() == text
         }
         return true

@@ -1,0 +1,91 @@
+name: Dispatch private M5 tests
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [requested, in_progress]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Public CI run to reconcile
+        required: true
+        type: string
+concurrency:
+  group: m5-dispatch-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  dispatch:
+    if: vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && github.actor == 'pHequals7') || (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.actor.login == 'pHequals7' && github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 44
+    environment: m5-dispatch
+    permissions:
+      actions: read
+      pull-requests: read
+      contents: read
+      statuses: write
+    steps:
+      # This workflow runs from the default branch. Never check out PR code here.
+      - name: Route the exact merge revision after CI selects M5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_TOKEN: ${{ secrets.M5_DISPATCH_TOKEN }}
+          RUN: ${{ github.event.workflow_run.id || inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN" =~ ^[0-9]+$ ]]
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN")
+          jq -e '.path == ".github/workflows/ci.yml" and .event == "pull_request" and
+            .actor.login == "pHequals7" and .triggering_actor.login == "pHequals7" and
+            .head_repository.full_name == "Muesli-HQ/muesli"' <<< "$run" >/dev/null || exit 0
+          ATTEMPT=$(jq -er .run_attempt <<< "$run")
+          pr=$(jq -er '.pull_requests | if length == 1 then .[0].number else empty end' <<< "$run") || exit 0
+          data=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr")
+          jq -e --arg head "$(jq -r .head_sha <<< "$run")" '
+            .state == "open" and .base.ref == "main" and .user.login == "pHequals7" and
+            .head.repo.full_name == "Muesli-HQ/muesli" and .head.sha == $head and
+            any(.labels[]; .name == "self-host") and all(.labels[]; .name != "ci:blacksmith")' <<< "$data" >/dev/null || exit 0
+          head=$(jq -r .head.sha <<< "$data")
+          # Ignore unrelated-label and docs-only runs. Dispatch only for a live waiting job.
+          for ((i=0; i<40; i++)); do
+            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq '.jobs[] | select(.name | startswith("m5-tests ")) | [.status,.name] | @tsv')
+            state=${job%%$'\t'*}
+            [[ "$state" == in_progress ]] && break
+            [[ "$state" == completed ]] && exit 0
+            sleep 10
+          done
+          [[ "$state" == in_progress ]] || exit 0
+          merge=${job##* }
+          [[ "$merge" =~ ^[0-9a-f]{40}$ ]]
+          context="m5/$RUN/$ATTEMPT/$merge"
+          status() { gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head" -f state="$1" -f context="$context" >/dev/null; }
+          trap 'status failure' ERR
+          # A queued/rerun request for an obsolete merge fails immediately.
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$pr/merge" --jq .object.sha)" == "$merge" ]] || { status failure; exit 1; }
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$merge" --jq '.parents[1].sha')" == "$head" ]] || { status failure; exit 1; }
+          status pending
+          repo=Muesli-HQ/muesli-private-ci
+          private() { GH_TOKEN="$PRIVATE_TOKEN" gh "$@"; }
+          matching_run() {
+            private run list -R "$repo" --workflow pr-tests.yml --limit 100 --json databaseId,displayTitle |
+              jq -r --arg title "M5 $RUN-$ATTEMPT $merge" 'map(select(.displayTitle == $title)) | first.databaseId // empty'
+          }
+          private_id=$(matching_run)
+          if [[ -z "$private_id" ]]; then
+            private workflow run pr-tests.yml -R "$repo" --ref main -f "pr=$pr" -f "revision=$merge" -f "request=$RUN-$ATTEMPT"
+          fi
+          for ((i=0; i<100; i++)); do
+            [[ -n "$private_id" ]] || private_id=$(matching_run)
+            result=""
+            if [[ -n "$private_id" ]]; then
+              result=$(private run view "$private_id" -R "$repo" --json conclusion --jq '.conclusion // ""')
+            fi
+            case "$result" in
+              success) status success; exit 0 ;;
+              "") ;;
+              *) status failure; exit 1 ;;
+            esac
+            sleep 20
+          done
+          status failure
+          exit 1

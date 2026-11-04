@@ -22,13 +22,15 @@ struct LocalStorageUsageView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(usage.map { formatted($0.totalBytes) } ?? "Calculating…")
-                        .font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
-                    Text("Muesli data and downloaded models").font(.caption).foregroundStyle(.secondary)
+                        .font(MuesliTheme.font(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("muesli data and downloaded models").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if isScanning { ProgressView().controlSize(.small) }
-                Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain).disabled(isScanning).help("Refresh storage usage")
+                Button { refreshID = UUID() } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 28, height: 28)
+                }
+                    .buttonStyle(.muesli(.quiet)).disabled(isScanning).help("Refresh storage usage")
                     .accessibilityLabel("Refresh storage usage")
             }
             if let usage {
@@ -52,6 +54,7 @@ struct LocalStorageUsageView: View {
                                         Text(title)
                                         Image(systemName: showModels ? "chevron.down" : "chevron.right").font(.caption2)
                                     }
+                                    .contentShape(Rectangle())
                                 }.buttonStyle(.plain)
                                 .accessibilityValue(showModels ? "Expanded" : "Collapsed")
                             } else { Text(title) }
@@ -64,7 +67,7 @@ struct LocalStorageUsageView: View {
                                     Text(model.name).lineLimit(1).help(model.name)
                                     Spacer()
                                     Text(formatted(model.bytes)).monospacedDigit()
-                                }.font(.caption).foregroundStyle(.secondary).padding(.leading, 30)
+                                }.font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).padding(.leading, 30)
                             }
                         }
                     }
@@ -72,12 +75,12 @@ struct LocalStorageUsageView: View {
                 Divider()
                 HStack {
                     Text("Includes shared model caches")
-                        .help("Allocated file sizes in Muesli’s app data and known model folders. Model caches may also be used by other Muesli builds or apps. The database includes dictation history. APFS sharing and compression can affect physical disk usage. App binaries, temporary recordings and system-managed caches are excluded.")
+                        .help("Allocated file sizes in muesli’s app data and known model folders. Model caches may also be used by other muesli builds or apps. The database includes dictation history. APFS sharing and compression can affect physical disk usage. App binaries, temporary recordings and system-managed caches are excluded.")
                     Spacer()
                     if let free = usage.freeBytes { Text("\(formatted(free)) available") }
-                }.font(.caption).foregroundStyle(.secondary)
+                }.font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 if usage.unavailableLocations > 0 {
-                    Text("Some files could not be measured. Totals may be incomplete.").font(.caption).foregroundStyle(.secondary)
+                    Text("Some files could not be measured. Totals may be incomplete.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 }
             }
         }

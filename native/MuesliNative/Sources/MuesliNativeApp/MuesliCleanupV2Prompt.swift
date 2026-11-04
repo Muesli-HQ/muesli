@@ -1,6 +1,7 @@
 import Foundation
 
-/// Inference contract for the v12 fine-tune (same prompt contract as v10). Keep aligned with its training manifest.
+/// Inference contract for the v12 and v14 fine-tunes (same prompt contract as v10).
+/// Keep aligned with `common/data/build_gemma_manifest.py` in asr-finetune.
 enum MuesliCleanupV2Prompt {
     static let systemPrompt = """
     Clean up speech-to-text transcription. Only make changes when there is a clear error. If the text is already correct, output it exactly as-is.
@@ -14,13 +15,36 @@ enum MuesliCleanupV2Prompt {
 
     static func request(_ text: String, appContext: String?) -> String {
         var context = ""
-        let appContext = appContext?.components(separatedBy: "\n").filter { line in
-            !["Document context:", "OCR screen text:"].contains(line.trimmingCharacters(in: .whitespacesAndNewlines))
-        }.joined(separator: "\n")
+        let appContext = appContext.map(trainingContext)
         if let appContext, !appContext.isEmpty {
             context = "<APP-CONTEXT>\n\(String(appContext.prefix(1_200)))\n</APP-CONTEXT>\n\n"
         }
         return systemPrompt + "\n\n" + context + text
+    }
+
+    /// Training context holds only `App:`, `Document context:` and `OCR screen text:`.
+    /// The app's prompt context also carries a ` (url)` suffix and a `Selected text:`
+    /// section, which the models never saw; drop both and any empty sections.
+    static func trainingContext(_ appContext: String) -> String {
+        let labels = ["App:", "Document context:", "Selected text:", "OCR screen text:"]
+        var kept: [String] = []
+        var skipping = false
+        for line in appContext.components(separatedBy: "\n") {
+            if let label = labels.first(where: { line.hasPrefix($0) }) {
+                skipping = label == "Selected text:"
+                // An empty header may still be followed by the section's text.
+                if skipping || line.trimmingCharacters(in: .whitespacesAndNewlines) == label { continue }
+                if label == "App:",
+                   let range = line.range(of: #" \([A-Za-z][A-Za-z0-9+.-]*://.*\)$"#, options: .regularExpression) {
+                    kept.append(String(line[..<range.lowerBound]))
+                    continue
+                }
+            } else if skipping {
+                continue
+            }
+            kept.append(line)
+        }
+        return kept.joined(separator: "\n")
     }
 
     static func ggufRequest(_ text: String, appContext: String?, format: PostProcessorOption.InputFormat) -> String {

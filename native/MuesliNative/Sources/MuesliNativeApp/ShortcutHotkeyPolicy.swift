@@ -62,10 +62,10 @@ struct ShortcutHotkeyPolicy {
     private static func conflict(with action: String, hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         .conflict(message: conflictMessage(with: action, hotkey: hotkey))
     }
-    static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
+    static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. muesli listens globally, so choose a less common combination if it conflicts with your workflow."
     static let commandSpaceWarning = "Command-Space may already open Spotlight or switch input sources. Choose another shortcut, or change the conflicting shortcut in System Settings > Keyboard > Keyboard Shortcuts."
     static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
-    static let pasteConflictMessage = "Muesli uses this shortcut to paste. Choose a different shortcut."
+    static let pasteConflictMessage = "muesli uses this shortcut to paste. Choose a different shortcut."
     static let dictationShortcutMessage = "Use a modifier key, or add Control, Option, or Shift. Command alone works only with digits, Space, arrows, and function keys."
 
     static func isValidQuilShortcut(_ hotkey: HotkeyConfig) -> Bool {

@@ -181,7 +181,7 @@ struct ClaudeCodeSignInButton: View {
                     .fill(ClaudeLogoShape.color)
                     .frame(width: compact ? 14 : 17, height: compact ? 14 : 17)
                 Text("Sign in with Claude Code")
-                    .font(.system(size: compact ? 11 : 13, weight: .medium))
+                    .font(MuesliTheme.font(size: compact ? 11 : 13, weight: .medium))
                     .foregroundStyle(MuesliTheme.textPrimary)
             }
             .padding(.horizontal, compact ? 12 : 16)

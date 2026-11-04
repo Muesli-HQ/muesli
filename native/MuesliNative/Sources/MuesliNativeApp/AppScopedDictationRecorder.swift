@@ -280,11 +280,12 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
     func stop() -> URL? {
         lock.lock()
         cancelTimersLocked()
-        activeRecordingID = nil
+        let recordingID = activeRecordingID
+        explicitPreparation?.cancel()
         explicitPreparation = nil
         lifecycleGeneration &+= 1
         lock.unlock()
-        return recorderQueue.sync {
+        let url = recorderQueue.sync {
             // Stop IO and finalize the WAV, but keep the prepared capture
             // graph alive: AudioQueueInputRecorder.stop() retains the queue,
             // so the next start() is AudioQueueStart on the existing graph
@@ -292,6 +293,13 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
             // cancel() (proven failure / explicit invalidation).
             recorder.stop()
         }
+        // Child stop drains the final PCM into both its WAV and this recording's
+        // sink. Keep its identity valid through that drain, without holding the
+        // callback lock. Cancellation still retires the identity immediately.
+        lock.withLock {
+            if activeRecordingID == recordingID { activeRecordingID = nil }
+        }
+        return url
     }
 
     func cancel() {
@@ -454,22 +462,24 @@ final class AppScopedDictationRecorder: DictationAudioRecording {
 
     private func scheduleNoAudioTimeoutLocked() {
         noAudioTimeoutWorkItem?.cancel()
+        let recordingID = activeRecordingID
         let workItem = DispatchWorkItem { [weak self] in
-            self?.notifyNoAudioTimeoutIfNeeded()
+            self?.notifyNoAudioTimeoutIfNeeded(recordingID: recordingID)
         }
         noAudioTimeoutWorkItem = workItem
         callbackQueue.asyncAfter(deadline: .now() + Self.noAudioTimeout, execute: workItem)
     }
 
-    private func notifyNoAudioTimeoutIfNeeded() {
+    private func notifyNoAudioTimeoutIfNeeded(recordingID: UUID?) {
         lock.lock()
-        guard activeRecordingID != nil, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
+        guard activeRecordingID == recordingID, activeRecordingID != nil, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
             lock.unlock()
             return
         }
         hasReportedNoAudioTimeout = true
+        let callback = onNoAudioTimeout
         lock.unlock()
-        onNoAudioTimeout?(Date())
+        callback?(Date())
     }
 
     private func cancelTimersLocked() {
