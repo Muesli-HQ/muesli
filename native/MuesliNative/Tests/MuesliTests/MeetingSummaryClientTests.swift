@@ -324,7 +324,7 @@ struct MeetingSummaryClientTests {
     func oneRequestSummarySelection(provider: MeetingSummaryBackendOption) throws {
         let config = AppConfig()
         let selected = provider.summaryConfiguration(from: config, model: "chosen/model")
-        let fields = ["chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
+        let fields = ["gemma_mlx": "gemma_chat_model", "chatgpt": "chatgpt_model", "openai": "openai_model", "anthropic": "anthropic_model",
                       "claude_code": "claude_code_model",
                       "openrouter": "openrouter_model", "ollama": "ollama_model",
                       "lmstudio": "lmstudio_model", "custom_llm": "custom_llm_model"]

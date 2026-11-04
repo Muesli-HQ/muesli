@@ -785,7 +785,7 @@
   </table>
 
   <h3 id="floating-glass">Floating Liquid Glass prototype</h3>
-  <p class="pattern-note">Native macOS 26 regular glass is limited to the sidebar collapse/expand button. Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and older macOS retain solid raised controls. Reduce Motion disables interactive glass reactions. Reading surfaces, rows and the expanded editor stay solid. The persistent chat input on Timeline, Dictations, Meetings and Chat stays solid and editable: a slim full-width line at rest, expanding its controls on focus or draft text, with 24pt outer margins. Sidebar Chat houses previous threads above the same input. Native rendering is authoritative; the outline specimen below shows placement and shape only, not simulated refraction.</p>
+  <p class="pattern-note">Native macOS 26 regular glass is limited to the sidebar collapse/expand button. Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and older macOS retain solid raised controls. Reduce Motion disables interactive glass reactions. Reading surfaces, rows and the expanded editor stay solid. The persistent chat input on Timeline, Dictations, Meetings and Chat stays solid and editable: a slim full-width line at rest, expanding its controls on focus or draft text, with 24pt outer margins. Sidebar Chat houses previous threads above the same input. A paperclip on the right of the bottom controls row, immediately before Send/Stop, opens the native image/PDF/Markdown/plain-text picker. It appears with the other expanded controls. Attachment cards sit above the editor and above sent question text. PDF first-page and image previews are rendered off the main thread at thumbnail size, with file names and removal controls; text files retain a compact document card. Never decode full originals during view rendering. Keep the provider disclosure at 12pt: originals stay in place; the selected provider receives images and only the document pages it requests. On-device Gemma reads document text locally. File-only drafts keep the composer expanded. Native rendering is authoritative; the outline specimen below shows placement and shape only, not simulated refraction.</p>
   <div class="component-preview demo-row">
     <span aria-label="Sidebar toggle placement" style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--border);border-radius:50%">◧</span>
     <span style="display:inline-flex;align-items:center;justify-content:space-between;gap:32px;padding:8px 14px;border:1px solid var(--border);border-radius:999px;flex:1">What’s on your mind? <span aria-hidden="true">↑</span></span>
@@ -1124,6 +1124,12 @@
   </div>
   <p class="pattern-note">The answer panel shares the visible notch bar's width and horizontal origin. Natural content height is bounded to 96–420pt; long answers scroll. Use 16pt panel padding, a 10pt question/answer gap, and a 26pt footer separated by 12pt. Question text uses the 12pt helper role (three-line limit); selectable Markdown answers use 14pt body. Copy confirms success; Follow up starts hands-free capture; holding and releasing the shortcut submits a follow-up in the same conversation. Dismiss clears active context; New conversation starts fresh. Preparation and recording use the same notch surface. Question transcription is hidden until recording stops. This static specimen illustrates layout; native checks establish hit testing, focus, wrapping and display placement.</p>
 
+  <h3>Live Meeting Transcript</h3>
+  <p>Manual recordings prompt after 45 seconds without transcript activity. The reminder lasts 30 seconds, pauses dismissal on hover, and never stops recording automatically. Paused recordings do not prompt.</p>
+  <p>Pause/Resume and Stop keep single-line labels at their intrinsic size. Narrow meeting headers move the recording status above the controls instead of squeezing them into tall buttons.</p>
+  <p>In-progress speech and newest captions lead the Live tab. Reading older captions freezes the displayed snapshot so incoming speech cannot move the text. A compact “↑ New messages” action returns to the latest captions; Copy always includes the current full transcript. Pill and notch hover transcripts retain their chronological order.</p>
+  <p>Shortcut activation-delay fields accept an editable numeric draft. Validate on Return or focus loss, allowing intermediate values such as an empty field or “1”.</p>
+
   <h3>Computer-Use Expansion</h3>
   <p class="pattern-note">Center the expanded panel beneath the visible asymmetric bar, 16pt left of the camera center for the usual 110pt/78pt wings. Keep the camera gap fixed. Instruction text uses 13pt; up to three recent tool summaries use 10pt and at most two lines each. The panel starts at 100pt and adds 30pt per response, to 190pt. Summaries describe the operation and outcome (for example, “Read page text”); full responses, observations, and tool arguments remain in Timeline.</p>
   <div class="component-preview" style="max-width:440px;background:#0e0e0e;color:white;padding:10px 18px;border-radius:0 0 18px 18px">
@@ -1164,6 +1170,18 @@
     <p class="pattern-note">Only meetings are saved, including recordings. Time Turner and Cotypist are paused.</p>
   </div>
   <p class="pattern-note">The native switch sits beside Timeline filters below search, wrapping onto a trailing second row at narrow widths. Default off; use the saved switch accent in every theme. Anonymous analytics has its own independent control.</p>
+
+  <h3>What's New in muesli 0.8.6</h3>
+  <div class="component-preview" style="max-width:380px;display:block;padding:20px;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)">
+    <div style="display:flex;align-items:center;gap:12px">
+      <img src="../assets/quill-icon.svg" alt="Quill feather" style="width:24px;height:24px">
+      <span style="font-size:11px">QUILL · 4 OF 10</span>
+    </div>
+    <p style="font-size:20px;font-weight:600;margin:16px 0">Your spoken assistant</p>
+    <p style="font-size:14px">Ask a question, follow up, or ask Quill to rewrite selected text. Configure Quill in Settings → Experimental.</p>
+    <div style="display:flex;justify-content:space-between;margin-top:16px;font-size:14px"><span>Back</span><span>Next →</span></div>
+  </div>
+  <p class="pattern-note">Reuse Quill's bundled feather and Time Turner's orbital hourglass. Other cards use their feature symbols: Chat bubbles, dictation waveform, Cotypist text cursor, app formatting text, meeting record circle, search magnifier, model CPU and cleanup sparkles. The tour changes destinations without changing settings or starting capture. A missing target keeps the card centered and navigable. Wait for the dashboard's first ordered layout, ignore subpixel geometry churn, and cancel nonanimated Settings/Models scrolls when the target or destination changes. This specimen abbreviates the card's copy; the native catalog retains provider/privacy disclosures.</p>
 
   <h3>Insights Session Vocabulary</h3>
   <p class="pattern-note">App/model rankings count one saved, non-deleted dictation record as one session within the selected date range, including synced dictations. Duration and streaming chunks do not multiply the count. Meetings, Quill, and computer-use records are excluded from these rankings. Rank by session count, then word count.</p>

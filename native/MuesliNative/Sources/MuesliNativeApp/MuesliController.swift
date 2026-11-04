@@ -506,7 +506,8 @@ public final class MuesliController: NSObject {
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
-    private let chatGPTAuth = ChatGPTAuthManager.shared
+    private let chatGPTAuth: ChatGPTAuthManager
+    private var authCredentialError: String?
     private let openRouterAuth: OpenRouterAuthManager
     private let openRouterModelCatalogClient: OpenRouterModelCatalogClient
     private var calendarCheckTimer: Timer?
@@ -744,7 +745,7 @@ public final class MuesliController: NSObject {
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
     private var meetingSignalLossPromptState = MeetingSignalLossPromptState()
     private let meetingAutoStopGracePeriod: TimeInterval = 20
-    private let meetingSignalLossTranscriptQuietPeriod: TimeInterval = 45
+    private var meetingInactivityReminder: Timer?
     private var meetingActivity: NSObjectProtocol?
     private var isStoppingMeetingRecording: Bool { meetingCapture?.session.capturePhase == .stopping }
     private var isPresentingMeetingTerminationConfirmation = false
@@ -807,7 +808,8 @@ public final class MuesliController: NSObject {
         self.downloadedBackendOptions = {
             BackendOption.compatibleOptions(downloadedBackendOptions(), currentOSVersion: modelOSVersion)
         }
-        self.openRouterAuth = openRouterAuth ?? .shared
+        self.chatGPTAuth = ChatGPTAuthManager(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault)
+        self.openRouterAuth = openRouterAuth ?? OpenRouterAuthManager(credentialStore: OpenRouterCredentialStore(supportDirectory: configStore.supportDirectory(), vault: configStore.credentialVault))
         self.openRouterModelCatalogClient = openRouterModelCatalogClient
         var loadedConfig = configStore.load()
         let repairedModelSelection = BackendOption.normalizeRestoredSelections(
@@ -1566,6 +1568,7 @@ public final class MuesliController: NSObject {
     }
 
     private func navigateToFeatureTourStep(_ step: FeatureTourStep) {
+        appState.globalSearchPresented = false
         if appState.isSearchActive {
             clearSearch()
         }
@@ -1575,7 +1578,11 @@ public final class MuesliController: NSObject {
             appState.selectedSettingsPane = pane
             appState.selectedTab = .settings
         case let .tab(tab):
-            appState.selectedTab = tab
+            if tab == .timeline {
+                showTimelineHome()
+            } else {
+                appState.selectedTab = tab
+            }
         case let .models(category):
             showModels(category: category)
         case .timelineApplications:
@@ -1667,6 +1674,10 @@ public final class MuesliController: NSObject {
 
     /// Observation publishes assignments even when their values have not changed.
     func publishConfig() {
+        let credentialError = configStore.credentialStorageError ?? authCredentialError
+        if appState.credentialStorageError != credentialError {
+            appState.credentialStorageError = credentialError
+        }
         guard appState.config != config else { return }
         let pathChanged = appState.config.claudeCodeExecutablePath != config.claudeCodeExecutablePath
         appState.config = config
@@ -2627,6 +2638,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.refreshChatGPTAuthenticationStatus()
                 self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
                     intent: .incoming,
@@ -4093,6 +4105,7 @@ public final class MuesliController: NSObject {
     func signInWithChatGPT(selectMeetingSummaryBackend shouldSelectMeetingSummaryBackend: Bool = true) async -> String? {
         do {
             try await chatGPTAuth.signIn()
+            authCredentialError = nil
             if shouldSelectMeetingSummaryBackend {
                 selectMeetingSummaryBackend(.chatGPT)
             }
@@ -4105,8 +4118,18 @@ public final class MuesliController: NSObject {
         }
     }
 
+    func refreshChatGPTAuthenticationStatus() {
+        chatGPTAuth.refreshCredentialStatus()
+        appState.isChatGPTAuthenticated = chatGPTAuth.isAuthenticated
+    }
+
     func signOutChatGPT() {
-        chatGPTAuth.signOut()
+        do { try chatGPTAuth.signOut() } catch {
+            authCredentialError = CredentialVaultError.unavailable.localizedDescription
+            publishConfig()
+            return
+        }
+        authCredentialError = nil
         if selectedMeetingSummaryBackend == .chatGPT {
             selectMeetingSummaryBackend(.openAI)
         }
@@ -6288,6 +6311,7 @@ public final class MuesliController: NSObject {
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) else { return }
+        if option == .chatGPT { refreshChatGPTAuthenticationStatus() }
         if option == .chatGPT, !chatGPTAuth.isAuthenticated {
             Task { await signInWithChatGPT() }
             return
@@ -6298,6 +6322,9 @@ public final class MuesliController: NSObject {
     func canUseSummaryProvider(_ provider: MeetingSummaryBackendOption, config summaryConfig: AppConfig? = nil) -> Bool {
         let summaryConfig = summaryConfig ?? config
         switch provider {
+        case .gemmaMLX:
+            guard #available(macOS 15, *) else { return false }
+            return Gemma4LiteRTModel.generalPurpose.contains { appState.settingsModelAvailability.gemmaIDs.contains($0.repoID) }
         case .chatGPT: return appState.isChatGPTAuthenticated
         case .openAI: return !MeetingSummaryClient.resolvedOpenAIAPIKey(config: summaryConfig).isEmpty
         case .anthropic: return !MeetingSummaryClient.resolvedAnthropicAPIKey(config: summaryConfig).isEmpty
@@ -7469,6 +7496,9 @@ public final class MuesliController: NSObject {
               !isStoppingMeetingRecording else { return }
         visualMemory.setMeetingPaused(true)
         activeMeetingSession.pause()
+        meetingInactivityReminder?.invalidate()
+        meetingInactivityReminder = nil
+        dismissMeetingSignalLossPromptIfVisible(for: activeMeetingID)
         indicator.setMeetingRecordingPaused(true, config: config)
         statusBarController?.setStatus("Meeting paused")
         statusBarController?.refresh()
@@ -7481,6 +7511,9 @@ public final class MuesliController: NSObject {
               activeMeetingSession.isPaused,
               !isStoppingMeetingRecording else { return }
         activeMeetingSession.resume()
+        if activeMeetingSignalLossResponse == .transcriptInactivity {
+            noteMeetingTranscriptActivity()
+        }
         visualMemory.setMeetingPaused(false)
         indicator.setMeetingRecordingPaused(false, config: config)
         statusBarController?.setStatus("Meeting: \(activeMeetingDisplayTitle())")
@@ -8349,6 +8382,9 @@ public final class MuesliController: NSObject {
                 try checkMeetingStartStillCurrent(owner)
                 guard meetingSession.capturePhase.isRecording else { throw CancellationError() }
                 activeMeetingAutoStop.markRecordingStarted(now: Date())
+                if activeMeetingSignalLossResponse == .transcriptInactivity {
+                    noteMeetingTranscriptActivity()
+                }
                 meetingMonitor.suppressWhileActive()
                 meetingMonitor.refreshState()
                 statusBarController?.setStatus("Meeting: \(title)")
@@ -10008,7 +10044,9 @@ public final class MuesliController: NSObject {
         response: MeetingSignalLossResponse = .warnOnly
     ) {
         activeMeetingAutoStop.arm(source: source)
-        activeMeetingSignalLossResponse = source == nil ? .none : response
+        meetingInactivityReminder?.invalidate()
+        meetingInactivityReminder = nil
+        activeMeetingSignalLossResponse = response == .transcriptInactivity ? response : (source == nil ? .none : response)
         meetingSignalLossPromptState.resetForRecording()
         syncMeetingDetectionMonitor()
     }
@@ -10037,6 +10075,8 @@ public final class MuesliController: NSObject {
     }
 
     private func disarmMeetingAutoStop() {
+        meetingInactivityReminder?.invalidate()
+        meetingInactivityReminder = nil
         activeMeetingAutoStop.disarm()
         activeMeetingSignalLossResponse = .none
         meetingSignalLossPromptState.resetForRecording()
@@ -10107,12 +10147,41 @@ public final class MuesliController: NSObject {
     }
 
     private func noteMeetingTranscriptActivity() {
+        guard activeMeetingSession?.isRecording == true,
+              activeMeetingSession?.isPaused == false,
+              !isStoppingMeetingRecording else { return }
+        let usesInactivityReminder = activeMeetingSignalLossResponse == .transcriptInactivity
+        if usesInactivityReminder {
+            meetingSignalLossPromptState.markSourceRecovered()
+        }
         meetingSignalLossPromptState.noteTranscriptActivity(now: Date())
         let promptID = meetingSignalLossPromptID(for: activeMeetingID)
         if meetingNotification.isVisible,
            meetingNotification.currentPromptID == promptID {
-            meetingSignalLossPromptState.markAutoDismissed()
+            if !usesInactivityReminder { meetingSignalLossPromptState.markAutoDismissed() }
             meetingNotification.close()
+        }
+        if usesInactivityReminder { scheduleMeetingInactivityReminder() }
+    }
+
+    private func scheduleMeetingInactivityReminder() {
+        meetingInactivityReminder?.invalidate()
+        meetingInactivityReminder = nil
+        guard let deadline = meetingSignalLossPromptState.inactivityDeadline,
+              let meetingID = activeMeetingID,
+              let generation = liveMeetingTranscriptGeneration else { return }
+        // One deadline per quiet period, reset by transcript events; no polling.
+        meetingInactivityReminder = Timer.scheduledTimer(
+            withTimeInterval: max(0.01, deadline.timeIntervalSinceNow), repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.isCurrentLiveMeetingTranscriptSession(ownerID: meetingID, generation: generation),
+                      self.activeMeetingSignalLossResponse == .transcriptInactivity,
+                      self.meetingSignalLossPromptState.inactivityDeadline == deadline else { return }
+                self.meetingInactivityReminder = nil
+                self.presentMeetingSignalLossPromptIfNeeded()
+            }
         }
     }
 
@@ -10120,9 +10189,10 @@ public final class MuesliController: NSObject {
         guard activeMeetingSignalLossResponse != .none,
               meetingSignalLossPromptState.canPresentPrompt,
               !meetingSignalLossPromptState.hasRecentTranscriptActivity(
-                  now: Date(), quietPeriod: meetingSignalLossTranscriptQuietPeriod
+                  now: Date(), quietPeriod: MeetingSignalLossPromptState.transcriptQuietPeriod
               ),
               activeMeetingSession?.isRecording == true,
+              activeMeetingSession?.isPaused == false,
               !isStoppingMeetingRecording else { return }
 
         let meetingID = activeMeetingID
@@ -10132,10 +10202,11 @@ public final class MuesliController: NSObject {
         meetingSignalLossPromptState.markPromptPresented()
         let didShow = meetingNotification.show(
             promptID: promptID,
-            title: "Meeting signal lost",
+            title: activeMeetingSignalLossResponse == .transcriptInactivity
+                ? "Is the meeting still happening?" : "Meeting signal lost",
             subtitle: "Recording continues. Stop if the meeting ended.",
             actionLabel: "Stop Transcribing",
-            dismissAfter: 30,
+            dismissAfter: MeetingSignalLossPromptState.notificationDuration,
             // MeetingNotificationController uses onStartRecording as its generic
             // primary-action slot; here the primary action is stopping transcription.
             onStartRecording: { [weak self] in

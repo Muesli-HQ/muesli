@@ -103,7 +103,7 @@ final class HoverIndicatorView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         didDrag = false
-        mouseDownScreenLocation = NSEvent.mouseLocation
+        mouseDownScreenLocation = owner?.pointerLocation() ?? NSEvent.mouseLocation
         owner?.pointerInteractionBegan()
         windowOriginAtMouseDown = window?.frame.origin
     }
@@ -111,8 +111,8 @@ final class HoverIndicatorView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let window,
               let mouseDownScreenLocation,
-              let windowOriginAtMouseDown else { return }
-        let currentScreenLocation = NSEvent.mouseLocation
+              var windowOriginAtMouseDown else { return }
+        let currentScreenLocation = owner?.pointerLocation() ?? NSEvent.mouseLocation
         let deltaX = currentScreenLocation.x - mouseDownScreenLocation.x
         let deltaY = currentScreenLocation.y - mouseDownScreenLocation.y
         guard didDrag || FloatingIndicatorPointerIntent.isDrag(
@@ -120,7 +120,12 @@ final class HoverIndicatorView: NSView {
             to: currentScreenLocation
         ) else { return }
         if !didDrag {
-            owner?.pointerDragBegan()
+            if owner?.pointerDragBegan() == true {
+                // Rebase only the transcript-collapse adjustment, not an idle
+                // hover animation that moved the panel after mouse-down.
+                windowOriginAtMouseDown = window.frame.origin
+                self.windowOriginAtMouseDown = windowOriginAtMouseDown
+            }
         }
         didDrag = true
         window.setFrameOrigin(
@@ -236,7 +241,7 @@ final class FloatingIndicatorController: NSObject {
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
     private let configStore: ConfigStore
-    private let pointerLocation: () -> NSPoint
+    fileprivate let pointerLocation: () -> NSPoint
     private var isMeetingRecording = false
     private var isMeetingRecordingPaused = false
     private var isMeetingTranscriptManuallyDismissed = false
@@ -301,7 +306,7 @@ final class FloatingIndicatorController: NSObject {
          loadFeedbackConfiguration: (() -> AppConfig)? = nil) {
         self.notchIndicator = injectedNotch ?? NotchIndicatorController()
         self.configStore = configStore
-        self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.load() }
+        self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.loadForReading() }
         self.pointerLocation = pointerLocation
         super.init()
         notchIndicator.onOpenMeetingNotes = { [weak self] in self?.onOpenMeetingNotes?() }
@@ -451,16 +456,22 @@ final class FloatingIndicatorController: NSObject {
         notchIndicator.screenFrame ?? indicatorScreenFrame
     }
 
-    func pointerDragBegan() {
+    func pointerDragBegan() -> Bool {
+        let originBeforeCollapse = panel?.frame.origin
         hideMeetingTranscript()
+        return panel?.frame.origin != originBeforeCollapse
     }
 
     func pointerInteractionBegan() {
+        // Own this gesture exclusively; avoid WindowServer edge-tiling previews.
+        // Restore normal screen-reconfiguration behavior after the gesture.
+        panel?.isMovable = false
         isDragging = true
         hoverExitWorkItem?.cancel()
     }
 
     func pointerInteractionEnded() {
+        panel?.isMovable = true
         isDragging = false
         if let message = deferredLoadingMessage {
             deferredLoadingMessage = nil
@@ -667,6 +678,7 @@ final class FloatingIndicatorController: NSObject {
             in: containerView,
             frame: localFrame(transcriptFrame, in: expandedFrame)
         )
+        panel.invalidateShadow()
     }
 
     private func hideMeetingTranscript(reset: Bool = false) {
@@ -689,6 +701,8 @@ final class FloatingIndicatorController: NSObject {
         panel.setFrame(indicatorFrame, display: true)
         containerView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
         contentView.frame = NSRect(origin: .zero, size: indicatorFrame.size)
+        containerView.needsDisplay = true
+        panel.invalidateShadow()
     }
 
     private func localFrame(_ screenFrame: NSRect, in windowFrame: NSRect) -> NSRect {
@@ -1193,7 +1207,7 @@ final class FloatingIndicatorController: NSObject {
 
     /// Refresh the idle icon to match the user's selected menu bar icon.
     func refreshIcon() {
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         lastLoadedConfig = config
         micIconView?.image = Self.idleIndicatorIcon(config: config)
         if config.indicatorAnchor == .notch, !isShowingLoading, !isComputerUseCursorMode {
@@ -1303,7 +1317,7 @@ final class FloatingIndicatorController: NSObject {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             guard let self, self.state == .idle else { return }
-            self.setState(.idle, config: self.configStore.load())
+            self.setState(.idle, config: self.configStore.loadForReading())
         }
     }
 
@@ -1454,7 +1468,7 @@ final class FloatingIndicatorController: NSObject {
                 panel?.orderOut(nil)
                 return
             }
-            setState(.idle, config: configStore.load())
+            setState(.idle, config: configStore.loadForReading())
         }
     }
 
@@ -1467,7 +1481,7 @@ final class FloatingIndicatorController: NSObject {
                 return
             }
             guard !isMeetingTranscriptManuallyDismissed else { return }
-            let config = configStore.load()
+            let config = configStore.loadForReading()
             guard config.showMeetingTranscriptOnIndicatorHover, panel != nil else { return }
             hoverExitWorkItem?.cancel()
             showMeetingTranscript()
@@ -1476,7 +1490,7 @@ final class FloatingIndicatorController: NSObject {
         guard state == .idle, !isShowingLoading, !isDragging, isHovered != hovered else { return }
         hoverExitWorkItem?.cancel()
         isHovered = hovered
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         setState(.idle, config: config)
         contentView?.updateTrackingAreas()
         if hovered, config.indicatorHoverStyle == .shortcutPill {
@@ -1786,7 +1800,7 @@ final class FloatingIndicatorController: NSObject {
         if isShowingLoading { return bounds }
         // Cache: hit-testing runs on the pointer hot path; reading + decoding
         // config from disk per event would add avoidable main-thread latency.
-        let config = lastLoadedConfig ?? configStore.load()
+        let config = lastLoadedConfig ?? configStore.loadForReading()
         guard state == .idle, config.indicatorHoverStyle == .shortcutPill else { return bounds }
         let placement = idleHoverPlacement(for: config.indicatorAnchor)
         if isHovered {
@@ -1914,7 +1928,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
@@ -2322,7 +2336,7 @@ final class FloatingIndicatorController: NSObject {
 
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
-        let config = configStore.load()
+        let config = configStore.loadForReading()
         let idleImage = Self.idleIndicatorIcon(config: config)
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white

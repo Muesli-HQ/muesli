@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import MuesliCore
 import AIElementsSwift
 
@@ -11,6 +12,7 @@ struct MeetingChatView: View {
     @State private var showHistory = false
     @State private var showScope = false
     @State private var showModelPicker = false
+    @State private var showFilePicker = false
     @State private var citation: MeetingChatCitation?
     @State private var deletingChat: UUID?
     @State private var renamingChat: UUID?
@@ -54,10 +56,16 @@ struct MeetingChatView: View {
         case .all: return "All saved meetings"
         case .folder(let id): return "\(appState.folders.first { $0.id == id }?.name ?? "Folder") · This folder only"
         case .meetings(let ids):
-            if ids.isEmpty { return "No meetings selected" }
+            if ids.isEmpty { return "Choose meetings" }
             if ids.count == 1, let source = coordinator.sourceChoices.first(where: { $0.id == ids[0] }) { return source.title }
             return "\(ids.count) selected meeting\(ids.count == 1 ? "" : "s")"
         }
+    }
+    private var suggestedScope: MeetingChatScope {
+        guard docked else { return MeetingChatScopePolicy.empty }
+        return MeetingChatScopePolicy.suggestedScope(tab: appState.selectedTab,
+            navigation: appState.meetingsNavigationState, returnDestination: appState.meetingDetailReturnDestination,
+            searchActive: appState.isSearchActive, folderID: appState.selectedFolderID)
     }
     var body: some View {
         // Share one canonical catalog across every setting control on this surface.
@@ -71,7 +79,11 @@ struct MeetingChatView: View {
     }
 
     private var chatContent: some View {
-        VStack(spacing: 0) {
+        // Lazy rows can outlive the render that created them during navigation.
+        // Read neighboring turns from that same snapshot, never a newer list.
+        let turns = coordinator.turns
+        let scope = coordinator.scope
+        return VStack(spacing: 0) {
             if !docked || expanded || (!composerIsCompact && coordinator.selectedSessionID != nil) {
                 header
                     .background(docked ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
@@ -97,9 +109,9 @@ struct MeetingChatView: View {
                                     Text("Loading conversation…").font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
                                 }.accessibilityElement(children: .combine)
                             }
-                            ForEach(Array(coordinator.turns.enumerated()), id: \.element.id) { index, turn in
-                                if (index == 0 && turn.scope != coordinator.scope) ||
-                                    (index > 0 && coordinator.turns[index - 1].scope != turn.scope) {
+                            ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
+                                if (index == 0 && turn.scope != scope) ||
+                                    (index > 0 && turns[index - 1].scope != turn.scope) {
                                     Text(turn.scopeLabel ?? "Meeting context changed")
                                         .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
                                 }
@@ -115,7 +127,7 @@ struct MeetingChatView: View {
             }
             // Shared structural position keeps the editor mounted when the Chat index
             // becomes a conversation after the first send.
-            composer
+            composer.layoutPriority(1)
         }
         .background(docked && expanded ? MuesliTheme.backgroundDeep : MuesliTheme.backgroundBase)
         .clipShape(RoundedRectangle(cornerRadius: docked && expanded ? 20 : 0))
@@ -152,6 +164,17 @@ struct MeetingChatView: View {
         }
         .onChange(of: coordinator.selectedSessionID) { _, _ in citation = nil; preparedIsDraft = false }
         .onChange(of: coordinator.composerDraft) { _, _ in dismissedMention = nil }
+        .fileImporter(isPresented: $showFilePicker, allowedContentTypes: ChatFileReader.supportedContentTypes, allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result {
+                let session = coordinator.selectedSessionID
+                Task {
+                    guard coordinator.selectedSessionID == session else { return }
+                    await coordinator.attachFiles(urls)
+                    guard coordinator.selectedSessionID == session else { return }
+                    focusComposer()
+                }
+            } else if case let .failure(error) = result { coordinator.errorMessage = error.localizedDescription }
+        }
         .onChange(of: mention) { _, _ in mentionIndex = 0 }
         .onChange(of: coordinator.turns.count) { _, _ in
             if let activeID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == activeID }) {
@@ -162,6 +185,10 @@ struct MeetingChatView: View {
             if let source = citation, !coordinator.turns.flatMap(\.citations).contains(where: { $0.meetingID == source.meetingID && $0.revision == source.revision }) { citation = nil }
         }
         .task { await coordinator.refreshChoices() }
+        .onChange(of: suggestedScope, initial: true) { _, scope in
+            guard scope == suggestedScope else { return }
+            coordinator.prepareContextualDraft(scope: scope)
+        }
     }
     private var header: some View {
         HStack(spacing: 12) {
@@ -214,6 +241,7 @@ struct MeetingChatView: View {
             }
             Button {
                 coordinator.startDraft()
+                coordinator.prepareContextualDraft(scope: suggestedScope)
                 expanded = false
                 focusComposer()
             } label: {
@@ -290,10 +318,10 @@ struct MeetingChatView: View {
         }
     }
 
-    private var footerControlsDisabled: Bool { coordinator.isBusy || coordinator.isUpdatingChat }
+    private var footerControlsDisabled: Bool { coordinator.isBusy || coordinator.isUpdatingChat || coordinator.isPreparingFiles }
 
     private var composerIsCompact: Bool {
-        !composerFocused && coordinator.composerDraft.isEmpty
+        !composerFocused && coordinator.composerDraft.isEmpty && coordinator.composerFiles.isEmpty && !coordinator.isPreparingFiles
             && !coordinator.isBusy && !expanded && !showScope && !showModelPicker
             && coordinator.errorMessage == nil
     }
@@ -301,7 +329,7 @@ struct MeetingChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let error = coordinator.errorMessage {
-                Text(error).foregroundStyle(.orange).font(MuesliTheme.font(.callout)).textSelection(.enabled)
+                Text(error).foregroundStyle(MuesliTheme.warningText).font(MuesliTheme.font(.callout)).textSelection(.enabled)
             }
             if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
@@ -309,7 +337,11 @@ struct MeetingChatView: View {
                     .padding(.horizontal, 4).padding(.bottom, 3)
             }
             AIPromptInput(isFocused: composerFocused, isCompact: composerIsCompact, header: {
-                if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
+                VStack(alignment: .leading, spacing: 6) {
+                    if let ids = attachedMeetingIDs, !ids.isEmpty { attachmentChips(ids) }
+                    if !coordinator.composerFiles.isEmpty { fileChips }
+                    if coordinator.isPreparingFiles { ProgressView("Checking attachments…").controlSize(.small) }
+                }
             }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
@@ -320,7 +352,6 @@ struct MeetingChatView: View {
                                               focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
-
                 }
             }, footer: {
                 // Footer actions share a 28pt hit height; padding sits inside each label so
@@ -334,7 +365,7 @@ struct MeetingChatView: View {
                     Button { showScope = true } label: {
                         HStack(spacing: 5) {
                             AIIcon(.slidersHorizontal)
-                            if attachedMeetingIDs == nil { Text(scopeLabel).font(MuesliTheme.font(.caption)).lineLimit(1) }
+                            if attachedMeetingIDs?.isEmpty != false { Text(scopeLabel).font(MuesliTheme.font(.caption)).lineLimit(1) }
                             if let dates = MeetingChatScopePresentation.dateLabel(coordinator.scope) {
                                 Text(dates).font(MuesliTheme.font(.caption)).lineLimit(1)
                             }
@@ -346,7 +377,9 @@ struct MeetingChatView: View {
                     Spacer(minLength: 4)
                     Button { showModelPicker = true } label: {
                         HStack(spacing: 5) {
-                            Text(MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
+                            Text(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend) == .gemmaMLX
+                                ? (Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == requestConfig.gemmaChatModel }?.label ?? "Gemma 4")
+                                : MeetingTextGenerationClient.model(requestConfig)).lineLimit(1)
                             if let thinkingLabel { Text("· " + thinkingLabel).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1) }
                             AIIcon(.chevronDown, size: 10)
                         }.font(MuesliTheme.font(.caption)).padding(.horizontal, 6).frame(height: 28)
@@ -365,6 +398,11 @@ struct MeetingChatView: View {
                             .menuStyle(.borderlessButton).fixedSize().help("Prepare a question")
                             .accessibilityLabel("Prepare a question").disabled(footerControlsDisabled)
                     }
+                    Button { showFilePicker = true } label: { AIIcon(.paperclip).frame(width: 28, height: 28) }
+                        .buttonStyle(.muesli(.quiet)).foregroundStyle(MuesliTheme.textSecondary)
+                        .help("Attach images, PDFs, Markdown or text without copying the originals")
+                        .accessibilityLabel("Attach files").accessibilityIdentifier("meeting-chat-attach-files")
+                        .disabled(footerControlsDisabled)
                     // Send and Stop share one 32pt circular slot so the footer does not shift.
                     if coordinator.isBusy {
                         Button { coordinator.stop() } label: { AIIcon(.square).frame(width: 32, height: 32) }
@@ -378,12 +416,19 @@ struct MeetingChatView: View {
                             .buttonStyle(.muesli(.primary, shape: .circle))
                             .accessibilityIdentifier("meeting-chat-send")
                             .help("Send question").accessibilityLabel("Send question")
-                            .disabled(coordinator.isUpdatingChat || coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(footerControlsDisabled || (coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && coordinator.composerFiles.isEmpty))
                     }
                 }
                 // The @ glyph stays optically aligned with the editor text; its target extends into the inset.
                 .padding(.leading, -6)
             })
+            if !coordinator.composerFiles.isEmpty {
+                Text(MeetingSummaryBackendOption.resolved(appState.config.meetingSummaryBackend) == .gemmaMLX
+                    ? "Originals stay in place. Gemma reads requested document text entirely on this Mac."
+                    : "Originals stay in place. Your selected AI provider receives images and the document pages it requests. PDF page images need a vision-capable model.")
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    .lineLimit(nil).layoutPriority(1)
+            }
             if !composerIsCompact {
                 Text("↵ Send · ⇧↵ New line")
                     .font(MuesliTheme.font(size: 10)).foregroundStyle(MuesliTheme.textSecondary)
@@ -392,6 +437,21 @@ struct MeetingChatView: View {
         }.frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: .infinity)
     }
+    private var fileChips: some View {
+        filePreviews(coordinator.composerFiles, editable: true)
+    }
+    private func filePreviews(_ files: [ChatFileReference], editable: Bool, allowsPreview: Bool = true) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 8) {
+                ForEach(files) { file in
+                    MeetingChatAttachmentPreview(file: file, coordinator: coordinator, allowsPreview: allowsPreview,
+                        onRemove: editable ? { Task { await coordinator.removeFile(file.id) } } : nil)
+                        .disabled(editable && footerControlsDisabled)
+                }
+            }
+        }.frame(height: files.contains(where: { $0.kind == .pdf || $0.kind == .image }) ? 180 : 76)
+    }
+
     private func attachmentChips(_ ids: [Int64]) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             if !ids.isEmpty {
@@ -536,7 +596,12 @@ struct MeetingChatView: View {
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             AIMessage(role: .user) {
-                Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 10) {
+                    if let files = turn.fileAttachments, !files.isEmpty {
+                        filePreviews(files, editable: false, allowsPreview: turn.state != .sourceDeleted)
+                    }
+                    Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
+                }
             }
             AIMessage(role: .assistant) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -558,7 +623,7 @@ struct MeetingChatView: View {
                     }
                     if turn.id == coordinator.activityTurnID {
                         if !turn.state.isPending && !coordinator.activities.isEmpty {
-                            AIDisclosure(title: "Meeting research · \(coordinator.activities.count) steps", icon: .search) {
+                            AIDisclosure(title: "Research · \(coordinator.activities.count) steps", icon: .search) {
                                 activityRows
                             }
                         }
@@ -581,9 +646,19 @@ struct MeetingChatView: View {
                                 citation = $0
                             }
                         }
+                        if let documents = turn.documentCoverage, !documents.isEmpty {
+                            ForEach(documents, id: \.fileID) { document in
+                                let name = turn.fileAttachments?.first { $0.id == document.fileID }?.name ?? "PDF"
+                                Text("\(name): all \(document.totalPages) pages inspected."
+                                     + (document.wasCondensed ? " Answer uses condensed notes." : "")
+                                     + (document.pagesWithoutText > 0 ? " \(document.pagesWithoutText) pages had no recoverable text." : ""))
+                                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
                         answerActions(turn)
                     } else if turn.state == .sourceDeleted {
-                        Label { Text("Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
+                        Label { Text(turn.error ?? "Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
                             .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
                     } else if !turn.state.isPending {
                         Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }

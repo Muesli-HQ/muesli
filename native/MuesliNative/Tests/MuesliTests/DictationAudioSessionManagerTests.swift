@@ -1068,7 +1068,7 @@ extension ComputerUseRunDiagnosticsTests {
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: directory)
+            configStore: makeTestConfigStore(supportDirectory: directory)
         )
         controller.computerUseAudioSessionManager = harness.manager
         controller.handleComputerUsePrepare()

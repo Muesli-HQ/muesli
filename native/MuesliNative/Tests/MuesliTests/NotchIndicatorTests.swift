@@ -21,7 +21,7 @@ struct NotchIndicatorTests {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let notch = makeNotch()
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory), notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
         config.indicatorAnchor = .custom
@@ -49,7 +49,7 @@ struct NotchIndicatorTests {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -113,7 +113,7 @@ struct NotchIndicatorTests {
         _ = NSApplication.shared
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -155,7 +155,7 @@ struct NotchIndicatorTests {
     func statusRouting(kind: NotchStatus) throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -185,7 +185,7 @@ struct NotchIndicatorTests {
     func quillPreparationFeedbackUsesNotch() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -239,7 +239,7 @@ struct NotchIndicatorTests {
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
         })
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
@@ -279,7 +279,7 @@ struct NotchIndicatorTests {
     func progressConfigurationCache() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .notch
         config.showFloatingIndicator = false
@@ -317,7 +317,7 @@ struct NotchIndicatorTests {
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
         })
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
@@ -341,7 +341,7 @@ struct NotchIndicatorTests {
     func loadingCompletionPreservesNotice() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -361,7 +361,7 @@ struct NotchIndicatorTests {
     func statusFallback() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = NotchIndicatorController(resolveGeometry: { _ in nil })
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -479,7 +479,7 @@ struct NotchIndicatorTests {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let notch = makeNotch()
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory), notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
         config.indicatorAnchor = .notch
@@ -498,7 +498,7 @@ struct NotchIndicatorTests {
     func loadingPreservesNotch(state: DictationState) throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -632,7 +632,7 @@ struct NotchIndicatorTests {
     @Test("Compact tool responses are bounded, deduplicated, and cleared between commands")
     func toolResultLifecycle() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -665,7 +665,7 @@ struct NotchIndicatorTests {
     @Test("Live instruction survives status updates and clears at session end")
     func instructionLifecycle() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -788,7 +788,7 @@ struct NotchIndicatorTests {
     @Test("Notch cancel routes recording and processing to cancellation, never finish")
     func cancellationRouting() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -821,7 +821,7 @@ struct NotchIndicatorTests {
     @MainActor
     func meetingControlsAndSharedPower() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false

@@ -871,7 +871,7 @@ struct NemotronDictationModePolicyTests {
     @MainActor
     @Test("showWarning is callable without crash in idle state")
     func showWarningIdleNoCrash() {
-        let configStore = ConfigStore()
+        let configStore = makeTestConfigStore()
         let config = configStore.load()
         let indicator = FloatingIndicatorController(configStore: configStore)
         // First setState creates the panel so subsequent calls are correctly sequenced
@@ -883,7 +883,7 @@ struct NemotronDictationModePolicyTests {
     @MainActor
     @Test("showWarning is a no-op when indicator is in recording state")
     func showWarningIgnoredDuringRecording() {
-        let configStore = ConfigStore()
+        let configStore = makeTestConfigStore()
         let config = configStore.load()
         let indicator = FloatingIndicatorController(configStore: configStore)
         // Create panel first so setState(.recording) sets state correctly

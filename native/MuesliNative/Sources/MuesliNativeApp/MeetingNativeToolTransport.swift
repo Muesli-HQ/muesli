@@ -7,6 +7,7 @@ struct MeetingNativeToolRequest {
     let tools: Data
     let allowTools: Bool
     var requiresMeetingAnswerFormat: Bool = true
+    var allowedAnswerStatuses: [String] = ["conversation", "answered", "insufficient_evidence"]
     var maximumArgumentBytes: Int = MeetingNativeToolTransport.defaultMaximumArgumentBytes
 }
 
@@ -42,11 +43,16 @@ enum MeetingNativeToolTransport {
     static let defaultMaximumArgumentBytes = 16_384
 
     static func requestBody(_ request: MeetingNativeToolRequest, stream: Bool) throws -> [String: Any] {
-        guard request.inputItems.count <= maximumResponseBytes,
+        guard request.inputItems.count <= ChatFileReader.maximumRequestBytes,
               request.tools.count <= 32_768,
-              let input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
+              var input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
               let tools = try JSONSerialization.jsonObject(with: request.tools) as? [[String: Any]] else {
             throw MeetingTextGenerationError.emptyResponse
+        }
+        if !request.base.images.isEmpty, let index = input.firstIndex(where: { $0["role"] as? String == "user" }) {
+            var content = input[index]["content"] as? [[String: Any]] ?? (input[index]["content"] as? String).map { [["type": "input_text", "text": $0]] } ?? []
+            content += request.base.images.map(\.responsesContent)
+            input[index]["content"] = content
         }
         let model = MeetingTextGenerationClient.model(request.base.config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
@@ -65,7 +71,7 @@ enum MeetingNativeToolTransport {
             "include": ["reasoning.encrypted_content"],
             "text": ["format": ["type": "json_schema", "name": "meeting_answer", "strict": true,
                 "schema": ["type": "object", "properties": [
-                    "status": ["type": "string", "enum": ["conversation", "answered", "insufficient_evidence"]],
+                    "status": ["type": "string", "enum": request.allowedAnswerStatuses],
                     "markdown": ["type": "string"]
                 ], "required": ["status", "markdown"], "additionalProperties": false]]]
         ]

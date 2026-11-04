@@ -90,6 +90,30 @@ work; it does no disk or network work on the insertion thread. The startup
 snapshot's maximum ID prevents a racing save from entering both baseline and
 delta. Row IDs stay in memory; the pending total survives history deletion.
 
+### Credentials outside SQLite
+
+`ConfigStore` retains hydrated provider credentials in memory but serializes empty
+credential fields to `config.json`. OpenAI, Anthropic, custom API keys, custom
+credential commands and request headers share a typed Keychain item. OpenRouter,
+ChatGPT OAuth and Google Calendar OAuth use separate items. The service namespace
+is derived from the standardized application-support directory, separating stable
+and development lanes while allowing the app and its bundled CLI to share access.
+Environment-provided keys remain external to this migration.
+
+Migration reads existing config/auth JSON, writes Keychain, verifies the stored
+bytes, then removes the old plaintext fields/file. A failed or locked Keychain
+leaves the legacy copy intact for retry; new secret saves never fall back to
+plaintext. Existing valid Keychain data takes precedence over stale files.
+Credential writes fail visibly rather than silently losing a new key. These
+credentials are local-only, not SQLite rows, CloudKit fields, chat exports or
+telemetry. See [credential storage](docs/credential-storage.md).
+Failed config credential reads leave the stored item unmodified: an existing
+item must be successfully hydrated before a later save may replace or clear it.
+Observer reads cannot hydrate the owner's save baseline. The standalone CLI
+reads OpenRouter credentials without migrating or deleting legacy files; migration
+requires the app or its bundled CLI. Rotated ChatGPT tokens remain only in memory
+if Keychain persistence fails, with a retry on their next use.
+
 ### App formatting preferences outside SQLite
 
 `ConfigStore` saves dictation formatting preferences in the local `AppConfig`
@@ -305,6 +329,15 @@ unreleased direct Google OAuth integration does not import or persist meeting
 participants; Google calendars exposed through macOS Calendar use this EventKit
 path.
 
+### On-device chat model preference
+
+`AppConfig` adds optional `gemma_chat_model` in local `config.json`, with E2B as
+its backward-compatible default. The `gemma_mlx` chat/summary provider shares the
+existing managed Gemma checkpoint files; selecting it does not copy model weights
+or create a server. Native tool calls, results and KV caches are attempt-local,
+with existing chat answers and original-file dependencies persisted as before.
+There are no new SQLite columns, sync fields, telemetry or exported tool payloads.
+
 ### Chat threads, memory, and retrieval
 
 A thread is independent of a meeting: one meeting can have multiple chats, and a
@@ -327,6 +360,37 @@ The JSON bodies are typed serialized records, not arbitrary extension fields.
 Keep SQL projections (`state`, `ordinal`, `updated_at`), relationship rows, and
 body encodings consistent through the store APIs. Adding model properties may
 require backward-compatible decoding even when no SQL column changes.
+
+Optional `fileAttachments` in session/turn bodies and `fileDependencies` in turn
+bodies decode as nil in older records. Each `ChatFileReference` stores a SHA-256
+content ID, basename, kind (`image`, `pdf`, `markdown` or `text`), original-file
+bookmark and original byte count. Sandboxed hosts create security-scoped bookmarks;
+the unsandboxed app uses ordinary bookmarks without needing an app-scope key.
+Both forms decode without a record migration. Existing image/PDF records decode unchanged.
+The bookmark contains original-location metadata; it is private local state.
+There are no attachment blobs, copied originals, thumbnails, extracted text or
+base64 payloads in SQLite, exports, sync or telemetry. Session references describe
+unsent composer selection; immutable turn references describe that request. An
+accepted send consumes only the matching session selection through the store API;
+a later selection cannot be erased by a delayed earlier send. The composer hides
+submitted references during preparation and restores them if preparation is stopped
+or fails. Successfully sent files remain on their original turn when reopening
+a chat, without repopulating the composer. Inherited
+file dependencies survive removing a composer attachment. The worker validates
+originals before context reuse and completion; missing/changed originals invalidate
+dependent answers, drafts, rolling memory and generated titles through store APIs.
+Deleting a chat removes references, never the user's original files.
+
+Optional `documentCoverage` in turn bodies decodes as nil in older records. Each
+legacy entry stores the attached PDF's `fileID`, `totalPages`, `pagesWithoutText`, and
+`wasCondensed`. New on-demand document turns leave this legacy whole-document
+coverage empty; page ranges and extracted content are transient tool results,
+not additional serialized fields. Completion validates legacy attachment identity and page counts; retries
+and file invalidation clear it. The UI shows coverage only alongside a surviving
+answer. This adds no SQL columns, CloudKit fields, telemetry or export/CLI data.
+Extracted document text and OCR/page images remain transient. Document tools can
+revisit valid original-file dependencies from earlier turns without copying files
+or persisting their contents; conversation-memory compaction is separate.
 
 Selection, anchoring, and evidence dependency are distinct. The anchor records
 where a chat started, selected rows describe explicit retrieval scope, and
