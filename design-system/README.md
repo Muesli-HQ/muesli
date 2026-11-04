@@ -394,9 +394,8 @@ automatic issue-reporting prompts or optional hosted AI features.
 Place a compact, labelled Privacy switch with an eye-slash symbol at the trailing
 edge of the filter row below Timeline search. Use the canonical `private_mode`
 setting and shared switch accent; narrow layouts move trailing controls below the
-origin/app filters. When on, show a wrapping 12pt note: only meetings are saved,
-including recordings, while Time Turner and Cotypist are paused. The help text
-explains that existing history remains, cloud processing is unchanged, and
+origin/app filters. When on, show a wrapping 12pt note: only meetings and their recordings are retained from new activity on this Mac, while Time Turner and Cotypist are paused. The help text
+explains that history from other devices still syncs and
 anonymous events use the separate analytics preference. Default off; local only.
 
 ### Chat meeting context

@@ -5203,27 +5203,7 @@ public final class DictationStore {
 
     @discardableResult
     public func upsertSyncedTextRecords(_ records: [SyncTextRecord]) throws -> [SyncTextRecord] {
-        let result = try applyFetchedTextRecords(records)
-        // Token-based callers must replay this page after Privacy mode ends.
-        guard !result.deferredDictations else { throw ContentPrivacy.Failure.ephemeralContent }
-        return result.applied
-    }
-
-    public func applyFetchedTextRecords(_ records: [SyncTextRecord]) throws
-        -> (applied: [SyncTextRecord], deferredDictations: Bool) {
-        guard !records.isEmpty else { return ([], false) }
-
-        let hasDictations = records.contains { $0.kind == .dictation }
-        var admitted = false
-        if hasDictations {
-            do {
-                try ContentPrivacy.shared.beginWrite()
-                admitted = true
-            } catch ContentPrivacy.Failure.ephemeralContent {
-                guard records.contains(where: { $0.kind == .meeting }) else { return ([], true) }
-            }
-        }
-        defer { if admitted { ContentPrivacy.shared.endWrite() } }
+        guard !records.isEmpty else { return [] }
 
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -5236,7 +5216,6 @@ public final class DictationStore {
                 let changed: Bool
                 switch record.kind {
                 case .dictation:
-                    guard admitted else { continue }
                     changed = try upsertSyncedDictation(record, db: db)
                 case .meeting:
                     sawMeeting = true
@@ -5250,7 +5229,7 @@ public final class DictationStore {
                 try reconcileFollowUpLinks(db: db)
             }
             try exec("COMMIT", db: db)
-            return (applied, hasDictations && !admitted)
+            return applied
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error

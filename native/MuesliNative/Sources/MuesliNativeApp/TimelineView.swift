@@ -149,7 +149,7 @@ struct TimelineView: View {
                 }
             }
             if appState.privateMode {
-                Text("Only meetings are saved, including recordings. Time Turner and Cotypist are paused.")
+                Text("Of new activity on this Mac, only meetings and their recordings are saved. Time Turner and Cotypist are paused.")
                     .font(MuesliTheme.font(size: 12))
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -183,7 +183,7 @@ struct TimelineView: View {
         }
         .controlSize(.small)
         .fixedSize()
-        .help("Other new activity stays temporary; switching clears temporary chats. Existing history remains. Cloud providers still process requests. Anonymous events follow your analytics preference.")
+        .help("Other new activity stays temporary; switching clears temporary chats. History from other devices still syncs. Cloud providers still process requests. Anonymous events follow your analytics preference.")
     }
 
     private var dateFilterMenu: some View {
