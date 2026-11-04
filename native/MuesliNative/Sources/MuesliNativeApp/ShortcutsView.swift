@@ -262,8 +262,11 @@ struct ShortcutsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Vidshot").font(MuesliTheme.headline())
-                    Text("Release to record the display under the pointer. Press again to finish.")
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        VidshotIcon().frame(width: 18, height: 18).foregroundStyle(MuesliTheme.accentText)
+                        Text("Vidshot").font(MuesliTheme.headline())
+                    }
+                    Text("Select a window or region to record. Press again to finish.")
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()

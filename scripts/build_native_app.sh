@@ -399,13 +399,13 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key>
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
+  <string>$APP_DISPLAY_NAME records microphone audio for dictation, meetings, and Vidshot narration.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>$APP_DISPLAY_NAME captures system audio from other applications during meeting recordings.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>$APP_DISPLAY_NAME captures screen content for meeting context.</string>
+  <string>$APP_DISPLAY_NAME captures screen content for meetings and selected Vidshot recordings.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads calendar events to help with meeting recordings.</string>
   <key>NSContactsUsageDescription</key>

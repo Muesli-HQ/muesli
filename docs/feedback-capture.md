@@ -1,12 +1,12 @@
 # Vidshot (experimental)
 
-Vidshot records a selected window or screen region with microphone narration for local playback. Enable **Settings → General → Experimental → Vidshot**. Grant Screen Recording, Microphone, Accessibility and Input Monitoring in macOS System Settings; a blocked pill names the missing permission and opens its setup action.
+Vidshot records a selected window or screen region with microphone narration for local playback. Enable **Settings → Experimental → Vidshot**. Grant Screen Recording, Microphone, Accessibility and Input Monitoring in macOS System Settings; a blocked pill names the missing permission and opens its setup action.
 
 Press **Option–Shift–S (⌥⇧S)** and release every key, then click a window or drag a region. Press Escape to cancel selection before recording begins. A region stays fixed to the chosen display; a window capture follows the selected window. Speak while demonstrating the issue, then press the shortcut again or click **Finish** to save. Change the shortcut in **Settings → Shortcuts** using a modifier-plus-letter chord. Clicking **✕** asks **Discard?**; click it again to discard. Closing a window or pressing Escape leaves an established capture running.
 
 Vidshot stops after ten minutes, when the recorded display disconnects or changes geometry, or when the Mac sleeps or locks. Starting a meeting finishes the capture and releases its microphone before meeting audio starts. If device teardown takes longer than eight seconds, the meeting reports that it is still pending; retry after teardown finishes. Finish stops screen collection immediately while already captured narration drains. Dictation, Quill and computer-use commands cannot start while Vidshot owns the microphone; an active meeting or other audio activity also prevents a new capture.
 
-Click **Open** on the Ready pill, choose **Open Vidshot Captures…** from the menu bar, or use **Open Vidshot captures…** in General settings. Select a capture to play it, reveal its bundle with **Show in Finder**, or choose **Delete…** and confirm to remove it and all its files. Saved captures remain accessible after disabling Vidshot.
+Click **Open** on the Ready pill, choose **Open Vidshot Captures…** from the menu bar, or use **Open Vidshot captures…** in Experimental settings. Select a capture to play it, reveal its bundle with **Show in Finder**, or choose **Delete…** and confirm to remove it and all its files. Saved captures remain accessible after disabling Vidshot.
 
 Recording excludes Muesli's application windows, including its indicator, and captures microphone narration without system audio. Files stay on this Mac and appear under **Vidshot captures** in Local storage. Vidshot currently provides recording and playback; transcription and clipboard summaries are not available yet.
 

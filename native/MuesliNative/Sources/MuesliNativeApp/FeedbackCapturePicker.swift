@@ -15,6 +15,7 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
         let id: UInt32
         let bounds: CGRect
         let appName: String
+        let selectable: Bool
     }
     private final class Panel: NSPanel {
         override var canBecomeKey: Bool { true }
@@ -58,10 +59,10 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
                 let region = FeedbackCaptureTarget.Frame(x: selection.minX, y: selection.minY,
                     width: selection.width, height: selection.height, scale: screenTarget.frame.scale)
                 choose(.init(displayId: screenTarget.displayId, frame: screenTarget.frame,
-                             appName: screenTarget.appName, region: region))
+                             appName: "Screen region", region: region))
             } else {
                 let point = CGPoint(x: screenTarget.frame.x + end.x, y: screenTarget.frame.y + end.y)
-                guard let window = windowAt(point) else { cancel(); return }
+                guard let window = windowAt(point), window.selectable else { cancel(); return }
                 choose(.init(displayId: screenTarget.displayId, frame: screenTarget.frame,
                              appName: window.appName, windowID: window.id))
             }
@@ -99,13 +100,14 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         windows = info.compactMap { item in
-            guard let pid = item[kCGWindowOwnerPID as String] as? Int32, pid != ownPID,
+            guard let pid = item[kCGWindowOwnerPID as String] as? Int32,
                   let layer = item[kCGWindowLayer as String] as? Int, layer == 0,
+                  let alpha = item[kCGWindowAlpha as String] as? CGFloat, alpha > 0,
                   let id = item[kCGWindowNumber as String] as? UInt32,
                   let dictionary = item[kCGWindowBounds as String] as? NSDictionary,
                   let rect = CGRect(dictionaryRepresentation: dictionary), rect.width > 1, rect.height > 1,
                   let name = item[kCGWindowOwnerName as String] as? String else { return nil }
-            return Window(id: id, bounds: rect, appName: name)
+            return Window(id: id, bounds: rect, appName: name, selectable: pid != ownPID)
         }
         let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Screen"
         for screen in NSScreen.screens {

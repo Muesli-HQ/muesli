@@ -719,11 +719,6 @@ struct SettingsView: View {
                 }
             }
 
-            settingsSection("Experimental") {
-                settingsRow("Vidshot") { settingsControl("feedback_capture") }
-                SettingsNote("Record a window or screen region with microphone narration. Captures stay on this Mac.")
-                compactActionButton("Open Vidshot captures…") { controller.openFeedbackCaptures() }
-            }
             syncSettingsPane
 
             permissionsSection
@@ -2326,6 +2321,16 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Vidshot") {
+                settingsRow("Enable Vidshot", description: "Record a window or screen region with microphone narration. Captures stay on this Mac.") {
+                    settingsControl("feedback_capture")
+                }
+                HStack {
+                    compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
+                        .disabled(!appState.config.enableFeedbackCapture)
+                    compactActionButton("Open Vidshot captures…") { controller.openFeedbackCaptures() }
+                }
+            }
             TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
             quilSettingsSection
