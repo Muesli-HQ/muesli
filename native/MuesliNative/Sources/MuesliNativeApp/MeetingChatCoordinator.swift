@@ -332,6 +332,7 @@ final class MeetingChatCoordinator {
     private(set) var pendingChatMutations: [UUID: MeetingChatPendingMutation] = [:]
     var isLoadingConversation: Bool { selectedSessionID != nil && turnsSessionID != selectedSessionID }
     private(set) var selectedSessionID: UUID?
+    @ObservationIgnored private var privacyGeneration = 0
     private(set) var activeRequestID: UUID?
     private(set) var activeTurnID: UUID?
     private var activeSessionID: UUID?
@@ -746,8 +747,10 @@ final class MeetingChatCoordinator {
         activeSessionID = id
         do {
             let requestConfig = config
+            let savingGeneration = privacyGeneration
             try await worker.setFiles(sessionID: id, files: files)
-            guard activeRequestID == requestID, !Task.isCancelled else { return }
+            // Stop preserves the submitted turn as stopped; a privacy transition discards it.
+            guard savingGeneration == privacyGeneration, !Task.isCancelled else { return }
             let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID, files: files)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
@@ -1002,6 +1005,7 @@ final class MeetingChatCoordinator {
         return "Meeting AI request failed. Please retry or check your connection settings."
     }
     func discardForPrivacyTransition() {
+        privacyGeneration &+= 1
         activeRequestID = nil
         activeTurnID = nil
         activeSessionID = nil
