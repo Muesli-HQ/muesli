@@ -22,11 +22,50 @@ final class EphemeralChatDatabase: @unchecked Sendable {
         return try instance.lock.withLock {
             let version = try MeetingChatSQL.rows("SELECT version FROM main.meeting_chat_source_version WHERE id=1", db: instance.db) { sqlite3_column_int64($0, 0) }.first ?? 0
             if version != instance.sourceVersion {
-                try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT id FROM main.meetings UNION SELECT meeting_id FROM meeting_chat_index_state", db: instance.db)
+                try instance.markChangedIndexSources()
                 try instance.invalidateChangedSources()
                 instance.sourceVersion = version
             }
             return try operation(instance.db)
+        }
+    }
+    private func markChangedIndexSources() throws {
+        // A reconciled durable index has the current revision. New, removed and
+        // moved meetings can also be identified without reading transcript text.
+        try MeetingChatSQL.execute("""
+            INSERT OR IGNORE INTO temp.meeting_chat_dirty_sources
+            SELECT m.id FROM main.meetings m
+            LEFT JOIN temp.meeting_chat_index_state p ON p.meeting_id=m.id
+            LEFT JOIN main.meeting_chat_index_state d ON d.meeting_id=m.id
+            LEFT JOIN main.meeting_chat_dirty_sources q ON q.meeting_id=m.id
+            WHERE m.deleted_at IS NULL AND m.meeting_status NOT IN ('recording','processing')
+              AND (p.meeting_id IS NULL OR p.folder_id IS NOT m.folder_id
+                   OR (q.meeting_id IS NULL AND d.revision IS NOT NULL AND p.revision != d.revision))
+            UNION ALL
+            SELECT p.meeting_id FROM temp.meeting_chat_index_state p
+            LEFT JOIN main.meetings m ON m.id=p.meeting_id
+            WHERE m.id IS NULL OR m.deleted_at IS NOT NULL OR m.meeting_status IN ('recording','processing')
+            """, db: db)
+        // If the durable index itself is stale, compare live content revisions
+        // in bounded batches. Only changed content enters passage extraction.
+        var afterID: Int64 = 0
+        while true {
+            let candidates = try MeetingChatSQL.rows("""
+                SELECT p.meeting_id,p.revision FROM temp.meeting_chat_index_state p
+                LEFT JOIN main.meeting_chat_index_state d ON d.meeting_id=p.meeting_id
+                LEFT JOIN main.meeting_chat_dirty_sources q ON q.meeting_id=p.meeting_id
+                LEFT JOIN temp.meeting_chat_dirty_sources queued ON queued.meeting_id=p.meeting_id
+                WHERE p.meeting_id>? AND queued.meeting_id IS NULL
+                  AND (d.meeting_id IS NULL OR q.meeting_id IS NOT NULL)
+                ORDER BY p.meeting_id LIMIT 32
+                """, [.integer(afterID)], db: db) { (sqlite3_column_int64($0, 0), MeetingChatSQL.text($0, 1)) }
+            guard let last = candidates.last else { return }
+            let revisions = Dictionary(uniqueKeysWithValues: candidates)
+            let sources = try MeetingChatSQL.snapshots(scope: .init(selection: .meetings(candidates.map { $0.0 })), db: db)
+            for source in sources where revisions[source.meetingID] != source.revision {
+                try MeetingChatSQL.execute("INSERT OR IGNORE INTO temp.meeting_chat_dirty_sources VALUES(?)", [.integer(source.meetingID)], db: db)
+            }
+            afterID = last.0
         }
     }
     private func invalidateChangedSources() throws {

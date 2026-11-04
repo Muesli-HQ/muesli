@@ -31,17 +31,20 @@ public final class ContentPrivacy: @unchecked Sendable {
             enabled = value
             if value {
                 epoch = UUID(); redactsLogs = true
-                while activeWrites > 0 { lock.wait() }
             }
         }
     }
     /// Writers do not serialize against other writers or hold the policy lock
-    /// during disk work. Enabling revokes admission and waits for prior writes.
+    /// during disk work. Enabling revokes new admissions immediately.
     public func beginWrite(_ session: Session? = ContentPrivacy.session) throws {
         try lock.withLock {
             guard permitsUnlocked(session) else { throw Failure.ephemeralContent }
             activeWrites += 1
         }
+    }
+    /// Background synchronization point for callers that must observe completed writes.
+    public func waitForAdmittedWrites() {
+        lock.withLock { while activeWrites > 0 { lock.wait() } }
     }
     public func endWrite() {
         lock.withLock { activeWrites -= 1; if activeWrites == 0 { lock.broadcast() } }

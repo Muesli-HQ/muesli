@@ -55,7 +55,7 @@ struct TimeTurnerRecapView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                Text("Based on sampled excerpts · Saved on this Mac")
+                Text(model.savedKey == nil ? "Based on sampled excerpts · Temporary recap" : "Based on sampled excerpts · Saved on this Mac")
                     .font(MuesliTheme.caption()).foregroundStyle(.secondary)
             }
         }

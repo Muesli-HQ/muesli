@@ -140,7 +140,7 @@ final class TimeTurnerRecapModel {
     var isLoading = false
     var generatedAt: Date?
     var providerLabel = ""
-    @ObservationIgnored private var savedKey: String?
+    private(set) var savedKey: String?
     var isGenerating = false
     var hasGenerated = false
     var error: String?
@@ -163,7 +163,7 @@ final class TimeTurnerRecapModel {
         isGenerating = true
         modelLabel = MeetingTextGenerationClient.model(config)
         providerLabel = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label
-        let privacy = ContentPrivacy.shared.capture()
+        let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
         let analytics = AnalyticsAttempt(.recap, model: .summary(config))
         task = Task { [weak self] in
             defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
@@ -193,24 +193,26 @@ final class TimeTurnerRecapModel {
                 let saved = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
                     timeZone: timeZone, generatedAt: Date(), provider: self.providerLabel, model: self.modelLabel,
                     insights: result, sources: packet.sources)
-                try await Task.detached(priority: .utility) {
+                let persisted = try await Task.detached(priority: .utility) {
                     do {
                         try ContentPrivacy.shared.beginWrite(privacy)
                         defer { ContentPrivacy.shared.endWrite() }
                         try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL)
+                        return true
                     } catch ContentPrivacy.Failure.ephemeralContent {
-                        // A mode transition keeps the completed result in memory.
+                        return false
                     }
                 }.value
                 // If navigation/cancellation occurred during the write, remove only this generation.
                 guard self.attempt == token, !Task.isCancelled else {
+                    guard persisted else { return }
                     _ = try? await Task.detached(priority: .utility) {
                         try TimeTurnerRecapStore(databaseURL: databaseURL).delete(key: saved.key, generatedAt: saved.generatedAt)
                     }.value
                     return
                 }
                 analytics.finish(.success)
-                self.apply(saved)
+                self.apply(saved, persisted: persisted)
                 self.isGenerating = false
             } catch {
                 guard let self, self.attempt == token else { return }
@@ -220,9 +222,9 @@ final class TimeTurnerRecapModel {
         }
     }
 
-    private func apply(_ saved: SavedTimeTurnerRecap) {
+    private func apply(_ saved: SavedTimeTurnerRecap, persisted: Bool = true) {
         insights = saved.insights; sources = saved.sources; hasGenerated = true
-        generatedAt = saved.generatedAt; savedKey = saved.key
+        generatedAt = saved.generatedAt; savedKey = persisted ? saved.key : nil
         modelLabel = saved.model; providerLabel = saved.provider
     }
 

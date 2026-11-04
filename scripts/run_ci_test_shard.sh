@@ -74,6 +74,9 @@ case "${shard}" in
       WordCountTests
       DictationWordAnalyticsTests
       ContentPrivacyTests
+      TelemetryPrivacyTests
+      ProductAnalyticsTests
+      ProductAnalyticsModelTests
       DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests

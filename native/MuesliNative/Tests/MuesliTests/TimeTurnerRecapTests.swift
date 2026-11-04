@@ -256,12 +256,15 @@ struct TimeTurnerRecapTests {
         #expect(model.error == TimeTurnerRecapError.changedSources.localizedDescription)
     }
 
-    @MainActor @Test func successfulGenerationReloadsWithoutProvider() async throws {
+    @MainActor @Test(arguments: [true, false]) func successfulGenerationReportsActualRetention(privateMode: Bool) async throws {
         let (root, db, _, item) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let generator = RecapTestGenerator()
         let model = TimeTurnerRecapModel()
-        model.generate(day: day, captures: [item], root: root, databaseURL: db, config: AppConfig(), generator: generator)
+        let privacy = privateMode ? ContentPrivacy(enabled: true).capture() : ContentPrivacy.shared.capture()
+        ContentPrivacy.$session.withValue(privacy) {
+            model.generate(day: day, captures: [item], root: root, databaseURL: db, config: AppConfig(), generator: generator)
+        }
         for _ in 0..<200 {
             if await generator.received { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -276,7 +279,9 @@ struct TimeTurnerRecapTests {
         #expect(model.error == nil)
         let reopened = TimeTurnerRecapModel()
         await reopened.load(day: day, root: root, databaseURL: db)
-        #expect(reopened.hasGenerated)
+        #expect((model.savedKey == nil) == privateMode)
+        #expect(reopened.hasGenerated == !privateMode)
+        if privateMode { return }
         #expect(reopened.insights.first?.text == "Reviewed the checklist.")
         #expect(reopened.generatedAt == model.generatedAt)
     }

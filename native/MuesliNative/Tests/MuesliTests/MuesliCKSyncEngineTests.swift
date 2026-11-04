@@ -476,6 +476,41 @@ struct MuesliCKSyncEngineTests {
         #expect(state.pendingRecordZoneChanges.isEmpty)
     }
 
+    @Test("private mixed cloud page imports meetings and replays skipped dictations")
+    func privateMixedPageReplaysDictations() async throws {
+        let store = try makeStore()
+        let now = Date()
+        let records = [SyncTextRecordKind.dictation, .meeting].map { kind in
+            SyncTextRecord(id: "\(kind.rawValue)-\(UUID().uuidString)", kind: kind,
+                title: kind == .meeting ? "Synthetic meeting" : nil, text: "Synthetic record",
+                source: "macos", createdAt: now, updatedAt: now, startedAt: now, endedAt: now,
+                durationSeconds: 1, wordCount: 2)
+        }
+        let privateSession = ContentPrivacy(enabled: true).capture()
+        let legacy = try makeStore()
+        ContentPrivacy.$session.withValue(privateSession) {
+            #expect(throws: ContentPrivacy.Failure.self) { try legacy.upsertSyncedTextRecords(records) }
+        }
+        #expect(try legacy.textRecordForSync(recordName: records[0].id) == nil)
+        #expect(try legacy.textRecordForSync(recordName: records[1].id)?.text == "Synthetic record")
+
+        let cloudRecords = records.map { MuesliICloudSyncEngine.syncZoneCloudRecord(from: $0) }
+        let pending = cloudRecords.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0.recordID) }
+        let state = TestCKSyncPendingState(pending)
+        let coordinator = MuesliCKSyncEngine(store: store)
+        try store.saveCloudSyncStateData(Data([1]), forKey: MuesliCKSyncEngine.stateKey)
+        try await ContentPrivacy.$session.withValue(privateSession) {
+            try await coordinator.handleFetchedRecords(cloudRecords, state: state)
+        }
+        #expect(try store.textRecordForSync(recordName: records[0].id) == nil)
+        #expect(try store.textRecordForSync(recordName: records[1].id)?.text == "Synthetic record")
+        #expect(try store.cloudSyncStateData(forKey: MuesliCKSyncEngine.stateKey) == nil)
+        #expect(state.pendingRecordZoneChanges == [pending[0]])
+        try await coordinator.handleFetchedRecords(cloudRecords, state: state)
+        #expect(try store.textRecordForSync(recordName: records[0].id)?.text == "Synthetic record")
+        #expect(state.pendingRecordZoneChanges.isEmpty)
+    }
+
     @Test("older fetched server record hydrates metadata but preserves local dirty edit")
     func newerLocalEditWinsFetchedRecord() async throws {
         let store = try makeStore()

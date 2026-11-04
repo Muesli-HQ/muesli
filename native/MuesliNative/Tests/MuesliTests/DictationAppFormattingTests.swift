@@ -268,18 +268,24 @@ struct DictationAppFormattingTests {
         #expect(try database.recentDictations().first?.rawText == phrase)
     }
 
-    @Test("Voice notes never buffer for app rules or insert text")
+    @Test("Voice notes use history or an ephemeral preview without inserting text", arguments: [true, false])
     @MainActor
-    func streamingVoiceNote() throws {
+    func streamingVoiceNote(privateMode: Bool) throws {
         let (directory, database, _, controller, board) = try streamingFixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
         controller.dictationOutputTestHooks = .init(pasteboard: board,
             typeText: { _ in Issue.record("Voice note typed") },
             dispatchPaste: { _ in Issue.record("Voice note pasted"); return false })
-        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        var temporaryText: String?
+        controller.dictationOutputTestHooks?.temporaryVoiceNote = { temporaryText = $0 }
+        let session = privateMode ? ContentPrivacy(enabled: true).capture() : ContentPrivacy.shared.capture()
+        let id = ContentPrivacy.$session.withValue(session) {
+            controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        }
         controller.receiveStreamingFormattingForTesting("Voice note.", sessionID: id)
         controller.finishStreamingFormattingForTesting("Voice note.", sessionID: id)
-        #expect(try database.recentDictations().first?.rawText == "Voice note.")
+        #expect(temporaryText == (privateMode ? "Voice note." : nil))
+        #expect(try database.recentDictations().first?.rawText == (privateMode ? nil : "Voice note."))
         #expect(board.string(forType: .string) == "original clipboard")
     }
     #endif

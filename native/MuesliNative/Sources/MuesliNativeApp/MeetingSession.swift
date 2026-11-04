@@ -1023,7 +1023,6 @@ final class MeetingSession {
         ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
-            fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)
         } else {
             generatedTitle = title
         }

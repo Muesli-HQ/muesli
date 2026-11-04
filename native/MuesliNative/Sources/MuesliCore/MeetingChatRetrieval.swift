@@ -9,10 +9,11 @@ public struct MeetingChatRetrieval: Sendable {
 
     private let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
     private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
-        if !ContentPrivacy.shared.permits(privacy) {
+        do {
+            try ContentPrivacy.shared.beginWrite(privacy)
+        } catch ContentPrivacy.Failure.ephemeralContent {
             return try EphemeralChatDatabase.withConnection(url: databaseURL, session: privacy, operation: operation)
         }
-        try ContentPrivacy.shared.beginWrite(privacy)
         defer { ContentPrivacy.shared.endWrite() }
         return try DictationStore(databaseURL: databaseURL).withChatDatabase(operation)
     }

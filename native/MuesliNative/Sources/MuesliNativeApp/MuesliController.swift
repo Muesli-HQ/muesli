@@ -37,6 +37,7 @@ struct DictationOutputTestHooks {
     var dispatchPaste: (PasteShortcut) -> Bool = { _ in true }
     var monitorCorrections: (String) -> Void = { _ in }
     var warning: (String) -> Void = { _ in }
+    var temporaryVoiceNote: ((String) -> Void)?
     var settled: () -> Void = {}
 }
 #endif
@@ -12522,6 +12523,7 @@ public final class MuesliController: NSObject {
 
     func startStreamingFormattingForTesting(bundleID: String?, voiceNote: Bool = false) -> UUID {
         clearCapturedDictationSessionContext()
+        dictationPrivacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
         currentDictationOutputMode = voiceNote ? .voiceNote : .paste
         captureDictationFormatting(targetBundleID: bundleID)
         let id = UUID()
@@ -13058,23 +13060,20 @@ public final class MuesliController: NSObject {
             return
         }
 
-        if !cleaned.isEmpty, ContentPrivacy.shared.permits(dictationPrivacy) {
-            _ = try? dictationStore.insertDictation(
-                text: cleaned,
-                durationSeconds: duration,
-                targetAppName: targetApp?.appName,
-                targetAppBundleID: targetApp?.bundleID,
-                startedAt: startedAt,
-                endedAt: Date(),
-                transcriptionModel: DictationModelIdentity(backend: BackendOption.nemotron35Multilingual.backend,
-                    model: BackendOption.nemotron35Multilingual.model, name: BackendOption.nemotron35Multilingual.label)
+        if cleaned.isEmpty {
+            dictationAnalytics?.finish(.discarded, fields: [.saved: .no, .delivery: .none])
+            dictationAnalytics = nil
+        } else {
+            let backend = BackendOption.nemotron35Multilingual
+            finishStandardDictationBookkeeping(
+                text: cleaned, duration: duration, appContext: "", startedAt: startedAt,
+                outputMode: outputMode, targetApp: targetApp, backend: backend.backend,
+                bodhanMeasurement: nil,
+                transcriptionModel: DictationModelIdentity(backend: backend.backend, model: backend.model, name: backend.label),
+                privacySession: dictationPrivacy
             )
-            scheduleICloudSyncAfterLocalChange()
         }
 
-        statusBarController?.refresh()
-        historyWindowController?.reload()
-        syncAppState()
         clearCapturedDictationSessionContext()
         resetDictationOutputMode()
         setState(.idle)
@@ -13225,8 +13224,9 @@ public final class MuesliController: NSObject {
     ) -> Bool {
         let privacy = privacySession ?? ContentPrivacy.session ?? dictationPrivacy
         guard ContentPrivacy.shared.permits(privacy) else {
+            if outputMode == .voiceNote { presentTemporaryVoiceNote(text) }
             if finishAnalytics {
-                dictationAnalytics?.finish(.success, fields: [.saved: .no, .delivery: .unknown],
+                dictationAnalytics?.finish(.success, fields: [.saved: .no, .delivery: outputMode == .voiceNote ? .none : .unknown],
                     model: .catalog(provider: transcriptionModel.backend, model: transcriptionModel.model))
                 dictationAnalytics = nil
             }
@@ -13851,6 +13851,24 @@ public final class MuesliController: NSObject {
         presentAlert(alert, fallbackLogContext: "dictation recovery") { [weak self] response in
             if response == .alertSecondButtonReturn { self?.retryFailedDictation(record) }
             if response == .alertThirdButtonReturn { self?.revealFailedDictation(record) }
+        }
+    }
+
+    private func presentTemporaryVoiceNote(_ text: String) {
+        #if DEBUG
+        if let present = dictationOutputTestHooks?.temporaryVoiceNote { present(text); return }
+        #endif
+        let alert = NSAlert()
+        alert.messageText = "Temporary voice note"
+        alert.informativeText = text
+        alert.addButton(withTitle: "Done")
+        alert.addButton(withTitle: "Copy transcript")
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertSecondButtonReturn { self?.copyToClipboard(text) }
+        }
+        if !presentAlert(alert, fallbackLogContext: "temporary voice note",
+                         includeInformativeTextInFallbackLog: false, completion: finish) {
+            finish(alert.runModal())
         }
     }
 

@@ -166,6 +166,8 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     private var bridgeRefreshTask: Task<Void, Never>?
     private var bridgeRefreshForceRequested = false
     private var targetZoneFetchProcessingFailed = false
+    // The live CKSyncEngine can advance its cursor even when its delegate defers a row.
+    private var needsDictationReplay = false
     private let bridgeRefreshDidFinish: (@MainActor @Sendable () -> Void)?
     private let syncZoneFetchDidSucceed: (@MainActor @Sendable () -> Void)?
     private let engineCancellationObserver: @Sendable () async -> Void
@@ -327,6 +329,11 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     private func prepareEngine() async throws -> CKSyncEngine {
+        if needsDictationReplay && !ContentPrivacy.shared.isEnabled, let previous = engine {
+            try store.clearCloudSyncStateData(forKey: Self.stateKey)
+            engine = nil
+            await previous.cancelOperations()
+        }
         try await preparePreflightIfNeeded()
         return try makeEngineIfNeeded()
     }
@@ -546,6 +553,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         configuration.subscriptionID = Self.subscriptionID
         let created = CKSyncEngine(configuration)
         engine = created
+        needsDictationReplay = false
         return created
     }
 
@@ -581,7 +589,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard !accountBoundaryBlocked else { return nil }
+        guard syncEngine === engine, !accountBoundaryBlocked else { return nil }
         let pending = Array(syncEngine.state.pendingRecordZoneChanges.lazy.filter {
             context.options.scope.contains($0)
         }.prefix(Self.uploadBatchSize))
@@ -656,6 +664,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        guard syncEngine === engine else { return }
         do {
             switch event {
             case .stateUpdate(let update):
@@ -663,6 +672,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                     try store.clearCloudSyncStateData(forKey: Self.stateKey)
                     break
                 }
+                guard !needsDictationReplay else { break }
                 let data = try PropertyListEncoder().encode(update.stateSerialization)
                 try store.saveCloudSyncStateData(data, forKey: Self.stateKey)
 
@@ -760,8 +770,16 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
                     && $0.recordType == MuesliICloudSyncEngine.Schema.textRecordType
             }
             .compactMap(MuesliICloudSyncEngine.syncTextRecord(from:))
-        let appliedRecordIDs = Set(try store.upsertSyncedTextRecords(records).map(\.id))
+        let result = try store.applyFetchedTextRecords(records)
+        if result.deferredDictations && !needsDictationReplay {
+            // A restart must fetch the skipped records too. Keep only this flag,
+            // never their identifiers or content, and rebuild on the next public sync.
+            needsDictationReplay = true
+            try store.clearCloudSyncStateData(forKey: Self.stateKey)
+        }
+        let appliedRecordIDs = Set(result.applied.map(\.id))
         for record in records {
+            if record.kind == .dictation && result.deferredDictations { continue }
             if !appliedRecordIDs.contains(record.id) {
                 try store.updateTextRecordCloudMetadata(
                     kind: record.kind,

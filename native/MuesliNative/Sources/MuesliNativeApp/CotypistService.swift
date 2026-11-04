@@ -325,7 +325,11 @@ final class CotypistService {
         Task { @MainActor in
             let captured = await DictationContextCapture.capture(
                 includeScreenOCR: true,
-                shouldCaptureScreenOCR: { await MainActor.run { CotypistService.shared.isScreenCaptureAllowed() } },
+                shouldCaptureScreenOCR: {
+                    await MainActor.run {
+                        self.privacyEpoch == epoch && !ContentPrivacy.shared.isEnabled && self.isScreenCaptureAllowed()
+                    }
+                },
                 allowTitleFallback: true
             )
             guard epoch == privacyEpoch, !ContentPrivacy.shared.isEnabled else { return }
@@ -382,9 +386,9 @@ final class CotypistService {
         let privacy = ContentPrivacy.shared.capture()
         Task.detached(priority: .utility) {
             do {
-                try ContentPrivacy.shared.beginWrite(privacy)
-                defer { ContentPrivacy.shared.endWrite() }
-                try store.recordCotypistSuggestion(event)
+                try ContentPrivacy.$session.withValue(privacy) {
+                    _ = try store.recordCotypistSuggestion(event)
+                }
                 if !event.acceptedText.isEmpty { await MainActor.run { CotypistService.shared.onAccepted() } }
             } catch {
                 fputs("[cotypist] could not record suggestion: \(error)\n", stderr)

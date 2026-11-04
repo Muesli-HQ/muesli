@@ -23,22 +23,30 @@ struct ContentPrivacyTests {
         let policy = ContentPrivacy()
         try policy.beginWrite()
         let second = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             do { try policy.beginWrite(); policy.endWrite(); second.signal() }
             catch { Issue.record("Unexpected admission failure") }
         }
         #expect(second.wait(timeout: .now() + 1) == .success)
         policy.endWrite()
     }
-    @Test func enablingWaitsForAdmittedWritesAndRevokesLateCallbacks() throws {
+    @Test func enablingRevokesImmediatelyAndDrainsOffCaller() throws {
         let policy = ContentPrivacy()
         let session = policy.capture()
         try policy.beginWrite(session)
         let enabled = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { policy.setEnabled(true); enabled.signal() }
-        #expect(enabled.wait(timeout: .now() + 0.02) == .timedOut)
-        policy.endWrite()
+        let drained = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            policy.setEnabled(true)
+            enabled.signal()
+            policy.waitForAdmittedWrites()
+            drained.signal()
+        }
         #expect(enabled.wait(timeout: .now() + 1) == .success)
+        #expect(!policy.permits(session))
+        #expect(drained.wait(timeout: .now()) == .timedOut)
+        policy.endWrite()
+        #expect(drained.wait(timeout: .now() + 1) == .success)
         policy.setEnabled(false)
         #expect(throws: ContentPrivacy.Failure.self) { try policy.beginWrite(session) }
     }
@@ -96,6 +104,26 @@ struct ContentPrivacyTests {
         try store.deleteMeeting(id: meeting)
         #expect(try chat.turns(sessionID: session.id).first?.originalAnswer == nil)
         #expect(try retrieval.retrieve(question: "Friday", scope: scope).passages.isEmpty)
+    }
+    @Test func privateIndexOnlyRebuildsEditedMeetings() throws {
+        let (folder, store) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func addMeeting(_ title: String) throws -> Int64 {
+            try store.insertMeeting(title: title, calendarEventID: nil,
+                startTime: Date(), endTime: Date(), rawTranscript: "Synthetic excerpt for indexing.",
+                formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+        }
+        let edited = try addMeeting("First")
+        _ = try addMeeting("Second")
+        let retrieval = ContentPrivacy.$session.withValue(ContentPrivacy(enabled: true).capture()) {
+            MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL)
+        }
+        #expect(try retrieval.prepareIndex().reindexedMeetingCount == 2)
+        try store.updateMeetingTranscript(id: edited, rawTranscript: "First edit.")
+        #expect(try retrieval.prepareIndex().reindexedMeetingCount == 1)
+        try store.updateMeetingTranscript(id: edited, rawTranscript: "Second edit.")
+        _ = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).prepareIndex()
+        #expect(try retrieval.prepareIndex().reindexedMeetingCount == 1)
     }
     @Test func privateFailuresCannotCreateRecoveryFiles() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

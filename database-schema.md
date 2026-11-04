@@ -36,13 +36,16 @@ it is not a transmitted user or session identifier.
 
 The bundle-local UserDefaults flag `muesli.privateMode` defaults to false and is
 owned by `ContentPrivacy`, independently of anonymous-analytics consent. Enabling
-revokes earlier session tokens and waits for admitted content writes to finish;
-writers otherwise run concurrently. Turning the flag off never makes a private
+immediately revokes earlier session tokens. Writes admitted before the switch
+can finish in the background. Turning the flag off never makes a private
 or revoked session saveable. No token enters telemetry, exports or CloudKit.
 
 Normal dictations, recovery retries, Quill turns/late previews, CUA commands and
 traces, Cotypist suggestions and incoming synced dictations refuse content writes
-under this policy. Meeting records, notes and audio/video retain their existing
+under this policy. In a mixed CloudKit fetch, meeting updates commit and incoming
+dictations are deferred. The legacy fetch keeps its prior change token, and
+CKSyncEngine clears its checkpoint so a later public fetch can replay the
+deferred records. Meeting records, notes and audio/video retain their existing
 storage behavior. Existing history is not deleted. Settings/preferences remain
 persistent; this is an activity-retention policy, not a read-only application.
 
