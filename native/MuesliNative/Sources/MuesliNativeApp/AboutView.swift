@@ -1,9 +1,9 @@
 import SwiftUI
 import MuesliCore
 
-struct AboutView: View {
+struct AboutView<AnalyticsControl: View>: View {
     let appState: AppState
-    let controller: MuesliController
+    let analyticsControl: AnalyticsControl
     let onShare: (ContributionMilestoneAction) -> Void
     let onOpenManualDiagnosticReport: () -> Void
     let onSetAutomaticDiagnosticIssuePrompts: (Bool) -> Void
@@ -121,8 +121,7 @@ struct AboutView: View {
                 aboutCard {
                     VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                         SettingsRow(label: "Disable anonymous analytics", controlWidth: nil) {
-                            MuesliSettingControl(controller: controller, id: "disable_anonymous_analytics")
-                                .environment(\.muesliSettingDefinitions, [controller.anonymousAnalyticsDefinition()])
+                            analyticsControl
                         }
                         SettingsNote("Stops anonymous usage and error analytics from being sent to TelemetryDeck. Applies immediately on this Mac. Requests already sent cannot be recalled.")
                     }

@@ -293,7 +293,8 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
-                    controller: controller,
+                    analyticsControl: MuesliSettingControl(controller: controller, id: "disable_anonymous_analytics")
+                        .environment(\.muesliSettingDefinitions, [controller.anonymousAnalyticsDefinition()]),
                     onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }
