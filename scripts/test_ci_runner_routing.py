@@ -171,9 +171,9 @@ class RunnerRoutingTests(unittest.TestCase):
         self.assertEqual(normal, 'ci-refs/pull/698/merge')
         gate_name = re.search(r'^    name: (.+)$', self.job('ci-gate'), re.M)[1]
         for action in ('labeled', 'unlabeled', 'synchronize'):
-            for label in ('ci:blacksmith', 'bug'):
+            for label in ('ci:blacksmith', 'self-host', 'bug'):
                 ctx = context(action=action, changed_label=label)
-                relevant = action == 'synchronize' or label == 'ci:blacksmith'
+                relevant = action == 'synchronize' or label in ('ci:blacksmith', 'self-host')
                 for job in ('changes', 'classifier-tests', 'ci-gate'):
                     condition = re.search(r'^    if: >-\n((?:      .+\n)+)', self.job(job), re.M)[1]
                     self.assertEqual(bool(evaluate(' '.join(condition.split()), ctx)), relevant)
@@ -184,6 +184,30 @@ class RunnerRoutingTests(unittest.TestCase):
         self.assertNotEqual(render(group, main), render(group, warming))
         self.assertEqual(render(gate_name, warming), 'blacksmith-cache-warm')
         self.assertEqual(render(gate_name, main), 'ci-gate')
+
+    def test_private_mac_requires_enabled_trusted_same_repo_pr(self):
+        ctx = context(labels=['self-host'])
+        ctx['vars'] = {'M5_CI_ENABLED': 'true'}
+        ctx['github']['triggering_actor'] = 'pHequals7'
+        ctx['github']['event']['pull_request']['head'] = {'repo': {'full_name': 'Muesli-HQ/muesli'}}
+        expression = self.expression('self_host')
+        self.assertTrue(evaluate(expression, ctx))
+        for path, value in [
+            (('vars', 'M5_CI_ENABLED'), 'false'),
+            (('github', 'event_name'), 'push'),
+            (('github', 'actor'), 'contributor'),
+            (('github', 'triggering_actor'), 'contributor'),
+            (('github', 'event', 'pull_request', 'user', 'login'), 'contributor'),
+            (('github', 'event', 'pull_request', 'head', 'repo', 'full_name'), 'fork/muesli'),
+            (('github', 'event', 'pull_request', 'labels'), []),
+            (('github', 'event', 'pull_request', 'labels'), [{'name': 'self-host'}, {'name': 'ci:blacksmith'}]),
+        ]:
+            case = deepcopy(ctx)
+            target = case
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            self.assertFalse(evaluate(expression, case), path)
 
     def test_regression_suite_is_registered(self):
         self.assertIn('run: python3 ./scripts/test_ci_runner_routing.py', self.workflow)
