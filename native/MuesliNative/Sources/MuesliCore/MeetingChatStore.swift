@@ -5,12 +5,18 @@ import CryptoKit
 /// Opens the explicitly supplied app database per operation; no shared mutable connection.
 public struct MeetingChatStore: Sendable {
     public let databaseURL: URL
+    private let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
     private let readOnly: Bool
     public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL; self.readOnly = readOnly
     }
     private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
-        try DictationStore(databaseURL: databaseURL, readOnly: readOnly).withChatDatabase(operation)
+        if !ContentPrivacy.shared.permits(privacy) {
+            return try EphemeralChatDatabase.withConnection(url: databaseURL, session: privacy, operation: operation)
+        }
+        try ContentPrivacy.shared.beginWrite(privacy)
+        defer { ContentPrivacy.shared.endWrite() }
+        return try DictationStore(databaseURL: databaseURL, readOnly: readOnly).withChatDatabase(operation)
     }
     public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession {
         let now = Date()

@@ -23,6 +23,70 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### Anonymous analytics preference outside SQLite
+
+The About opt-out uses bundle-local UserDefaults keys
+`muesli.disableAnonymousAnalytics` (absent means false) and
+`muesli.analyticsConsentGeneration` (absent means the pre-opt-out generation).
+These are not AppConfig, SQLite, CloudKit, history, export or CLI fields. The
+consent generation is an internal queue-rejection token stripped before upload;
+it is not a transmitted user or session identifier.
+
+### Privacy mode and ephemeral activity
+
+The bundle-local UserDefaults flag `muesli.privateMode` defaults to false and is
+owned by `ContentPrivacy`, independently of anonymous-analytics consent. Enabling
+revokes earlier session tokens and waits for admitted content writes to finish;
+writers otherwise run concurrently. Turning the flag off never makes a private
+or revoked session saveable. No token enters telemetry, exports or CloudKit.
+
+Normal dictations, recovery retries, Quill turns/late previews, CUA commands and
+traces, Cotypist suggestions and incoming synced dictations refuse content writes
+under this policy. Meeting records, notes and audio/video retain their existing
+storage behavior. Existing history is not deleted. Settings/preferences remain
+persistent; this is an activity-retention policy, not a read-only application.
+
+Private meeting chat opens the main database read-only and shadows chat/history
+and retrieval-index tables in SQLite TEMP tables with `temp_store=MEMORY`.
+These tables never spill to disk. Saved meeting sources remain live/read-only;
+source-version changes invalidate affected answers and rolling memory. The
+in-memory workspace is isolated by privacy epoch and discarded on mode changes
+or process exit. Existing durable chat sessions are not copied into it. Chat
+source validation still applies; private answers must not reuse deleted evidence.
+
+Time Turner and Cotypist pause without changing their enablement preferences.
+Pending captures recheck admission before file/database writes. Recaps can be
+generated and displayed but are not saved. Dictation and Quill recovery backups
+are suppressed; temporary working audio follows normal completion/cancellation
+cleanup. Content-bearing debug logs stay suppressed for the rest of a process
+that has entered Privacy mode. Anonymous finite lifecycle events remain governed
+by the separate analytics switch; unsaved private dictations do not contribute
+to the saved-word baseline or daily word counts.
+
+### Local word analytics checkpoint outside SQLite
+
+`DictationWordAnalytics` owns `analytics-word-count.json` beside the active
+`muesli.db`. Version 1 stores only a baseline-attempted flag, local consent
+generation, UTC day number and pending word count. It is not synced, exported,
+or exposed through the CLI. Atomic writes run on a utility queue. Corrupt,
+unknown-version or unwritable checkpoints fail closed. Retain this file when
+reinstalling the app; deleting/restoring application support can invalidate the
+one-time baseline guarantee.
+
+`DictationStore.localDictationWordBaseline()` reads numeric columns only in one
+snapshot. It includes undeleted `source = dictation` rows with no cloud record
+name, or with local-only transcription backend provenance. Ambiguous old synced
+rows are excluded, including locally created old rows whose origin cannot be
+established. Other activity types and deleted history are excluded. This is a
+conservative recoverable baseline, not an exact all-time user total.
+
+The store's optional `onLocalDictationWords` observer receives only the saved row
+ID and the already computed word count after a successful normal local insert.
+It never runs for sync upserts or recovery retries. The app observer only queues
+work; it does no disk or network work on the insertion thread. The startup
+snapshot's maximum ID prevents a racing save from entering both baseline and
+delta. Row IDs stay in memory; the pending total survives history deletion.
+
 ### App formatting preferences outside SQLite
 
 `ConfigStore` saves dictation formatting preferences in the local `AppConfig`

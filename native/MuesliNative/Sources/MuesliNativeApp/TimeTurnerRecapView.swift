@@ -108,6 +108,7 @@ struct TimeTurnerRecapView: View {
                         guard !text.isEmpty else { return }
                         NSPasteboard.general.clearContents()
                         copied = NSPasteboard.general.setString(text, forType: .string)
+                        if copied { ProductAnalytics.event(.recap, .result_action, fields: [.action: .copy]) }
                     }
                 } label: {
                     Label(copied ? "Copied" : "Copy summary", systemImage: copied ? "checkmark" : "doc.on.doc")

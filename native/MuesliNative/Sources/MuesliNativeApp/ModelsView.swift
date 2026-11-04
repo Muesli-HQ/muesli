@@ -1909,6 +1909,8 @@ struct ModelsView: View {
 
     /// Returns true when an installed build was replaced by a newer one.
     private func downloadPostProcModel(_ option: PostProcessorOption, generation: UUID) async throws -> Bool {
+        return try await AnalyticsAttempt.measure(.model_setup, fields: [.stage: .download], model: .catalog(provider: "local", model: option.id)) {
+
         if let slot = option.cleanupSlot {
             return try await installCleanupRelease(option,
                 release: appState.modelLibrary.latestCleanupReleases[option.id] ?? slot.bundled, generation: generation)
@@ -1939,6 +1941,7 @@ struct ModelsView: View {
         }
         try Task.checkCancellation()
         return false
+        }
     }
 
     /// Downloads a Muesli cleanup build beside the live folder and swaps it in only

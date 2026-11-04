@@ -20,7 +20,18 @@ for file in "${files[@]}"; do
   current+=("$app/$file")
 done
 common=(-O -whole-module-optimization -module-cache-path "$output/module-cache" scripts/benchmark_dictation_pipeline_support.swift)
-swiftc "${common[@]}" "${old[@]}" -o "$output/baseline-benchmark"
+# Baselines after the watchdog/capture-health merge need the same production
+# helpers. Keep older refs usable for the original introduction benchmark.
+base_flags=()
+for spec in "DictationStartupWatchdog.swift:WATCHDOG_CANDIDATE" "DictationCaptureHealth.swift:CAPTURE_HEALTH_CANDIDATE"; do
+  helper="${spec%%:*}"; flag="${spec##*:}"
+  if git cat-file -e "$base_sha:$app/$helper" 2>/dev/null; then
+    git show "$base_sha:$app/$helper" > "$output/baseline/$helper"
+    old+=("$output/baseline/$helper")
+    base_flags+=(-D "$flag")
+  fi
+done
+swiftc "${common[@]}" "${base_flags[@]}" "${old[@]}" -o "$output/baseline-benchmark"
 swiftc "${common[@]}" -D WATCHDOG_CANDIDATE -D CAPTURE_HEALTH_CANDIDATE "${current[@]}" "$app/DictationStartupWatchdog.swift" "$app/DictationCaptureHealth.swift" -o "$output/candidate-benchmark"
 for round in 1 2 3; do
   if [[ "$round" == 2 ]]; then order=(candidate baseline); else order=(baseline candidate); fi

@@ -177,7 +177,8 @@ struct DiarizerPreloadDiagnostics {
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         signalSink: @escaping SignalSink = { event, parameters in
-            TelemetryDeck.signal(event, parameters: parameters)
+            guard !["diarizer.preload.started", "diarizer.preload.ready", "diarizer.preload.skipped"].contains(event) else { return }
+            MuesliTelemetry.signal(event, parameters: parameters)
         }
     ) {
         self.defaults = defaults

@@ -29,7 +29,7 @@ final class DictationDevFaults: @unchecked Sendable {
               let value = environment[environmentKey], let fault = Fault(rawValue: value) else { return nil }
         return DictationDevFaults(fault) { fault in
             // Fixed enum only; never include content, identifiers or error text.
-            TelemetryDeck.signal("dictation.dev_fault.triggered", parameters: ["fault": fault.rawValue])
+            MuesliTelemetry.signal("dictation.dev_fault.triggered", parameters: ["fault": fault.rawValue])
         }
     }
 

@@ -101,6 +101,7 @@ struct DashboardRootView: View {
                         if showsPersistentChat {
                             MeetingChatView(appState: appState, controller: controller,
                                             coordinator: controller.meetingChatCoordinator, docked: true)
+                                .id(appState.privateMode)
                         }
                     }
             }
@@ -280,6 +281,7 @@ struct DashboardRootView: View {
                 MeetingsView(appState: appState, controller: controller)
             case .meetingChat:
                 MeetingChatView(appState: appState, controller: controller, coordinator: controller.meetingChatCoordinator)
+                    .id(appState.privateMode)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:
@@ -291,6 +293,7 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
+                    controller: controller,
                     onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }

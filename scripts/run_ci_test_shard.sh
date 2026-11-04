@@ -72,6 +72,8 @@ case "${shard}" in
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictationWordAnalyticsTests
+      ContentPrivacyTests
       DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests

@@ -90,6 +90,8 @@ final class TimeTurnerRecapStore {
         _ = sqlite3_bind_text(statement, index, value, -1, transient)
     }
     func save(_ recap: SavedTimeTurnerRecap) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
         guard recap.version == 1, recap.dayEnd > recap.dayStart else { throw Self.failure }
         let body = String(decoding: try JSONEncoder().encode(recap), as: UTF8.self)
         let s = try statement("INSERT OR REPLACE INTO time_turner_recaps(day_key,day_start,day_end,time_zone,generated_at,body) VALUES(?,?,?,?,?,?)")

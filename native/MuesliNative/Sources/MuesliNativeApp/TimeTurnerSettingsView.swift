@@ -259,14 +259,21 @@ struct TimeTurnerSetupView: View {
         }.padding(14).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
     private func enable() {
-        refresh(); guard ready else { step = 1; return }
+        refresh(); guard ready else {
+            ProductAnalytics.event(.time_turner, .activation_finished, outcome: .blocked, fields: [.stage: .permission])
+            step = 1; return
+        }
         enabling = true
         Task { @MainActor in
             defer { enabling = false }
             do {
                 try await controller.applySetting("time_turner_enabled", value: "on")
+                ProductAnalytics.event(.time_turner, .activation_finished, outcome: .success)
                 dismiss()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                ProductAnalytics.event(.time_turner, .activation_finished, outcome: .failed, fields: [.stage: .setup])
+                self.error = error.localizedDescription
+            }
         }
     }
 }

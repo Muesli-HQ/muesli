@@ -5,6 +5,42 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    func setPrivateMode(_ enabled: Bool) {
+        guard ContentPrivacy.shared.isEnabled != enabled else { return }
+        ContentPrivacy.shared.setEnabled(enabled)
+        UserDefaults.standard.set(enabled, forKey: ContentPrivacy.preferenceKey)
+        resetChatForPrivacyTransition()
+        appState.privateMode = enabled
+        visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
+        CotypistService.shared.privacyChanged()
+    }
+
+    func privateModeDefinition() -> MuesliSetting {
+        MuesliSetting(id: "private_mode", label: "Privacy mode",
+            choices: [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in self.appState.privateMode ? "on" : "off" },
+            unavailable: { _ in nil },
+            apply: { self.setPrivateMode($0 == "on") })
+    }
+
+    func setAnonymousAnalyticsDisabled(_ disabled: Bool) {
+        MuesliTelemetry.setDisabled(disabled)
+        appState.anonymousAnalyticsDisabled = UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey)
+    }
+
+    /// About and voice share one definition without constructing the model catalog.
+    func anonymousAnalyticsDefinition() -> MuesliSetting {
+        MuesliSetting(
+            id: "disable_anonymous_analytics", label: "Disable anonymous analytics",
+            choices: [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in
+                _ = self.appState.anonymousAnalyticsDisabled // Observe local preference changes.
+                return UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey) ? "on" : "off"
+            },
+            unavailable: { _ in nil },
+            apply: { self.setAnonymousAnalyticsDisabled($0 == "on") })
+    }
+
     /// Static appearance choices shared by the sidebar and full settings catalog.
     /// Does not enumerate models, calendars, or their availability on disk.
     func appearanceDefinition() -> MuesliSetting {
@@ -268,6 +304,9 @@ extension MuesliController {
         textMenu("time_turner_history_retention", "Keep searchable history for", ["7", "30", "90", "365", "forever"].map {
             Choice(id: $0, label: $0 == "forever" ? "Until I delete it" : "\($0) days")
         }, \.timeTurnerHistoryRetention, deletionWarning: "Older OCR and app history, associated screenshots and recaps will be deleted.")
+
+        settings.append(anonymousAnalyticsDefinition())
+        settings.append(privateModeDefinition())
 
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)

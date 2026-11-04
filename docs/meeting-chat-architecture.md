@@ -83,3 +83,15 @@ The October 11, 2026 local review ran 142 meeting-chat/presentation/ChatGPT-tran
 This host uses Xcode 27 / Swift 6.4, newer than the documented CI toolchain. Automated suites use synthetic responses. Live checks using only synthetic content confirmed HTTP 200 and a valid cited Markdown-table answer from the configured `gpt-6.1-sol` model. A real meeting request exposed a response-validation failure; bounded recovery and specific diagnostics were added. A synthetic request with `reasoning.summary: auto` was accepted but emitted no summary events, confirming that the disclosure must remain conditional. End-to-end answer quality across real meeting archives still needs evaluation.
 
 Live synthetic follow-up checks with no current sources returned `conversation` for a rewrite and `insufficient_evidence` for an unsupported new meeting deadline. These checks used invented release-discussion text, not the user’s meeting archive.
+
+
+## Privacy mode
+
+Private conversations retain their sessions, turns, drafts, evidence links and
+retrieval caches only in RAM. The main meeting database is opened read-only;
+TEMP tables use `temp_store=MEMORY` and shadow only chat/index tables. The stored
+meeting sources remain current, and dependency validation/invalidation still
+applies. Switching privacy mode cancels the old coordinator and drops the
+in-memory workspace. Epoch-specific workspaces keep late callbacks from touching
+a new private conversation. No private conversation is promoted to durable
+history when the switch is turned off.

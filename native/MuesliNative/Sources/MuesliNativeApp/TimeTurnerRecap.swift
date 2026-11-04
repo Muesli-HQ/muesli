@@ -163,7 +163,10 @@ final class TimeTurnerRecapModel {
         isGenerating = true
         modelLabel = MeetingTextGenerationClient.model(config)
         providerLabel = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label
+        let privacy = ContentPrivacy.shared.capture()
+        let analytics = AnalyticsAttempt(.recap, model: .summary(config))
         task = Task { [weak self] in
+            defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
             do {
                 let packet = try await Task.detached(priority: .utility) {
                     let evidence = try MeetingChatRetrieval(databaseURL: databaseURL).retrieve(question: "Daily recap",
@@ -191,7 +194,13 @@ final class TimeTurnerRecapModel {
                     timeZone: timeZone, generatedAt: Date(), provider: self.providerLabel, model: self.modelLabel,
                     insights: result, sources: packet.sources)
                 try await Task.detached(priority: .utility) {
-                    try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL)
+                    do {
+                        try ContentPrivacy.shared.beginWrite(privacy)
+                        defer { ContentPrivacy.shared.endWrite() }
+                        try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL)
+                    } catch ContentPrivacy.Failure.ephemeralContent {
+                        // A mode transition keeps the completed result in memory.
+                    }
                 }.value
                 // If navigation/cancellation occurred during the write, remove only this generation.
                 guard self.attempt == token, !Task.isCancelled else {
@@ -200,6 +209,7 @@ final class TimeTurnerRecapModel {
                     }.value
                     return
                 }
+                analytics.finish(.success)
                 self.apply(saved)
                 self.isGenerating = false
             } catch {

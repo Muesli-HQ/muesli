@@ -347,3 +347,21 @@ verified matches are available rather than claiming the history has no matches.
 Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
+
+## About privacy control
+
+About includes a Privacy card with the canonical “Disable anonymous analytics”
+switch, off by default. Use the compact SettingsRow switch and wrapping helper
+text explaining immediate local opt-out and the limit for already-sent requests.
+Keep the shared toggle accent in all themes; do not conflate this control with
+automatic issue-reporting prompts or optional hosted AI features.
+
+## Timeline privacy mode
+
+Place a compact, labelled Privacy switch with an eye-slash symbol at the trailing
+edge of the filter row below Timeline search. Use the canonical `private_mode`
+setting and shared switch accent; narrow layouts move trailing controls below the
+origin/app filters. When on, show a wrapping 12pt note: only meetings are saved,
+including recordings, while Time Turner and Cotypist are paused. The help text
+explains that existing history remains, cloud processing is unchanged, and
+anonymous events use the separate analytics preference. Default off; local only.

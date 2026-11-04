@@ -432,7 +432,7 @@ actor GemmaNativeAudioTranscriber {
             }
         }
         try Task.checkCancellation()
-        if ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_TEST"] == "1" { print("MLX_TOOL_RAW model=\(model.label) output=\(raw)") }
+        if ContentPrivacy.shared.mayLogContent && ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_TEST"] == "1" { print("MLX_TOOL_RAW model=\(model.label) output=\(raw)") }
         let response = try GemmaToolCalling.response(raw)
         log("tool_completed model=\(model.label) runtime=mlx-swift-lm constrained=true mtp=\(toolMTP) total_seconds=\(Date().timeIntervalSince(start))")
         return response

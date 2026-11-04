@@ -53,6 +53,9 @@ SoundControllerTests
 StreamingVadControllerTests
 SystemTurnNormalizerTests
 TelemetryRuntimeConfigurationTests
+TelemetryPrivacyTests
+ProductAnalyticsTests
+ProductAnalyticsModelTests
 TranscriptChatMessageTests
 TranscriptCleanupBackendOptionTests
 UpcomingMeetingsWindowTests

@@ -162,6 +162,31 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
+    @Test("Privacy keeps paste functional without saving history or monitoring corrections", arguments: [true, false])
+    @MainActor
+    func privatePasteCompletion(delivered: Bool) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var warnings: [String] = []
+        var pastes = 0
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in Issue.record("Unexpected live typing") },
+            dispatchPaste: { _ in pastes += 1; return delivered },
+            warning: { warnings.append($0) })
+        controller.dictationOutputTestHooks?.monitorCorrections = { _ in Issue.record("Private content entered correction monitoring") }
+        let privacy = ContentPrivacy(enabled: true).capture()
+        await ContentPrivacy.$session.withValue(privacy) {
+            await withCheckedContinuation { continuation in
+                controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+                controller.finishStandardFormattingForTesting("Synthetic private dictation.")
+            }
+        }
+        #expect(pastes == 1)
+        #expect(try database.recentDictations().isEmpty)
+        #expect(warnings == (delivered ? [] : ["Dictation wasn't pasted. Privacy mode kept it out of History."]))
+        #expect(board.string(forType: .string) == "original clipboard")
+    }
+
     @Test("History recovery messages reflect actual persistence for every paste completion path",
           arguments: ["standard", "buffered", "recovered"],
           ["saved/pasted", "saved/rejected", "openFailure/pasted", "openFailure/rejected", "writeFailure/pasted", "writeFailure/rejected"])

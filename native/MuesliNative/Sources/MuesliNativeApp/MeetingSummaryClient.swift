@@ -224,8 +224,10 @@ enum MeetingSummaryClient {
         guard !hasNothingToSummarize(transcript: transcript, manualNotes: manualNotesToRetain,
             visualContext: visualContext, existingNotes: existingNotes, previousMeetingNotes: previousMeetingNotes)
         else { return emptyRecordingNotes }
+        let analytics = AnalyticsAttempt(.meeting_summary, model: .summary(config))
+        defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
         let isClaudeCode = config.meetingSummaryBackend.lowercased() == MeetingSummaryBackendOption.claudeCode.backend
-        return try await withSummaryRetries(
+        let result = try await withSummaryRetries(
             maxRetries: config.meetingSummaryRetryCount,
             timeBudget: isClaudeCode ? claudeCodeSummaryTimeBudget : nil
         ) { remainingTime in
@@ -243,6 +245,8 @@ enum MeetingSummaryClient {
                 remainingSummaryTime: remainingTime
             )
         }
+        analytics.finish(.success)
+        return result
     }
 
     static func withSummaryRetries(

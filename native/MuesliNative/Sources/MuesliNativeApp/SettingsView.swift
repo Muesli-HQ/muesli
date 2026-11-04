@@ -576,7 +576,6 @@ struct SettingsView: View {
             .onChange(of: syncQRCodePresentationPhase) { _, phase in
                 guard phase == .dismiss else { return }
                 isShowingIPhoneBridgeQRCode = false
-                TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_settings"])
             }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
@@ -843,7 +842,6 @@ struct SettingsView: View {
     private func showSyncSetupQRCode(source: String) {
         isShowingIPhoneBridgeQRCode = true
         controller.beginIPhoneBridgeDeviceDiscovery()
-        TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": source])
     }
 
     private var syncFlowAction: ICloudSyncFlowAction {

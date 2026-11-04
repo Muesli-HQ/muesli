@@ -148,6 +148,9 @@ struct GlobalSearchPanel: View {
     let controller: MuesliController
     let appState: AppState
     @Environment(\.dismiss) private var dismiss
+    @State private var analyticsOpenedResult = false
+    @State private var analyticsReported = false
+    @State private var analyticsConsent: String?
     @State private var request = GlobalSearchRequest()
     @State private var model = GlobalSearchPresentation()
     @State private var opening = false
@@ -224,6 +227,13 @@ struct GlobalSearchPanel: View {
         .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textPrimary)
         .background(MuesliTheme.backgroundBase)
         .frame(width: min(780, (NSScreen.main?.visibleFrame.width ?? 900) - 80), height: 580)
+        .onAppear { analyticsConsent = ProductAnalytics.emitter.token() }
+        .onDisappear {
+            guard !analyticsReported else { return }
+            analyticsReported = true
+            ProductAnalytics.emitter.emit(.init(feature: .search, kind: .session_finished,
+                fields: [.results: ProductAnalytics.bucket(model.results.count), .opened: analyticsOpenedResult ? .yes : .no]), token: analyticsConsent)
+        }
         .task(id: request) {
             openTask?.cancel(); opening = false; preview.clear(); navigationError = nil
             var partialRetryAt = Date().addingTimeInterval(30)
@@ -327,6 +337,7 @@ struct GlobalSearchPanel: View {
                 case .missing: navigationError = "This item is no longer available."; return
                 case .unavailable: navigationError = "This item is temporarily unavailable. Try again."; return
                 }
+                analyticsOpenedResult = true
                 switch destination {
                 case .text(let text): preview.show(text, source: result); copied = false
                 case .meeting(let record):

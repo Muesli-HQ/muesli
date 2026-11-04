@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import MuesliLLM
 
@@ -11,13 +12,13 @@ enum Qwen3PostProcessorLogging {
     }
 
     static var isPairLoggingEnabled: Bool {
-        guard isVerboseEnabled else { return false }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled else { return false }
         let raw = ProcessInfo.processInfo.environment[pairLogEnv]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return raw == "1" || raw == "true" || raw == "yes"
     }
 
     static func logVerbose(_ message: @autoclosure () -> String) {
-        guard isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
         fputs("[muesli-native] \(message())\n", stderr)
     }
 }

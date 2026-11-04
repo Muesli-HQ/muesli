@@ -131,6 +131,33 @@ struct TimelineView: View {
     }
 
     private var filterBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: MuesliTheme.spacing12) {
+                    originControls
+                    Spacer(minLength: 12)
+                    privacyControl
+                    dateFilterMenu
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    originControls
+                    HStack {
+                        Spacer(minLength: 0)
+                        privacyControl
+                        dateFilterMenu
+                    }
+                }
+            }
+            if appState.privateMode {
+                Text("Only meetings are saved, including recordings. Time Turner and Cotypist are paused.")
+                    .font(MuesliTheme.font(size: 12))
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var originControls: some View {
         HStack(spacing: MuesliTheme.spacing12) {
             RecordOriginPicker(selection: Binding(
                 get: { appState.timelineOriginFilter },
@@ -144,9 +171,19 @@ struct TimelineView: View {
                 )
                 .featureTourTarget(.timelineApplications)
             }
-            Spacer(minLength: 0)
-            dateFilterMenu
         }
+    }
+
+    private var privacyControl: some View {
+        HStack(spacing: 6) {
+            Label("Privacy", systemImage: "eye.slash")
+                .font(MuesliTheme.font(size: 12, weight: .medium))
+            MuesliSettingControl(controller: controller, id: "private_mode")
+                .environment(\.muesliSettingDefinitions, [controller.privateModeDefinition()])
+        }
+        .controlSize(.small)
+        .fixedSize()
+        .help("Other new activity stays temporary; switching clears temporary chats. Existing history remains. Cloud providers still process requests. Anonymous events follow your analytics preference.")
     }
 
     private var dateFilterMenu: some View {

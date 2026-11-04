@@ -144,7 +144,9 @@ final class CotypistSetup: ObservableObject {
         guard !model.isDownloaded else { modelStates[model] = .ready; return }
         guard let release = model.release else { modelStates[model] = .unavailable; return }
         modelStates[model] = .downloading(0)
+        let analytics = AnalyticsAttempt(.model_setup, fields: [.stage: .download], model: .catalog(provider: "local", model: model.rawValue))
         modelDownloads[model] = Task { @MainActor [weak self] in
+            defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
             do {
                 // Pause cancels this task; with no one left observing, the transfer itself stops
                 // (the partial download is kept for resuming).
@@ -158,6 +160,7 @@ final class CotypistSetup: ObservableObject {
                         self?.downloadSnapshots[model] = progress
                     }
                 }
+                if model.isDownloaded { analytics.finish(.success) }
                 self?.modelStates[model] = model.isDownloaded ? .ready : .failed("The download didn't complete.")
             } catch is CancellationError {
                 self?.modelStates[model] = Self.diskState(model)
