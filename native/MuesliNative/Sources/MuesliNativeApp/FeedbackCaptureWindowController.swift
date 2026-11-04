@@ -13,7 +13,7 @@ final class FeedbackCaptureWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            window.title = "Scrawl captures"
+            window.title = "Vidshot captures"
             window.contentMinSize = NSSize(width: 540, height: 400)
             window.isReleasedWhenClosed = false
             window.delegate = self

@@ -620,6 +620,10 @@ telemetry, or automatic exports. Media lives in mode-0700
 uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
 Readers ignore unknown fields and reject unsupported versions. Future produced
 payloads must decode older slice-1 manifests without requiring those fields.
+The optional target `region` is in display-relative points and `windowID` identifies
+the selected window for the recording attempt. Older targets omit both and remain
+display captures. Neither field changes the database projection or is used to
+reacquire a window during recovery.
 
 Before capture, `unfinished.json` journals the manifest atomically. The first
 microphone host frame and first accepted video host frame are checkpointed as

@@ -324,7 +324,9 @@ extension MuesliController {
         toggle("show_hotkey_hover", "Show shortcut on floating indicator hover", \.showHotkeyOnFloatingIndicator)
         add("indicator_style", "Recording indicator style", RecordingIndicatorStyle.allCases.map {
             Choice(id: $0.rawValue, label: $0 == .classic ? "Classic floating pill" : $0.title)
-        }, read: { $0.recordingIndicatorStyle.rawValue }) { value in
+        }, read: { $0.recordingIndicatorStyle.rawValue }, unavailable: { _ in
+            self.feedbackCaptureOwnsMicrophone ? "Finish the capture before changing the recording indicator." : nil
+        }) { value in
             guard let style = RecordingIndicatorStyle(rawValue: value) else { return }
             self.updateConfig { $0.selectRecordingIndicatorStyle(style) }
             self.refreshIndicatorVisibility()
@@ -579,7 +581,7 @@ extension MuesliController {
         }
 
         toggle("transcript_cleanup", "AI transcript cleanup", \.enablePostProcessor, apply: setPostProcessorEnabled)
-        toggle("feedback_capture", "Scrawl", \.enableFeedbackCapture) { try checkShortcut(self.updateFeedbackCaptureEnabled($0)) }
+        toggle("feedback_capture", "Vidshot", \.enableFeedbackCapture) { try checkShortcut(self.updateFeedbackCaptureEnabled($0)) }
         toggle("quill", "Quill rewrite selected text", \.enableQuilMode, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateQuilModeEnabled($0)) }
         add("cleanup_source", "Cleanup source", TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }.map { .init(id: $0.backend, label: $0.label) },
             read: { TranscriptCleanupBackendOption.resolved($0.postProcessorBackend).isOnDevice ? TranscriptCleanupBackendOption.local.backend : $0.postProcessorBackend }) { value in

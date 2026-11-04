@@ -720,9 +720,9 @@ struct SettingsView: View {
             }
 
             settingsSection("Experimental") {
-                settingsRow("Scrawl") { settingsControl("feedback_capture") }
-                SettingsNote("Scrawl saves the display video and microphone narration locally. It does not save an interaction or keystroke log.")
-                compactActionButton("Open Scrawl captures…") { controller.openFeedbackCaptures() }
+                settingsRow("Vidshot") { settingsControl("feedback_capture") }
+                SettingsNote("Record a window or screen region with microphone narration. Captures stay on this Mac.")
+                compactActionButton("Open Vidshot captures…") { controller.openFeedbackCaptures() }
             }
             syncSettingsPane
 
@@ -2600,6 +2600,7 @@ struct SettingsView: View {
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
+                .disabled(controller.feedbackCaptureOwnsMicrophone)
                 .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, MuesliTheme.spacing8)
                 if appState.config.recordingIndicatorStyle == .notch {

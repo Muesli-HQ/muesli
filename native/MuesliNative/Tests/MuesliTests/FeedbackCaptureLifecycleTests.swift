@@ -45,6 +45,13 @@ final class FeedbackMicrophoneFixture: StreamingDictationRecording, MicrophoneCa
     func drainAcceptedAudio() {}
 }
 
+@MainActor
+private final class FeedbackPickerFixture: FeedbackCaptureSelecting {
+    var completion: ((FeedbackCaptureTarget?) -> Void)?
+    func show(completion: @escaping (FeedbackCaptureTarget?) -> Void) { self.completion = completion }
+    func cancel() { completion?(nil) }
+}
+
 @Suite("Scrawl lifecycle", .serialized)
 @MainActor
 struct FeedbackCaptureLifecycleTests {
@@ -57,6 +64,25 @@ struct FeedbackCaptureLifecycleTests {
     }
 
     let granted = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: true)
+
+    @Test func cancellingSelectionDoesNotCreateMediaAndRejectsLateSelection() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            let picker = FeedbackPickerFixture()
+            let mic = FeedbackMicrophoneFixture()
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
+                pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
+                    try attempt.install(device: device, microphone: mic)
+                }, observeSystem: false, pickerFactory: { picker }, selectionPermissions: { granted })
+            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+            #expect(controller.hasAttempt)
+            controller.finish()
+            #expect(!controller.hasAttempt)
+            #expect(!controller.ownsMicrophone)
+            picker.completion?(feedbackTarget()) // A retired picker may never start a capture.
+            #expect(mic.starts == 0)
+            #expect((try? store.list())?.isEmpty == true)
+        }
+    }
 
     @Test func delayedPreparationKeepsRecordingClockDistinctFromAdmission() async throws {
         // Match AppKit's common modes in this test host, which never runs NSApplication.run().

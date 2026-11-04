@@ -674,7 +674,7 @@ public final class MuesliController: NSObject {
     private func feedbackCaptureConflict(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult? {
         guard config.enableFeedbackCapture,
               ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(hotkey, config.feedbackCaptureHotkey) else { return nil }
-        return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Scrawl", hotkey: config.feedbackCaptureHotkey))
+        return .conflict(message: ShortcutHotkeyPolicy.conflictMessage(with: "Vidshot", hotkey: config.feedbackCaptureHotkey))
     }
     private func validateFeedbackCaptureShortcut(_ hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         let result = ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(hotkey, config: config)

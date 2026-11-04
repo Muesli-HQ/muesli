@@ -13,6 +13,7 @@ struct FeedbackCapturePillView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            VidshotIcon().frame(width: 14, height: 14)
             switch state {
             case .preparing, .processing:
                 ProgressView().controlSize(.small)
@@ -43,7 +44,7 @@ struct FeedbackCapturePillView: View {
                 }
             }
         }
-        .font(.system(size: 12, weight: .medium)).buttonStyle(.plain)
+        .font(MuesliTheme.font(size: 12, weight: .medium)).buttonStyle(.plain)
         .padding(.horizontal, 14).padding(.vertical, 10)
         .foregroundStyle(.white)
         .background(.black, in: Capsule())

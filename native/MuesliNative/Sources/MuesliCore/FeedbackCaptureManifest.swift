@@ -22,8 +22,14 @@ public struct FeedbackCaptureTarget: Codable, Equatable, Sendable {
     public let displayId: UInt32
     public let frame: Frame
     public let appName: String
-    public init(displayId: UInt32, frame: Frame, appName: String) {
-        mode = "display"; self.displayId = displayId; self.frame = frame; self.appName = appName
+    /// Region coordinates are relative to the display's top-left in points.
+    public let region: Frame?
+    public let windowID: UInt32?
+    public init(displayId: UInt32, frame: Frame, appName: String,
+                region: Frame? = nil, windowID: UInt32? = nil) {
+        mode = windowID != nil ? "window" : (region != nil ? "region" : "display")
+        self.displayId = displayId; self.frame = frame; self.appName = appName
+        self.region = region; self.windowID = windowID
     }
 }
 

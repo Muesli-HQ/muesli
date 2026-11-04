@@ -22,7 +22,7 @@ enum FeedbackCapturePillState: Equatable {
     }
     var title: String {
         switch self {
-        case .preparing: "Preparing Scrawl"
+        case .preparing: "Preparing Vidshot"
         case .recording(let seconds, _): String(format: "%d:%02d", seconds / 60, seconds % 60)
         case .discardConfirmation: "Discard?"
         case .processing: "Processing"
@@ -30,7 +30,7 @@ enum FeedbackCapturePillState: Equatable {
         case .recovered: "Recovered"
         case .copied(let partial): "Copied" + (partial.map { " · \($0)" } ?? "")
         case .readyToCopy(let partial): "Ready · Copy" + (partial.map { " · \($0)" } ?? "")
-        case .blocked(let permission): "Scrawl needs \(permission)"
+        case .blocked(let permission): "Vidshot needs \(permission)"
         case .busy(let activity): "\(activity) first"
         case .failed(let stage, let message, _): "\(stage) failed: \(message)"
         }

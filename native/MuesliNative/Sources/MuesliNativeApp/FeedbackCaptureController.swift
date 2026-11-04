@@ -214,6 +214,11 @@ final class FeedbackCaptureController {
     var onMicrophoneReleased: (() -> Void)?
     var onAdmissionReset: (() -> Void)?
     private var attempt: FeedbackCaptureAttempt?
+    private var picker: (any FeedbackCaptureSelecting)?
+    private var selectionStartedAt: Date?
+    private let makePicker: @MainActor () -> any FeedbackCaptureSelecting
+    private let usePicker: Bool
+    private let selectionPermissions: @MainActor () -> InteractionPermissionSnapshot
     private var startTask: Task<Void, Never>?
     private var startupDeadline: Task<Void, Never>?
     private var dismissal: Task<Void, Never>?
@@ -232,8 +237,8 @@ final class FeedbackCaptureController {
     private let openCapture: (@MainActor (String?) -> Void)?
     private let now: () -> Date
     private let repairAudio: @Sendable (URL) throws -> Int64?
-    var hasAttempt: Bool { attempt != nil }
-    var admittedAt: Date? { attempt.flatMap { $0.isCurrent ? $0.admittedAt : nil } }
+    var hasAttempt: Bool { attempt != nil || picker != nil }
+    var admittedAt: Date? { attempt.flatMap { $0.isCurrent ? $0.admittedAt : nil } ?? selectionStartedAt }
 
     init(databaseURL: URL, supportDirectory: URL,
          pointerTarget: @escaping @MainActor () -> FeedbackCaptureTarget? = FeedbackCaptureController.pointerDisplayTarget,
@@ -242,7 +247,12 @@ final class FeedbackCaptureController {
          startupTimeout: Duration = .seconds(8), now: @escaping () -> Date = Date.init,
          observeSystem: Bool = true, dismissalDelay: Duration = .seconds(25),
          openCapture: (@MainActor (String?) -> Void)? = nil, waiterTimeout: Duration = .seconds(8),
-         repairAudio: @escaping @Sendable (URL) throws -> Int64? = { try WavWriter.repairIncrementalWAV(at: $0) }) {
+         repairAudio: @escaping @Sendable (URL) throws -> Int64? = { try WavWriter.repairIncrementalWAV(at: $0) },
+         pickerFactory: (@MainActor () -> any FeedbackCaptureSelecting)? = nil,
+         selectionPermissions: @escaping @MainActor () -> InteractionPermissionSnapshot = { .captureSystemSnapshot() }) {
+        self.makePicker = pickerFactory ?? { FeedbackCapturePicker() }
+        self.usePicker = prepareScreen == nil || pickerFactory != nil
+        self.selectionPermissions = selectionPermissions
         self.repairAudio = repairAudio
         self.waiterTimeout = waiterTimeout
         self.dismissalDelay = dismissalDelay; self.openCapture = openCapture
@@ -301,16 +311,32 @@ final class FeedbackCaptureController {
     static func displayTarget(_ original: FeedbackCaptureTarget) -> FeedbackCaptureTarget? {
         NSScreen.screens.compactMap { target(screen: $0, appName: original.appName) }.first { $0.displayId == original.displayId }
     }
-    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?) -> Bool {
+    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?,
+               selectedTarget: FeedbackCaptureTarget? = nil) -> Bool {
         if let permission = FeedbackCaptureAdmission.missingPermission(permissions) {
             present(.blocked(permission: permission)); return false
         }
-        guard attempt == nil else {
+        guard attempt == nil, picker == nil else {
             if !ownsMicrophone { onStateChanged?(.busy(activity: "Wait for feedback processing")) }
             return false
         }
         if let busyActivity { present(.busy(activity: busyActivity)); return false }
-        guard let store, let target = pointerTarget() else {
+        if usePicker, selectedTarget == nil {
+            let picker = makePicker()
+            self.picker = picker; selectionStartedAt = now(); ownsMicrophone = true
+            picker.show { [weak self, weak picker] target in
+                guard let self, self.picker === picker else { return }
+                self.picker = nil; self.selectionStartedAt = nil; self.ownsMicrophone = false
+                guard let target else {
+                    self.present(nil); self.onAdmissionReset?(); self.onMicrophoneReleased?(); return
+                }
+                if !self.start(permissions: self.selectionPermissions(), busyActivity: nil, device: device, selectedTarget: target) {
+                    self.onAdmissionReset?(); self.onMicrophoneReleased?()
+                }
+            }
+            return true
+        }
+        guard let store, let target = selectedTarget ?? pointerTarget() else {
             present(.failed(stage: "Preparation", message: errorMessage ?? "Display unavailable", retainedMedia: false)); return false
         }
         let capture = FeedbackCaptureAttempt(target: target, store: store, now: now())
@@ -334,11 +360,30 @@ final class FeedbackCaptureController {
                           let ownApp = content.applications.first(where: { $0.processID == ProcessInfo.processInfo.processIdentifier }) else {
                         throw ScreenVideoRecorder.error("Cannot exclude Muesli from this display")
                     }
-                    guard self.currentTarget(capture) == target else { throw ScreenVideoRecorder.error("Display geometry changed") }
+                    guard let current = self.currentTarget(capture), current.displayId == target.displayId,
+                          current.frame == target.frame else { throw ScreenVideoRecorder.error("Display geometry changed") }
                     try await capture.prepareResources(device: device())
                     guard capture.isCurrent else { return }
-                    let filter = SCContentFilter(display: display, excludingApplications: [ownApp], exceptingWindows: [])
-                    try await capture.video!.start(filter: filter, width: display.width, height: display.height)
+                    let filter: SCContentFilter
+                    let width: Int, height: Int
+                    var sourceRect: CGRect?
+                    if let windowID = target.windowID {
+                        guard let window = content.windows.first(where: { $0.windowID == windowID }),
+                              window.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier else {
+                            throw ScreenVideoRecorder.error("Selected window is no longer available")
+                        }
+                        filter = SCContentFilter(desktopIndependentWindow: window)
+                        width = Int((window.frame.width * target.frame.scale).rounded())
+                        height = Int((window.frame.height * target.frame.scale).rounded())
+                    } else {
+                        filter = SCContentFilter(display: display, excludingApplications: [ownApp], exceptingWindows: [])
+                        if let region = target.region {
+                            sourceRect = CGRect(x: region.x, y: region.y, width: region.width, height: region.height)
+                            width = Int((region.width * Double(display.width) / target.frame.width).rounded())
+                            height = Int((region.height * Double(display.height) / target.frame.height).rounded())
+                        } else { width = display.width; height = display.height }
+                    }
+                    try await capture.video!.start(filter: filter, width: width, height: height, sourceRect: sourceRect)
                 }
                 guard self.attempt === capture, capture.isCurrent else { return }
                 try await capture.startMicrophone()
@@ -393,6 +438,7 @@ final class FeedbackCaptureController {
         else { present(.discardConfirmation(seconds: 0, deadMicrophone: attempt?.meter(now: Date()).0 ?? true)) }
     }
     func finish(discard: Bool = false) {
+        if let picker { picker.cancel(); return }
         guard let capture = attempt, capture.isCurrent else { return }
         let changeCount = NSPasteboard.general.changeCount
         capture.finishAdmission(); onAdmissionReset?()

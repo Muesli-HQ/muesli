@@ -262,7 +262,7 @@ struct ShortcutsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Scrawl").font(MuesliTheme.headline())
+                    Text("Vidshot").font(MuesliTheme.headline())
                     Text("Release to record the display under the pointer. Press again to finish.")
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                 }

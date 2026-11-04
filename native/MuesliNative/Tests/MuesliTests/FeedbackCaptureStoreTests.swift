@@ -45,6 +45,21 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Scrawl storage")
 struct FeedbackCaptureStoreTests {
+    @Test func selectedTargetsRoundTripAndOlderTargetsRemainReadable() throws {
+        let original = feedbackTarget()
+        let region = FeedbackCaptureTarget.Frame(x: 20, y: 30, width: 400, height: 250, scale: 2)
+        for target in [
+            FeedbackCaptureTarget(displayId: original.displayId, frame: original.frame, appName: original.appName, region: region),
+            FeedbackCaptureTarget(displayId: original.displayId, frame: original.frame, appName: original.appName, windowID: 123)
+        ] {
+            #expect(try JSONDecoder().decode(FeedbackCaptureTarget.self, from: JSONEncoder().encode(target)) == target)
+        }
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        legacy.removeValue(forKey: "region"); legacy.removeValue(forKey: "windowID")
+        let decoded = try JSONDecoder().decode(FeedbackCaptureTarget.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(decoded == original)
+        #expect(decoded.mode == "display")
+    }
     @Test func manifestVersionAndUnknownFields() throws {
         var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
         m.microphoneStartFrame = 32_000; m.videoStartFrame = 36_000; m.alignClocks()

@@ -53,8 +53,9 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         return writer
     }
 
-    func start(filter: SCContentFilter, width: Int, height: Int) async throws {
+    func start(filter: SCContentFilter, width: Int, height: Int, sourceRect: CGRect? = nil) async throws {
         let config = SCStreamConfiguration()
+        if let sourceRect { config.sourceRect = sourceRect }
         config.width = max(2, width / 2 * 2)
         config.height = max(2, height / 2 * 2)
         config.minimumFrameInterval = CMTime(value: 1, timescale: 15)

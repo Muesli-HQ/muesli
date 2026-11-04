@@ -61,7 +61,7 @@ struct FeedbackCaptureView: View {
                         .disabled(loading || activeWriter)
                 }
             } else if !loading {
-                ContentUnavailableView("No Scrawl captures", systemImage: "video", description: Text("Enable Scrawl in General settings, then release your shortcut to record."))
+                ContentUnavailableView("No Vidshots", systemImage: "video", description: Text("Enable Vidshot in General settings, then select a window or region to record."))
             }
             if let state = controller.state, controller.hasAttempt { Text(state.title).foregroundStyle(.secondary) }
             if let message { Text(message).foregroundStyle(.orange) }
