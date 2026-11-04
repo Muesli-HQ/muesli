@@ -392,6 +392,7 @@ jobs:
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
   m5-tests:
+    name: m5-tests ${{ github.sha }}
     needs: changes
     if: needs.changes.outputs.self_host == 'true' && needs.changes.outputs.native_or_packaging == 'true'
     runs-on: ubuntu-latest

@@ -6,7 +6,7 @@ on:
 permissions: {}
 jobs:
   dispatch:
-    if: vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.actor.login == 'pHequals7' && github.event.workflow_run.triggering_actor.login == 'pHequals7' && github.event.workflow_run.head_repository.full_name == github.repository
+    if: vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.actor.login == 'pHequals7' && github.event.workflow_run.triggering_actor.login == 'pHequals7' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 44
     environment: m5-dispatch
@@ -32,20 +32,23 @@ jobs:
             .head.repo.full_name == "Muesli-HQ/muesli" and .head.sha == $head and
             any(.labels[]; .name == "self-host") and all(.labels[]; .name != "ci:blacksmith")' <<< "$data" >/dev/null || exit 0
           head=$(jq -r .head.sha <<< "$data")
-          merge=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$pr/merge" --jq .object.sha)
-          [[ "$merge" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$merge" --jq '.parents[1].sha')" == "$head" ]]
           # Ignore unrelated-label and docs-only runs. Dispatch only for a live waiting job.
           for ((i=0; i<40; i++)); do
-            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq '.jobs[] | select(.name == "m5-tests") | .status')
+            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq '.jobs[] | select(.name | startswith("m5-tests ")) | [.status,.name] | @tsv')
+            state=${job%%$'\t'*}
             [[ "$state" == in_progress ]] && break
             [[ "$state" == completed ]] && exit 0
             sleep 10
           done
           [[ "$state" == in_progress ]] || exit 0
+          merge=${job##* }
+          [[ "$merge" =~ ^[0-9a-f]{40}$ ]]
           context="m5/$RUN/$ATTEMPT/$merge"
           status() { gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head" -f state="$1" -f context="$context" >/dev/null; }
           trap 'status failure' ERR
+          # A queued/rerun request for an obsolete merge fails immediately.
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/pull/$pr/merge" --jq .object.sha)" == "$merge" ]] || { status failure; exit 1; }
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$merge" --jq '.parents[1].sha')" == "$head" ]] || { status failure; exit 1; }
           status pending
           repo=Muesli-HQ/muesli-private-ci
           private() { GH_TOKEN="$PRIVATE_TOKEN" gh "$@"; }
