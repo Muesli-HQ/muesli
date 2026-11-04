@@ -8,6 +8,7 @@ struct OnboardingView: View {
     let appState: AppState
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var analytics: AnalyticsAttempt?
     @State private var currentStep: Int
     @State private var userName: String
     @State private var selectedUseCase: OnboardingUseCase
@@ -223,9 +224,24 @@ struct OnboardingView: View {
         .background(MuesliTheme.backgroundBase)
         .preferredColorScheme(.dark)
         .onAppear {
+            if analytics == nil { analytics = AnalyticsAttempt(.onboarding) }
             saveProgress(atStep: currentStep)
         }
-        .onChange(of: currentStep) { _, step in
+        .onDisappear { analytics?.finish(controller.appState.config.hasCompletedOnboarding ? .success : .cancelled); analytics = nil }
+        .onChange(of: currentStep) { previous, step in
+            if step > previous {
+                let stage: AnalyticsValue
+                switch OnboardingFlow.Step(rawValue: previous) {
+                case .welcome: stage = .welcome
+                case .model: stage = .models
+                case .permissions, .calendarAccess: stage = .permission
+                case .hotkey: stage = .setup
+                case .dictationTest: stage = .capture
+                case .meetingSummary: stage = .generation
+                case nil: stage = .unknown
+                }
+                ProductAnalytics.event(.onboarding, .step_finished, outcome: .success, fields: [.stage: stage])
+            }
             saveProgress(atStep: step)
         }
         .onChange(of: userName) { _, _ in

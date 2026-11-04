@@ -68,6 +68,7 @@ struct MeetingExporter {
                 if formatPicker.selectedFormat == .pdf {
                     do {
                         try writePDF(attributed: buildAttributedString(from: markdown), to: url)
+                        ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                         NSWorkspace.shared.open(url)
                     } catch {
                         showError("Export Failed", error.localizedDescription)
@@ -152,6 +153,7 @@ struct MeetingExporter {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try text.write(to: url, atomically: true, encoding: .utf8)
+                ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                 DispatchQueue.main.async { NSWorkspace.shared.open(url) }
             } catch {
                 DispatchQueue.main.async { showError("Export Failed", error.localizedDescription) }

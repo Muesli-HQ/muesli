@@ -208,7 +208,7 @@ enum ChatGPTResponsesClient {
             let message = extractErrorMessage(from: errorData)
                 ?? String(data: errorData, encoding: .utf8)
                 ?? "(unknown)"
-            fputs("[\(logCategory)] ChatGPT Responses: HTTP \(httpStatus): \(String(message.prefix(500)))\n", stderr)
+            fputs("[\(logCategory)] ChatGPT Responses: HTTP \(httpStatus)\n", stderr)
             throw ChatGPTResponsesError.backendFailed(statusCode: httpStatus, message: message)
         }
 

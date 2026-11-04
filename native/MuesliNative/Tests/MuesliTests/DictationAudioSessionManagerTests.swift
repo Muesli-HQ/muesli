@@ -614,6 +614,13 @@ struct DictationAudioSessionManagerTests {
     func delayedRouteRefreshDoesNotArmActivateHeadphoneRoute() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
+        let cancelled = DispatchSemaphore(value: 0)
+        harness.manager.onEvent = { event in
+            if case .latency("route_refresh_cancelled:idle_routeChange", _) = event {
+                cancelled.signal()
+            }
+        }
+
         harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), delay: 0.2, canWarmUp: true)
         harness.manager.arm(source: "hotkey")
         harness.wait()
@@ -622,16 +629,10 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.warmUpCalls == 0)
 
-        Thread.sleep(forTimeInterval: 0.25)
+        #expect(cancelled.wait(timeout: .now() + 5) == .success)
         harness.wait()
-
         #expect(harness.recorder.warmUpCalls == 0)
-        #expect(harness.events.contains { event in
-            if case .latency(let name, _) = event {
-                return name == "route_refresh_cancelled:idle_routeChange"
-            }
-            return false
-        })
+        #expect(harness.recorder.activateCalls == 0)
     }
 
     @Test("recorder callbacks emit stream active, speech detected, and no audio timeout")

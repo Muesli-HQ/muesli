@@ -224,8 +224,10 @@ enum MeetingSummaryClient {
         guard !hasNothingToSummarize(transcript: transcript, manualNotes: manualNotesToRetain,
             visualContext: visualContext, existingNotes: existingNotes, previousMeetingNotes: previousMeetingNotes)
         else { return emptyRecordingNotes }
+        let analytics = AnalyticsAttempt(.meeting_summary, model: .summary(config))
+        defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
         let isClaudeCode = config.meetingSummaryBackend.lowercased() == MeetingSummaryBackendOption.claudeCode.backend
-        return try await withSummaryRetries(
+        let result = try await withSummaryRetries(
             maxRetries: config.meetingSummaryRetryCount,
             timeBudget: isClaudeCode ? claudeCodeSummaryTimeBudget : nil
         ) { remainingTime in
@@ -243,6 +245,8 @@ enum MeetingSummaryClient {
                 remainingSummaryTime: remainingTime
             )
         }
+        analytics.finish(.success)
+        return result
     }
 
     static func withSummaryRetries(
@@ -1746,31 +1750,17 @@ enum MeetingSummaryClient {
                 fputs("[summary] title generation: invalid JSON response\n", stderr)
                 return nil
             }
-            if let error = json["error"] as? [String: Any] {
-                if customLLM {
-                    fputs("[summary] Custom LLM title generation failed\n", stderr)
-                } else {
-                    fputs("[summary] title generation error: \(error["message"] ?? error)\n", stderr)
-                }
+            if json["error"] is [String: Any] {
+                fputs("[summary] title generation returned a provider error\n", stderr)
                 return nil
             }
             // Try chat completions format first, then responses API format
             let result = (extractOpenRouterText(from: json) ?? extractOpenAIText(from: json))?
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
-            if result == nil {
-                if customLLM {
-                    fputs("[summary] Custom LLM title generation returned no title\n", stderr)
-                } else {
-                    let choices = json["choices"] as? [[String: Any]] ?? []
-                    let firstChoice = choices.first ?? [:]
-                    let message = firstChoice["message"] as? [String: Any] ?? [:]
-                    fputs("[summary] title generation: nil. message keys: \(message.keys.sorted()), content type: \(type(of: message["content"] as Any)), content: \(String(describing: message["content"]).prefix(300))\n", stderr)
-                }
-            }
-            fputs("[summary] generated title: \(result ?? "(nil)")\n", stderr)
+            if result == nil { fputs("[summary] title generation returned no title\n", stderr) }
             return result
         } catch {
-            fputs("[summary] title generation failed: \(error)\n", stderr)
+            fputs("[summary] title generation failed: \(type(of: error))\n", stderr)
             return nil
         }
     }
@@ -1819,7 +1809,7 @@ enum MeetingSummaryClient {
             return extractAnthropicText(from: json)?
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
         } catch {
-            fputs("[summary] Anthropic title generation failed: \(error)\n", stderr)
+            fputs("[summary] Anthropic title generation failed: \(type(of: error))\n", stderr)
             return nil
         }
     }
@@ -1836,10 +1826,9 @@ enum MeetingSummaryClient {
             )
             let title = result.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
             guard !title.isEmpty else { return nil }
-            fputs("[summary] ChatGPT generated title: \(title)\n", stderr)
             return title
         } catch {
-            fputs("[summary] ChatGPT title generation failed: \(error)\n", stderr)
+            fputs("[summary] ChatGPT title generation failed: \(type(of: error))\n", stderr)
             return nil
         }
     }
@@ -1964,13 +1953,9 @@ enum MeetingSummaryClient {
                 fputs("[summary] Ollama title generation: trimmed response is empty\n", stderr)
                 return nil
             }
-            fputs("[summary] Ollama generated title: \(title)\n", stderr)
             return title
-        } catch let error as MeetingSummaryError {
-            fputs("[summary] Ollama title generation failed: \(error.localizedDescription)\n", stderr)
-            return nil
         } catch {
-            fputs("[summary] Ollama title generation failed: \(error)\n", stderr)
+            fputs("[summary] Ollama title generation failed: \(type(of: error))\n", stderr)
             return nil
         }
     }

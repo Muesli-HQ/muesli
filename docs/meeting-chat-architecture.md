@@ -84,6 +84,18 @@ This host uses Xcode 27 / Swift 6.4, newer than the documented CI toolchain. Aut
 
 Live synthetic follow-up checks with no current sources returned `conversation` for a rewrite and `insufficient_evidence` for an unsupported new meeting deadline. These checks used invented release-discussion text, not the user’s meeting archive.
 
+
+## Privacy mode
+
+Private conversations retain their sessions, turns, drafts, evidence links and
+retrieval caches only in RAM. The main meeting database is opened read-only;
+TEMP tables use `temp_store=MEMORY` and shadow only chat/index tables. The stored
+meeting sources remain current, and dependency validation/invalidation still
+applies. Switching privacy mode cancels the old coordinator and drops the
+in-memory workspace. Epoch-specific workspaces keep late callbacks from touching
+a new private conversation. No private conversation is promoted to durable
+history when the switch is turned off.
+
 ## Original-file attachments
 
 The paperclip sits on the right of the bottom controls row, immediately before

@@ -1152,6 +1152,25 @@
   </div>
   <p class="pattern-note">Recap screenshot citations show actual 144×90pt image previews above their timestamp, with 6pt padding and 10pt corners. They open the matching History capture. Previews resolve the current media location after compaction; expired screenshots show a compact explicit state while retained text stays accessible. Meeting citations remain text links. Search shows progress while results load, rather than an empty-history message.</p>
 
+  <h3>About · Privacy</h3>
+  <div style="padding:20px;border:1px solid var(--border);border-radius:12px;max-width:620px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:20px;font-size:14px">
+      <span>Disable anonymous analytics</span>
+      <span role="img" aria-label="Switch off by default" style="flex:none;width:32px;height:20px;border-radius:10px;background:var(--border);padding:2px"><span style="display:block;width:16px;height:16px;border-radius:50%;background:var(--text-secondary)"></span></span>
+    </div>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:12px">Stops anonymous usage and error analytics from being sent to TelemetryDeck. Applies immediately on this Mac. Requests already sent cannot be recalled.</p>
+  </div>
+  <p class="pattern-note">Use the shared compact switch, off by default, and wrapping helper text. The privacy preference is separate from automatic issue-reporting prompts. The enabled switch retains the saved accent in Ultra Dark.</p>
+
+  <h3>Timeline Privacy Mode</h3>
+  <div class="settings-card">
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:12px">
+      <label style="font-size:12px">Privacy <input type="checkbox" role="switch" aria-label="Privacy mode" style="accent-color:var(--accent)"></label>
+    </div>
+    <p class="pattern-note">Of new activity on this Mac, only meetings and their recordings are saved. Time Turner and Cotypist are paused.</p>
+  </div>
+  <p class="pattern-note">The native switch sits beside Timeline filters below search, wrapping onto a trailing second row at narrow widths. Default off; use the saved switch accent in every theme. Anonymous analytics has its own independent control.</p>
+
   <h3>What's New in muesli 0.8.6</h3>
   <div class="component-preview" style="max-width:380px;display:block;padding:20px;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)">
     <div style="display:flex;align-items:center;gap:12px">

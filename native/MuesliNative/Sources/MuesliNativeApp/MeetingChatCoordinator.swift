@@ -332,6 +332,7 @@ final class MeetingChatCoordinator {
     private(set) var pendingChatMutations: [UUID: MeetingChatPendingMutation] = [:]
     var isLoadingConversation: Bool { selectedSessionID != nil && turnsSessionID != selectedSessionID }
     private(set) var selectedSessionID: UUID?
+    @ObservationIgnored private var privacyGeneration = 0
     private(set) var activeRequestID: UUID?
     private(set) var activeTurnID: UUID?
     private var activeSessionID: UUID?
@@ -746,7 +747,10 @@ final class MeetingChatCoordinator {
         activeSessionID = id
         do {
             let requestConfig = config
+            let savingGeneration = privacyGeneration
             try await worker.setFiles(sessionID: id, files: files)
+            // Stop preserves the submitted turn as stopped; a privacy transition discards it.
+            guard savingGeneration == privacyGeneration, !Task.isCancelled else { return }
             let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID, files: files)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
@@ -813,18 +817,27 @@ final class MeetingChatCoordinator {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: turn.attemptID)
                 await refreshHistory(); return
             }
-            launch(turn, config: requestConfig, isDraft: turn.isDraft, contextWindowTokens: contextWindowTokens)
+            launch(turn, config: requestConfig, isDraft: turn.isDraft, contextWindowTokens: contextWindowTokens, attemptKind: .retry)
             await refreshHistory()
         } catch {
             if activeRequestID == reservation { activeRequestID = nil; phase = ""; errorMessage = error.localizedDescription }
         }
     }
-    private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool, contextWindowTokens: Int? = nil, preparedAttachments: PreparedChatFiles? = nil) {
+    private func launch(_ turn: MeetingChatTurn, config: AppConfig, isDraft: Bool, contextWindowTokens: Int? = nil, preparedAttachments: PreparedChatFiles? = nil, attemptKind: AnalyticsValue = .initial) {
         cancelTitle(sessionID: turn.sessionID)
         let requestID = turn.attemptID ?? UUID(); activeRequestID = requestID; activeTurnID = turn.id; activeSessionID = turn.sessionID; phase = "Finding meeting context"
         activities = []; reasoningSummaries = []; reasoningIsStreaming = false; activityTurnID = turn.id; activitySessionID = turn.sessionID
         let worker = worker; let unpreparedGenerator = generator
+        let scope: AnalyticsValue
+        switch turn.scope.selection {
+        case .all: scope = .all
+        case .folder: scope = .selected
+        case .meetings(let ids): scope = ids.isEmpty ? .none : .selected
+        }
+        let analytics = AnalyticsAttempt(.chat, fields: [.scope: scope, .attempt_kind: attemptKind], model: .summary(config))
         tasks[requestID] = Task {
+            var analyticsOutcome: AnalyticsOutcome = .cancelled
+            defer { analytics.finish(analyticsOutcome) }
             defer {
                 tasks.removeValue(forKey: requestID)
                 if activeRequestID == requestID { activeRequestID = nil; activeTurnID = nil; activeSessionID = nil; phase = ""; reasoningIsStreaming = false }
@@ -924,8 +937,10 @@ final class MeetingChatCoordinator {
                 guard activeRequestID == requestID else { return }
                 guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft, documentCoverage: attachments.documentCoverage) else { throw MeetingChatError.sourceChanged }
                 guard activeRequestID == requestID, !Task.isCancelled else { return }
+                analyticsOutcome = answer.insufficientEvidence ? .partial : .success
                 if !answer.insufficientEvidence { scheduleTitle(turn: turn, config: config) }
             } catch {
+                analyticsOutcome = Task.isCancelled || error is CancellationError ? .cancelled : .failed
                 guard activeRequestID == requestID else { return }
                 let stopped = Task.isCancelled || error is CancellationError
                 let message = stopped ? nil : Self.failureMessage(error)
@@ -989,6 +1004,21 @@ final class MeetingChatCoordinator {
         }
         return "Meeting AI request failed. Please retry or check your connection settings."
     }
+    func discardForPrivacyTransition() {
+        privacyGeneration &+= 1
+        activeRequestID = nil
+        activeTurnID = nil
+        activeSessionID = nil
+        submittedFileDraft = nil
+        filePreparation?.task.cancel()
+        filePreparation = nil
+        for task in tasks.values { task.cancel() }
+        for task in titleTasks.values { task.cancel() }
+        initialization?.cancel(); historyLoad?.cancel()
+        tasks.removeAll(); titleTasks.removeAll()
+        sessions = []; turns = []; turnsSessionID = nil
+    }
+
     func stop() {
         submittedFileDraft = nil
         filePreparation?.task.cancel(); filePreparation = nil

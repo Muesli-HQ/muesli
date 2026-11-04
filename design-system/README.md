@@ -381,6 +381,23 @@ Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
 
+## About privacy control
+
+About includes a Privacy card with the canonical “Disable anonymous analytics”
+switch, off by default. Use the compact SettingsRow switch and wrapping helper
+text explaining immediate local opt-out and the limit for already-sent requests.
+Keep the shared toggle accent in all themes; do not conflate this control with
+automatic issue-reporting prompts or optional hosted AI features.
+
+## Timeline privacy mode
+
+Place a compact, labelled Privacy switch with an eye-slash symbol at the trailing
+edge of the filter row below Timeline search. Use the canonical `private_mode`
+setting and shared switch accent; narrow layouts move trailing controls below the
+origin/app filters. When on, show a wrapping 12pt note: only meetings and their recordings are retained from new activity on this Mac, while Time Turner and Cotypist are paused. The help text
+explains that history from other devices still syncs and
+anonymous events use the separate analytics preference. Default off; local only.
+
 ### Chat meeting context
 
 The composer uses “Choose meetings” when no meeting is selected. The scope picker

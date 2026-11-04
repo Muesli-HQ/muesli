@@ -233,7 +233,6 @@ struct IPhoneBridgeCard: View {
         .onAppear {
             guard !promptSeen else { return }
             promptSeen = true
-            TelemetryDeck.signal("bridge_prompt_seen", parameters: ["platform": "macos"])
         }
         .sheet(isPresented: $isQRCodePresented, onDismiss: {
             controller.cancelIPhoneBridgeDeviceDiscovery()
@@ -247,7 +246,6 @@ struct IPhoneBridgeCard: View {
         .onChange(of: qrCodePresentationPhase) { _, phase in
             guard phase == .dismiss else { return }
             isQRCodePresented = false
-            TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_timeline"])
         }
         .alert("Reconnect iCloud sync?", isPresented: $isReconnectConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
@@ -463,12 +461,10 @@ struct IPhoneBridgeCard: View {
         switch flowAction {
         case .setUp, .continueSetup:
             isQRCodePresented = true
-            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos_setup"])
             controller.beginIPhoneBridgeDeviceDiscovery()
             controller.enableIPhoneBridgeSync()
         case .connectDevice:
             isQRCodePresented = true
-            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos"])
             controller.beginIPhoneBridgeDeviceDiscovery()
         case .waitingForDevice:
             break

@@ -110,7 +110,8 @@ struct RecordingUXTests {
     func liveTranscriptViewport(width: Double) async throws {
         let transcript = (0..<60).map { "[00:\($0)] You: Caption \($0) with enough text to wrap on a narrow window." }.joined(separator: "\n")
         let input = TranscriptTestInput(transcript: transcript)
-        let host = NSHostingView(rootView: TranscriptTestView(input: input))
+        let presentation = LiveTranscriptPresentationModel()
+        let host = NSHostingView(rootView: TranscriptTestView(input: input, presentation: presentation))
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: width, height: 400),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -131,17 +132,26 @@ struct RecordingUXTests {
         scroll.reflectScrolledClipView(scroll.contentView)
         try await settle()
         let before = scroll.contentView.bounds.origin
-        let heightBefore = try #require(scroll.documentView).frame.height
+        try #require(presentation.transcript == transcript)
         #expect(before.y > 24)
         let expanded = transcript + "\n[01:01] Others: Newly arrived caption."
         input.transcript = expanded
         input.partial = "More speech arriving"
         try await settle()
         #expect(abs(scroll.contentView.bounds.origin.y - before.y) < 1)
-        #expect(abs(try #require(scroll.documentView).frame.height - heightBefore) < 1)
+        // LazyVStack can refine its estimated height as wrapped rows are measured.
+        // The reader should keep the same captions and scroll position.
+        #expect(presentation.transcript == transcript)
+        #expect(presentation.partialYou.isEmpty)
         scroll.contentView.scroll(to: .zero)
         scroll.reflectScrolledClipView(scroll.contentView)
         try await settle()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while presentation.transcript != expanded && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(presentation.transcript == expanded)
+        #expect(presentation.partialYou == input.partial)
         #expect(abs(scroll.contentView.bounds.origin.y) < 1)
     }
 
@@ -202,7 +212,8 @@ private final class TranscriptTestInput: ObservableObject {
 
 private struct TranscriptTestView: View {
     @ObservedObject var input: TranscriptTestInput
+    let presentation: LiveTranscriptPresentationModel
     var body: some View {
-        LiveTranscriptView(transcript: input.transcript, partialYou: input.partial)
+        LiveTranscriptView(transcript: input.transcript, partialYou: input.partial, presentation: presentation)
     }
 }

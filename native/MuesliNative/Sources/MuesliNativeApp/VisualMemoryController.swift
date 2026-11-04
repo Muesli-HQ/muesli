@@ -454,6 +454,12 @@ final class VisualMemoryController {
                 self?.reload()
             }
         }
+        if ContentPrivacy.shared.isEnabled {
+            ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
+            ambientStatus = "Paused — Privacy mode"
+            lastFingerprint = nil; lastText = ""; lastSource = ""
+            return
+        }
         if !config.timeTurnerEnabled || audioFallbackActive {
             ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
             ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
@@ -498,6 +504,8 @@ final class VisualMemoryController {
     }
 
     private func captureMoment(generation: UUID) async {
+        let privacy = ContentPrivacy.shared.capture()
+        guard ContentPrivacy.shared.permits(privacy) else { return }
         guard generation == ambientGeneration, !Task.isCancelled else { return }
         guard !ambientPaused, !locked else { ambientStatus = "Paused"; return }
         guard !isInactive else { ambientStatus = "Paused — inactive"; return }
@@ -562,6 +570,8 @@ final class VisualMemoryController {
                 text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted,
                 pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)
             try await Task.detached(priority: .utility) {
+                try ContentPrivacy.shared.beginWrite(privacy)
+                defer { ContentPrivacy.shared.endWrite() }
                 let url = try store.url(for: path)
                 try result.data.write(to: url, options: .atomic)
                 do { try store.save([item]) }

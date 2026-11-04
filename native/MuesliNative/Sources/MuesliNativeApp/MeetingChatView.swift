@@ -637,10 +637,14 @@ struct MeetingChatView: View {
                             .environment(\.openURL, OpenURLAction { url in
                                 let key = String(url.path.dropFirst())
                                 guard url.scheme == "muesli-citation", let source = turn.citations.first(where: { $0.sourceKey == key }) else { return .discarded }
+                                ProductAnalytics.event(.chat, .result_action, fields: [.action: .citation_open])
                                 citation = source; return .handled
                             })
                         if !turn.citations.isEmpty {
-                            MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
+                            MeetingChatSourcesView(citations: turn.citations) {
+                                ProductAnalytics.event(.chat, .result_action, fields: [.action: .citation_open])
+                                citation = $0
+                            }
                         }
                         if let documents = turn.documentCoverage, !documents.isEmpty {
                             ForEach(documents, id: \.fileID) { document in
@@ -899,6 +903,7 @@ private struct MeetingChatCopyButton: View {
         Button {
             NSPasteboard.general.clearContents()
             if NSPasteboard.general.setString(text, forType: .string) {
+                ProductAnalytics.event(.chat, .result_action, fields: [.action: .copy])
                 copyID = UUID()
             }
         } label: {

@@ -711,6 +711,8 @@ actor TranscriptionCoordinator {
 
     private func logPostProcPair(raw: String, processed: String, model: String, asr: String) {
         guard Qwen3PostProcessorLogging.isPairLoggingEnabled else { return }
+        do { try ContentPrivacy.shared.beginWrite() } catch { return }
+        defer { ContentPrivacy.shared.endWrite() }
         let logURL = AppIdentity.supportDirectoryURL.appendingPathComponent("postproc-pairs.jsonl")
         let iso8601 = ISO8601DateFormatter()
         iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -769,7 +771,7 @@ actor TranscriptionCoordinator {
             progress("Preparing \(entry.model.label)… Mic off")
             try await nativeGemma(for: entry.model).prepareForInteraction(model: entry.model, audio: entry.audio, text: entry.text)
         }, optionalFailure: { entry, error in
-            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(error)\n", stderr)
+            fputs("[gemma-preparation] optional \(entry.model.rawValue) unavailable: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         })
     }
 
@@ -852,7 +854,7 @@ actor TranscriptionCoordinator {
                 progressSnapshot: progressSnapshot
             )
         } catch {
-            fputs("[muesli-native] preload failed for \(backend.backend)/\(backend.model): \(error)\n", stderr)
+            fputs("[muesli-native] preload failed for \(backend.backend)/\(backend.model): \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         }
     }
 
@@ -865,6 +867,10 @@ actor TranscriptionCoordinator {
         progress: ((Double, String?) -> Void)? = nil,
         progressSnapshot: ModelDownloadProgressHandler? = nil
     ) async throws {
+        return try await AnalyticsAttempt.measure(
+            [.onboarding, .modelLibrary].contains(meetingHelperTrigger) ? .model_setup : nil,
+            fields: [.stage: .setup], model: .catalog(provider: backend.backend, model: backend.model)) {
+
         if backend.backend == "medasr" { try MedASRLicense.shared.requireAcceptance() }
         if backend.backend == "medasr", meetingHelperTrigger == .modelLibrary {
             try await libraryModelPreparation.run {
@@ -1018,6 +1024,7 @@ actor TranscriptionCoordinator {
         }
 
         await preloadPostProcessorIfNeeded(enabled: enablePostProcessor, transcriptionBackend: backend)
+        }
     }
 
     func preloadMeetingHelpers(trigger: DiarizerPreloadTrigger = .unspecified) async {
@@ -1031,7 +1038,7 @@ actor TranscriptionCoordinator {
                 vadManager = try await vadLoader()
                 fputs("[muesli-native] Silero VAD loaded\n", stderr)
             } catch {
-                fputs("[muesli-native] VAD load failed (non-critical): \(error)\n", stderr)
+                fputs("[muesli-native] VAD load failed (non-critical): \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
@@ -1301,7 +1308,7 @@ actor TranscriptionCoordinator {
                         return SpeechTranscriptionResult(text: "", segments: [])
                     }
                 } catch {
-                    fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
+                    fputs("[muesli-native] VAD check failed, transcribing anyway: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 }
             }
             let asrStart = ProcessInfo.processInfo.systemUptime
@@ -1425,7 +1432,10 @@ actor TranscriptionCoordinator {
         appleSpeechLanguage: String = AppleSpeechLanguageOption.systemIdentifier,
         progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
     ) async throws -> SpeechTranscriptionResult {
-        try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
+        let analytics = AnalyticsAttempt(.meeting_transcription, fields: [.source: .postprocess],
+            model: .catalog(provider: backend.backend, model: backend.model))
+        defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
+        let result = try await MeetingRecordingTranscriber().transcribe(url: url, infer: { chunk in
             try await self.transcribeMeetingChunk(
                 at: chunk,
                 backend: backend,
@@ -1438,6 +1448,8 @@ actor TranscriptionCoordinator {
                 appleSpeechLanguage: appleSpeechLanguage
             )
         }, progress: progress)
+        analytics.finish(.success)
+        return result
     }
 
     func transcribeMeetingChunk(
@@ -1462,7 +1474,7 @@ actor TranscriptionCoordinator {
                     return SpeechTranscriptionResult(text: "", segments: [])
                 }
             } catch {
-                fputs("[muesli-native] VAD check failed, transcribing anyway: \(error)\n", stderr)
+                fputs("[muesli-native] VAD check failed, transcribing anyway: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
         return cleanMeetingTranscript(try await route(
@@ -1586,21 +1598,28 @@ actor TranscriptionCoordinator {
             Qwen3PostProcessorLogging.logVerbose("Cleanup skipped: incompatible transcription and cleanup models")
             return nil
         }
+        let analytics = AnalyticsAttempt(.cleanup, model: .catalog(provider: postProcessorSnapshot.backend.backend, model: postProcessorSnapshot.modelId))
+        var analyticsSucceeded = false
+        defer { analytics.finish(Task.isCancelled ? .cancelled : (analyticsSucceeded ? .success : .failed)) }
         if postProcessorSnapshot.backend.isGemma4LiteRT {
-            return await postProcessDictationWithGemma4(
+            let cleaned = await postProcessDictationWithGemma4(
                 result,
                 backend: backend,
                 postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             )
+            analyticsSucceeded = cleaned != nil
+            return cleaned
         }
         if postProcessorSnapshot.backend.llmBackend != nil {
-            return await postProcessDictationWithHostedBackend(
+            let cleaned = await postProcessDictationWithHostedBackend(
                 result,
                 backend: backend,
                 postProcessorSnapshot: postProcessorSnapshot,
                 appContext: appContext
             )
+            analyticsSucceeded = cleaned != nil
+            return cleaned
         }
         guard #available(macOS 15, *) else {
             Qwen3PostProcessorLogging.logVerbose("Qwen3 post-processor skipped: requires macOS 15+")
@@ -1655,6 +1674,7 @@ actor TranscriptionCoordinator {
                 cleanupOutputText: trimmed,
                 elapsedMs: elapsedMs
             )
+            analyticsSucceeded = true
             return SpeechTranscriptionResult(
                 text: trimmed,
                 // Original ASR segments describe pre-cleanup text. Keep them only for debug diagnostics.
@@ -1878,7 +1898,7 @@ actor TranscriptionCoordinator {
     private func transcribeWithFluidAudio(url: URL, language: ParakeetLanguage, expectedModelID: String) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with FluidAudio: \(url.lastPathComponent)\n", stderr)
         let result = try await fluidTranscriber.transcribe(wavURL: url, language: language.isoCode, expectedModelID: expectedModelID)
-        fputs("[muesli-native] FluidAudio result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] FluidAudio result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let segments = (result.tokenTimings ?? []).map { timing in
             SpeechSegment(start: timing.startTime, end: timing.endTime, text: timing.token)
@@ -1894,7 +1914,7 @@ actor TranscriptionCoordinator {
     private func transcribeWithParakeetUnified(url: URL) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with Parakeet Unified: \(url.lastPathComponent)\n", stderr)
         let result = try await parakeetUnifiedTranscriber.transcribe(wavURL: url)
-        fputs("[muesli-native] Parakeet Unified result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] Parakeet Unified result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1911,7 +1931,7 @@ actor TranscriptionCoordinator {
     ) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with WhisperKit: \(url.lastPathComponent)\n", stderr)
         let result = try await whisperTranscriber.transcribe(wavURL: url, language: language, expectedModel: expectedModel)
-        fputs("[muesli-native] WhisperKit result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] WhisperKit result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1925,7 +1945,7 @@ actor TranscriptionCoordinator {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
             let result = try await qwen3Transcriber.transcribe(wavURL: url, language: language.pinnedCode)
-            fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Qwen3 ASR result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,
@@ -1947,7 +1967,7 @@ actor TranscriptionCoordinator {
     private func transcribeWithSenseVoice(url: URL) async throws -> SpeechTranscriptionResult {
         fputs("[muesli-native] transcribing with SenseVoice: \(url.lastPathComponent)\n", stderr)
         let result = try await senseVoiceTranscriber.transcribe(wavURL: url)
-        fputs("[muesli-native] SenseVoice result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+        fputs("[muesli-native] SenseVoice result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpeechTranscriptionResult(
             text: text,
@@ -1993,7 +2013,7 @@ actor TranscriptionCoordinator {
         if #available(macOS 15, *) {
             fputs("[muesli-native] transcribing with Cohere Transcribe: \(url.lastPathComponent)\n", stderr)
             let result = try await cohereTranscriber.transcribe(wavURL: url, language: language)
-            fputs("[muesli-native] Cohere Transcribe result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Cohere Transcribe result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,
@@ -2043,7 +2063,7 @@ actor TranscriptionCoordinator {
             fputs("[muesli-native] transcribing with Nemotron 3.5: \(url.lastPathComponent)\n", stderr)
             let transcriber = try await getLoadedNemotron35Transcriber()
             let result = try await transcriber.transcribe(wavURL: url)
-            fputs("[muesli-native] Nemotron 3.5 result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            fputs("[muesli-native] Nemotron 3.5 result: \(result.text.count) characters (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return SpeechTranscriptionResult(
                 text: text,

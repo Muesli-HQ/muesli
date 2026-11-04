@@ -165,6 +165,8 @@ enum OpenRouterModelCatalogLoadState: Equatable {
 @MainActor
 @Observable
 final class AppState {
+    var privateMode = ContentPrivacy.shared.isEnabled
+    var anonymousAnalyticsDisabled = UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey)
     // Dashboard data
     // Also changes when a mutation affects a row outside the first visible page.
     var timelineHistoryRevision: UInt64 = 0

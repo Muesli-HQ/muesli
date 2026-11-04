@@ -33,6 +33,15 @@ public final class DictationStore {
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let iso8601FormatterLock = NSLock()
 
+    private let wordObserverLock = NSLock()
+    private var wordObserver: (@Sendable (Int64, Int) -> Void)?
+    /// Local successful normal inserts only; never sync imports or recovery retries.
+    /// The observer must enqueue work without waiting for disk/network activity.
+    public var onLocalDictationWords: (@Sendable (Int64, Int) -> Void)? {
+        get { wordObserverLock.withLock { wordObserver } }
+        set { wordObserverLock.withLock { wordObserver = newValue } }
+    }
+
     private let databaseURL: URL
     private let readOnly: Bool
     private static let dictationColumns = """
@@ -484,6 +493,9 @@ public final class DictationStore {
     }
 
     public func appendQuillTurn(sessionID: UUID, turn: QuillHistoryTurn) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db)
@@ -506,6 +518,9 @@ public final class DictationStore {
     }
 
     public func updateQuillQuestion(turnID: UUID, question: String) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db)
@@ -656,6 +671,9 @@ public final class DictationStore {
     /// a suggestion that wasn't taken only counts toward an open session. Returns the session id.
     @discardableResult
     public func recordCotypistSuggestion(_ event: CotypistSuggestionEvent) throws -> Int64? {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
@@ -845,8 +863,12 @@ public final class DictationStore {
         bodhanMeasurement: BodhanWBCSMeasurement? = nil,
         transcriptionModel: DictationModelIdentity? = nil
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        var savedWords = 0
         let id = try insertDictation(
             text: text,
             durationSeconds: durationSeconds,
@@ -857,7 +879,8 @@ public final class DictationStore {
             startedAt: startedAt,
             endedAt: endedAt,
             transcriptionModel: transcriptionModel,
-            db: db
+            db: db,
+            countedWords: { savedWords = $0 }
         )
         if let bodhanMeasurement {
             do {
@@ -868,6 +891,7 @@ public final class DictationStore {
                 fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
             }
         }
+        if source == "dictation" { onLocalDictationWords?(id, savedWords) }
         return id
     }
 
@@ -882,6 +906,9 @@ public final class DictationStore {
         endedAt: Date,
         transcriptionModel: DictationModelIdentity? = nil
     ) throws -> String {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         // Lazy creation keeps normal dictation persistence/migrations unchanged.
@@ -974,6 +1001,9 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db)
@@ -1037,7 +1067,8 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date,
         transcriptionModel: DictationModelIdentity? = nil,
-        db: OpaquePointer?
+        db: OpaquePointer?,
+        countedWords: (Int) -> Void = { _ in }
     ) throws -> Int64 {
 
         let sql = """
@@ -1060,7 +1091,8 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 2, durationSeconds)
         sqlite3_bind_text(statement, 3, (text as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (appContext as NSString).utf8String, -1, nil)
-        sqlite3_bind_int(statement, 5, Int32(Self.countWords(in: statisticsText ?? text)))
+        let words = Self.countWords(in: statisticsText ?? text)
+        sqlite3_bind_int(statement, 5, Int32(words))
         sqlite3_bind_text(statement, 6, (source as NSString).utf8String, -1, nil)
         bindOptionalText(targetAppName, at: 7, statement: statement)
         bindOptionalText(targetAppBundleID, at: 8, statement: statement)
@@ -1076,6 +1108,7 @@ public final class DictationStore {
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        countedWords(words)
         return sqlite3_last_insert_rowid(db)
     }
 
@@ -2456,6 +2489,26 @@ public final class DictationStore {
         return BodhanWBCSMeasurement(languageSamples: samples, runLengths: runs)
     }
 
+    /// One consistent snapshot; no transcript or record identifiers leave this API's caller.
+    /// Synced rows without local-only model provenance are ambiguous and excluded.
+    public func localDictationWordBaseline() throws -> (lastID: Int64, words: Int) {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var lastID: Int64 = 0
+        var words = 0
+        try withStatement("""
+        SELECT COALESCE(MAX(id), 0), COALESCE(SUM(CASE
+          WHEN source = 'dictation' AND deleted_at IS NULL
+            AND (cloud_record_name IS NULL OR transcription_backend IS NOT NULL)
+          THEN MAX(word_count, 0) ELSE 0 END), 0)
+        FROM dictations
+        """, db: db, row: {
+            lastID = sqlite3_column_int64($0, 0)
+            words = Int(sqlite3_column_int64($0, 1))
+        })
+        return (lastID, words)
+    }
+
     public func dictationStats(
         fromDate: String? = nil,
         toDate: String? = nil,
@@ -3258,6 +3311,9 @@ public final class DictationStore {
         finalMessage: String,
         events: [ComputerUseTraceEvent]
     ) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try insertComputerUseTrace(

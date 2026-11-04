@@ -195,6 +195,24 @@ struct MeetingChatHistoryLoadingTests {
         #expect(coordinator.errorMessage?.contains("Attach a meeting") == true)
     }
 
+    @Test func privacyTransitionRevokesSendWaitingOnWorker() async throws {
+        let (store, coordinator, first, second) = try await fixture()
+        coordinator.selectChat(id: first)
+        await coordinator.waitForIdle()
+        let before = try coordinator.store.turns(sessionID: first).count
+        let (db, writer) = try await occupyWorker(coordinator, store: store, renaming: second)
+        defer { sqlite3_close(db) }
+        let send = Task { await coordinator.send(question: "Synthetic question", config: AppConfig()) }
+        for _ in 0..<100 where !coordinator.isBusy { try await Task.sleep(for: .milliseconds(2)) }
+        #expect(coordinator.isBusy)
+        coordinator.discardForPrivacyTransition()
+        #expect(!coordinator.isBusy)
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        await writer.value
+        await send.value
+        #expect(try coordinator.store.turns(sessionID: first).count == before)
+    }
+
     @Test func stopDuringPostSendHistoryPublicationCannotRelaunchTheRequest() async throws {
         let (_, coordinator, first, _) = try await fixture()
         coordinator.selectChat(id: first)
