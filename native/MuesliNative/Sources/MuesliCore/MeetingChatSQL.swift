@@ -118,6 +118,7 @@ enum MeetingChatSQL {
             """
         ]
         for sql in statements { try execute(sql, db: db) }
+        try migrateChatHistoryDependencies(db: db)
         // Passages are a rebuildable cache. Explicit integer keys survive VACUUM
         // and let FTS deletion use a rowid lookup rather than scanning all text.
         try transaction(db: db) {

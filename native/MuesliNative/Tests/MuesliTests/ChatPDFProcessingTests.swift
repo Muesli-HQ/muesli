@@ -166,7 +166,7 @@ struct ChatPDFProcessingTests {
             let first = String(decoding: requests[0].inputItems, as: UTF8.self)
             #expect(!first.contains("cobalt lantern"))
             #expect(String(decoding: requests[0].tools, as: UTF8.self).contains("read_document"))
-            #expect(!String(decoding: requests[0].tools, as: UTF8.self).contains("search_meeting_sources"))
+            #expect(!String(decoding: requests[0].tools, as: UTF8.self).contains("search_history"))
             #expect(String(decoding: requests[1].inputItems, as: UTF8.self).contains("cobalt lantern"))
         } else {
             let requests = await probe.textRequests

@@ -12,6 +12,7 @@ struct SavedTimeTurnerRecap: Codable, Sendable {
     let model: String
     let insights: [TimeTurnerRecapInsight]
     let sources: [TimeTurnerRecapSource]
+    var includedInputs: [TimeTurnerRecapInput]? = nil
 
     var key: String { Self.key(dayStart: dayStart, timeZone: timeZone) }
     static func key(dayStart: Date, timeZone: String) -> String {
@@ -72,6 +73,11 @@ final class TimeTurnerRecapStore {
                 body TEXT NOT NULL
             )
             """)
+        try execute("BEGIN IMMEDIATE")
+        do {
+            try installHistoryInvalidation()
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
     }
     deinit { sqlite3_close(db) }
     private static var failure: NSError {
@@ -89,6 +95,84 @@ final class TimeTurnerRecapStore {
     private func bind(_ value: String, to statement: OpaquePointer?, at index: Int32) {
         _ = sqlite3_bind_text(statement, index, value, -1, transient)
     }
+    /// Triggers invalidate dependent quotes in the source mutation transaction,
+    /// including soft deletes and edits, without waiting for the Recap tab to open.
+    private func installHistoryInvalidation() throws {
+        let check = try statement("SELECT 1 FROM sqlite_master WHERE name='time_turner_recap_history_sources'")
+        let projectionStatus = sqlite3_step(check)
+        sqlite3_finalize(check)
+        guard projectionStatus == SQLITE_ROW || projectionStatus == SQLITE_DONE else { throw Self.failure }
+        let projectionExists = projectionStatus == SQLITE_ROW
+        try execute("""
+            CREATE TABLE IF NOT EXISTS time_turner_recap_history_sources (
+                day_key TEXT NOT NULL, kind TEXT NOT NULL, source_id TEXT NOT NULL, parent_id TEXT NOT NULL,
+                PRIMARY KEY(day_key,kind,source_id)
+            );
+            CREATE INDEX IF NOT EXISTS recap_history_source ON time_turner_recap_history_sources(kind,source_id,day_key);
+            CREATE INDEX IF NOT EXISTS recap_history_parent ON time_turner_recap_history_sources(kind,parent_id,day_key);
+            CREATE TRIGGER IF NOT EXISTS recap_history_projection_delete AFTER DELETE ON time_turner_recaps
+            BEGIN DELETE FROM time_turner_recap_history_sources WHERE day_key=OLD.day_key; END;
+            """)
+        for event in ["INSERT", "UPDATE OF body"] {
+            let name = event.hasPrefix("INSERT") ? "insert" : "update"
+            try execute("""
+                CREATE TRIGGER IF NOT EXISTS recap_history_projection_\(name) AFTER \(event) ON time_turner_recaps
+                BEGIN
+                    DELETE FROM time_turner_recap_history_sources WHERE day_key=NEW.day_key;
+                    INSERT OR IGNORE INTO time_turner_recap_history_sources
+                    SELECT NEW.day_key,json_extract(value,'$.history.kind'),json_extract(value,'$.history.id'),json_extract(value,'$.history.parentID')
+                    FROM json_each(NEW.body,'$.sources') WHERE json_extract(value,'$.history.id') IS NOT NULL;
+                END;
+                """)
+        }
+        if !projectionExists {
+            try execute("""
+                INSERT OR IGNORE INTO time_turner_recap_history_sources
+                SELECT r.day_key,json_extract(j.value,'$.history.kind'),json_extract(j.value,'$.history.id'),json_extract(j.value,'$.history.parentID')
+                FROM time_turner_recaps r,json_each(r.body,'$.sources') j WHERE json_extract(j.value,'$.history.id') IS NOT NULL;
+                """)
+        }
+        let rules: [(String, String, String, String, String?)] = [
+            ("dictations", "dictations','commands", "source_id", "id", "raw_text,timestamp,source,target_app_name,target_app_bundle_id,deleted_at"),
+            ("quill_conversations", "quill", "parent_id", "id", "deleted_at"),
+            ("quill_conversation_turns", "quill", "source_id", "turn_id", "body"),
+            ("cotypist_sessions", "cotypist", "parent_id", "id", "deleted_at"),
+            ("cotypist_suggestions", "cotypist", "source_id", "id", "accepted_text,timestamp,session_id"),
+            ("meeting_chat_sessions", "chat", "source_id", "id", "body,updated_at"),
+            ("meeting_chat_turns", "chat", "parent_id", "session_id", nil)
+        ]
+        for (table, kinds, field, column, updates) in rules {
+            let check = try statement("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+            bind(table, to: check, at: 1)
+            let status = sqlite3_step(check); sqlite3_finalize(check)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw Self.failure }
+            if status == SQLITE_DONE { continue }
+            for event in ["DELETE", "UPDATE"] {
+                let operation = event == "UPDATE" ? "UPDATE" + (updates.map { " OF " + $0 } ?? "") : event
+                try execute("""
+                    CREATE TRIGGER IF NOT EXISTS recap_history_\(table)_\(event)_v1 AFTER \(operation) ON \(table)
+                    BEGIN
+                        DELETE FROM time_turner_recaps WHERE day_key IN (
+                            SELECT day_key FROM time_turner_recap_history_sources
+                            WHERE kind IN ('\(kinds)') AND \(field)=CAST(OLD.\(column) AS TEXT)
+                        );
+                    END;
+                    """)
+            }
+        }
+    }
+
+    /// Serialize main-database validation with publication. Source mutations must
+    /// occur before validation or after INSERT, where the invalidation trigger sees it.
+    func publish(_ recap: SavedTimeTurnerRecap, validate: () throws -> Bool) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            guard try validate() else { throw TimeTurnerRecapError.changedSources }
+            try save(recap)
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
     func save(_ recap: SavedTimeTurnerRecap) throws {
         try ContentPrivacy.shared.beginWrite()
         defer { ContentPrivacy.shared.endWrite() }
@@ -176,14 +260,14 @@ enum TimeTurnerRetention {
         let ids = try store.pendingCaptureDeletions()
         guard !ids.isEmpty else { return }
         try TimeTurnerRecapStore(databaseURL: databaseURL).delete(captureIDs: ids)
+        try MeetingChatStore(databaseURL: databaseURL).invalidateHistoryCaptures(Array(ids))
         try store.acknowledgeCaptureDeletions(ids)
     }
 
     static func save(_ recap: SavedTimeTurnerRecap, root: URL?, databaseURL: URL) throws {
         lock.lock(); defer { lock.unlock() }
-        guard try TimeTurnerRecap.sourcesAreCurrent(recap.sources, root: root, databaseURL: databaseURL) else {
-            throw TimeTurnerRecapError.changedSources
+        try TimeTurnerRecapStore(databaseURL: databaseURL).publish(recap) {
+            try TimeTurnerRecap.sourcesAreCurrent(recap.sources, root: root, databaseURL: databaseURL)
         }
-        try TimeTurnerRecapStore(databaseURL: databaseURL).save(recap)
     }
 }

@@ -727,11 +727,47 @@ Insights contain a section (`work`, `decisions`, `followUps`), text and source I
 Source snapshots include the source ID, title, date, excerpt, and either a typed
 capture snapshot (stable capture ID, original timestamp/OCR and media locator)
 or a revisioned `MeetingChatCitation` (meeting ID, source kind, offsets and
-revision). These logical references cross database boundaries; there are no
+revision). An optional `history` object adds enabled dictation, Computer Use command,
+Quill turn, accepted Cotypist text or saved Chat evidence, with `kind`, stable `id`,
+`parentID`, event `date`, `title`, bounded `text`, `textIsTruncated` and a SHA-256
+`revision` of the original content. Optional `includedInputs` records the generation
+preferences; absence decodes as the legacy Time Turner + Meetings selection. These logical references cross database boundaries; there are no
 cross-database foreign keys. All supplied sources are dependencies, including
 those not cited in the final text. The body uses Codable; future additions must
 be backward compatible or explicitly migrate the version. Unsupported versions
 and malformed records fail visibly rather than silently resetting history.
+
+Generation uses the shared `MuesliTaskRunner` with a recap-specific output validator.
+The scoped `search_history` tool can discover additional sources within the same day and enabled classes. Accepted results use the existing source snapshot format with generation-local citation IDs. The scoped `read_history` tool pages through issued sources. It adds no persisted tool transcript. Every supplied
+snapshot remains a dependency, even if an additional read is withheld for context
+limits. Optional fields preserve JSON version 1 compatibility.
+
+`time_turner_recap_history_sources` is a local dependency projection in `muesli.db`:
+`day_key`, `kind`, `source_id`, `parent_id`, primary key `(day_key, kind, source_id)`.
+Indexes on `(kind, source_id, day_key)` and `(kind, parent_id, day_key)` let source
+mutation triggers invalidate dependent recaps without scanning recap JSON.
+Recap insert/update triggers rebuild that row's projection; deletion clears it.
+The lazy writer migration atomically backfills existing bodies. Source edit and
+soft/hard-delete triggers cover dictations, Quill turns/conversations, Cotypist
+suggestions/sessions and Chat turns/sessions. Publication takes an immediate
+main-database transaction around source revalidation and insert, so a concurrent
+source mutation either precedes validation or invalidates the inserted recap.
+Read-time validation still checks indirect Chat meeting dependencies and the
+separate visual catalog. These projections do not create new CloudKit records.
+
+Recap-page Sources controls persist `recap_include_meetings` (default true),
+`recap_include_dictations`, `recap_include_commands`, `recap_include_quill`,
+`recap_include_cotypist` and `recap_include_chat` (new classes default false).
+Time Turner has no off switch in this selection. Preferences apply to future
+generations; saved recaps retain their evidence until regeneration or invalidation.
+Optional classes are read off the main actor, sampled at most twice in each of
+six day buckets (12 per class), and interleaved with screen/meeting evidence under
+the shared model budget. History source text is capped at 16 KB; the revision
+covers full original text. CUA includes input only, never traces; Cotypist includes
+accepted text only. Quill uses each turn's timestamp. Chat has no per-message date:
+it uses the conversation update date, explicitly warns that messages may be older,
+and withholds conversations with invalid meeting evidence or file-derived turns
+whose original attachments this adapter cannot validate.
 
 The store owns parameterized reads, atomic single-row replacement and deletion;
 call it off the main actor. Regeneration replaces the day's saved record only
@@ -891,3 +927,35 @@ Copy action until verification succeeds, and retry on the next poll. Closing or
 replacing the preview invalidates in-flight reads.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.
+
+
+### Shared history task access (no additional history tables)
+
+`MuesliHistoryAccess` and `MuesliHistoryReader` are shared by app history tasks and
+`muesli-cli history sample/read`. They reuse existing source tables and the screen
+catalog, not a copied history database. `MuesliHistorySource` preserves the existing
+recap history object's JSON keys and kind values; its revision includes the entire
+source text even when the returned text is truncated at 16 KB. CLI consumers must
+honor `textIsTruncated` and the packet's explicit partial-coverage notice.
+
+Versioned task definitions live in code (`MuesliHistoryTask`/`MuesliHistorySkill`),
+not in captured evidence or SQLite. Daily recap retains the existing dependency
+projection and deletion behavior above. Resume work, Project brief and Follow-ups
+are transient task results: they add no table, CloudKit field, chat turn or memory
+record. App/CLI sampling selects the same bounded source set and uses the same
+source validation. CLI exports are explicit commands; no background export occurs.
+
+Tagged skill requests are ordinary local meeting chat turns. Optional JSON fields
+Session JSON records `allowsRequestedMeetingDiscovery` for new implicit drafts. A manual scope choice clears it; older sessions without the field keep their existing scope. The per-turn discovery permission is stored in `skillRecentMeetingScope` for ordinary and tagged turns. Discovered title citations use the `title` source kind and the meeting revision. Model-supplied date filters are tool arguments scoped to a single call. Older turns may also carry their original selection in `composerScopeAtSend`.
+
+`skillTitle` and `skillRecentMeetingScope` capture the displayed skill and the
+allowed recent-meeting lookup scope. Older turns decode with both fields absent.
+Meeting citations use the existing dependency table. For day-history reads,
+`meeting_chat_history_dependencies(turn_id, kind, source_id, parent_id)` stores
+identities and propagates them to subsequent turns using that conversation.
+Source changes and the capture deletion outbox invalidate derived turns.
+
+
+General Chat history discovery uses `global_search_documents`, its FTS index, and Time Turner's existing OCR index. The temporary result handles and cursors live only for a provider attempt. The existing `meeting_chat_history_dependencies` table also accepts `quillSession`, `cotypistSession`, and `recap` for whole-source reads. Recap reads include the underlying source dependencies. Source invalidation applies to the saved answer and dependent conversation history.
+
+General Chat SQL materializes permitted columns into an ephemeral SQLite database. SQL meeting dependencies use kind `sqlMeeting`; edits or deletion invalidate dependent chat answers. No model-authored statement executes on a user database.

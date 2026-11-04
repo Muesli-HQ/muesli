@@ -291,6 +291,10 @@ extension MuesliController {
                 self.updateConfig { $0.timeTurnerEnabled = value == "on" }
             }
         toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
+        for source in TimeTurnerRecapInput.allCases {
+            toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
+        }
+
         textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
             Choice(id: $0, label: "\($0) seconds")
         }, \.timeTurnerInterval)

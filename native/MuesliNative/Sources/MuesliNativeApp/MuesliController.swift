@@ -4063,19 +4063,14 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func createCustomMeetingTemplate(name: String, prompt: String, icon: String) {
+    @discardableResult
+    func createCustomMeetingTemplate(name: String, prompt: String, icon: String) -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return }
-        updateConfig {
-            $0.customMeetingTemplates.append(
-                CustomMeetingTemplate(
-                    name: trimmedName,
-                    prompt: trimmedPrompt,
-                    icon: MeetingTemplates.normalizedCustomIcon(named: icon)
-                )
-            )
-        }
+        guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return nil }
+        let template = CustomMeetingTemplate(name: trimmedName, prompt: trimmedPrompt, icon: icon)
+        updateConfig { $0.customMeetingTemplates.append(template) }
+        return template.id
     }
 
     func updateCustomMeetingTemplate(id: String, name: String, prompt: String, icon: String) {

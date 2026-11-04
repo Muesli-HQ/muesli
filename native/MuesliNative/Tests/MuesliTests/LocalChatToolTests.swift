@@ -32,7 +32,7 @@ struct LocalChatToolTests {
         }, cache: LocalChatProbeCache())
         #expect(caps.nativeTools && caps.contextTokens == 16384)
         let body = try LocalChatToolTransport.body(request(c, items: initial), capabilities: caps)
-        #expect((body["tools"] as? [Any])?.count == 3)
+        #expect((body["tools"] as? [Any])?.count == 2)
         #expect((body["options"] as? [String: Int])?["num_ctx"] == 16384)
         #expect(body["format"] == nil)
     }

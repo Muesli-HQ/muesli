@@ -9,6 +9,18 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Recap sources use canonical settings with mandatory screen history")
+    func recapSourceDefinitions() async throws {
+        try await withShortcutSettings { controller, _ in
+            let definitions = controller.settingsDefinitions()
+            for kind in TimeTurnerRecapInput.allCases {
+                let setting = try #require(definitions.first { $0.id == kind.settingID })
+                #expect(setting.read(controller.config) == (kind == .meetings ? "on" : "off"))
+            }
+            #expect(!definitions.contains { $0.id == "recap_include_time_turner" })
+        }
+    }
+
     @Test("Time Turner reductions require confirmation but remain voice discoverable")
     func timeTurnerDeletionPolicy() async throws {
         try await withShortcutSettings { controller, _ in
