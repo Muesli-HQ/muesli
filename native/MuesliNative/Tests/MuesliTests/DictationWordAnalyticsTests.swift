@@ -95,9 +95,12 @@ struct DictationWordAnalyticsTests {
         let saved = try JSONDecoder().decode(DictationWordState.self, from: Data(contentsOf: stateURL))
         #expect(saved.pending == 3)
         let next = DictationWordAnalytics(token: { "legacy" }, sink: { batch, _ in recorder.batch(batch) })
-        next.start(databaseURL: store.resolvedDatabaseURL, stateURL: stateURL)
+        // Daily counting after the baseline must work without opening the history database.
+        next.start(databaseURL: dir.appendingPathComponent("absent.db"), stateURL: stateURL)
+        next.record(id: id + 2, words: 4)
         next.drain()
         #expect(recorder.batches.count == 1)
+        #expect(try JSONDecoder().decode(DictationWordState.self, from: Data(contentsOf: stateURL)).pending == 7)
     }
     @Test func concurrentStartupSnapshotAndSavesHaveNoOverlap() throws {
         let (dir, store) = try fixture()

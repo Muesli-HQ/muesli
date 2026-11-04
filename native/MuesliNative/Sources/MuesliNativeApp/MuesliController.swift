@@ -1398,35 +1398,39 @@ public final class MuesliController: NSObject {
         return try? dictationStore.meeting(id: id)
     }
 
-    func dictationStats() -> DictationStats {
-        (try? dictationStore.dictationStats()) ?? DictationStats(
-            totalWords: 0,
-            totalSessions: 0,
-            averageWordsPerSession: 0,
-            averageWPM: 0,
-            currentStreakDays: 0,
-            longestStreakDays: 0
-        )
-    }
+    private(set) var historyStatsTask: Task<Void, Never>?
+    private var historyStatsRevision: UInt = 0
 
-    private func filteredDictationStats() -> DictationStats {
-        (try? dictationStore.dictationStats(
-            fromDate: appState.dictationFromDate,
-            toDate: appState.dictationToDate,
-            origin: appState.dictationOriginFilter,
-            targetApplication: appState.dictationApplicationFilter
-        )) ?? DictationStats(
-            totalWords: 0,
-            totalSessions: 0,
-            averageWordsPerSession: 0,
-            averageWPM: 0,
-            currentStreakDays: 0,
-            longestStreakDays: 0
-        )
-    }
-
-    func meetingStats() -> MeetingStats {
-        (try? dictationStore.meetingStats()) ?? MeetingStats(totalWords: 0, totalMeetings: 0, averageWPM: 0)
+    private func refreshHistoryStats() {
+        historyStatsRevision &+= 1
+        guard historyStatsTask == nil, !isShuttingDown else { return }
+        historyStatsTask = Task { [weak self] in
+            guard let self else { return }
+            defer { historyStatsTask = nil }
+            while !isShuttingDown {
+                let revision = historyStatsRevision
+                let url = dictationStore.resolvedDatabaseURL
+                let from = appState.dictationFromDate, to = appState.dictationToDate
+                let origin = appState.dictationOriginFilter, app = appState.dictationApplicationFilter
+                let result = await Task.detached(priority: .utility) {
+                    let store = DictationStore(databaseURL: url, readOnly: true)
+                    let all = try? store.dictationStats()
+                    let filtered = from == nil && to == nil && origin == .all && app == nil
+                        ? all : try? store.dictationStats(fromDate: from, toDate: to, origin: origin, targetApplication: app)
+                    return (all, filtered, try? store.meetingStats())
+                }.value
+                guard !isShuttingDown else { return }
+                // Collapse refreshes during a read into one scan of the newest filters.
+                guard revision == historyStatsRevision else { continue }
+                if let all = result.0 { appState.dictationStats = all }
+                if let filtered = result.1 { appState.filteredDictationStats = filtered }
+                if let meetings = result.2 { appState.meetingStats = meetings }
+                if let all = result.0, let meetings = result.2 {
+                    refreshContributionMilestonePrompt(totalWords: all.totalWords, totalMeetings: meetings.totalMeetings)
+                }
+                return
+            }
+        }
     }
 
     func openInsights(section: InsightsSection) {
@@ -1779,13 +1783,7 @@ public final class MuesliController: NSObject {
         let order = config.folderOrder
         // Sort folders into a depth-first tree order so children appear beneath parents.
         appState.folders = Self.treeOrderedFolders(allFolders, order: order)
-        appState.dictationStats = dictationStats()
-        appState.filteredDictationStats = filteredDictationStats()
-        appState.meetingStats = meetingStats()
-        refreshContributionMilestonePrompt(
-            totalWords: appState.dictationStats.totalWords,
-            totalMeetings: appState.meetingStats.totalMeetings
-        )
+        refreshHistoryStats()
         appState.selectedBackend = selectedBackend
         appState.dictationProvider = selectedDictationProvider
         appState.selectedMeetingTranscriptionBackend = selectedMeetingTranscriptionBackend

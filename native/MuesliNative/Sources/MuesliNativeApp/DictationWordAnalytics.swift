@@ -76,12 +76,13 @@ final class DictationWordAnalytics: @unchecked Sendable {
                 } else {
                     state = .init(consent: launchToken, day: today)
                 }
-                let snapshot = try DictationStore(databaseURL: databaseURL, readOnly: true).localDictationWordBaseline()
-                cutoff = snapshot.lastID
-                // A consent transition while reading history must not expose a baseline.
-                if launchToken != token() { state?.baselineAttempted = true }
-                let baseline = state?.baseline(words: snapshot.words, token: token())
-                persistAndSend(baseline)
+                state?.reconcile(token: launchToken)
+                if state?.baselineAttempted == false, launchToken == token() {
+                    let snapshot = try DictationStore(databaseURL: databaseURL, readOnly: true).localDictationWordBaseline()
+                    cutoff = snapshot.lastID
+                    let baseline = state?.baseline(words: snapshot.words, token: token())
+                    persistAndSend(baseline)
+                }
                 flush()
                 let timer = DispatchSource.makeTimerSource(queue: queue)
                 timer.schedule(deadline: .now() + 60, repeating: 60, leeway: .seconds(15))

@@ -125,7 +125,7 @@ struct MeetingsNavigationTests {
 
 
     @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
-    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
+    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) async throws {
         let directory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
@@ -148,6 +148,7 @@ struct MeetingsNavigationTests {
                 startedAt: Date(), endedAt: Date()
             )
             controller.refreshUI()
+            await controller.historyStatsTask?.value
             #expect(counter.count == expectedCount)
             #expect(controller.appState.dictationRows.contains { $0.id == id })
             #expect(controller.appState.dictationStats.totalSessions == expectedCount)
@@ -156,6 +157,7 @@ struct MeetingsNavigationTests {
         // Standalone reload callers must still refresh history themselves.
         if let history {
             history.reload()
+            await controller.historyStatsTask?.value
             #expect(counter.count == 3)
         }
     }
@@ -557,7 +559,7 @@ struct MeetingsNavigationTests {
     }
 
     @Test("timeline pagination and filter changes reset to the newest composite anchor")
-    func timelinePaginationAndFilterReset() throws {
+    func timelinePaginationAndFilterReset() async throws {
         let store = try makeStore()
         let base = Date(timeIntervalSince1970: 1_776_000_000)
         let notes = DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")
@@ -598,6 +600,7 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
 
         controller.filterDictations(application: notes)
+        await controller.historyStatsTask?.value
         #expect(controller.appState.dictationApplicationFilter == notes)
         #expect(controller.appState.dictationRows.count == 1)
         #expect(controller.appState.filteredDictationStats.totalSessions == 1)

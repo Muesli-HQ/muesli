@@ -390,8 +390,10 @@ final class CotypistService {
                     _ = try store.recordCotypistSuggestion(event)
                 }
                 if !event.acceptedText.isEmpty { await MainActor.run { CotypistService.shared.onAccepted() } }
+            } catch ContentPrivacy.Failure.ephemeralContent {
+                return
             } catch {
-                fputs("[cotypist] could not record suggestion: \(error)\n", stderr)
+                fputs("[cotypist] could not record suggestion: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }

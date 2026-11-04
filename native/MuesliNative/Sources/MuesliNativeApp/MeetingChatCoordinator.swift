@@ -747,6 +747,7 @@ final class MeetingChatCoordinator {
         do {
             let requestConfig = config
             try await worker.setFiles(sessionID: id, files: files)
+            guard activeRequestID == requestID, !Task.isCancelled else { return }
             let turn = try await worker.beginTurn(sessionID: id, question: question, scope: requestScope, config: requestConfig, attemptID: requestID, files: files)
             guard activeRequestID == requestID, !Task.isCancelled else {
                 try? await worker.setTurnState(id: turn.id, state: .stopped, attemptID: requestID)
@@ -1001,6 +1002,12 @@ final class MeetingChatCoordinator {
         return "Meeting AI request failed. Please retry or check your connection settings."
     }
     func discardForPrivacyTransition() {
+        activeRequestID = nil
+        activeTurnID = nil
+        activeSessionID = nil
+        submittedFileDraft = nil
+        filePreparation?.task.cancel()
+        filePreparation = nil
         for task in tasks.values { task.cancel() }
         for task in titleTasks.values { task.cancel() }
         initialization?.cancel(); historyLoad?.cancel()
