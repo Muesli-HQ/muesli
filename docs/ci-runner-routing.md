@@ -133,10 +133,11 @@ separately and are not accelerated by the PR label.
 ### Private Mac test runner
 
 A maintainer can add `self-host` to their own same-repository PR to run the
-core, dictation-transcription and meetings shards on the private M5 Pro. One
-runner accepts one job at a time, and that job runs all shards with a shared
-SwiftPM cache. Release, CLI packaging and the other jobs use their ordinary
-routing. Pushes and merges use GitHub. Blacksmith takes precedence if both
+core, dictation-transcription and meetings shards, release compilation, AI Elements
+tests/icon validation, and packaged CLI smoke checks on the private M5 Pro.
+One runner accepts one job at a time. Checks use persistent, runner-specific
+debug, release, AI Elements and LocalVQE caches. Each invocation still builds
+and executes its checks. Linux checks and external reviews use ordinary routing. Pushes and merges use GitHub. Blacksmith takes precedence if both
 labels are present. Remove self-host to start replacement hosted CI.
 
 Deployment: install the PR tests workflow in Muesli-HQ/muesli-private-ci on
@@ -150,3 +151,12 @@ An offline runner can queue work; removal of the label replaces the public
 check, and already-running private tests can be cancelled in private Actions.
 The gate requires success for the current attempt and merge SHA. Use the
 ordinary hosted run if a self-hosted test fails; investigate the discrepancy.
+
+The all-macOS protocol uses the private `pr-macos.yml` workflow and a
+`m5-macos/<run>/<attempt>/<merge>` status. Deploy that private workflow before
+merging public routing changes. Earlier PR revisions continue to use
+`pr-tests.yml` and their original status, so a tests-only result cannot satisfy
+the expanded macOS gate. Draft PRs skip release compilation in both routes.
+Cache roots live under the runner account's Library/Caches directory and remain
+on the Mac. Architecture/toolchain changes select a new root. LocalVQE uses a
+build-script fingerprint and validates the complete runtime before reuse.

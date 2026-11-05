@@ -48,7 +48,7 @@ jobs:
           head=$(jq -r .head.sha <<< "$data")
           # Ignore unrelated-label and docs-only runs. Dispatch only for a live waiting job.
           for ((i=0; i<40; i++)); do
-            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq '.jobs[] | select(.name | startswith("m5-tests ")) | [.status,.name] | @tsv')
+            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/attempts/$ATTEMPT/jobs" --jq '.jobs[] | select(.name | startswith("m5-tests ") or startswith("m5-macos ")) | [.status,.name] | @tsv')
             state=${job%%$'\t'*}
             [[ "$state" == in_progress ]] && break
             [[ "$state" == completed ]] && exit 0
@@ -57,7 +57,12 @@ jobs:
           [[ "$state" == in_progress ]] || exit 0
           merge=${job##* }
           [[ "$merge" =~ ^[0-9a-f]{40}$ ]]
+          workflow=pr-tests.yml
           context="m5/$RUN/$ATTEMPT/$merge"
+          if [[ "$job" == *$'\t'm5-macos\ * ]]; then
+            workflow=pr-macos.yml
+            context="m5-macos/$RUN/$ATTEMPT/$merge"
+          fi
           status() { gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$head" -f state="$1" -f context="$context" >/dev/null; }
           trap 'status failure' ERR
           # A queued/rerun request for an obsolete merge fails immediately.
@@ -67,12 +72,12 @@ jobs:
           repo=Muesli-HQ/muesli-private-ci
           private() { GH_TOKEN="$PRIVATE_TOKEN" gh "$@"; }
           matching_run() {
-            private run list -R "$repo" --workflow pr-tests.yml --limit 100 --json databaseId,displayTitle |
+            private run list -R "$repo" --workflow "$workflow" --limit 100 --json databaseId,displayTitle |
               jq -r --arg title "M5 $RUN-$ATTEMPT $merge" 'map(select(.displayTitle == $title)) | first.databaseId // empty'
           }
           private_id=$(matching_run)
           if [[ -z "$private_id" ]]; then
-            private workflow run pr-tests.yml -R "$repo" --ref main -f "pr=$pr" -f "revision=$merge" -f "request=$RUN-$ATTEMPT"
+            private workflow run "$workflow" -R "$repo" --ref main -f "pr=$pr" -f "revision=$merge" -f "request=$RUN-$ATTEMPT"
           fi
           for ((i=0; i<100; i++)); do
             [[ -n "$private_id" ]] || private_id=$(matching_run)

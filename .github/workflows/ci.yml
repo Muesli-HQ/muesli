@@ -147,6 +147,7 @@ jobs:
       cache_ready: ${{ steps.save-release.outcome == 'success' || (steps.lookup-release.outcome == 'success' && steps.lookup-release.outputs.cache-hit == 'true') }}
       cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
     if: >-
+      needs.changes.outputs.self_host != 'true' &&
       needs.changes.outputs.native_or_packaging == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: >-
@@ -392,7 +393,7 @@ jobs:
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
   m5-tests:
-    name: m5-tests ${{ github.sha }}
+    name: m5-macos ${{ github.sha }}
     needs: changes
     if: needs.changes.outputs.self_host == 'true' && needs.changes.outputs.native_or_packaging == 'true'
     runs-on: ubuntu-latest
@@ -405,7 +406,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          context="m5/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA"
+          context="m5-macos/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA"
           for ((i=0; i<120; i++)); do
             state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/statuses?per_page=100" |
               jq -r --arg context "$context" 'map(select(.context == $context and .creator.login == "github-actions[bot]")) | first.state // "pending"')
@@ -421,7 +422,7 @@ jobs:
   # Dependency test targets are not executed by the application's test shards.
   ai-elements:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -447,7 +448,7 @@ jobs:
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -535,10 +536,10 @@ jobs:
 
       - name: Check result
         env:
-          RELEASE_REQUIRED: ${{ needs.changes.outputs.native_or_packaging == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+          RELEASE_REQUIRED: ${{ needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
         run: |
           if [[ "${{ needs.changes.outputs.self_host }}" == true && "${{ needs.changes.outputs.native_or_packaging }}" == true && "${{ needs.m5-tests.result }}" != success ]]; then
-            echo "Required M5 tests did not succeed."
+            echo "Required M5 macOS checks did not succeed."
             exit 1
           fi
           if [[ "$RELEASE_REQUIRED" == "true" && "${{ needs.build_release.result }}" != "success" ]]; then
