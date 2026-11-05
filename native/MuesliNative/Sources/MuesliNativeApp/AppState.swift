@@ -327,7 +327,19 @@ final class AppState {
         }
     }
     var timeTurnerSelectedRecap: TimeTurnerRecapSelection?
-    var timeTurnerShowsRecap = false
+    enum TimeTurnerSection { case history, recap, todos }
+    var timeTurnerSection: TimeTurnerSection = .history
+    var timeTurnerShowsRecap: Bool {
+        get { timeTurnerSection == .recap }
+        set { timeTurnerSection = newValue ? .recap : .history }
+    }
+    var timeTurnerFocusedTodo: String?
+    func openTimeTurnerTodo(_ id: String) {
+        timeTurnerFocusedTodo = id
+        timeTurnerSection = .todos
+        selectedTab = .timeTurner
+        timeTurnerNavigationID = UUID()
+    }
     var timeTurnerSelectedCapture: VisualMemoryItem?
     // Explicit source navigation must reset the explorer's local scrub position,
     // even when it is already mounted or the same result is opened again.

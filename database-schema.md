@@ -641,6 +641,21 @@ no activity or inferred-insight table is introduced.
 | `media_deleted_at_unix` | Nullable screenshot retirement time (Unix seconds); non-null means OCR-only history. The locator is historical and must not be used to retrieve media. |
 | `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
 
+The additive local `time_turner_lifecycle` table has one row (`id=1`) with
+`capture_ready_at` as fractional Unix seconds. It is set once when Time Turner is
+enabled with Screen Recording and Accessibility permissions, before app exclusions
+or inactivity checks. Existing installations seed it from their earliest retained
+capture; a first saved capture also establishes it if missing. Pause, disable,
+sleep, restart and retention do not reset it. It contains no captured content and
+is not synced or exported.
+
+Daily recap generation (manual and scheduled) requires 12 elapsed hours after this
+timestamp and at least one retained Time Turner observation in the selected
+half-open day interval. Other selected sources cannot bypass that requirement;
+retired screenshot media still qualifies when its history remains. Calendar
+navigation starts on the readiness day. Saved recaps remain readable; scheduled
+attempts blocked by warmup do not consume their schedule slot.
+
 Time and app/time indexes support retrieval; `evidence_search` provides FTS5
 search over source labels and OCR. Store APIs transactionally maintain the typed
 projection from compatibility records in `evidence`. Read-only SQL consumers can
@@ -717,25 +732,109 @@ before first use is valid.
 
 | Column | Contract |
 |---|---|
-| `day_key` | Primary key: time-zone identifier plus local day-start Unix timestamp. One current recap per day/zone. |
+| `day_key` | Primary key: day/zone identity for the current recap; prior versions append `\|version\|` and a UUID. `storageKey` in the JSON records that version identity. |
 | `day_start`, `day_end` | REAL Unix seconds, half-open calendar interval; supports 23/25-hour DST days. |
 | `time_zone` | Calendar time-zone identifier captured when generating. |
 | `generated_at` | REAL Unix seconds for this generation, also guards late cancellation cleanup. |
 | `body` | Versioned JSON (`version = 1`) containing matching day bounds/zone, generation time, provider/model, insights and all supplied sources. |
 
+Open follow-ups appear together across all saved days. The optional insight field
+`action` is a short to-do title. Older follow-ups use their existing text.
+`time_turner_todos` stores completion by opaque task ID plus `created_at`
+(UTC epoch seconds, fixed at first generation), `reminder_interval` and `remind_at`
+(nullable seconds / UTC deadline), and nullable `deleted_at` (UTC epoch seconds).
+Explicit to-do deletion sets this marker and clears both reminder fields. Hidden
+items are excluded from lists and model task context; stale completion/reminder
+callbacks and recap replay cannot revive that ID. The original recap remains
+readable. Deletion markers and task relationships are removed when the last
+supporting recap is removed by normal source/retention cleanup. Lists sort by creation time, newest first.
+Reminders are opt-in per task, every 12 or 24 elapsed hours until completed or
+turned off. Successful delivery advances the deadline using a compare-and-set
+on the observed deadline. Completing or reopening clears reminders; recap
+regeneration never resets them. The lazy migration backfills creation time from
+the earliest supporting saved recap. Source deletion also removes its reminder.
+`time_turner_todo_links` links each item to its supporting daily recap version(s).
+Optional insight `taskID` references an existing task or a new app-issued UUID.
+`duplicateTaskIDs` records the generating model's equivalence decision. The same
+selected model receives existing task IDs, titles and completion states; Swift
+validates references and never uses fuzzy matching to decide equivalence.
+Publication revalidates that task context under the write transaction, then merges
+links and evidence while preserving the earliest creation time, any completed
+state and the earliest enabled reminder (completed tasks clear reminders).
+Omission never deletes a task. There is no task-title editing UI yet.
+`time_turner_todo_aliases` migrates legacy text-keyed identities to opaque IDs;
+this exact legacy import mapping is not semantic reconciliation. Its title text
+is removed when the associated task is deleted. `time_turner_todo_redirects`
+retains ID-only merge aliases so archived versions cannot resurrect a duplicate.
+No manual completed task is reopened by generation.
+The indexed `time_turner_todo_refs` table retains original source identities and revisions. An open or completed item survives regeneration even if a later summary omits it. Installation backfills existing recaps. SQLite triggers update membership in
+the same transaction as recap publication and deletion. An item with another
+supporting recap keeps its completion state. Removing the last supporting
+recap also removes its derived to-do. Temporary private recaps are excluded.
+
 Insights contain a section (`work`, `decisions`, `followUps`), text and source IDs.
 Source snapshots include the source ID, title, date, excerpt, and either a typed
 capture snapshot (stable capture ID, original timestamp/OCR and media locator)
 or a revisioned `MeetingChatCitation` (meeting ID, source kind, offsets and
-revision). These logical references cross database boundaries; there are no
+revision). An optional `history` object adds enabled dictation, Computer Use command,
+Quill turn, accepted Cotypist text or saved Chat evidence, with `kind`, stable `id`,
+`parentID`, event `date`, `title`, bounded `text`, `textIsTruncated` and a SHA-256
+`revision` of the original content. Optional `includedInputs` records the generation
+preferences; absence decodes as the legacy Time Turner + Meetings selection. These logical references cross database boundaries; there are no
 cross-database foreign keys. All supplied sources are dependencies, including
 those not cited in the final text. The body uses Codable; future additions must
 be backward compatible or explicitly migrate the version. Unsupported versions
 and malformed records fail visibly rather than silently resetting history.
 
-The store owns parameterized reads, atomic single-row replacement and deletion;
-call it off the main actor. Regeneration replaces the day's saved record only
-after valid generation. Provider changes do not alter already-saved attribution.
+Generation uses the shared `MuesliTaskRunner` with a recap-specific output validator.
+The scoped `search_history` tool can discover additional sources within the same day and enabled classes. Accepted results use the existing source snapshot format with generation-local citation IDs. The scoped `read_history` tool pages through issued sources. It adds no persisted tool transcript. Every supplied
+snapshot remains a dependency, even if an additional read is withheld for context
+limits. Optional fields preserve JSON version 1 compatibility.
+
+`time_turner_recap_history_sources` is a local dependency projection in `muesli.db`:
+`day_key`, `kind`, `source_id`, `parent_id`, primary key `(day_key, kind, source_id)`.
+Indexes on `(kind, source_id, day_key)` and `(kind, parent_id, day_key)` let source
+mutation triggers invalidate dependent recaps without scanning recap JSON.
+Recap insert/update triggers rebuild that row's projection; deletion clears it.
+The lazy writer migration atomically backfills existing bodies. Source edit and
+soft/hard-delete triggers cover dictations, Quill turns/conversations, Cotypist
+suggestions/sessions and Chat turns/sessions. Publication takes an immediate
+main-database transaction around source revalidation and insert, so a concurrent
+source mutation either precedes validation or invalidates the inserted recap.
+Read-time validation still checks indirect Chat meeting dependencies and the
+separate visual catalog. These projections do not create new CloudKit records.
+
+Recap-page Sources controls persist `recap_include_meetings` (default true),
+`recap_include_dictations`, `recap_include_commands`, `recap_include_quill`,
+`recap_include_cotypist` and `recap_include_chat` (new classes default false).
+Time Turner has no off switch in this selection. Preferences apply to future
+generations; saved recaps retain their evidence until regeneration or invalidation.
+Optional classes are read off the main actor, sampled at most twice in each of
+six day buckets (12 per class), and interleaved with screen/meeting evidence under
+the shared model budget. History source text is capped at 16 KB; the revision
+covers full original text. CUA includes input only, never traces; Cotypist includes
+accepted text only. Quill uses each turn's timestamp. Chat has no per-message date:
+it uses the conversation update date, explicitly warns that messages may be older,
+and withholds conversations with invalid meeting evidence or file-derived turns
+whose original attachments this adapter cannot validate.
+
+The store owns parameterized reads, transactional publication and deletion;
+call it off the main actor. A successful update archives the previous recap in
+the same table before replacing the current day row. All versions therefore use
+the same source projections, invalidation triggers, capture cleanup and search
+validation. Provider changes preserve the previous version and its attribution.
+The optional `inputFingerprint` hashes the model/backend, reasoning setting,
+selected classes, skill/format instructions, bounded opening packet and a
+streaming content digest of eligible records in the selected day (including
+unsampled records). Media paths are excluded from the inventory digest. Matching
+valid versions are reused without a generation call; task reminder changes are
+not new recap inputs. Existing legacy recaps have no fingerprint and are retained
+as versions on their first update. Explicit force generation bypasses reuse only
+after confirmation. The scheduler uses the same gate. Generation remains sampled,
+not exhaustive, even though the reuse digest checks the day's inventory.
+Task reconciliation and version publication are atomic. A failed update leaves
+the previous recap and user task state intact. Cancellation cleanup targets only
+the newly saved generation; older versions remain available.
 Source validation runs on load, before navigation and every five seconds while
 visible. Removed/missing captures or revised/deleted meetings invalidate the
 whole recap, remove its saved record and require explicit regeneration. Capture
@@ -891,3 +990,69 @@ Copy action until verification succeeds, and retry on the next poll. Closing or
 replacing the preview invalidates in-flight reads.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.
+
+
+### Shared history task access (no additional history tables)
+
+`MuesliHistoryAccess` and `MuesliHistoryReader` are shared by app history tasks and
+`muesli-cli history sample/read`. They reuse existing source tables and the screen
+catalog, not a copied history database. `MuesliHistorySource` preserves the existing
+recap history object's JSON keys and kind values; its revision includes the entire
+source text even when the returned text is truncated at 16 KB. CLI consumers must
+honor `textIsTruncated` and the packet's explicit partial-coverage notice.
+
+Versioned task definitions live in code (`MuesliHistoryTask`/`MuesliHistorySkill`),
+not in captured evidence or SQLite. Daily recap retains the existing dependency
+projection and deletion behavior above. Resume work, Project brief and Follow-ups invoked in Chat use ordinary
+persisted chat turns, history and evidence dependencies; they add no separate
+task-results table or CloudKit field. App/CLI sampling selects the same bounded source set and uses the same
+source validation. CLI exports are explicit commands; no background export occurs.
+
+Tagged skill requests are ordinary local meeting chat turns.
+Session JSON records `allowsRequestedMeetingDiscovery` for new implicit drafts. A manual scope choice clears it; older sessions without the field keep their existing scope. The per-turn discovery permission is stored in `skillRecentMeetingScope` for ordinary and tagged turns. Discovered title citations use the `title` source kind and the meeting revision. Model-supplied date filters are tool arguments scoped to a single call. Older turns may also carry their original selection in `composerScopeAtSend`.
+
+`skillTitle` and `skillRecentMeetingScope` capture the displayed skill and the
+allowed recent-meeting lookup scope. Older turns decode with both fields absent.
+Meeting citations use the existing dependency table. For day-history reads,
+`meeting_chat_history_dependencies(turn_id, kind, source_id, parent_id)` stores
+identities and propagates them to subsequent turns using that conversation.
+Source changes and the capture deletion outbox invalidate derived turns.
+
+
+General Chat history discovery uses `global_search_documents`, its FTS index, and Time Turner's existing OCR index. The temporary result handles and cursors live only for a provider attempt. The existing `meeting_chat_history_dependencies` table also accepts `quillSession`, `cotypistSession`, and `recap` for whole-source reads. Recap reads include the underlying source dependencies. Source invalidation applies to the saved answer and dependent conversation history. The dependency-removal trigger computes the transitive chat dependency closure before clearing answers; it does not rely on SQLite recursive triggers being enabled. The transaction-local worklist `meeting_chat_history_invalidations` snapshots affected turn/session IDs before any mutation, restricts rolling-summary and generated-title cleanup to those sessions, and is emptied before the trigger returns; it stores no content and is not a retrieval source. Trigger replacement runs in a write transaction so concurrent source mutations cannot bypass invalidation during migration.
+
+General Chat SQL materializes permitted columns into an ephemeral SQLite database. SQL meeting dependencies use kind `sqlMeeting`; edits or deletion invalidate dependent chat answers. No model-authored statement executes on a user database. Materialization, query execution and dependency publication share a ten-second work deadline and a 100,000-row projection ceiling (at most one extra row detects overflow); failed/cancelled dependency publication rolls back. The writer transaction has a two-second sub-budget and reuses its insert statement. These limits return an explicit query error, never partial aggregate results.
+
+### Time Turner generation and reminders
+
+AppConfig's optional `recap_model_selection` stores a feature-owned backend/model
+selection. Absence inherits meeting settings for compatibility. Explicit choices
+resolve through the shared provider catalog and request configuration; provider
+connections and credentials are reused without changing meeting or Computer Use
+preferences. Scheduled and manual recap generation use the same selection.
+`recap_schedule` (off/previous/today) and `recap_schedule_hour` (0–23) configure
+local-time recap generation while the app is running. Recap notifications open
+the Recap tab. Per-task reminders independently open To-dos, even with automatic
+recaps disabled. Both defer while locked, recording, in private mode, or while
+another notification is visible. Overdue reminders resume after wake or launch,
+with the next deadline based on delivery time rather than replaying missed intervals.
+Scheduled generation keeps a local UserDefaults lease (`timeTurner.scheduledRecapAttempt`) separate from successful notification delivery. Failures retry after five then ten minutes, up to three attempts per daily slot; abandoned leases expire after fifteen minutes. A concurrent manual generation does not consume an attempt. A validated manual recap generated after the first scheduled attempt satisfies delivery even during backoff or after retry exhaustion. Successful persisted or reused recaps complete generation; only a displayed notification marks delivery. This state is local-only and contains no source text.
+The model chooses the number of supported actions; the response validator retains
+a 64-insight safety bound and the provider's token budget.
+
+Recap generation and task reconciliation use the same prepared provider/model.
+Reconciliation reads all supported task identities in bounded, token-budgeted batches,
+including completed tasks and deletion markers that still have supporting recaps.
+Task matching is model-authored; deterministic publication only normalizes those
+identities and preserves live completion, deletion and reminder state. New identities
+or changed task titles during generation retry reconciliation up to twice without
+regenerating the recap evidence/summary. Publication still validates evidence and
+inventory atomically; continuous changes fail explicitly without publishing stale work.
+Deleted task markers prevent a matching generated task from being restored. They are
+not exposed as open tasks and disappear with their supporting records.
+
+SQL meeting dates are normalized to UTC using the same historical date parser as
+meeting retrieval (timezone-less legacy timestamps retain their existing local-time
+interpretation). A concurrent snapshot change returns a retryable tool error without
+attaching query evidence. Cancellation, invalid attempt ownership and revoked scope
+remain hard failures.

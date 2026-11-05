@@ -41,13 +41,13 @@ struct GemmaMeetingChatTests {
 
     @Test func nativeFramingRegistersDeclarationsAndReplaysActualToolResponses() throws {
         let id = String(repeating: "a", count: 64)
-        let arguments = "{\"document_id\":\"\(id)\"}"
-        let call: [String: Any] = ["type": "function_call", "name": "inspect_document", "call_id": "native-1", "arguments": arguments]
+        let arguments = "{\"document_id\":\"\(id)\",\"page\":null,\"offset\":0,\"end_page\":null}"
+        let call: [String: Any] = ["type": "function_call", "name": "read_document", "call_id": "native-1", "arguments": arguments]
         let output: [String: Any] = ["type": "function_call_output", "call_id": "native-1", "output": "{\"total_pages\":289}"]
         let prompt = try GemmaChatCodec.prompt(request(initial + [call, output]))
-        #expect(prompt.contains("<|tool>declaration:inspect_document"))
-        #expect(prompt.contains("<|tool_call>call:inspect_document{document_id:<|\"|>" + id))
-        #expect(prompt.contains("<|tool_response>response:inspect_document{value:"))
+        #expect(prompt.contains("<|tool>declaration:read_document"))
+        #expect(prompt.contains("<|tool_call>call:read_document{document_id:<|\"|>" + id))
+        #expect(prompt.contains("<|tool_response>response:read_document{value:"))
         #expect(prompt.contains("total_pages"))
         #expect(!prompt.contains("QUOTED TOOL HISTORY"))
         #expect(prompt.contains("nullable:true"))
@@ -83,7 +83,7 @@ struct GemmaMeetingChatTests {
     }
 
     @Test func sdkToolEventsPreserveTypedArgumentsAndNativeIDs() throws {
-        let call = ToolCall(function: .init(name: "read_full_meeting", arguments: ["meeting_id": .int(3), "page": .int(0)]), id: "model-call-id")
+        let call = ToolCall(function: .init(name: "read_history", arguments: ["handle": .string("meeting:3"), "offset": .int(0)]), id: "model-call-id")
         let response = try GemmaChatCodec.response(text: "", calls: [call], allowTools: true)
         #expect(response.calls.first?.id == "model-call-id")
         #expect(try MeetingChatNativeHarness.call(name: response.calls[0].name, arguments: response.calls[0].arguments) == .readMeeting(3, 0))
@@ -135,7 +135,7 @@ struct GemmaMeetingChatTests {
             return response
         }
         let (answer, _) = try await MeetingChatClient.run(
-            question: "Use inspect_document and read_document to inspect the attached file and report its exact verification phrase and item count. Use the file only.",
+            question: "Use read_document to inspect the attached file and report its exact verification phrase and item count. Use the file only.",
             evidence: evidence, history: [], config: config, sessionID: UUID(), generator: client,
             execute: { call, current in
                 calls.append(call)
@@ -175,10 +175,10 @@ private actor GemmaNativeProbe {
         count += 1
         let prompt = try GemmaChatCodec.prompt(request)
         if count == 1 {
-            #expect(prompt.contains("<|tool>declaration:inspect_document"))
-            return try GemmaChatCodec.response(text: "", calls: [.init(function: .init(name: "inspect_document", arguments: ["document_id": .string(String(repeating: "b", count: 64))]))], allowTools: true)
+            #expect(prompt.contains("<|tool>declaration:read_document"))
+            return try GemmaChatCodec.response(text: "", calls: [.init(function: .init(name: "read_document", arguments: ["document_id": .string(String(repeating: "b", count: 64)), "page": .null, "offset": .int(0), "end_page": .null]))], allowTools: true)
         }
-        #expect(prompt.contains("<|tool_response>response:inspect_document"))
+        #expect(prompt.contains("<|tool_response>response:read_document"))
         return try GemmaChatCodec.response(text: #"{"status":"conversation","markdown":"One page."}"#, calls: [], allowTools: request.allowTools)
     }
 }

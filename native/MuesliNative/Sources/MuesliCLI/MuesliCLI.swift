@@ -117,13 +117,13 @@ func appBundlePath() -> String? {
     return FileManager.default.fileExists(atPath: defaultPath) ? defaultPath : nil
 }
 
-func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL, warnings: [String] = [], nextCursor: String? = nil, hasMore: Bool? = nil) {
+func emitSuccess<T: Encodable>(command: String, data: T, dbPath: URL?, warnings: [String] = [], nextCursor: String? = nil, hasMore: Bool? = nil, dateEncodingStrategy: JSONEncoder.DateEncodingStrategy = .deferredToDate) {
     let envelope = SuccessEnvelope(
         command: command,
         data: data,
-        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath.path, warnings: warnings, nextCursor: nextCursor, hasMore: hasMore)
+        meta: MetaBody(schemaVersion: 1, generatedAt: timestampString(), dbPath: dbPath?.path ?? "", warnings: warnings, nextCursor: nextCursor, hasMore: hasMore)
     )
-    emitJSON(envelope)
+    emitJSON(envelope, dateEncodingStrategy: dateEncodingStrategy)
 }
 
 func emitFailure(command: String, error: ErrorBody, dbPath: URL?) {
@@ -135,9 +135,10 @@ func emitFailure(command: String, error: ErrorBody, dbPath: URL?) {
     emitJSON(envelope)
 }
 
-func emitJSON<T: Encodable>(_ value: T) {
+func emitJSON<T: Encodable>(_ value: T, dateEncodingStrategy: JSONEncoder.DateEncodingStrategy = .deferredToDate) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = dateEncodingStrategy
     do {
         let data = try encoder.encode(value)
         FileHandle.standardOutput.write(data)
@@ -331,7 +332,7 @@ struct MuesliCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "muesli-cli",
         abstract: "Agent-friendly CLI for local muesli meetings, dictations, and screen history.",
-        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self, TimeTurnerCommand.self]
+        subcommands: [SpecCommand.self, InfoCommand.self, ModelTermsCommand.self, TranscribeCommand.self, MeetingsCommand.self, DictationsCommand.self, TimeTurnerCommand.self, HistoryCommand.self, SkillsCommand.self]
     )
 
     static func main() async {
@@ -376,6 +377,10 @@ struct MuesliCLI: AsyncParsableCommand {
 
     static func specPayload() -> CommandSpecPayload {
         CommandSpecPayload(commands: [
+            .init(name: "skills list", usage: "muesli-cli skills list", summary: "List history skills and meeting templates available in Chat.", examples: ["muesli-cli skills list"]),
+            .init(name: "skills get", usage: "muesli-cli skills get <id> [--markdown] [--support-dir PATH]", summary: "Load full retrieval instructions and a task template; no execution or installation.", examples: ["muesli-cli skills get muesli-history --markdown", "muesli-cli skills get resume-work"]),
+            .init(name: "history sample", usage: "muesli-cli history sample --from <ISO8601> --until <ISO8601> [--sources <meetings,dictations,commands,quill,cotypist,chat>] [--query <topic>] [--support-dir <dir>]", summary: "Bounded cross-source evidence using the same retrieval and validation as app tasks. Screen history always included; partial coverage.", examples: ["muesli-cli history sample --from 2026-11-04T00:00:00Z --until 2026-11-05T00:00:00Z --sources meetings,dictations"]),
+            .init(name: "history read", usage: "muesli-cli history read <dictations|commands|quill|cotypist|chat> <id> [--support-dir <dir>]", summary: "Read current source text and revision, excluding stale/deleted evidence.", examples: ["muesli-cli history read dictations 42"]),
             .init(name: "time-turner history", usage: "muesli-cli time-turner history (--last <6h> | --from <ISO8601> --until <ISO8601> | --cursor <token>) [--app <bundle-id-or-name>] [--limit <1-1000>] [--support-dir <dir>]", summary: "Read chronological app/window observations and OCR with a fixed time range and paginated JSON; no model invocation.", examples: ["muesli-cli time-turner history --last 6h", "muesli-cli time-turner history --cursor TOKEN"]),
             .init(name: "time-turner search", usage: "muesli-cli time-turner search [--query <phrase>] [--from <ISO8601>] [--until <ISO8601>] [--app <bundle-id-or-name>] [--limit <1-1000>] [--cursor <token>] [--support-dir <dir>]", summary: "Search local screen OCR and source titles by capture time and app.", examples: ["muesli-cli time-turner search --query roadmap --app ChatGPT"]),
             .init(name: "time-turner get", usage: "muesli-cli time-turner get <id> [--output <new.png>] [--support-dir <dir>]", summary: "Read OCR and metadata; export the original still or exact archived frame as PNG for visual inspection.", examples: ["muesli-cli time-turner get CAPTURE_ID --output /tmp/capture.png"]),

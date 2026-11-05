@@ -65,6 +65,7 @@ final class MeetingNotificationController {
         title: String,
         subtitle: String,
         actionLabel: String = "Start Transcribing",
+        opensFromBody: Bool = false,
         meetingURL: URL? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
@@ -260,6 +261,16 @@ final class MeetingNotificationController {
             titleLabel.frame.size.width = textWidth
             subtitleLabel.frame.size.width = textWidth
 
+            if opensFromBody {
+                let bodyAction = NSButton(frame: NSRect(x: 0, y: 0, width: buttonX, height: cardHeight))
+                bodyAction.isBordered = false
+                bodyAction.isTransparent = true
+                bodyAction.title = ""
+                bodyAction.target = self
+                bodyAction.action = #selector(handleStartRecording)
+                bodyAction.setAccessibilityElement(false)
+                cardView.addSubview(bodyAction)
+            }
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
             startButton.font = AppFonts.font(size: 12, weight: .medium)
             startButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
