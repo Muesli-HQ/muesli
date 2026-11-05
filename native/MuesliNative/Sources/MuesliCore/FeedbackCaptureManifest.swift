@@ -25,11 +25,21 @@ public struct FeedbackCaptureTarget: Codable, Equatable, Sendable {
     /// Region coordinates are relative to the display's top-left in points.
     public let region: Frame?
     public let windowID: UInt32?
+    /// Initial window bounds in global display points, used to interpret saved input geometry.
+    public let windowFrame: Frame?
     public init(displayId: UInt32, frame: Frame, appName: String,
-                region: Frame? = nil, windowID: UInt32? = nil) {
+                region: Frame? = nil, windowID: UInt32? = nil, windowFrame: Frame? = nil) {
         mode = windowID != nil ? "window" : (region != nil ? "region" : "display")
         self.displayId = displayId; self.frame = frame; self.appName = appName
-        self.region = region; self.windowID = windowID
+        self.region = region; self.windowID = windowID; self.windowFrame = windowFrame
+    }
+    public var captureFrame: Frame {
+        if let windowFrame { return windowFrame }
+        if let region {
+            return .init(x: frame.x + region.x, y: frame.y + region.y,
+                         width: region.width, height: region.height, scale: region.scale)
+        }
+        return frame
     }
 }
 
@@ -43,6 +53,13 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     public var video: String?
     public var videoOffsetMs: Int64?
     public var audio: String?
+    public var transcript: FeedbackCaptureTranscript?
+    public var events: [FeedbackCaptureEvent] = []
+    public var strokes: [FeedbackCaptureStroke] = []
+    public var marks: [FeedbackCaptureMark] = []
+    public var inputGaps: [FeedbackCaptureInputGap] = []
+    public var keyframes: [FeedbackCaptureKeyframe] = []
+    public var contactSheet: String?
     public var failures: [FeedbackCaptureFailure]
     /// Also journaled before Finish, so crash recovery preserves sample zero.
     public var microphoneStartFrame: Int64?
@@ -62,13 +79,13 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
     }
     enum CodingKeys: String, CodingKey {
         case version, id, createdAtMs, durationMs, state, target, video, videoOffsetMs, audio, failures
-        case microphoneStartFrame, videoStartFrame
+        case microphoneStartFrame, videoStartFrame, transcript, events, strokes, marks, inputGaps, keyframes, contactSheet
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decode(Int.self, forKey: .version)
         guard version == 1 else {
-            throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported Scrawl capture version \(version)")
+            throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported Vidshot capture version \(version)")
         }
         id = try c.decode(String.self, forKey: .id)
         createdAtMs = try c.decode(Int64.self, forKey: .createdAtMs)
@@ -77,9 +94,26 @@ public struct FeedbackCaptureManifest: Codable, Equatable, Sendable {
         target = try c.decode(FeedbackCaptureTarget.self, forKey: .target)
         video = try c.decodeIfPresent(String.self, forKey: .video)
         audio = try c.decodeIfPresent(String.self, forKey: .audio)
+        // Transcript is derived metadata; corruption here must not hide retained media.
+        transcript = try? c.decode(FeedbackCaptureTranscript.self, forKey: .transcript)
         videoOffsetMs = try c.decodeIfPresent(Int64.self, forKey: .videoOffsetMs)
         microphoneStartFrame = try c.decodeIfPresent(Int64.self, forKey: .microphoneStartFrame)
         videoStartFrame = try c.decodeIfPresent(Int64.self, forKey: .videoStartFrame)
+        // These cached sidecars can be rebuilt from the event journal and media.
+        events = (try? c.decodeIfPresent([FeedbackCaptureEvent].self, forKey: .events)) ?? []
+        keyframes = (try? c.decodeIfPresent([FeedbackCaptureKeyframe].self, forKey: .keyframes)) ?? []
+        strokes = (try? c.decodeIfPresent([FeedbackCaptureStroke].self, forKey: .strokes)) ?? []
+        marks = (try? c.decodeIfPresent([FeedbackCaptureMark].self, forKey: .marks)) ?? []
+        // Input gaps have no rebuild source, so skip malformed entries individually.
+        var decodedInputGaps: [FeedbackCaptureInputGap] = []
+        if var inputGapEntries = try? c.nestedUnkeyedContainer(forKey: .inputGaps) {
+            while !inputGapEntries.isAtEnd {
+                guard let entry = try? inputGapEntries.superDecoder() else { break }
+                if let gap = try? FeedbackCaptureInputGap(from: entry) { decodedInputGaps.append(gap) }
+            }
+        }
+        inputGaps = decodedInputGaps
+        contactSheet = try? c.decode(String.self, forKey: .contactSheet)
         var decodedFailures: [FeedbackCaptureFailure] = []
         if var failureEntries = try? c.nestedUnkeyedContainer(forKey: .failures) {
             while !failureEntries.isAtEnd {

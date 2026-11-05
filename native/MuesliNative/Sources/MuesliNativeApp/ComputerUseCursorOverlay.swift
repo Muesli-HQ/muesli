@@ -51,18 +51,7 @@ final class ComputerUseCursorOverlay {
     }
 
     private func makePanel(size: CGSize) -> NSPanel {
-        let panel = NSPanel(
-            contentRect: CGRect(origin: .zero, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = false
-        panel.ignoresMouseEvents = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let panel = makeClickThroughOverlayPanel(frame: CGRect(origin: .zero, size: size))
         panel.contentView = ComputerUseCursorOverlayView(frame: CGRect(origin: .zero, size: size))
         return panel
     }
@@ -106,4 +95,18 @@ private final class ComputerUseCursorOverlayView: NSView {
         NSColor.white.setFill()
         NSBezierPath(ovalIn: bounds.insetBy(dx: 9, dy: 9)).fill()
     }
+}
+
+/// Shared passive panel construction; content and lifecycle stay with each overlay.
+@MainActor
+func makeClickThroughOverlayPanel(frame: CGRect) -> NSPanel {
+    let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.backgroundColor = .clear
+    panel.isOpaque = false
+    panel.hasShadow = false
+    panel.ignoresMouseEvents = true
+    panel.level = .statusBar
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    return panel
 }

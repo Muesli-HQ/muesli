@@ -63,8 +63,11 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
             } else {
                 let point = CGPoint(x: screenTarget.frame.x + end.x, y: screenTarget.frame.y + end.y)
                 guard let window = windowAt(point), window.selectable else { cancel(); return }
+                let bounds = window.bounds
+                let windowFrame = FeedbackCaptureTarget.Frame(x: bounds.minX, y: bounds.minY,
+                    width: bounds.width, height: bounds.height, scale: screenTarget.frame.scale)
                 choose(.init(displayId: screenTarget.displayId, frame: screenTarget.frame,
-                             appName: window.appName, windowID: window.id))
+                             appName: window.appName, windowID: window.id, windowFrame: windowFrame))
             }
         }
         override func draw(_ dirtyRect: NSRect) {

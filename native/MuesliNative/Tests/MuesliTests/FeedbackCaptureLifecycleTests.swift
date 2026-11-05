@@ -52,7 +52,7 @@ private final class FeedbackPickerFixture: FeedbackCaptureSelecting {
     func cancel() { completion?(nil) }
 }
 
-@Suite("Scrawl lifecycle", .serialized)
+@Suite("Vidshot lifecycle", .serialized)
 @MainActor
 struct FeedbackCaptureLifecycleTests {
     private func waitUntil(description: String = "capture lifecycle", _ predicate: () -> Bool) async throws {
@@ -81,6 +81,44 @@ struct FeedbackCaptureLifecycleTests {
             picker.completion?(feedbackTarget()) // A retired picker may never start a capture.
             #expect(mic.starts == 0)
             #expect((try? store.list())?.isEmpty == true)
+        }
+    }
+
+    @Test func recoveredInkOnlyCapturePresentsRetainedMarksWithoutMissingMedia() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var manifest = try store.begin(target: feedbackTarget())
+            var data = Data()
+            for stroke in [feedbackStroke(100), feedbackStroke(1500, pin: 1)] {
+                data.append(try JSONEncoder().encode(FeedbackCaptureJournalRecord.stroke(stroke))); data.append(10)
+            }
+            try data.write(to: store.mediaURL(id: manifest.id, path: "events.jsonl"))
+            let recovered = store.reconcileMedia(manifest, audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            try #require(recovered.retainsContent && recovered.manifest.marks.count == 2)
+            manifest = recovered.manifest; manifest.state = .recovered
+            try store.publish(manifest); store.release(id: manifest.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"),
+                supportDirectory: root, observeSystem: false)
+            _ = await controller.reload(requestedID: manifest.id)
+            _ = NSApplication.shared
+            let attribute = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+            let previous = NSApp.accessibilityAttributeValue(attribute)
+            NSApp.accessibilitySetValue(true, forAttribute: attribute)
+            defer { NSApp.accessibilitySetValue(previous, forAttribute: attribute) }
+            let panel = FeedbackCapturePillTests.HiddenPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            let hosting = NSHostingView(rootView: FeedbackCaptureView(controller: controller, selectedID: manifest.id))
+            panel.contentView = hosting
+            defer { panel.contentView = nil; panel.close() }
+            let fixture = FeedbackCapturePillTests()
+            try await waitUntil {
+                fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled() }
+            }
+            let text = fixture.accessibilityElements(hosting).flatMap {
+                [$0.accessibilityLabel(), $0.accessibilityValue() as? String].compactMap { $0 }
+            }.joined(separator: "\n")
+            for mark in manifest.marks { #expect(text.contains(mark.description)) }
+            #expect(!text.contains("Saved media file is missing"))
+            #expect(!text.contains("Media unavailable"))
         }
     }
 
@@ -320,6 +358,7 @@ struct FeedbackCaptureLifecycleTests {
             let subject = try shortcutController(root: root, monitor: monitor, capture: capture,
                 menuRefresh: { menuOwnership.append(capture.ownsMicrophone) }, indicator: indicator)
             _ = subject.feedbackCapture // Wire the actual owner's monitor, presentation and release callbacks.
+            capture.finalizer.stages = [] // This control fixture must not invoke installed speech models.
             subject.handleFeedbackCaptureToggle(permissions: { granted }, device: { nil })
             try await waitUntil { capture.state?.isRecording == true }
             #expect(menuOwnership == [true], "Accepted Start refreshes menu ownership once")
@@ -480,8 +519,9 @@ struct FeedbackCaptureLifecycleTests {
         }
     }
 
-    @Test func processingDeadlineKeepsJournalAndLateCompletionPreservesNewWarning() async throws {
-        try await withFeedbackStoreAsync { _, root in
+    @Test(arguments: [false, true])
+    func processingDeadlineKeepsJournalAndLateCompletionPreservesNewWarning(recover: Bool) async throws {
+        try await withFeedbackStoreAsync { store, root in
             var resume: CheckedContinuation<Void, Never>?
             let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
                 pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
@@ -490,28 +530,43 @@ struct FeedbackCaptureLifecycleTests {
             controller.finalizer.stages = [.init(name: .render, run: { _, _ in
                 await withCheckedContinuation { resume = $0 }
             })]
-            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
-            try await waitUntil { controller.state?.isRecording == true }
-            #expect(await controller.finishAndReleaseMicrophone())
+            let recovery: Task<Void, Never>?
+            if recover {
+                let manifest = try store.begin(target: feedbackTarget())
+                try WavWriter.writeWAV(samples: Array(repeating: Float(0), count: 1600),
+                    to: store.mediaURL(id: manifest.id, path: "narration.wav"))
+                store.release(id: manifest.id)
+                recovery = Task { await controller.recover() }
+            } else {
+                recovery = nil
+                #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+                try await waitUntil { controller.state?.isRecording == true }
+                #expect(await controller.finishAndReleaseMicrophone())
+            }
             try await waitUntil { resume != nil }
-            let processingPresentation = controller.presentationID
-            let processingID = controller.presentedCaptureID
-            var notice: FeedbackCapturePillState?
-            controller.onStateChanged = { notice = $0 }
-            #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
-            #expect(notice == .busy(activity: "Wait for feedback processing"))
-            #expect(controller.state == .processing)
-            #expect(controller.presentationID == processingPresentation && controller.presentedCaptureID == processingID)
+            if !recover {
+                let processingPresentation = controller.presentationID
+                let processingID = controller.presentedCaptureID
+                var notice: FeedbackCapturePillState?
+                controller.onStateChanged = { notice = $0 }
+                #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+                #expect(notice == .busy(activity: "Wait for feedback processing"))
+                #expect(controller.state == .processing)
+                #expect(controller.presentationID == processingPresentation && controller.presentedCaptureID == processingID)
+            }
             #expect(!(await controller.shutdown()))
-            #expect(!controller.ownsMicrophone && controller.hasAttempt)
-            let id = try #require(controller.presentedCaptureID)
-            let pendingFinalization = FeedbackCapturePillState.failed(stage: "Media finalization",
-                message: "Finalization is still pending", retainedMedia: true)
-            try await waitUntil(description: "pending finalization warning") { controller.state == pendingFinalization }
+            #expect(!controller.ownsMicrophone && controller.hasAttempt == !recover)
+            let id = try #require(recover ? controller.records.first?.id : controller.presentedCaptureID)
+            if !recover {
+                let pendingFinalization = FeedbackCapturePillState.failed(stage: "Media finalization",
+                    message: "Finalization is still pending", retainedMedia: true)
+                try await waitUntil(description: "pending finalization warning") { controller.state == pendingFinalization }
+            }
             #expect(throws: (any Error).self) { try controller.store?.delete(id: id) }
             let denied = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: false)
             #expect(!controller.start(permissions: denied, busyActivity: nil, device: { nil }))
             resume?.resume()
+            await recovery?.value
             try await waitUntil { !controller.hasAttempt }
             #expect(controller.state == .blocked(permission: "Screen Recording"))
         }
@@ -584,6 +639,54 @@ struct FeedbackCaptureLifecycleTests {
             }
             try await controller.delete(id: damaged.id)
             #expect(try store.get(id: damaged.id) == nil)
+            await controller.shutdown()
+        }
+    }
+
+    @Test func failedRecoveryRefreshesDeleteAvailabilityForUnchangedProcessingRow() async throws {
+        try await withFeedbackStoreAsync { _, root in
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"),
+                supportDirectory: root, observeSystem: false)
+            let store = try #require(controller.store)
+            var interrupted = try store.begin(target: feedbackTarget())
+            interrupted.state = .processing
+            try store.checkpoint(interrupted)
+            try store.save(interrupted)
+            #expect(store.isActive(id: interrupted.id))
+            #expect(await controller.reload(requestedID: interrupted.id))
+
+            _ = NSApplication.shared
+            let attribute = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+            let previous = NSApp.accessibilityAttributeValue(attribute)
+            NSApp.accessibilitySetValue(true, forAttribute: attribute)
+            defer { NSApp.accessibilitySetValue(previous, forAttribute: attribute) }
+            let panel = FeedbackCapturePillTests.HiddenPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            let hosting = NSHostingView(rootView: FeedbackCaptureView(controller: controller, selectedID: interrupted.id))
+            panel.contentView = hosting
+            defer { panel.contentView = nil; panel.close(); store.release(id: interrupted.id) }
+
+            let fixture = FeedbackCapturePillTests()
+            try await waitUntil(description: "processing detail loads while recovery owns the capture") {
+                let elements = fixture.accessibilityElements(hosting)
+                guard let delete = elements.first(where: { $0.accessibilityLabel() == "Delete…" }) else { return false }
+                return !delete.isAccessibilityEnabled()
+                    && !elements.contains { $0.accessibilityRole() == .progressIndicator || $0.accessibilityRole() == .busyIndicator }
+            }
+            #expect(store.isActive(id: interrupted.id))
+
+            try Data("not json".utf8).write(to: try store.mediaURL(id: interrupted.id, path: "unfinished.json"))
+            store.release(id: interrupted.id)
+            await controller.recover()
+
+            #expect(!store.isActive(id: interrupted.id))
+            #expect(!controller.hasAttempt)
+            #expect(controller.records.first { $0.id == interrupted.id }?.state == .processing)
+            try await waitUntil(description: "Delete becomes available after failed recovery") {
+                fixture.accessibilityElements(hosting).contains {
+                    $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled()
+                }
+            }
             await controller.shutdown()
         }
     }

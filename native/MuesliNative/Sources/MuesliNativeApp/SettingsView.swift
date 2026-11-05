@@ -2325,6 +2325,7 @@ struct SettingsView: View {
                 settingsRow("Enable Vidshot", description: "Record a window or screen region with microphone narration. Captures stay on this Mac.") {
                     settingsControl("feedback_capture")
                 }
+                settingsRow("Draw modifier") { settingsControl("feedback_capture_draw_modifier") }
                 HStack {
                     compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
                         .disabled(!appState.config.enableFeedbackCapture)

@@ -3,7 +3,7 @@ import SwiftUI
 import Testing
 @testable import MuesliNativeApp
 
-@Suite("Scrawl pill", .serialized)
+@Suite("Vidshot pill", .serialized)
 @MainActor
 struct FeedbackCapturePillTests {
     /// A private fixture: construct/layout real controller content without showing a window.
@@ -36,6 +36,22 @@ struct FeedbackCapturePillTests {
         try body(indicator, notch, { created })
     }
 
+    @Test("Ready Copy is wired through both indicator styles", arguments: [IndicatorAnchor.bottomCenter, .notch])
+    func readyCopyCallback(anchor: IndicatorAnchor) throws {
+        var config = AppConfig(); config.indicatorAnchor = anchor
+        try withIndicators(config: config) { indicator, _, created in
+            var copies = 0
+            indicator.showFeedbackCapture(.readyToCopy(partial: "frames failed"), config: config,
+                power: { -160 }, finish: {}, discard: {}, open: {}, repairPermission: {}, copy: { copies += 1 })
+            let hosting = try #require(created().first?.contentView as? NSHostingView<FeedbackCapturePillView>)
+            hosting.layoutSubtreeIfNeeded()
+            let button = try #require(accessibilityElements(hosting).first { $0.accessibilityRole() == .button && $0.accessibilityLabel() == "Copy" })
+            #expect(button.isAccessibilityEnabled())
+            #expect(button.accessibilityPerformPress())
+            #expect(copies == 1)
+        }
+    }
+
     @Test func styleTransitionRetiresOnlyPreviousFeedbackSurface() throws {
         try withIndicators { indicator, notch, created in
             let screen = try #require(NSScreen.main)
@@ -64,7 +80,7 @@ struct FeedbackCapturePillTests {
         }
     }
 
-    @Test("floating Scrawl pill stays within the visible frame at a trailing-edge anchor")
+    @Test("floating Vidshot pill stays within the visible frame at a trailing-edge anchor")
     func floatingPillStaysWithinVisibleFrameAtTrailingEdge() throws {
         var config = AppConfig(); config.indicatorAnchor = .midTrailing
         try withIndicators(config: config) { indicator, _, created in

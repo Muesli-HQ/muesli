@@ -602,7 +602,7 @@ sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreig
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
 
-### Scrawl captures (local-only)
+### Vidshot captures (local-only)
 
 `FeedbackCaptureStore.migrate(db:)` runs from `DictationStore.migrateIfNeeded()`.
 The idempotent migration creates `feedback_captures` and the
@@ -611,8 +611,8 @@ The idempotent migration creates `feedback_captures` and the
 - `id TEXT PRIMARY KEY`, `created_at REAL` (Unix seconds), `duration_ms INTEGER`;
 - `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
 - `bundle_path TEXT`, relative to the support directory;
-- `title TEXT`, initially the starting app name, never a window title;
-- `body TEXT`, a small JSON projection with `keyframeCount` and `targetApp`.
+- `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
+- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
 
 Captures have no meeting/dictation foreign key and never enter CloudKit, search,
 telemetry, or automatic exports. Media lives in mode-0700
@@ -621,9 +621,25 @@ uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
 Readers ignore unknown fields and reject unsupported versions. Future produced
 payloads must decode older slice-1 manifests without requiring those fields.
 The optional target `region` is in display-relative points and `windowID` identifies
-the selected window for the recording attempt. Older targets omit both and remain
-display captures. Neither field changes the database projection or is used to
-reacquire a window during recovery.
+the selected window for the recording attempt; optional `windowFrame` stores
+its initial bounds. Older targets without these fields remain display captures.
+These fields do not change the database projection or reacquire a window during recovery.
+
+Readers ignore unknown fields and reject unsupported versions. Version 1 also
+contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional
+`contactSheet`; older manifests decode without these fields. Event coordinates
+are normalized to the selected region or window with a top-left origin; window
+coordinates track its current bounds. Legacy display captures use the display.
+Events are tagged
+`click`, `drag`, or `scroll`, with capture-relative millisecond times. Keyframes
+store `index`, decoded capture time `t`, `reason`, relative `file`, optional
+`eventIndex`, `said`, and a half-open `saidRange {from,to}` into transcript words.
+Malformed optional sidecars are tolerated independently: rebuildable `events`,
+`keyframes`, and `contactSheet` fall back to empty or nil, while malformed
+`inputGaps` entries are skipped individually.
+Action anchors drive narration partitioning separately from decoded frame times.
+All artifact paths pass the store's bundle containment checks. The row's
+`keyframeCount` reflects the published frames, including partial render results.
 
 Before capture, `unfinished.json` journals the manifest atomically. The first
 microphone host frame and first accepted video host frame are checkpointed as
@@ -633,9 +649,17 @@ still-finalizing bundles remain owned until actual writer completion. Recovery
 independently repairs complete surviving PCM samples and validates fragmented
 video through the same media reconciliation used at Finish. Each probe records
 its own failure; one cannot suppress the other. It preserves partial or uncertain
-media and reconciles rows idempotently. Only an interrupted bundle proven
-empty is removed. Journal-backed captures remain openable after row publication
-fails. Deletion uses the store, removes files
+media and claims interrupted bundles for the same finalizer. The journal remains
+while missing transcription resumes, and checkpointed transcripts are reused.
+Complete surviving `events.jsonl` records are replayed and merged; a truncated
+tail records an `events` failure without discarding earlier usable events.
+Event-only bundles retain ownership, contribute to duration, and enter the same
+finalizer even without playable media. Unknown contents still prevent deletion.
+Completion publishes `recovered` before retiring the journal. Each bundle reports
+recovery errors independently; successfully claimed bundles retain ownership and
+continue finalization even when a sibling fails. Inference holds no store lock.
+Only an interrupted bundle proven empty is removed. Journal-backed captures remain
+openable after row publication fails. Deletion uses the store, removes files
 before its row, and leaves failures visible for retry. No ad hoc SQL cleanup.
 Quill Timeline reads isolate malformed `quill_conversation_turns.body` JSON:
 readable turns remain visible. When both preview endpoints are damaged but
@@ -926,3 +950,47 @@ Copy action until verification succeeds, and retry on the next poll. Closing or
 replacing the preview invalidates in-flight reads.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.
+
+
+The optional version-1 `transcript` contains `source`, optional `model`, `text`,
+`words` and `segments` (`t0`, `t1`, `text`), `estimated`, and optional
+`missing.reason`. Times are integer milliseconds from narration WAV sample zero,
+independent of `videoOffsetMs`. Older manifests omit it; no SQL migration or
+backfill is needed. Store publication maintains title and body projections.
+Narration uses disjoint quiet chunks of at most eight seconds, each decoded once.
+Complete measured words are retained; incomplete chunks estimate their full text.
+Decoder-only padding to 300 ms never extends source-time bounds.
+Missing audio/model, empty output, cancellation, timeout, and decoding errors
+retain playable media and record a named transcription failure. Narration and
+model identifiers remain local-only and do not enter sync or telemetry.
+
+Finalization prepares thumbnails alongside transcription, selects and annotates
+frames under `frames/`, writes `contact-sheet.png`, then atomically writes
+`summary.md` before publication. Thumbnail and render deadlines cancel native
+decoding and reject its late results. Failed illustrations leave narration in
+the summary as unillustrated text. Automatic clipboard delivery follows durable
+publication only when the clipboard is unchanged since Finish; explicit Copy
+reads the saved summary. Recovery regenerates local artifacts without automatic
+copying. Clipboard delivery state is transient and is not a manifest promise.
+
+Slice 4 adds default-empty version-1 `strokes` and `marks`, and optional keyframe
+`markId`; absent fields remain backward compatible. A stroke stores capture-time
+`t0/t1`, point-space target dimensions `fw/fh`, optional numbered `pin`, and flat
+integer `pts` triples `[x,y,dtMs,…]` with x/y in 0…10000 and time from `t0`.
+Marks store stable replay-derived IDs, stroke indexes, time bounds, normalized
+bounding boxes, optional pin, description, and optional relative `frame`.
+Shared mark frames and individual keyframe files use the same containment checks.
+Only successfully written frames retain links. Strokes/marks remain local-only.
+
+The mixed event journal preserves old pointer records and adds tagged stroke,
+undo, and input-gap transitions. New undo records include an optional `stroke`
+target using the existing stroke value. Targeted undo removes only that surviving
+stroke; a missing or invalid preceding stroke cannot redirect it to earlier ink.
+Older time-only undo records retain their last-stroke behavior without a migration.
+Recovery applies operations in append order, retains complete records around
+invalid records/truncated tails, closes an open Secure Input interval at recovered
+capture end, and deterministically rebuilds marks from surviving strokes.
+Stroke-only captures retain content and contribute to duration. Existing SQL
+columns, title/body projection, version, and migration remain unchanged.
+Old configuration defaults the canonical
+`feedback_capture_draw_modifier` setting to `shift`.

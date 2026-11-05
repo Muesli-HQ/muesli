@@ -20,7 +20,7 @@ enum ShortcutAssignment: String, CaseIterable {
         case .computerUse: "Computer use shortcut key"
         case .quil: "Quill shortcut key"
         case .meetingRecording: "Meeting recording shortcut key"
-        case .feedbackCapture: "Scrawl shortcut key"
+        case .feedbackCapture: "Vidshot shortcut key"
         }
     }
 
