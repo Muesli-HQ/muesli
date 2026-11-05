@@ -474,17 +474,18 @@ extension MuesliController {
                 self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
             }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
-               requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
+               requestPermission: self.showPermissionsSettings,
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
             _ = self.setDictionaryCorrectionPromptsFromToggle($0)
         }
         toggle("app_context", "App context", \.enableScreenContext,
-               requestPermission: { _ = self.requestScreenContextEnable() },
+               requestPermission: self.showPermissionsSettings,
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable app context." : nil }) { enabled in
             if enabled { _ = self.requestScreenContextEnable() }
             else { self.updateConfig { $0.enableScreenContext = false; $0.enableDictationOCRContext = false } }
         }
         toggle("ocr_context", "Screen OCR context for dictation", \.enableDictationOCRContext,
+               requestPermission: self.showPermissionsSettings,
                unavailable: { enabled in
             guard enabled else { return nil }
             if !self.config.enableScreenContext { return "Enable app context first." }
@@ -543,6 +544,7 @@ extension MuesliController {
         menu("cotypist_word_pause", "Cotypist pause before completing a word", CotypistWordPause.allCases,
              \.cotypistWordPause, title: \.label, unavailable: { _ in cotypistMissing })
         toggle("cotypist_screen_context", "Cotypist uses on-screen text", \.cotypistUseScreenContext,
+               requestPermission: self.showPermissionsSettings,
                unavailable: { cotypistMissing ?? ($0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil) })
 
         add("dictation_provider", "Dictation provider", DictationProvider.allCases.map { .init(id: $0.rawValue, label: $0.label) },

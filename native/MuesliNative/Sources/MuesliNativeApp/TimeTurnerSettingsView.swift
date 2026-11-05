@@ -195,17 +195,23 @@ struct TimeTurnerSetupView: View {
             } else if step == 1 {
                 Text(ready ? "You're already set" : "A couple of permissions").font(MuesliTheme.font(.title).bold())
                 Text(ready ? "Muesli already has the permissions Time Turner needs. No need to grant them again." : "Allow the missing permissions below, then return here. We'll check again automatically.").foregroundStyle(.secondary)
-                permissionRow("Screen Recording", detail: "Save an image of the focused window.", granted: screen) {
-                    if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
+                permissionRow(.screenRecording, detail: "Save an image of the focused window.", granted: screen) {
+                    FeaturePermission.screenRecording.request()
                     refresh()
                 }
-                permissionRow("Accessibility", detail: "Identify the focused window and help detect secure fields.", granted: accessibility) {
-                    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    if !AXIsProcessTrustedWithOptions(options) { openPrivacy("Privacy_Accessibility") }
+                permissionRow(.accessibility, detail: "Identify the focused window and help detect secure fields.", granted: accessibility) {
+                    FeaturePermission.accessibility.request()
                     refresh()
                 }
                 Text("If macOS asks you to quit and reopen Muesli, do that, then return to setup. Your choices are saved. OCR needs no separate permission.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                Button("Check again", action: refresh)
+                HStack {
+                    Button("Check again", action: refresh)
+                    Spacer()
+                    Button("Manage permissions") {
+                        dismiss()
+                        controller.showPermissionsSettings()
+                    }
+                }
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -249,15 +255,15 @@ struct TimeTurnerSetupView: View {
         if screen != nextScreen { screen = nextScreen }
         if accessibility != nextAccessibility { accessibility = nextAccessibility }
     }
-    private func openPrivacy(_ pane: String) {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
-    }
-    private func permissionRow(_ title: String, detail: String, granted: Bool, request: @escaping () -> Void) -> some View {
+    private func permissionRow(_ permission: FeaturePermission, detail: String, granted: Bool, request: @escaping () -> Void) -> some View {
         HStack {
             Image(systemName: granted ? "checkmark.circle.fill" : "circle").foregroundStyle(granted ? Color.green : Color.secondary)
-            VStack(alignment: .leading) { Text(title).bold(); Text(detail).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary) }
+            VStack(alignment: .leading) { Text(permission.rawValue).bold(); Text(detail).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary) }
             Spacer()
-            if granted { Text("Allowed").font(MuesliTheme.font(.caption)) } else { Button("Allow…", action: request) }
+            if granted { Text("Allowed").font(MuesliTheme.font(.caption)) }
+            else {
+                Button("Allow…", action: request)
+            }
         }.padding(14).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
     private func enable() {

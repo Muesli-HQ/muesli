@@ -463,6 +463,7 @@ struct SettingsView: View {
                 stopPermissionMonitoring()
             }
             .onChange(of: appState.selectedTab) { _, tab in
+                if tab != .settings { appState.requestsPermissionsSettings = false }
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
                     refreshDownloadedModelOptions(force: true)
@@ -474,11 +475,23 @@ struct SettingsView: View {
                 selectedPane = pane
             }
             .onChange(of: selectedPane) { _, pane in
+                if pane != .general { appState.requestsPermissionsSettings = false }
                 appState.selectedSettingsPane = pane
                 calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
+            }
+            .task(id: appState.requestsPermissionsSettings && selectedPane == .general && appState.selectedTab == .settings) {
+                guard appState.requestsPermissionsSettings, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                await Task.yield()
+                guard !Task.isCancelled, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { scrollProxy.scrollTo("settings.permissions", anchor: .top) }
+                appState.requestsPermissionsSettings = false
             }
             .task(id: SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)) {
                 let request = SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)
@@ -3140,35 +3153,28 @@ struct SettingsView: View {
             permissionStatusRow(
                 "Microphone",
                 granted: micGranted,
-                action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
+                action: FeaturePermission.microphone.request,
                 pane: "Privacy_Microphone"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Accessibility",
                 granted: accessibilityGranted,
-                action: {
-                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    AXIsProcessTrustedWithOptions(opts)
-                },
+                action: FeaturePermission.accessibility.request,
                 pane: "Privacy_Accessibility"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Input Monitoring",
                 granted: inputMonitoringGranted,
-                action: {
-                    if !CGRequestListenEventAccess() {
-                        openPrivacyPane("Privacy_ListenEvent")
-                    }
-                },
+                action: FeaturePermission.inputMonitoring.request,
                 pane: "Privacy_ListenEvent"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Screen Recording",
                 granted: screenRecordingGranted,
-                action: { CGRequestScreenCaptureAccess() },
+                action: FeaturePermission.screenRecording.request,
                 pane: "Privacy_ScreenCapture"
             )
             if appState.config.useCoreAudioTap {
@@ -3202,6 +3208,7 @@ struct SettingsView: View {
                     .padding(.bottom, MuesliTheme.spacing4)
             }
         }
+        .id("settings.permissions")
     }
 
     @ViewBuilder

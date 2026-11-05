@@ -173,6 +173,54 @@ struct InteractionPermissionMonitorTests {
         ))
     }
 
+    @Test("Recording permission checks are scoped to capture and pasting, not hotkeys or screen history")
+    func recordingPermissions() {
+        var permissions = OnboardingPermissionSnapshot(microphone: false, accessibility: false,
+            inputMonitoring: false, systemAudio: false, screenRecording: false)
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: false) == .microphone)
+        permissions.microphone = true
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: false) == nil)
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: true) == .accessibility)
+        permissions.accessibility = true
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: true) == nil)
+        #expect(FeaturePermission.missingForScreenHistory(screen: true, accessibility: false) == .accessibility)
+        #expect(FeaturePermission.missingForScreenHistory(screen: false, accessibility: true) == .screenRecording)
+        #expect(FeaturePermission.missingForScreenHistory(screen: true, accessibility: true) == nil)
+    }
+
+    @Test("A failed System Audio request can observe a later grant on return from Settings")
+    @MainActor
+    func systemAudioGrantAfterDenial() async {
+        let check = SystemAudioPermissionCheck(read: { true }, requestAccess: { false })
+        var results: [Bool] = []
+        check.check(request: true) { results.append($0) }
+        #expect(await waitUntil { !check.isChecking })
+        #expect(results == [false])
+        check.check { results.append($0) }
+        #expect(await waitUntil { !check.isChecking })
+        #expect(results == [false, true])
+    }
+
+    @Test("Leaving permission setup cancels delivery and permits another attempt")
+    @MainActor
+    func systemAudioCancelledCompletion() async {
+        let gate = PermissionCheckContinuation()
+        let check = SystemAudioPermissionCheck(read: { true }, requestAccess: { await gate.wait() })
+        var results: [Bool] = []
+        check.check(request: true) { results.append($0) }
+        check.check(request: true) { results.append($0) }
+        #expect(check.isChecking)
+        check.cancel()
+        #expect(!check.isChecking)
+        check.check { results.append($0) }
+        #expect(await waitUntil { results == [true] })
+        await gate.finish(false)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(results == [true])
+        #expect(!check.isChecking)
+        #expect(await gate.calls <= 1)
+    }
+
     @MainActor
     private func waitUntil(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<100 {
@@ -183,5 +231,21 @@ struct InteractionPermissionMonitorTests {
             try? await Task.sleep(for: .milliseconds(5))
         }
         return condition()
+    }
+}
+
+private actor PermissionCheckContinuation {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var result: Bool?
+    private(set) var calls = 0
+    func wait() async -> Bool {
+        calls += 1
+        if let result { return result }
+        return await withCheckedContinuation { continuation = $0 }
+    }
+    func finish(_ value: Bool) {
+        result = value
+        continuation?.resume(returning: value)
+        continuation = nil
     }
 }

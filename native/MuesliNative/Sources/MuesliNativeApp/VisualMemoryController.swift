@@ -30,6 +30,8 @@ final class VisualMemoryController {
     var catalogRevision = 0
     var message: String?
     var messageMeetingID: Int64?
+    var recordingNeedsScreenPermission = false
+    var ambientMissingPermission: FeaturePermission?
     private var recordedSessions: Set<UUID> = []
     private var sessionClipIDs: [UUID: Set<String>] = [:]
     private var recordingSessionID: UUID?
@@ -253,6 +255,7 @@ final class VisualMemoryController {
     func requestRecording(meetingID: Int64, sessionID: UUID, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
         guard recordingMeetingID == nil, !isPreparing, !isFinalizing else { return }
         isPreparing = true; message = nil; messageMeetingID = meetingID; token = UUID()
+        recordingNeedsScreenPermission = false
         let attempt = token
         startTask = Task {
             defer { if token == attempt { isPreparing = false } }
@@ -260,6 +263,7 @@ final class VisualMemoryController {
                 await initializationTask?.value
                 guard token == attempt, isStillActive() else { return }
                 guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+                    recordingNeedsScreenPermission = true
                     throw ScreenVideoRecorder.error("Allow Screen Recording in System Settings, then try again.")
                 }
                 let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -522,7 +526,13 @@ final class VisualMemoryController {
         guard ProcessInfo.processInfo.thermalState != .serious, ProcessInfo.processInfo.thermalState != .critical else {
             ambientStatus = "Paused to reduce heat"; return
         }
-        guard CGPreflightScreenCaptureAccess() else { ambientStatus = "Screen Recording permission needed"; return }
+        ambientMissingPermission = FeaturePermission.missingForScreenHistory(
+            screen: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
+        if let missing = ambientMissingPermission {
+            ambientStatus = "\(missing.rawValue) permission needed"
+            lastFingerprint = nil
+            return
+        }
         guard let store, let app = NSWorkspace.shared.frontmostApplication,
               let bundle = app.bundleIdentifier else { return }
         let excluded = [Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"]

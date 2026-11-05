@@ -64,6 +64,16 @@ disabled. Capture, exclusions, storage/retention controls and their status detai
 appear once enabled. Hiding these controls does not change saved options or the
 retention lifecycle. The explicit setup flow still explains capture before enablement.
 
+### Permission recovery
+
+Permission setup offers Set up later and finishes on Timeline. Completed onboarding
+never makes dashboard navigation depend on recording permissions. Block only the
+requested capture or paste action, with Open permissions and Not now actions.
+Post-onboarding recovery opens Settings → General and scrolls directly to Permissions.
+Feature controls show the missing prerequisite beside Review access, including when
+a previously enabled feature loses permission. Guided setup retains a visible exit
+and a Manage permissions action; returning refreshes permission state.
+
 ### Recording interactions
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
