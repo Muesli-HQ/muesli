@@ -7,13 +7,13 @@
         <!-- Items are added by scripts/release-preprod.sh -->
         <item>
             <title>0.8.6-preprod.2</title>
-            <pubDate>Thu, 05 Nov 2026 18:35:37 +0530</pubDate>
+            <pubDate>Thu, 05 Nov 2026 19:34:09 +0530</pubDate>
             <description><![CDATA[
 <h2>muesli 0.8.6 preproduction 2</h2>
 <p>This second preview includes the latest 0.8.6 interface and permission-recovery improvements for upgrade and everyday-use testing before the stable release.</p>
 <h3>New in this preview</h3>
 <ul>
-<li>Defer permission setup and continue to Timeline. Features explain missing access and take you to Settings → General → Permissions when needed.</li>
+<li>Defer permission setup and continue to Timeline. Features explain missing access and take you to Settings → General → Permissions when needed. Voice Notes onboarding can test recording without granting text-pasting access.</li>
 <li>System Audio permission checks support retry and preserve a Grant click made while a background check is running.</li>
 <li>Discover major additions through small New badges that disappear after interaction.</li>
 <li>Read clearer accent-colored actions, open Insights from the Timeline or Dictations statistics tiles, and use the simpler Timeline filter.</li>
@@ -54,7 +54,7 @@
             <sparkle:shortVersionString>0.8.6-preprod.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6-preprod.2/MuesliPreprod-0.8.6-preprod.2.dmg" length="142731955" type="application/octet-stream" sparkle:edSignature="bn3G5KVxzVhHtdoK0ynYroy6/hoHJuMNsJjkGgqAwT1XHvHvviqemDFYuWUCyaXRMCnxUDDFcYtZD9zYaqxoBw=="/>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6-preprod.2/MuesliPreprod-0.8.6-preprod.2.dmg" length="142727046" type="application/octet-stream" sparkle:edSignature="K2Lnvwpe2awYaXlHUaHz9jFVAHuOIk1KZGwf4llLMmjSYQiQ0jcwB5dmLVCn0t3wPCq9LiG/GOE8dyk8lh2nDQ=="/>
         </item>
         <item>
             <title>0.8.6-preprod.1</title>
