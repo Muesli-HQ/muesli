@@ -52,6 +52,28 @@ Order tabs General, Dictations, Meetings, Appearance, Experimental. iCloud Sync
 lives in General; Computer Use, Quill and Cotypist live in Experimental. The
 meeting-chat destination is labeled Chat.
 
+### Progressive Settings detail
+
+Within App Formatting, use sentence-case callout text for “Most-used apps”,
+body text for app names and caption text for usage. Each suggestion has a small
+accessible dismiss action beside Customize. Dismissal persists locally; Add App
+can still select any app. Omit repeated explanations from individual rows.
+
+Time Turner shows only its Screen history description and Set up action while
+disabled. Capture, exclusions, storage/retention controls and their status details
+appear once enabled. Hiding these controls does not change saved options or the
+retention lifecycle. The explicit setup flow still explains capture before enablement.
+
+### Permission recovery
+
+Permission setup offers Set up later and finishes on Timeline. Completed onboarding
+never makes dashboard navigation depend on recording permissions. Block only the
+requested capture or paste action, with Open permissions and Not now actions.
+Post-onboarding recovery opens Settings → General and scrolls directly to Permissions.
+Feature controls show the missing prerequisite beside Review access, including when
+a previously enabled feature loses permission. Guided setup retains a visible exit
+and a Manage permissions action; returning refreshes permission state.
+
 ### Recording interactions
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
@@ -81,12 +103,13 @@ the white action fill. Preserve semantic recording, warning, error and success
 colors.
 
 Fills keep the raw saved accent and semantic hues; foregrounds use a role
-matched to the surface beneath them (4.5:1 for labels, 3:1 for state glyphs):
+matched to the surface beneath them (6:1 for accent text on neutral/tinted
+surfaces, at least 4.5:1 for filled-button labels, 3:1 for state glyphs):
 
 | Role | Use |
 | --- | --- |
 | `onAccent` | Text and glyphs on `accent` fills. Black or white, whichever contrasts more with the resolved fill, so Dark Default and light presets get dark ink. |
-| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark only as needed. Never a fill. White in Ultra Dark. |
+| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark to reach 6:1 on neutral surfaces and all accent-tint states. Never a fill. White in Ultra Dark. |
 | `accentStateShade` | Hover/pressed overlay on accent fills (8%/16%), always moving away from `onAccent`. |
 | `onSuccess` | Dark ink on `success` fills (Donate, onboarding confirmations). Never `onAccent`. |
 | `recordingFill` | #DC2626 with white labels for labelled Stop/Record. `recording` (#EF4444) remains for dots, waveforms and badges. |
@@ -410,3 +433,28 @@ context; explicit choices, typed drafts and existing chats remain stable.
 Attachment originals stay in place. The selected provider receives images and
 only the document pages requested through tools; on-device Gemma reads document
 text locally. Keep this disclosure at the shared 12pt helper-text size.
+
+### New-feature discovery badges
+
+Use one compact, static `New` capsule beside a major feature entry or setting,
+not every new control. Use Nunito Sans 11 semibold, white text, 5pt horizontal
+and 1pt vertical padding. The fill derives from the saved accent, deepened only
+as needed for 4.5:1 white-text contrast, including Ultra Dark. It has no shadow,
+animation or hit target; the parent control retains its normal click behavior.
+Badges disappear independently after feature interaction and stay dismissed across
+relaunches. Scrolling, rendering and the guided tour do not dismiss them. The
+0.8.6 introductions are Chat, Time Turner, Granola import, Cotypist, live dictation
+and App Formatting. Quill predates this release and does not receive a New badge.
+
+### Timeline presentation
+
+The activity filter shows its selected value without a separate visible label;
+retain its accessible name. Insights is reached through the Timeline and
+Dictations statistics tiles, not a sidebar destination. Saved sidebar orders
+ignore the retired Insights entry while preserving the other positions.
+
+Timeline does not display the inline iCloud companion/setup/status card. Keep
+the compact header sync control and Settings → General sync setup, status and
+recovery actions available. Background sync behavior and saved preferences are
+unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
+never use the raw saved accent as a label color on a neutral surface.

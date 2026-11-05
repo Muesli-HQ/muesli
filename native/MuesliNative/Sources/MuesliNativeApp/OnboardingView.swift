@@ -34,6 +34,7 @@ struct OnboardingView: View {
     @State private var inputMonitoringGranted = false
     @State private var screenRecordingGranted = false
     @State private var systemAudioGranted = false
+    @State private var systemAudioPermission = SystemAudioPermissionCheck()
     @State private var permissionPollTimer: Timer?
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
@@ -298,8 +299,11 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 3:
-            onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                advancePastPermissions()
+            HStack(spacing: MuesliTheme.spacing12) {
+                skipButton("Set up later") { finishOnboarding(withKey: false) }
+                onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
+                    advancePastPermissions()
+                }
             }
         case 4:
             if dictationTestResult != nil {
@@ -909,19 +913,7 @@ struct OnboardingView: View {
                     "System Audio",
                     "Capture meeting audio from other participants",
                     systemAudioGranted,
-                    {
-                        Task {
-                            let granted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
-                            await MainActor.run {
-                                self.systemAudioGranted = granted
-                                if granted {
-                                    self.notePermissionGranted("System Audio")
-                                } else {
-                                    self.saveProgress(atStep: self.currentStep)
-                                }
-                            }
-                        }
-                    }
+                    { refreshSystemAudioPermission(request: true) }
                 ))
             } else {
                 steps.append((
@@ -1025,6 +1017,17 @@ struct OnboardingView: View {
                     }
                 }
 
+                if step.name == "System Audio" {
+                    Button(!systemAudioPermission.isChecking ? "Check again" : "Checking…") {
+                        refreshSystemAudioPermission(request: true)
+                    }
+                    .disabled(systemAudioPermission.isChecking)
+                }
+                Text("You can set up permissions later in Settings. Features that need access stay unavailable until you allow them.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+
                 if isWaitingForNativePermissionPrompt(step.name) {
                     Text("Respond to the macOS permission prompt")
                         .font(MuesliTheme.font(size: 11))
@@ -1087,7 +1090,12 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             startPermissionPolling()
+            refreshSystemAudioPermission()
             schedulePermissionAdvanceIfReady()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissions()
+            refreshSystemAudioPermission()
         }
         .onChange(of: requiredPermissionsGranted) { _, granted in
             if granted {
@@ -1099,6 +1107,7 @@ struct OnboardingView: View {
         .onDisappear {
             cancelScheduledPermissionAdvance()
             stopPermissionPolling()
+            systemAudioPermission.cancel()
             controller.dismissSystemPermissionGuide()
         }
     }
@@ -1203,7 +1212,8 @@ struct OnboardingView: View {
     }
 
     private var requiredPermissionsGranted: Bool {
-        OnboardingPermissionGate.hasRequiredPermissions(
+        guard !systemAudioPermission.isChecking else { return false }
+        return OnboardingPermissionGate.hasRequiredPermissions(
             OnboardingPermissionSnapshot(
                 microphone: micGranted,
                 accessibility: accessibilityGranted,
@@ -1304,6 +1314,17 @@ struct OnboardingView: View {
     private func applyUseCaseSelection(_ state: OnboardingFlow.UseCaseSelectionState) {
         selectedUseCase = state.selectedUseCase
         selectionBeforeEverything = state.selectionBeforeEverything
+    }
+
+    private func refreshSystemAudioPermission(request: Bool = false) {
+        guard currentStep == Self.permissionsStep, selectedUseCase.includesMeetings,
+              appState.config.useCoreAudioTap else { return }
+        systemAudioPermission.check(request: request) { granted in
+            guard currentStep == Self.permissionsStep, !hasFinishedOnboarding else { return }
+            systemAudioGranted = granted
+            if granted, grantingPermissionName == "System Audio" { notePermissionGranted("System Audio") }
+            else { saveProgress(atStep: currentStep) }
+        }
     }
 
     private func refreshPermissions() {

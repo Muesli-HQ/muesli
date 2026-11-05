@@ -46,15 +46,15 @@ struct MuesliAccentPalette {
         let fill: Int
         /// Black or white, whichever contrasts more with `fill`.
         let onFill: Int
-        /// Same-hue shade with at least 4.5:1 on neutral surfaces and accent tints.
+        /// Same-hue shade with at least 6:1 on neutral surfaces and accent tints.
         let text: Int
         /// Overlay for hover/pressed fills that increases contrast with `onFill`.
         let stateShade: Int
     }
 
-    static let minimumTextContrast = 4.5
-    /// Derivation aims slightly above 4.5:1 so 8-bit blending cannot land below it.
-    private static let derivationTarget = 4.6
+    static let minimumTextContrast = 6.0
+    /// Leave headroom above the text target for 8-bit blending and color conversion.
+    private static let derivationTarget = minimumTextContrast + 0.1
     private static let shadeSteps = 50
 
     let light: Values
@@ -63,6 +63,7 @@ struct MuesliAccentPalette {
     let onFill: Color
     let text: Color
     let stateShade: Color
+    let badgeFill: Color
 
     init(lightFill: Int, darkFill: Int) {
         let light = Self.values(fill: lightFill, dark: false)
@@ -73,6 +74,16 @@ struct MuesliAccentPalette {
         onFill = Self.color(light: light.onFill, dark: dark.onFill)
         text = Self.color(light: light.text, dark: dark.text)
         stateShade = Self.color(light: light.stateShade, dark: dark.stateShade)
+        badgeFill = Self.color(light: Self.badgeFillHex(light.fill), dark: Self.badgeFillHex(dark.fill))
+    }
+
+    /// Small white badge labels need a deeper fill for pale saved accents.
+    static func badgeFillHex(_ fill: Int) -> Int {
+        for step in 0...shadeSteps {
+            let candidate = MuesliContrast.mix(fill, toward: 0x000000, amount: Double(step) / Double(shadeSteps))
+            if MuesliContrast.ratio(0xFFFFFF, candidate) >= 4.6 { return candidate }
+        }
+        return 0x000000
     }
 
     /// Identical values stay plain sRGB colors, as saved accents always were.

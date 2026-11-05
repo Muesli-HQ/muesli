@@ -79,14 +79,11 @@ struct TimelineView: View {
                 TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
                     ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
-                }.frame(width: 180)
+                }
+                .labelsHidden()
+                .accessibilityLabel("Activity")
+                .frame(width: 180)
             }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
-
-            if appState.config.showIOSCompanionPrompt {
-                IPhoneBridgeCard(appState: appState, controller: controller)
-                    .padding(.horizontal, MuesliTheme.pageInset)
-                    .padding(.bottom, MuesliTheme.spacing12)
-            }
 
             filterBar
                 .padding(.horizontal, MuesliTheme.pageInset)
@@ -348,7 +345,7 @@ private struct TimelineMeetingRow: View {
                 HStack(spacing: MuesliTheme.spacing8) {
                     Image(systemName: "person.2.fill")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                         .accessibilityLabel("Meeting")
 
                     Text(record.title)
@@ -581,7 +578,7 @@ private struct TimelineQuillRow: View {
                             Text("QUILL")
                                 .font(MuesliTheme.caption())
                         }
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(MuesliTheme.accentSubtle)

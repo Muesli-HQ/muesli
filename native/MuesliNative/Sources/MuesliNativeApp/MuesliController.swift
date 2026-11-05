@@ -1019,7 +1019,6 @@ public final class MuesliController: NSObject {
         reconcilePendingPushToTalkEnableIfReady()
 
         let canRunMainApp = config.hasCompletedOnboarding
-            && hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase)
         meetingFeatureMonitorsAllowed = canRunMainApp
 
         // Defer permission-triggering monitors until after onboarding
@@ -1227,8 +1226,6 @@ public final class MuesliController: NSObject {
         if !canRunMainApp {
             if let progress = OnboardingProgress.load() {
                 showOnboarding(resumeFrom: progress)
-            } else if config.hasCompletedOnboarding {
-                showOnboarding(resumeFrom: onboardingProgressForPermissionRepair())
             } else {
                 showOnboarding()
             }
@@ -1471,7 +1468,7 @@ public final class MuesliController: NSObject {
               !isFeatureTourPresentationQueued,
               appState.pendingFeatureTourInvitation == nil,
               appState.activeFeatureTour == nil,
-              ensureBasicDictationPermissionsBeforeDashboard() else { return false }
+              ensureOnboardingBeforeDashboard() else { return false }
 
         isFeatureTourPresentationQueued = true
         presentHistoryWindow(whenReady: { [weak self] in
@@ -1516,7 +1513,7 @@ public final class MuesliController: NSObject {
     private func beginFeatureTour(_ tour: FeatureTour, source: String) -> Bool {
         guard !tour.steps.isEmpty,
               !isFeatureTourPresentationQueued,
-              ensureBasicDictationPermissionsBeforeDashboard() else { return false }
+              ensureOnboardingBeforeDashboard() else { return false }
 
         appState.pendingFeatureTourInvitation = nil
         isFeatureTourPresentationQueued = true
@@ -3309,14 +3306,15 @@ public final class MuesliController: NSObject {
         return allowed ? nil : "Grant the required microphone, Accessibility and Input Monitoring permissions in Settings first."
     }
 
-    func requestPushToTalkSettingsPermissions() {
-        requestMissingPushToTalkPermissions(currentOnboardingPermissionSnapshot(),
-            profile: .resolved(for: config.resolvedOnboardingUseCase))
+    func showPermissionsSettings() {
+        appState.selectedSettingsPane = .general
+        appState.requestsPermissionsSettings = true
+        openHistoryWindow(tab: .settings)
     }
 
-    func requestSettingsPermissions() {
-        requestMissingShortcutPermissions(currentOnboardingPermissionSnapshot(), requiresAccessibility: true)
-    }
+    func requestPushToTalkSettingsPermissions() { showPermissionsSettings() }
+
+    func requestSettingsPermissions() { showPermissionsSettings() }
 
     @objc func selectCleanupModelFromMenu(_ sender: NSMenuItem) {
         guard let selection = sender.representedObject as? CleanupMenuSelection else { return }
@@ -3357,6 +3355,9 @@ public final class MuesliController: NSObject {
     }
 
     func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
+        if let feature = NewFeature.setting(id) {
+            NewFeatureDiscovery.shared.markUsed(feature)
+        }
         if dictationToggleShortcut != nil,
            id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
             throw MuesliSettings.Failure.rejected("A captured toggle shortcut can only set dictation Toggle mode.")
@@ -5685,45 +5686,41 @@ public final class MuesliController: NSObject {
         systemPermissionGuideController.dismiss()
         onboardingWindowController?.close()
         onboardingWindowController = nil
-        if hasRequiredStartupPermissions(for: onboardingUseCase) {
-            meetingFeatureMonitorsAllowed = true
-            let pushToTalkPermissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
-                for: onboardingUseCase
-            )
-            let pushToTalkPermissionSnapshot = currentOnboardingPermissionSnapshot()
-            if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
-                hasCompletedOnboarding: true,
-                hasRequiredPermissions: pushToTalkPermissionProfile.hasRequiredPermissions(
-                    pushToTalkPermissionSnapshot
-                ),
-                isEnabled: config.enablePushToTalk
-            ) {
-                startDictationHotkeyMonitorIfNeeded(permissions: pushToTalkPermissionSnapshot)
-            }
-            startIndependentDictationFeatureHotkeyMonitorsIfNeeded()
-            syncCalendarMonitor()
-            // Start monitors that were deferred during onboarding
-            if shouldRunMeetingFeatureMonitors {
-                startMeetingFeatureMonitors(includeMaraudersMap: false)
-            }
-            MuesliTelemetry.signal("onboarding.completed", parameters: [
-                "use_case": onboardingUseCase.rawValue,
-                "voice_notes_selected": onboardingUseCase.includesVoiceNotes ? "true" : "false",
-                "dictation_selected": onboardingUseCase.includesDictation ? "true" : "false",
-                "meetings_selected": onboardingUseCase.includesMeetings ? "true" : "false",
-                "microphone_granted": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "true" : "false",
-                "accessibility_granted": AXIsProcessTrusted() ? "true" : "false",
-                "input_monitoring_granted": CGPreflightListenEventAccess() ? "true" : "false",
-            ])
-            let completionTab = OnboardingFlow.completionTab(for: onboardingUseCase)
-            openHistoryWindow(tab: completionTab)
-        } else {
-            showOnboarding(resumeFrom: onboardingProgressForPermissionRepair())
+        meetingFeatureMonitorsAllowed = true
+        let pushToTalkPermissionProfile = PushToTalkEnablementPolicy.PermissionProfile.resolved(
+            for: onboardingUseCase
+        )
+        let pushToTalkPermissionSnapshot = currentOnboardingPermissionSnapshot()
+        if PushToTalkEnablementPolicy.shouldStartDictationHotkeyMonitor(
+            hasCompletedOnboarding: true,
+            hasRequiredPermissions: pushToTalkPermissionProfile.hasRequiredPermissions(
+                pushToTalkPermissionSnapshot
+            ),
+            isEnabled: config.enablePushToTalk
+        ) {
+            startDictationHotkeyMonitorIfNeeded(permissions: pushToTalkPermissionSnapshot)
         }
+        startIndependentDictationFeatureHotkeyMonitorsIfNeeded()
+        syncCalendarMonitor()
+        // Start monitors that were deferred during onboarding
+        if shouldRunMeetingFeatureMonitors {
+            startMeetingFeatureMonitors(includeMaraudersMap: false)
+        }
+        MuesliTelemetry.signal("onboarding.completed", parameters: [
+            "use_case": onboardingUseCase.rawValue,
+            "voice_notes_selected": onboardingUseCase.includesVoiceNotes ? "true" : "false",
+            "dictation_selected": onboardingUseCase.includesDictation ? "true" : "false",
+            "meetings_selected": onboardingUseCase.includesMeetings ? "true" : "false",
+            "microphone_granted": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "true" : "false",
+            "accessibility_granted": AXIsProcessTrusted() ? "true" : "false",
+            "input_monitoring_granted": CGPreflightListenEventAccess() ? "true" : "false",
+        ])
+        let completionTab = OnboardingFlow.completionTab(for: onboardingUseCase)
+        openHistoryWindow(tab: completionTab)
     }
 
     @objc func openHistoryWindow() {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
+        guard ensureOnboardingBeforeDashboard() else { return }
         showActiveMeetingDocumentIfNeeded()
         presentHistoryWindow()
     }
@@ -5735,7 +5732,7 @@ public final class MuesliController: NSObject {
     }
 
     func openHistoryWindow(tab: DashboardTab) {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
+        guard ensureOnboardingBeforeDashboard() else { return }
         presentHistoryWindow(tab: tab)
     }
 
@@ -5748,13 +5745,6 @@ public final class MuesliController: NSObject {
         DispatchQueue.main.async { [weak self] in
             self?.historyWindowController?.show(presentation: presentation)
         }
-    }
-
-    private func hasRequiredStartupPermissions(for useCase: OnboardingUseCase) -> Bool {
-        OnboardingPermissionGate.hasRequiredStartupPermissions(
-            currentOnboardingPermissionSnapshot(),
-            for: useCase
-        )
     }
 
     func reclassifyVoiceNotesAsDictationIfReady(
@@ -5909,16 +5899,10 @@ public final class MuesliController: NSObject {
         _ snapshot: OnboardingPermissionSnapshot,
         requiresAccessibility: Bool
     ) {
-        if !snapshot.microphone {
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-        }
-        if requiresAccessibility, !snapshot.accessibility {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-            AXIsProcessTrustedWithOptions(options)
-        }
-        if !snapshot.inputMonitoring {
-            _ = CGRequestListenEventAccess()
-        }
+        // Request one missing permission at a time; repeated clicks recover denied grants.
+        if !snapshot.microphone { FeaturePermission.microphone.request() }
+        else if requiresAccessibility, !snapshot.accessibility { FeaturePermission.accessibility.request() }
+        else if !snapshot.inputMonitoring { FeaturePermission.inputMonitoring.request() }
     }
 
     func independentShortcutPermissionMessageIfNeeded(isEnabled: Bool) -> String? {
@@ -5971,6 +5955,7 @@ public final class MuesliController: NSObject {
         reconcilePendingScreenContextPermission(snapshot)
         reconcilePushToTalkMonitorAvailability(permissions: permissions)
         reconcileIndependentShortcutFeatureEnablement(permissions: permissions)
+        startMeetingRecordingHotkeyMonitorIfNeeded()
     }
 
     private func reconcilePushToTalkMonitorAvailability(
@@ -6051,30 +6036,28 @@ public final class MuesliController: NSObject {
         ])
     }
 
-    private func ensureBasicDictationPermissionsBeforeDashboard() -> Bool {
-        guard hasRequiredStartupPermissions(for: config.resolvedOnboardingUseCase) else {
-            historyWindowController?.close()
-            if let progress = OnboardingProgress.load() {
-                showOnboarding(resumeFrom: progress)
-            } else {
-                showOnboarding(resumeFrom: onboardingProgressForPermissionRepair())
-            }
+    private func ensureRecordingAccess(pastesText: Bool) -> Bool {
+        guard let missing = FeaturePermission.missingForRecording(
+            currentOnboardingPermissionSnapshot(), pastesText: pastesText,
+            isDictationTest: isDictationTestMode
+        ) else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Allow \(missing.rawValue) to record"
+        alert.informativeText = "Grant access, then try recording again. You can keep using the rest of muesli without it."
+        alert.addButton(withTitle: "Open permissions")
+        alert.addButton(withTitle: "Not now")
+        presentAlert(alert, fallbackLogContext: "recording permission") { [weak self] response in
+            if response == .alertFirstButtonReturn { self?.showPermissionsSettings() }
+        }
+        return false
+    }
+
+    private func ensureOnboardingBeforeDashboard() -> Bool {
+        guard config.hasCompletedOnboarding else {
+            showOnboarding(resumeFrom: OnboardingProgress.load())
             return false
         }
         return true
-    }
-
-    private func onboardingProgressForPermissionRepair() -> OnboardingProgress {
-        OnboardingProgress(
-            currentStep: OnboardingView.permissionsStep,
-            userName: config.userName,
-            selectedBackendKey: config.sttBackend,
-            selectedModelKey: config.sttModel,
-            selectedCohereLanguageCode: config.cohereLanguage,
-            hotkey: config.dictationHotkey,
-            systemAudioRequested: false,
-            onboardingUseCaseRawValue: config.onboardingUseCase
-        )
     }
 
     func showMeetingsHome(folderID: Int64? = nil) {
@@ -6161,7 +6144,7 @@ public final class MuesliController: NSObject {
 
     @discardableResult
     func openActiveMeetingNotes() -> Bool {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
+        guard ensureOnboardingBeforeDashboard() else { return false }
         guard let activeMeetingID,
               isMeetingRecording() || isStartingMeetingRecording else { return false }
         showMeetingDocument(id: activeMeetingID)
@@ -6184,7 +6167,7 @@ public final class MuesliController: NSObject {
     }
 
     @objc func focusSearchField() {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return }
+        guard ensureOnboardingBeforeDashboard() else { return }
         presentHistoryWindow()
         DispatchQueue.main.async { [weak self] in
             self?.appState.globalSearchPresented = true
@@ -7558,7 +7541,7 @@ public final class MuesliController: NSObject {
         dashboardWindowPresentation: DashboardWindowPresentation = .restored,
         folderID: Int64? = nil
     ) -> Bool {
-        guard ensureBasicDictationPermissionsBeforeDashboard() else { return false }
+        guard ensureOnboardingBeforeDashboard() else { return false }
         if isMeetingRecording() {
             if presentation.presentsHistoryWindow {
                 presentHistoryWindow(
@@ -7604,6 +7587,7 @@ public final class MuesliController: NSObject {
     ) -> Bool {
         guard ensureNoMeetingRetranscription() else { return false }
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
+        guard ensureRecordingAccess(pastesText: false) else { return false }
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
                 title: "Meeting failed to start",
@@ -9707,10 +9691,10 @@ public final class MuesliController: NSObject {
         alert.messageText = isSystemAudioError ? "System audio capture failed" : "Meeting failed to start"
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
-        if isSystemAudioError { alert.addButton(withTitle: "Audio Recording Settings") }
+        if isSystemAudioError { alert.addButton(withTitle: "Open permissions") }
         presentAlert(alert, fallbackLogContext: "meeting start failure") { response in
             if isSystemAudioError, response == .alertSecondButtonReturn {
-                CoreAudioSystemRecorder.openSystemAudioSettings()
+                self.showPermissionsSettings()
             }
         }
     }
@@ -9915,7 +9899,8 @@ public final class MuesliController: NSObject {
     }
 
     private func startMeetingRecordingHotkeyMonitorIfNeeded() {
-        guard config.enableMeetingRecordingHotkey else {
+        guard config.hasCompletedOnboarding, config.enableMeetingRecordingHotkey,
+              ShortcutFeatureEnablementPolicy.hasRequiredPermissions(currentOnboardingPermissionSnapshot()) else {
             meetingRecordingHotkeyMonitor.stop()
             return
         }
@@ -11138,12 +11123,10 @@ public final class MuesliController: NSObject {
             let alert = NSAlert()
             alert.messageText = "Allow Screen Recording for computer use"
             alert.informativeText = "muesli needs Screen Recording permission to see the apps you ask it to use. Enable it in System Settings, then try your command again."
-            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Open permissions")
             alert.addButton(withTitle: "Cancel")
             if alert.runModal() == .alertFirstButtonReturn {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                    NSWorkspace.shared.open(url)
-                }
+                showPermissionsSettings()
             }
             return false
         }
@@ -11916,7 +11899,10 @@ public final class MuesliController: NSObject {
 
     private func handlePrepare() {
         if shouldRejectDictationForComputerUseActivity() { return }
-        guard canBeginDictationInteraction else { return }
+        guard canBeginDictationInteraction,
+              FeaturePermission.missingForRecording(currentOnboardingPermissionSnapshot(),
+                  pastesText: defaultDictationOutputMode == .paste,
+                  isDictationTest: isDictationTestMode) == nil else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -12788,6 +12774,7 @@ public final class MuesliController: NSObject {
     private func handleStart() {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction else { return }
+        guard ensureRecordingAccess(pastesText: defaultDictationOutputMode == .paste) else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
@@ -12990,6 +12977,7 @@ public final class MuesliController: NSObject {
     private func handleToggleStart(outputMode: DictationOutputMode? = nil) -> Bool {
         if shouldRejectDictationForComputerUseActivity() { return false }
         guard canBeginDictationInteraction else { return false }
+        guard ensureRecordingAccess(pastesText: (outputMode ?? defaultDictationOutputMode) == .paste) else { return false }
         guard ensureDictationBackendReady() else { return false }
         if isMeetingRecording() { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
@@ -13060,7 +13048,7 @@ public final class MuesliController: NSObject {
     @discardableResult
     public func startDictationForShortcuts() -> Bool {
         guard config.hasCompletedOnboarding,
-              ensureBasicDictationPermissionsBeforeDashboard(),
+              ensureOnboardingBeforeDashboard(),
               !isInteractiveAudioActivityInProgress,
               !dictationAudioSessionManager.hasActiveSession,
               canBeginDictationInteraction,

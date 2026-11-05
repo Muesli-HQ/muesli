@@ -157,6 +157,9 @@ struct SidebarView: View {
 
     private func collapsedItem(tab: DashboardTab, icon: String, label: String, tooltip: String? = nil) -> some View {
         Button {
+            if let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
                     appState.searchQuery = ""
@@ -535,6 +538,9 @@ struct SidebarView: View {
     private func sidebarItem(tab: DashboardTab, icon: String, label: String, updateCTA: UpdateCTA? = nil) -> some View {
         let isSelected = appState.selectedTab == tab
         Button {
+            if let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
                     appState.searchQuery = ""
@@ -559,6 +565,9 @@ struct SidebarView: View {
                     .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                 Spacer()
+                if let feature = NewFeature.sidebar(tab) {
+                    NewFeatureBadge(feature: feature)
+                }
                 if let updateCTA {
                     HStack(spacing: 4) {
                         Image(systemName: updateCTA.icon)

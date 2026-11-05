@@ -94,6 +94,9 @@ struct TimeTurnerControls: View {
             .accessibilityLabel(isExpanded ? "Collapse Time Turner" : "Expand Time Turner")
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             }
+            if memory.ambientMissingPermission != nil {
+                Button("Review access…") { showsSetup = true }
+            }
             Text(memory.ambientStatus)
                 .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
                 .help(memory.ambientStatus == "Skipping this app" ? "The current app is excluded from screen capture. Capture resumes when you switch to an allowed app." : memory.ambientStatus)

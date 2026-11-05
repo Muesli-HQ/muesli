@@ -25,7 +25,8 @@ struct WindowAppearanceTests {
         let legacy = "meetingChat,timeline,dictations,meetings,insights,dictionary"
         let restored = SidebarOrder.tabs(from: legacy)
         #expect(restored.last == .timeTurner)
-        #expect(SidebarOrder.encode(Array(restored.dropLast())) == legacy)
+        #expect(SidebarOrder.encode(Array(restored.dropLast())) == "meetingChat,timeline,dictations,meetings,dictionary")
+        #expect(!restored.contains(.insights))
         let moved = SidebarOrder.inserting(.timeTurner, relativeTo: .timeline, after: true, in: legacy)
         #expect(Array(SidebarOrder.tabs(from: moved).prefix(3)) == [.meetingChat, .timeline, .timeTurner])
         #expect(DashboardTab.timeTurner.sidebarLabel == "Time Turner")
@@ -35,7 +36,7 @@ struct WindowAppearanceTests {
     func sidebarOrderMoves() {
         let first = SidebarOrder.moving(.dictionary, to: .timeline, in: "")
         #expect(SidebarOrder.tabs(from: first).first == .dictionary)
-        let last = SidebarOrder.moving(.dictionary, to: .insights, in: first)
+        let last = SidebarOrder.moving(.dictionary, to: .meetingChat, in: first)
         #expect(SidebarOrder.tabs(from: last).last == .dictionary)
         #expect(SidebarOrder.tabs(from: last) == SidebarOrder.defaults)
         #expect(SidebarOrder.moving(.meetings, to: .meetings, in: last) == last)
