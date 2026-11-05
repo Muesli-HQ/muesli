@@ -2321,7 +2321,7 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
-            settingsSection("Vidshot") {
+            settingsSection("Vidshot", icon: VidshotIcon.image()) {
                 settingsRow("Enable Vidshot", description: "Record a window or screen region with microphone narration. Captures stay on this Mac.") {
                     settingsControl("feedback_capture")
                 }

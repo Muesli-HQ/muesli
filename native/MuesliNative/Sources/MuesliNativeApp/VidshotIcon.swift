@@ -2,6 +2,16 @@ import SwiftUI
 
 /// Viewfinder corners frame a play symbol, matching the weight of nearby icons.
 struct VidshotIcon: View {
+    /// AppKit menus and shared settings headings use the same template glyph.
+    @MainActor private static let cachedImage: NSImage = {
+        let renderer = ImageRenderer(content: VidshotIcon().foregroundStyle(.black).frame(width: 18, height: 18))
+        let image = renderer.nsImage ?? NSImage(size: NSSize(width: 18, height: 18))
+        image.isTemplate = true
+        return image
+    }()
+
+    @MainActor static func image() -> NSImage { cachedImage }
+
     var body: some View {
         GeometryReader { geometry in
             let side = min(geometry.size.width, geometry.size.height)

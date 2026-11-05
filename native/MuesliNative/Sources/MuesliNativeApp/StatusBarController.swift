@@ -194,10 +194,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         if controller.config.enableFeedbackCapture {
             let active = controller.feedbackCaptureOwnsMicrophone
-            menu.addItem(actionItem(title: active ? "Finish Vidshot" : "Start Vidshot",
-                action: active ? #selector(MuesliController.finishFeedbackCapture) : #selector(MuesliController.toggleFeedbackCapture)))
+            let vidshot = actionItem(title: active ? "Finish Vidshot" : "Start Vidshot",
+                action: active ? #selector(MuesliController.finishFeedbackCapture) : #selector(MuesliController.toggleFeedbackCapture))
+            vidshot.image = VidshotIcon.image()
+            menu.addItem(vidshot)
         }
-        menu.addItem(actionItem(title: "Open Vidshot Captures…", action: #selector(MuesliController.openFeedbackCaptures)))
+        let captures = actionItem(title: "Open Vidshot Captures…", action: #selector(MuesliController.openFeedbackCaptures))
+        captures.image = VidshotIcon.image()
+        menu.addItem(captures)
         menu.addItem(.separator())
 
         let recentItem = NSMenuItem(title: "Recent Dictations", action: nil, keyEquivalent: "")

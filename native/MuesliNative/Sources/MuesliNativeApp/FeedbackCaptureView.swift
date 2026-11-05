@@ -65,9 +65,12 @@ struct FeedbackCaptureView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if loading { ProgressView("Loading captures…") }
                 if let selected {
-                    Picker("Capture", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
-                        ForEach(controller.records) { record in
-                            Text("\(record.title) · \(Date(timeIntervalSince1970: record.createdAt).formatted())").tag(record.id)
+                    HStack(spacing: 8) {
+                        VidshotIcon().frame(width: 16, height: 16).foregroundStyle(MuesliTheme.accentText)
+                        Picker("Capture", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
+                            ForEach(controller.records) { record in
+                                Text("\(record.title) · \(Date(timeIntervalSince1970: record.createdAt).formatted())").tag(record.id)
+                            }
                         }
                     }
                     HStack {
@@ -174,7 +177,11 @@ struct FeedbackCaptureView: View {
                             .disabled(loading || activeWriter)
                     }
                 } else if !loading {
-                    ContentUnavailableView("No Vidshots", systemImage: "video", description: Text("Enable Vidshot in Experimental settings, then select a window or region to record."))
+                    ContentUnavailableView {
+                        Label { Text("No Vidshots") } icon: { VidshotIcon().frame(width: 36, height: 36) }
+                    } description: {
+                        Text("Enable Vidshot in Experimental settings, then select a window or region to record.")
+                    }
                 }
                 if let state = controller.state, controller.hasAttempt { Text(state.title).foregroundStyle(.secondary) }
                 if let message { Text(message).foregroundStyle(.orange) }
