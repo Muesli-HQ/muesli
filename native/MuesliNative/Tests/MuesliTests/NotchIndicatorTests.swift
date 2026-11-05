@@ -542,18 +542,24 @@ struct NotchIndicatorTests {
 
     @MainActor
     @Test("Placement refresh does not extend success dismissal")
-    func outcomeDeadline() async throws {
+    func outcomeDeadline() throws {
         let screen = try #require(NSScreen.main)
+        var scheduled: [(TimeInterval, DispatchWorkItem)] = []
         let controller = NotchIndicatorController(resolveGeometry: { screen in
             NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
-        })
+        }, scheduleOutcomeDismissal: { duration, work in scheduled.append((duration, work)) })
         defer { controller.hide() }
         #expect(controller.showOutcome(on: screen, outcome: .success,
             instruction: nil, message: "Done", icon: NSImage()))
-        try await Task.sleep(for: .seconds(1.2))
+        #expect(scheduled.count == 1)
+        let original = try #require(scheduled.first)
+        #expect(original.0 == NotchOutcome.success.duration)
         #expect(controller.refreshOutcomePlacement(on: screen))
-        try await Task.sleep(for: .seconds(1.1))
+        #expect(scheduled.count == 1)
+        #expect(!original.1.isCancelled)
+        #expect(controller.outcome == .success)
+        original.1.perform()
         #expect(controller.outcome == nil)
         #expect(!controller.isVisible)
     }

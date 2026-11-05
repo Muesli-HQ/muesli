@@ -63,7 +63,6 @@ case "${shard}" in
       FloatingIndicatorVisibilityTests
       FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
-      NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
       MuesliColorRolesTests
@@ -79,7 +78,6 @@ case "${shard}" in
       FeedbackCaptureInputTests
       FeedbackCaptureRendererTests
       FeedbackCaptureContextFinalizerTests
-      FeedbackCaptureTranscriptTests
       FeedbackCaptureStoreTests
       FeedbackCaptureLifecycleTests
       FeedbackCaptureFinalizerTests
@@ -115,6 +113,8 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      NotchIndicatorTests
+      FeedbackCaptureTranscriptTests
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests

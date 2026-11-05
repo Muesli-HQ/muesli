@@ -54,6 +54,18 @@ if [[ -s "$tmp_dir/stale-baseline" ]]; then
   failed=true
 fi
 
+# UI timing and Vidshot admission need the serial shard, not the concurrent core run.
+for suite in NotchIndicatorTests FeedbackCaptureTranscriptTests; do
+  if ! bash "$runner" --list-filters dictation-transcription | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must run in the serialized dictation-transcription shard" >&2
+    failed=true
+  fi
+  if bash "$runner" --list-filters core | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must not also run in the parallel core shard" >&2
+    failed=true
+  fi
+done
+
 if [[ "$failed" == true ]]; then
   exit 1
 fi

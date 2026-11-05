@@ -256,6 +256,8 @@ struct FeedbackCaptureTranscriptTests {
                 }
             }
         }
+        // Always release the held permit if setup fails or the test is cancelled.
+        defer { task.cancel(); Task { await gate.release() } }
         try await captureWaitUntil(timeout: .seconds(15)) { await gate.queuedWaiterCount() == 1 }
         try await Task.sleep(for: .milliseconds(1500))
         await gate.release()

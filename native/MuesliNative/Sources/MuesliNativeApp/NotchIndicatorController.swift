@@ -281,14 +281,19 @@ final class NotchIndicatorController {
 
     private let pointerLocation: () -> NSPoint
     private let makeFeedbackCapturePanel: @MainActor () -> NSPanel
+    private let scheduleOutcomeDismissal: @MainActor (TimeInterval, DispatchWorkItem) -> Void
 
     init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
          pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         scheduleOutcomeDismissal: @escaping @MainActor (TimeInterval, DispatchWorkItem) -> Void = { duration, work in
+             DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+         },
          makeFeedbackCapturePanel: @escaping @MainActor () -> NSPanel = {
              NotchIndicatorPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
          }) {
         self.pointerLocation = pointerLocation
         self.resolveGeometry = resolveGeometry
+        self.scheduleOutcomeDismissal = scheduleOutcomeDismissal
         self.makeFeedbackCapturePanel = makeFeedbackCapturePanel
     }
     var onReview: (() -> Void)?
@@ -530,7 +535,7 @@ final class NotchIndicatorController {
         if let duration = outcome.duration {
             let work = DispatchWorkItem { [weak self] in self?.hide() }
             dismissActivity = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+            scheduleOutcomeDismissal(duration, work)
         }
         return true
     }
