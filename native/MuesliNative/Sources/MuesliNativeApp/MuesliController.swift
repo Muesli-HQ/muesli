@@ -523,6 +523,8 @@ public final class MuesliController: NSObject {
     private let pushToTalkEnablementIntentStore = PushToTalkEnablementIntentStore()
     private var interactionPermissionMonitoringClientIDs = Set<UUID>()
     private var interactionPermissionMonitoringRevision = 0
+    private var isPresentingPermissionRestart = false
+    private(set) var isRelaunchRequested = false
     private lazy var interactionPermissionMonitor = InteractionPermissionMonitor { [weak self] snapshot in
         self?.applyInteractionPermissionSnapshot(snapshot)
     }
@@ -2640,6 +2642,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.offerPermissionRestartAfterSettings()
                 self?.refreshChatGPTAuthenticationStatus()
                 self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
@@ -4935,8 +4938,7 @@ public final class MuesliController: NSObject {
             return true
         }
         markPendingDictionaryCorrectionAccessibilityEnable()
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        FeaturePermission.accessibility.request()
         return false
     }
 
@@ -5002,8 +5004,7 @@ public final class MuesliController: NSObject {
     func requestScreenContextEnable() -> Bool {
         guard AXIsProcessTrusted() else {
             updateConfig { $0.enableScreenContext = false }
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-            AXIsProcessTrustedWithOptions(options)
+            FeaturePermission.accessibility.request()
             return false
         }
 
@@ -5382,28 +5383,107 @@ public final class MuesliController: NSObject {
         }
     }
 
+    private var permissionRestartActivity: PermissionRestartActivity {
+        PermissionRestartActivity(
+            recording: isInteractiveAudioActivityInProgress || meetingTerminationState != .none
+                || isStartingMeetingRecording || isCapturingShortcut,
+            processing: isMeetingAudioProcessing || !meetingRetranscriptionTasks.isEmpty
+                || backgroundMeetingProcessingCount > 0 || importTask != nil
+                || appState.activeAudioImportCount > 0 || appState.modelFileMutationCount > 0
+                || dictationRecoveryTask != nil,
+            assistant: computerUseCommandTask != nil || quilTask != nil
+                || meetingChatCoordinator.isBusy || meetingChatCoordinator.isUpdatingChat
+                || meetingChatCoordinator.isPreparingFiles,
+            unsentChat: meetingChatCoordinator.hasUnsentComposerContent
+        )
+    }
+
+    private func offerPermissionRestartAfterSettings() {
+        guard config.hasCompletedOnboarding, !isPresentingPermissionRestart else { return }
+        let permissions = PermissionRestartRecovery.shared.takeNotice()
+        guard !permissions.isEmpty else { return }
+        confirmPermissionRestart(permissions: permissions)
+    }
+
+    func confirmPermissionRestart(
+        permissions: [FeaturePermission] = [],
+        onboarding: Bool = false,
+        beforeRestart: @escaping () -> Void = {},
+        onLater: @escaping () -> Void = {}
+    ) {
+        guard !isPresentingPermissionRestart, !isRelaunchRequested else { return }
+        let alert = NSAlert()
+        alert.messageText = "Restart muesli to apply permissions?"
+        let names = permissions.map(\.rawValue).joined(separator: ", ")
+        alert.informativeText = onboarding
+            ? "muesli will restart to apply permissions, then reopen at your recording test."
+            : names.isEmpty
+            ? "If you enabled access in System Settings, restart muesli to apply it. The app will reopen automatically."
+            : "If you enabled \(names) in System Settings, restart muesli to apply it. The app will reopen automatically."
+        alert.addButton(withTitle: "Restart muesli")
+        alert.addButton(withTitle: "Later")
+        isPresentingPermissionRestart = true
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return }
+            self.isPresentingPermissionRestart = false
+            if response == .alertFirstButtonReturn {
+                if let message = self.permissionRestartActivity.blockingMessage {
+                    onLater()
+                    self.presentErrorAlert(title: "Finish your current work first", message: message)
+                } else {
+                    beforeRestart()
+                    self.relaunchApp()
+                }
+            } else { onLater() }
+        }
+        let presented: Bool
+        if onboarding {
+            if let window = onboardingWindowController?.presentationWindow {
+                onboardingWindowController?.bringToFront()
+                alert.beginSheetModal(for: window, completionHandler: completion)
+                presented = true
+            } else {
+                presented = false
+            }
+        } else {
+            presented = presentAlert(alert, fallbackLogContext: "permission restart", completion: completion)
+        }
+        if !presented {
+            isPresentingPermissionRestart = false
+            onLater()
+        }
+    }
+
+    /// Both onboarding and permission recovery use normal AppKit termination and cleanup.
     func relaunchApp() {
-        let bundlePath = Bundle.main.bundleURL.path
-        // Defer to next run-loop to escape any SwiftUI animation context
-        DispatchQueue.main.async {
-            // Launch a detached process that waits for us to die, then reopens the app.
-            // Uses /bin/sh only for the sleep; the path is passed as a positional arg
-            // to avoid shell interpolation of special characters.
-            let shell = Process()
-            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-            shell.arguments = ["-c", "sleep 1; open -- \"$1\"", "--", bundlePath]
-            do {
-                try shell.run()
-            } catch {
-                fputs("[muesli-native] relaunch failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
-            }
-            // Use exit(0) instead of NSApp.terminate(nil) — terminate can be
-            // blocked by SwiftUI animation contexts or applicationShouldTerminate,
-            // leaving the old process alive with stale floating indicator and
-            // status bar icon.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                exit(0)
-            }
+        guard !isRelaunchRequested, !isShuttingDown else { return }
+        if let message = permissionRestartActivity.blockingMessage {
+            presentErrorAlert(title: "Finish your current work first", message: message)
+            return
+        }
+        isRelaunchRequested = true
+        ApplicationTermination.request()
+    }
+
+    /// Revalidate at termination admission: work may have started after the notice.
+    /// Schedule reopening only after admission succeeds, so cancellation cannot relaunch later.
+    func prepareRequestedRelaunch() -> Bool {
+        guard isRelaunchRequested else { return true }
+        if let message = permissionRestartActivity.blockingMessage {
+            isRelaunchRequested = false
+            presentErrorAlert(title: "Finish your current work first", message: message)
+            return false
+        }
+        do {
+            try ApplicationRelaunch.schedule(restorePermissions: config.hasCompletedOnboarding)
+            stopHotkeyMonitor()
+            quilHotkeyMonitor.stop()
+            isShuttingDown = true
+            return true
+        } catch {
+            isRelaunchRequested = false
+            presentErrorAlert(title: "Couldn’t restart muesli", message: "Quit and reopen muesli to apply permission changes.")
+            return false
         }
     }
 
@@ -11115,7 +11195,7 @@ public final class MuesliController: NSObject {
                 hasRequestedComputerUseScreenRecordingAccess = true
                 // macOS owns this prompt and its Open System Settings action.
                 // Opening Settings ourselves as well leaves the prompt behind.
-                _ = CGRequestScreenCaptureAccess()
+                FeaturePermission.screenRecording.request()
                 return false
             }
             // A denied request may no longer produce a system prompt. Offer a

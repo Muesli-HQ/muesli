@@ -1395,8 +1395,11 @@ struct OnboardingView: View {
     }
 
     private func saveProgressAndRestart() {
-        saveProgress(atStep: Self.dictationTestStep)
-        controller.relaunchApp()
+        controller.confirmPermissionRestart(onboarding: true, beforeRestart: {
+            saveProgress(atStep: Self.dictationTestStep)
+        }, onLater: {
+            hasCompletedPermissionsStep = false
+        })
     }
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {

@@ -6,6 +6,33 @@ import Testing
 @MainActor
 @Suite("Meeting chat navigation")
 struct MeetingChatNavigationTests {
+    @Test func restartProtectionIncludesHiddenDraftsButNotPersistedAttachments() async throws {
+        let (controller, _, _) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        #expect(!chat.hasUnsentComposerContent)
+        await chat.createChat(scope: MeetingChatScopePolicy.empty)
+        let session = try #require(chat.selectedSessionID)
+        chat.composerDraft = "Keep this unsent question"
+        chat.showIndex()
+        #expect(chat.composerDraft.isEmpty)
+        #expect(chat.hasUnsentComposerContent)
+        chat.selectChat(id: session)
+        chat.composerDraft = ""
+        #expect(!chat.hasUnsentComposerContent)
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("restart-draft-\(UUID()).md")
+        try "Synthetic restart fixture".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        await chat.attachFiles([file])
+        #expect(chat.composerFiles.count == 1)
+        #expect(!chat.hasUnsentComposerContent)
+        chat.startDraft()
+        await chat.attachFiles([file])
+        #expect(chat.hasUnsentComposerContent)
+        chat.startDraft()
+        #expect(!chat.hasUnsentComposerContent)
+    }
+
     @Test func newDraftsStartEmptyAndOnlyUnusedDraftsFollowMeetingOrFolderContext() async throws {
         let (controller, _, citation) = try controllerFixture()
         let chat = controller.meetingChatCoordinator

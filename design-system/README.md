@@ -74,6 +74,15 @@ Feature controls show the missing prerequisite beside Review access, including w
 a previously enabled feature loses permission. Guided setup retains a visible exit
 and a Manage permissions action; returning refreshes permission state.
 
+Requests for Accessibility, Input Monitoring and Screen Recording offer a single
+restart notice on returning from System Settings, with Restart muesli and Later.
+Do not infer a grant from the request: use conditional copy when macOS still
+reports access unavailable. Settings → General → Permissions keeps a Restart
+action for already-enabled access that needs a fresh process. Restart uses normal
+shutdown, reopens Permissions after exit, and refuses to interrupt recordings,
+transcription, imports, AI requests or an unsent chat draft. Never reset permissions
+or restart automatically on a background permission poll.
+
 ### Recording interactions
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow

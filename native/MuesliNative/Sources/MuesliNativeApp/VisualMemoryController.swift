@@ -262,7 +262,8 @@ final class VisualMemoryController {
             do {
                 await initializationTask?.value
                 guard token == attempt, isStillActive() else { return }
-                guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+                if !CGPreflightScreenCaptureAccess() { FeaturePermission.screenRecording.request() }
+                guard CGPreflightScreenCaptureAccess() else {
                     recordingNeedsScreenPermission = true
                     throw ScreenVideoRecorder.error("Allow Screen Recording in System Settings, then try again.")
                 }
