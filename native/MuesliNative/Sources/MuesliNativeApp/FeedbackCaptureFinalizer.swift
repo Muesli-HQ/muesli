@@ -189,10 +189,15 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
         get { lock.withLock { value } }
         set { lock.withLock { value = newValue } }
     }
-    @MainActor static func write(_ summary: String, to pasteboard: NSPasteboard, unchangedSince: Int? = nil) -> Result {
+    @MainActor static func write(_ summary: String, image: Data? = nil, video: URL? = nil,
+                                 to pasteboard: NSPasteboard, unchangedSince: Int? = nil) -> Result {
         if let unchangedSince, pasteboard.changeCount != unchangedSince { return .skipped }
+        let item = NSPasteboardItem()
+        guard item.setString(summary, forType: .string) else { return .failed }
+        if let image, NSBitmapImageRep(data: image) != nil { _ = item.setData(image, forType: .png) }
+        if let video { _ = item.setString(video.absoluteString, forType: .fileURL) }
         pasteboard.clearContents()
-        return pasteboard.setString(summary, forType: .string) ? .copied : .failed
+        return pasteboard.writeObjects([item]) ? .copied : .failed
     }
 }
 extension FeedbackCaptureFinalizer {
@@ -284,14 +289,19 @@ extension FeedbackCaptureFinalizer {
         load: @escaping @Sendable (URL) async throws -> String = { url in
             try await Task.detached(priority: .utility) { try String(contentsOf: url, encoding: .utf8) }.value
         }) -> Stage {
-        let write: @MainActor (String, Int) -> FeedbackCaptureDelivery.Result = { summary, count in
-            FeedbackCaptureDelivery.write(summary, to: pasteboard, unchangedSince: count)
+        let write: @MainActor (String, Data?, Int) -> FeedbackCaptureDelivery.Result = { summary, image, count in
+            FeedbackCaptureDelivery.write(summary, image: image, to: pasteboard, unchangedSince: count)
         }
         return .init(name: .copy) { manifest, context in
             let url = try context.store.mediaURL(id: manifest.id, path: "summary.md")
             let summary = try await load(url)
+            let captureID = manifest.id, sheetPath = manifest.contactSheet
+            let image = await Task.detached(priority: .utility) { () -> Data? in
+                guard let path = sheetPath, let url = try? context.store.mediaURL(id: captureID, path: path) else { return nil }
+                return try? Data(contentsOf: url)
+            }.value
             try Task.checkCancellation()
-            let result = await write(summary, context.finishPasteboardChangeCount)
+            let result = await write(summary, image, context.finishPasteboardChangeCount)
             context.delivery.result = result
             if result == .failed { throw ScreenVideoRecorder.error("Cannot copy feedback summary") }
         }

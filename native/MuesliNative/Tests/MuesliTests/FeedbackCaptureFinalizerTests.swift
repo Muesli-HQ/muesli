@@ -8,6 +8,15 @@ import os
 @Suite("Vidshot finalizer", .serialized)
 @MainActor
 struct FeedbackCaptureFinalizerTests {
+    @Test func clipboardVideoCarriesFileAndContext() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let video = URL(fileURLWithPath: "/tmp/vidshot-fixture.mp4")
+        #expect(FeedbackCaptureDelivery.write("context", video: video, to: pasteboard) == .copied)
+        #expect(pasteboard.string(forType: .string) == "context")
+        #expect(pasteboard.string(forType: .fileURL) == video.absoluteString)
+    }
+
     @Test func orderedStagesContinueAfterFailureAndCopyFollowsPublication() async throws {
         try await withFeedbackStoreAsync { store, _ in
             var manifest = try store.begin(target: feedbackTarget())
@@ -112,6 +121,7 @@ struct FeedbackCaptureContextFinalizerTests {
             let summary = try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8)
             #expect(!summary.isEmpty)
             #expect(pasteboard.string(forType: .string) == summary && context.delivery.result == .copied)
+            #expect(pasteboard.data(forType: .png) == (try Data(contentsOf: store.mediaURL(id: m.id, path: sheet))))
             store.release(id: m.id)
         }
     }

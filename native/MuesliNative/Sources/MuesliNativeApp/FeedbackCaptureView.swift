@@ -159,8 +159,10 @@ struct FeedbackCaptureView: View {
                         Text("\(failure.stage): \(failure.message)").font(.caption).foregroundStyle(.orange)
                     }
                     HStack {
-                        Button("Copy") { copy(selected.id) }
+                        Button("Copy frames & context") { copy(selected.id) }
                             .disabled(loading || activeWriter || !summaryAvailable)
+                        Button("Copy video") { copy(selected.id, video: true) }
+                            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
                         if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
                         Button("Show in Finder") {
                             if let url = bundleURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -221,10 +223,10 @@ struct FeedbackCaptureView: View {
             Button("Cancel", role: .cancel) {}
         }
     }
-    private func copy(_ id: String) {
+    private func copy(_ id: String, video: Bool = false) {
         copyTask?.cancel(); copyMessage = nil
         copyTask = Task {
-            let result = await controller.copy(id: id)
+            let result = await controller.copy(id: id, video: video)
             guard !Task.isCancelled, selected?.id == id else { return }
             copyMessage = result == .copied ? "Copied" : result == .failed ? "Copy failed" : nil
         }
