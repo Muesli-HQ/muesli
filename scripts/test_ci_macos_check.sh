@@ -6,8 +6,11 @@ trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/scripts" "$fixture/cache/localvqe"
 cp "$ROOT/scripts/run_ci_macos_check.sh" "$fixture/scripts/"
 printf '# fixture runtime revision\n' > "$fixture/scripts/build_localvqe.sh"
+fingerprint="$(shasum -a 256 "$fixture/scripts/build_localvqe.sh" | cut -d ' ' -f 1)"
+mkdir -p "$fixture/cache/localvqe/$fingerprint/lib"
 cat > "$fixture/scripts/test_packaged_cli.sh" <<'SH'
 #!/usr/bin/env bash
+set -euo pipefail
 test "$MUESLI_SWIFTPM_SCRATCH_PATH" = "$MUESLI_CI_CACHE_ROOT/cli-debug"
 test -d "$MUESLI_LOCALVQE_LIB_DIR"
 exit "${SMOKE_RESULT:-0}"
