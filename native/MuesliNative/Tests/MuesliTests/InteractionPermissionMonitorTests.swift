@@ -201,6 +201,45 @@ struct InteractionPermissionMonitorTests {
         #expect(results == [false, true])
     }
 
+    @Test("A Grant click during a background read is preserved and coalesced", arguments: [false, true])
+    @MainActor
+    func systemAudioGrantDuringRead(alreadyGranted: Bool) async {
+        let read = PermissionCheckContinuation()
+        let request = PermissionCheckContinuation()
+        await request.finish(true)
+        let check = SystemAudioPermissionCheck(read: { await read.wait() }, requestAccess: { await request.wait() })
+        var backgroundResults: [Bool] = []
+        var grantResults: [Bool] = []
+        check.check { backgroundResults.append($0) }
+        check.check(request: true) { grantResults.append($0) }
+        check.check(request: true) { grantResults.append($0) }
+        #expect(check.isChecking)
+        #expect(await request.calls == 0)
+        await read.finish(alreadyGranted)
+        #expect(await waitUntil { !check.isChecking })
+        #expect(backgroundResults.isEmpty)
+        #expect(grantResults == [true])
+        #expect(await request.calls == (alreadyGranted ? 0 : 1))
+    }
+
+    @Test("Leaving setup discards a queued Grant click without requesting access")
+    @MainActor
+    func systemAudioCancelQueuedGrant() async {
+        let read = PermissionCheckContinuation()
+        let request = PermissionCheckContinuation()
+        await request.finish(true)
+        let check = SystemAudioPermissionCheck(read: { await read.wait() }, requestAccess: { await request.wait() })
+        var results: [Bool] = []
+        check.check { results.append($0) }
+        check.check(request: true) { results.append($0) }
+        check.cancel()
+        await read.finish(false)
+        check.check { results.append($0) }
+        #expect(await waitUntil { !check.isChecking })
+        #expect(results == [false])
+        #expect(await request.calls == 0)
+    }
+
     @Test("Leaving permission setup cancels delivery and permits another attempt")
     @MainActor
     func systemAudioCancelledCompletion() async {

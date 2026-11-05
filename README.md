@@ -62,7 +62,7 @@ Opt in under **Settings → Experimental**; availability depends on your build a
 - **[Time Turner](docs/visual-memory.md)** — Search local screen history by text, app, and date, generate source-linked daily recaps with your selected meeting model, and retrieve OCR and screenshots through `muesli-cli time-turner`.
 - **Computer Use voice commands** — Control apps, browsers, and supported muesli settings with on-device Gemma on macOS 15+ or a connected ChatGPT account; AI prompt settings remain manual-only.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
-- **Cotypist typeahead (experimental)** — Enable Cotypist in Settings for on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word. Off by default.
+- **Cotypist typeahead (experimental)** — Enable Cotypist in Settings for on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word. Off by default. Accepted suggestions appear in your local Timeline with the preceding text and app name.
 
 ---
 

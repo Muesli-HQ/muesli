@@ -169,6 +169,8 @@ enum FeaturePermission: String, Equatable, Sendable {
 @MainActor @Observable
 final class SystemAudioPermissionCheck {
     private(set) var isChecking = false
+    private var isRequesting = false
+    private var pendingRequest: (@MainActor (Bool) -> Void)?
     private var task: Task<Void, Never>?
     private var generation = UUID()
     private let read: @Sendable () async -> Bool
@@ -184,18 +186,33 @@ final class SystemAudioPermissionCheck {
     }
 
     func check(request: Bool = false, onResult: @escaping @MainActor (Bool) -> Void) {
-        guard !isChecking else { return }
+        if isChecking {
+            // A foreground Grant click must survive an in-flight background read.
+            // Coalesce clicks without running two CoreAudio operations at once.
+            if request, !isRequesting { pendingRequest = onResult }
+            return
+        }
         isChecking = true
+        isRequesting = request
         let attempt = UUID()
         generation = attempt
         let operation = request ? requestAccess : read
         task = Task { @MainActor [weak self] in
             guard !Task.isCancelled else { return }
-            let granted = await operation()
+            var granted = await operation()
             guard let self, !Task.isCancelled, self.generation == attempt else { return }
+            var deliver = onResult
+            if let pending = self.pendingRequest {
+                self.pendingRequest = nil
+                self.isRequesting = true
+                deliver = pending
+                if !granted { granted = await self.requestAccess() }
+                guard !Task.isCancelled, self.generation == attempt else { return }
+            }
             self.task = nil
             self.isChecking = false
-            onResult(granted)
+            self.isRequesting = false
+            deliver(granted)
         }
     }
 
@@ -204,5 +221,7 @@ final class SystemAudioPermissionCheck {
         task?.cancel()
         task = nil
         isChecking = false
+        isRequesting = false
+        pendingRequest = nil
     }
 }
