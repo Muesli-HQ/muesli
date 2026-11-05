@@ -646,7 +646,12 @@ struct ComputerUseSettingsTests {
         configStore.save(initial)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: configStore)
+            dictationStore: store, configStore: configStore,
+            // This test changes between Core and Flex. Real downloads can cause
+            // updateConfig to substitute a different available meeting model.
+            downloadedBackendOptions: { BackendOption.bodhanFamily })
+        #expect(controller.config.sttModel == model.rawValue)
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.flex.rawValue)
         let definitions = controller.settingsDefinitions()
         #expect(definitions.first { $0.id == "bodhan_language" }?.availability("en") == nil)
         #expect(definitions.first { $0.id == "bodhan_output" }?.availability(BodhanOutputMode.native.rawValue) == nil)
@@ -673,6 +678,8 @@ struct ComputerUseSettingsTests {
         let language = try #require(definitions.first { $0.id == "bodhan_language" })
         let snapshot = language.snapshot(config: controller.config)
         controller.updateConfig { $0.meetingTranscriptionModel = BodhanModel.core.rawValue }
+        #expect(controller.config.meetingTranscriptionBackend == "bodhan")
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.core.rawValue)
         // Final-producing live models supersede the saved Core meeting model.
         for backend in [MeetingLiveCaptionBackend.appleSpeech, .nemotron35] {
             controller.updateConfig {
@@ -682,6 +689,7 @@ struct ComputerUseSettingsTests {
             #expect(language.availability("hne") == nil)
         }
         controller.updateConfig { $0.enableLiveStreamingPartials = false }
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.core.rawValue)
         #expect(language.availability("hne") != nil)
         await #expect(throws: (any Error).self) {
             _ = try await MuesliSettings.apply(.init(setting: "bodhan_language", value: "hne"), settings: definitions,
