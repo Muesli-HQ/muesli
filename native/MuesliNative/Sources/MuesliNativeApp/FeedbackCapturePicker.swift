@@ -2,6 +2,15 @@ import AppKit
 import CoreGraphics
 import MuesliCore
 
+/// Window and display bounds are in Quartz global points; the selection view
+/// is flipped and uses display-relative points, including on negative-origin screens.
+enum FeedbackCaptureSelectionGeometry {
+    static func highlight(window: CGRect, display: CGRect, viewBounds: CGRect) -> CGRect? {
+        let rect = window.offsetBy(dx: -display.minX, dy: -display.minY).intersection(viewBounds)
+        return rect.isNull || rect.isEmpty ? nil : rect
+    }
+}
+
 /// A short-lived selection surface. It never records screen pixels or audio.
 @MainActor
 protocol FeedbackCaptureSelecting: AnyObject {
@@ -27,6 +36,8 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
         let windowAt: (CGPoint) -> Window?
         private var start: CGPoint?
         private var end: CGPoint?
+        private var hoveredWindow: CGRect?
+        private var hoverTracking: NSTrackingArea?
         override var isFlipped: Bool { true }
         override var acceptsFirstResponder: Bool { true }
 
@@ -41,6 +52,25 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
         required init?(coder: NSCoder) { nil }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let hoverTracking { removeTrackingArea(hoverTracking) }
+            let tracking = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+            addTrackingArea(tracking); hoverTracking = tracking
+        }
+        override func mouseMoved(with event: NSEvent) {
+            guard start == nil else { return }
+            let point = convert(event.locationInWindow, from: nil)
+            let global = CGPoint(x: screenTarget.frame.x + point.x, y: screenTarget.frame.y + point.y)
+            let target = windowAt(global)
+            let display = CGRect(x: screenTarget.frame.x, y: screenTarget.frame.y,
+                                 width: screenTarget.frame.width, height: screenTarget.frame.height)
+            let rect = target.flatMap { $0.selectable ? FeedbackCaptureSelectionGeometry.highlight(window: $0.bounds, display: display, viewBounds: bounds) : nil }
+            if hoveredWindow != rect { hoveredWindow = rect; needsDisplay = true }
+        }
+        override func mouseExited(with event: NSEvent) {
+            if start == nil, hoveredWindow != nil { hoveredWindow = nil; needsDisplay = true }
+        }
         override func keyDown(with event: NSEvent) {
             if event.keyCode == 53 { cancel() } else { super.keyDown(with: event) }
         }
@@ -71,10 +101,13 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
             }
         }
         override func draw(_ dirtyRect: NSRect) {
-            NSColor.black.withAlphaComponent(0.18).setFill(); bounds.fill()
+            NSColor.black.withAlphaComponent(0.35).setFill(); bounds.fill()
+            let highlight: CGRect?
             if let start, let end {
-                let rect = CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
-                                  width: abs(end.x - start.x), height: abs(end.y - start.y))
+                highlight = CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                                   width: abs(end.x - start.x), height: abs(end.y - start.y)).intersection(bounds)
+            } else { highlight = hoveredWindow }
+            if let rect = highlight, !rect.isNull, !rect.isEmpty {
                 NSGraphicsContext.saveGraphicsState()
                 NSGraphicsContext.current?.compositingOperation = .clear
                 NSBezierPath(rect: rect).fill()
@@ -118,6 +151,7 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
             let panel = Panel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false, screen: screen)
             panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+            panel.acceptsMouseMovedEvents = true
             panel.level = .screenSaver; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.isReleasedWhenClosed = false
             panel.contentView = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size), screenTarget: target,

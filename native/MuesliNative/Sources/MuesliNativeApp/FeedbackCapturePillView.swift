@@ -5,6 +5,7 @@ struct FeedbackCapturePillView: View {
     var power: () -> Float = { -160 }
     var finish: () -> Void = {}
     var discard: () -> Void = {}
+    var keepRecording: () -> Void = {}
     var open: () -> Void = {}
     var repairPermission: () -> Void = {}
     var copy: (() -> Void)?
@@ -13,6 +14,14 @@ struct FeedbackCapturePillView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            if case .recording = state {
+                Button(action: discard) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Cancel Vidshot")
+                .help("Cancel Vidshot…")
+            }
             VidshotIcon().frame(width: 14, height: 14)
             switch state {
             case .preparing, .processing:
@@ -29,9 +38,13 @@ struct FeedbackCapturePillView: View {
             default: EmptyView()
             }
             Text(state.title).fixedSize(horizontal: false, vertical: true)
-            if state.isRecording {
+            switch state {
+            case .recording:
                 Button("Finish", action: finish)
-            } else {
+            case .discardConfirmation:
+                Button("Keep", action: keepRecording).accessibilityLabel("Keep recording")
+                Button("Discard", action: discard).accessibilityLabel("Discard Vidshot")
+            default:
                 switch state {
                 case .blocked: Button("Open Settings", action: repairPermission)
                 case .readyToCopy:

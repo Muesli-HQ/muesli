@@ -65,6 +65,15 @@ struct FeedbackCaptureLifecycleTests {
 
     let granted = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: true)
 
+    @Test func windowHighlightClipsToTheCorrectDisplay() {
+        let display = CGRect(x: -1920, y: 120, width: 1920, height: 1080)
+        let view = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        #expect(FeedbackCaptureSelectionGeometry.highlight(window: CGRect(x: -2000, y: 200, width: 500, height: 300),
+            display: display, viewBounds: view) == CGRect(x: 0, y: 80, width: 420, height: 300))
+        #expect(FeedbackCaptureSelectionGeometry.highlight(window: CGRect(x: 10, y: 200, width: 300, height: 300),
+            display: display, viewBounds: view) == nil)
+    }
+
     @Test func cancellingSelectionDoesNotCreateMediaAndRejectsLateSelection() async throws {
         try await withFeedbackStoreAsync { store, root in
             let picker = FeedbackPickerFixture()
@@ -824,7 +833,11 @@ struct FeedbackCaptureLifecycleTests {
             #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
             try await waitUntil { !(controller.state == .preparing) }
             controller.discard()
-            #expect(controller.state?.isRecording == true)
+            if case .discardConfirmation = controller.state {} else { Issue.record("Discard must ask for confirmation") }
+            controller.keepRecording()
+            if case .recording = controller.state {} else { Issue.record("Keep must resume the recording") }
+            #expect(controller.ownsMicrophone && mic.stops == 0)
+            controller.discard()
             controller.discard()
             await controller.shutdown()
             #expect(!controller.ownsMicrophone)

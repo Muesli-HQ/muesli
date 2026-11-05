@@ -619,6 +619,7 @@ public final class MuesliController: NSObject {
                 power: { [weak capture] in capture?.powerLevel() ?? -160 },
                 finish: { [weak capture] in if capture?.presentationID == presentation { capture?.finish() } },
                 discard: { [weak capture] in if capture?.presentationID == presentation { capture?.discard() } },
+                keepRecording: { [weak capture] in if capture?.presentationID == presentation { capture?.keepRecording() } },
                 open: { [weak capture] in if capture?.presentationID == presentation { capture?.open(id: captureID) } },
                 repairPermission: { [weak self, weak capture] in
                     if capture?.presentationID == presentation { self?.repairFeedbackCapturePermission() }

@@ -101,10 +101,10 @@ struct FeedbackCapturePillTests {
     func stablePresentations(anchor: IndicatorAnchor) throws {
         var config = AppConfig(); config.indicatorAnchor = anchor
         try withIndicators(config: config) { indicator, notch, created in
-            var finishes = 0, discards = 0, opens = 0
+            var finishes = 0, discards = 0, keeps = 0, opens = 0
             @MainActor func update(_ state: FeedbackCapturePillState?) {
                 indicator.showFeedbackCapture(state, config: config, power: { -30 }, finish: { finishes += 1 },
-                    discard: { discards += 1 }, open: { opens += 1 }, repairPermission: {})
+                    discard: { discards += 1 }, keepRecording: { keeps += 1 }, open: { opens += 1 }, repairPermission: {})
             }
             update(.recording(seconds: 0, deadMicrophone: false))
             let first = try #require(created().first)
@@ -137,11 +137,18 @@ struct FeedbackCapturePillTests {
                     }
                     hosting.layoutSubtreeIfNeeded()
                     let buttons = accessibilityElements(hosting).filter { $0.accessibilityRole() == .button }
-                    #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == (state.isRecording ? ["Finish"] : state == .ready ? ["Open"] : []))
+                    let expected: Set<String>
+                    switch state {
+                    case .recording: expected = ["Cancel Vidshot", "Finish"]
+                    case .discardConfirmation: expected = ["Keep recording", "Discard Vidshot"]
+                    case .ready: expected = ["Open"]
+                    default: expected = []
+                    }
+                    #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == expected)
                     for button in buttons { #expect(button.accessibilityPerformPress()) }
                 }
             }
-            #expect(finishes == 3 && discards == 0 && opens == 1)
+            #expect(finishes == 2 && discards == 3 && keeps == 1 && opens == 1)
             update(.busy(activity: "Finish dictation"))
             #expect(first.contentView === hosting, "Busy must preserve the existing surface")
             update(.recording(seconds: 2, deadMicrophone: false))
@@ -213,7 +220,11 @@ struct FeedbackCapturePillTests {
                 for reduced in [false, true] {
                     var actions: [String] = []
                     let view = FeedbackCapturePillView(state: state, finish: { actions.append("Finish") },
-                        discard: { actions.append("Discard capture") }, open: { actions.append("Open") },
+                        discard: {
+                            if case .discardConfirmation = state { actions.append("Discard Vidshot") }
+                            else { actions.append("Cancel Vidshot") }
+                        },
+                        keepRecording: { actions.append("Keep recording") }, open: { actions.append("Open") },
                         repairPermission: { actions.append("Open Settings") }, reduceMotionOverride: reduced)
                         .environment(\.colorScheme, scheme)
                     let hosting = NSHostingView(rootView: view)
@@ -227,7 +238,8 @@ struct FeedbackCapturePillTests {
                     #expect(elements.contains { ($0.accessibilityValue() as? String) == state.title || $0.accessibilityLabel() == state.title })
                     let expected: Set<String>
                     switch state {
-                    case .recording, .discardConfirmation: expected = ["Finish"]
+                    case .recording: expected = ["Cancel Vidshot", "Finish"]
+                    case .discardConfirmation: expected = ["Keep recording", "Discard Vidshot"]
                     case .blocked: expected = ["Open Settings"]
                     case .readyToCopy: expected = ["Copy", "Open"]
                     case .ready, .recovered, .copied, .failed(_, _, true): expected = ["Open"]
