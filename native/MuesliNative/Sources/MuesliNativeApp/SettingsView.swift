@@ -978,7 +978,8 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow(
                     "Watch text appear during hands-free mode",
-                    description: "Preview as you speak; apply enabled cleanup when you stop."
+                    description: "Preview as you speak; apply enabled cleanup when you stop.",
+                    newFeature: .liveDictation
                 ) {
                     settingsControl("buffered_live_dictation")
                 }
@@ -1949,7 +1950,7 @@ struct SettingsView: View {
 
             dictationCleanupSettingsSection
 
-            settingsSection("App Formatting") {
+            settingsSection("App Formatting", newFeature: .appFormatting) {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
             .id(FeatureTourTarget.appFormatting.rawValue)
@@ -1983,7 +1984,7 @@ struct SettingsView: View {
     /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
     /// selects it, or opens Keyboard settings with a guide until the user has added it.
     private var cotypistSettingsSection: some View {
-        settingsSection("Cotypist") {
+        settingsSection("Cotypist", newFeature: .cotypist) {
             settingsCompactRow("Typeahead suggestions", description: cotypistStatus) {
                 settingsControl("cotypist_enabled")
             }
@@ -3388,10 +3389,11 @@ struct SettingsView: View {
     private func settingsSection(
         _ title: String,
         icon: NSImage? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder content: () -> some View
     ) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            SettingsSectionHeading(title: title, icon: icon)
+            SettingsSectionHeading(title: title, icon: icon, newFeature: newFeature)
 
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -3420,9 +3422,10 @@ struct SettingsView: View {
     private func settingsCompactRow(
         _ label: String,
         description: String? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder control: () -> some View
     ) -> some View {
-        SettingsRow(label: label, description: description, controlWidth: nil, control: control)
+        SettingsRow(label: label, description: description, controlWidth: nil, newFeature: newFeature, control: control)
     }
 
     /// Optional setup reference, kept out of the way but available without hovering.

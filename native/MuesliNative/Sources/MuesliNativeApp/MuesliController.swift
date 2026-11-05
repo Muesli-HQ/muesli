@@ -3357,6 +3357,9 @@ public final class MuesliController: NSObject {
     }
 
     func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
+        if let feature = NewFeature.setting(id) {
+            NewFeatureDiscovery.shared.markUsed(feature)
+        }
         if dictationToggleShortcut != nil,
            id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
             throw MuesliSettings.Failure.rejected("A captured toggle shortcut can only set dictation Toggle mode.")

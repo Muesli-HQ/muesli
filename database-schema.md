@@ -23,6 +23,14 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### Feature-discovery preferences outside SQLite
+
+Feature-discovery badges use bundle-local UserDefaults key
+`featureDiscovery.0.8.6.seen`, an array of stable feature IDs. Missing means no
+features discovered; unknown IDs are preserved. Each feature is marked on explicit
+navigation or interaction, independently of the What's New tour. This preference
+is not user activity and is not stored in SQLite, synced, exported or sent to telemetry.
+
 ### Anonymous analytics preference outside SQLite
 
 The About opt-out uses bundle-local UserDefaults keys

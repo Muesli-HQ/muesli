@@ -412,7 +412,19 @@ Attachment originals stay in place. The selected provider receives images and
 only the document pages requested through tools; on-device Gemma reads document
 text locally. Keep this disclosure at the shared 12pt helper-text size.
 
-### Timeline sync presentation
+### New-feature discovery badges
+
+Use one compact, static `New` capsule beside a major feature entry or setting,
+not every new control. Use Nunito Sans 11 semibold, white text, 5pt horizontal
+and 1pt vertical padding. The fill derives from the saved accent, deepened only
+as needed for 4.5:1 white-text contrast, including Ultra Dark. It has no shadow,
+animation or hit target; the parent control retains its normal click behavior.
+Badges disappear independently after feature interaction and stay dismissed across
+relaunches. Scrolling, rendering and the guided tour do not dismiss them. The
+0.8.6 introductions are Chat, Time Turner, Granola import, Cotypist, live dictation
+and App Formatting. Quill predates this release and does not receive a New badge.
+
+### Timeline presentation
 
 The activity filter shows its selected value without a separate visible label;
 retain its accessible name. Insights is reached through the Timeline and

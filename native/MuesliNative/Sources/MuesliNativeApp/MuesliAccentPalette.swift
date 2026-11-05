@@ -63,6 +63,7 @@ struct MuesliAccentPalette {
     let onFill: Color
     let text: Color
     let stateShade: Color
+    let badgeFill: Color
 
     init(lightFill: Int, darkFill: Int) {
         let light = Self.values(fill: lightFill, dark: false)
@@ -73,6 +74,16 @@ struct MuesliAccentPalette {
         onFill = Self.color(light: light.onFill, dark: dark.onFill)
         text = Self.color(light: light.text, dark: dark.text)
         stateShade = Self.color(light: light.stateShade, dark: dark.stateShade)
+        badgeFill = Self.color(light: Self.badgeFillHex(light.fill), dark: Self.badgeFillHex(dark.fill))
+    }
+
+    /// Small white badge labels need a deeper fill for pale saved accents.
+    static func badgeFillHex(_ fill: Int) -> Int {
+        for step in 0...shadeSteps {
+            let candidate = MuesliContrast.mix(fill, toward: 0x000000, amount: Double(step) / Double(shadeSteps))
+            if MuesliContrast.ratio(0xFFFFFF, candidate) >= 4.6 { return candidate }
+        }
+        return 0x000000
     }
 
     /// Identical values stay plain sRGB colors, as saved accents always were.

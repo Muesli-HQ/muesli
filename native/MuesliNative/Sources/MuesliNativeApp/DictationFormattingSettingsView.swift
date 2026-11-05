@@ -99,7 +99,10 @@ struct DictationFormattingSettingsView: View {
                     : "Choose an app to get started. Suggestions appear here as you dictate into more apps.")
                     .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
             }
-            Button("Add App…") { controller.chooseDictationFormattingApp(onChoose: beginEditing) }
+            Button("Add App…") {
+                NewFeatureDiscovery.shared.markUsed(.appFormatting)
+                controller.chooseDictationFormattingApp(onChoose: beginEditing)
+            }
 
             if !appState.config.dictationFormattingTemplates.isEmpty {
                 DisclosureGroup("My templates (\(appState.config.dictationFormattingTemplates.count))") {
@@ -146,6 +149,7 @@ struct DictationFormattingSettingsView: View {
     }
 
     private func beginEditing(bundleID: String, name: String) {
+        NewFeatureDiscovery.shared.markUsed(.appFormatting)
         controller.addDictationFormattingApp(bundleID: bundleID, name: name)
         expandedAppIDs.insert(bundleID)
     }
@@ -154,6 +158,7 @@ struct DictationFormattingSettingsView: View {
         Binding(
             get: { expandedAppIDs.contains(bundleID) },
             set: { isExpanded in
+                NewFeatureDiscovery.shared.markUsed(.appFormatting)
                 if isExpanded { expandedAppIDs.insert(bundleID) }
                 else {
                     expandedAppIDs.remove(bundleID)

@@ -23,6 +23,8 @@ struct MuesliColorRolesTests {
             let palette = MuesliAccentPalette.palette(forHex: hex)
             for dark in [false, true] {
                 let values = palette.values(dark: dark)
+                #expect(MuesliContrast.ratio(0xFFFFFF, MuesliAccentPalette.badgeFillHex(values.fill)) >= Self.minimumText,
+                        "white New label on \(hex ?? "default") badge dark=\(dark)")
                 #expect(MuesliContrast.ratio(values.onFill, values.fill) >= Self.minimumText,
                         "onAccent on \(hex ?? "default") dark=\(dark)")
                 for opacity in [MuesliTheme.accentShadeHover, MuesliTheme.accentShadePressed] {
