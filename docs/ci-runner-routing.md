@@ -136,7 +136,7 @@ A maintainer can add `self-host` to their own same-repository PR to run the
 core, dictation-transcription and meetings shards, release compilation, AI Elements
 tests/icon validation, and packaged CLI smoke checks on the private M5 Pro.
 One runner accepts one job at a time. Checks use persistent, runner-specific
-debug, release, AI Elements and LocalVQE caches. Each invocation still builds
+test-debug, CLI-debug, release, AI Elements and LocalVQE caches. Each invocation still builds
 and executes its checks. Linux checks and external reviews use ordinary routing. Pushes and merges use GitHub. Blacksmith takes precedence if both
 labels are present. Remove self-host to start replacement hosted CI.
 

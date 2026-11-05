@@ -25,6 +25,7 @@ PY
     git diff --exit-code -- native/AIElementsSwift/Sources/AIElementsSwift/AIIcon.swift
     ;;
   cli-smoke)
+    export MUESLI_SWIFTPM_SCRATCH_PATH="$MUESLI_CI_CACHE_ROOT/cli-debug"
     mkdir -p "$MUESLI_CI_CACHE_ROOT/localvqe"
     fingerprint="$(shasum -a 256 scripts/build_localvqe.sh | cut -d ' ' -f 1)"
     export LOCALVQE_REPO="$MUESLI_CI_CACHE_ROOT/localvqe/$fingerprint/source"
