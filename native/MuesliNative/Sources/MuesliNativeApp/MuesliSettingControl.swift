@@ -13,6 +13,8 @@ struct MuesliSettingControl: View {
     @State private var isApplying = false
 
     var body: some View {
+        // Permission grants can change availability without changing saved config.
+        let _ = controller.appState.interactionPermissionSnapshot
         Group {
             if let setting = definitions.first(where: { $0.id == id }) {
                 let state = filteredSnapshot(setting)
@@ -44,20 +46,26 @@ struct MuesliSettingControl: View {
                     .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     .fixedSize(horizontal: compactAppearance, vertical: true)
                 } else if Set(state.choices.map(\.id)) == ["on", "off"] {
-                    HStack {
-                        if state.current == "off", state.unavailable["on"] != nil,
-                           let requestPermission = setting.requestPermission {
-                            Button("Grant access", action: requestPermission)
-                                .help(state.unavailable["on"] ?? "Grant the required permissions")
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            if state.unavailable["on"] != nil,
+                               let requestPermission = setting.requestPermission {
+                                Button("Review access", action: requestPermission)
+                                    .help(state.unavailable["on"] ?? "Grant the required permissions")
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(get: { state.current == "on" }, set: { apply($0 ? "on" : "off") }))
+                                .toggleStyle(.switch)
+                                .tint(MuesliTheme.toggleAccent)
+                                .labelsHidden()
+                                .accessibilityLabel(state.label)
+                                .disabled(state.unavailable[state.current == "on" ? "off" : "on"] != nil)
+                                .help(state.unavailable[state.current == "on" ? "off" : "on"] ?? state.label)
                         }
-                        Spacer()
-                        Toggle("", isOn: Binding(get: { state.current == "on" }, set: { apply($0 ? "on" : "off") }))
-                            .toggleStyle(.switch)
-                            .tint(MuesliTheme.toggleAccent)
-                            .labelsHidden()
-                            .accessibilityLabel(state.label)
-                            .disabled(state.unavailable[state.current == "on" ? "off" : "on"] != nil)
-                            .help(state.unavailable[state.current == "on" ? "off" : "on"] ?? state.label)
+                        if let reason = state.unavailable["on"], setting.requestPermission != nil {
+                            Text(reason).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 } else if setting.presentation == .discreteSlider, !state.choices.isEmpty {
                     let index = state.choices.firstIndex { $0.id == state.current } ?? 0

@@ -159,6 +159,11 @@ struct DashboardRootView: View {
                                     set: { appState.globalSearchPresented = $0 })) {
             GlobalSearchPanel(controller: controller, appState: appState)
         }
+        .onChange(of: appState.selectedTab) { _, tab in
+            if appState.activeFeatureTour == nil, let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
+        }
         .onChange(of: appState.focusSearchField) { _, focus in
             if focus {
                 appState.focusSearchField = false

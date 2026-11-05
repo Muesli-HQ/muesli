@@ -45,6 +45,16 @@ if [[ ! -x "$CLI_BIN" ]]; then
   exit 1
 fi
 
+# Exercise the default release identity: the optional feature must be available
+# in the distributed bundle even though users have not enabled its input source.
+if [[ "${MUESLI_INCLUDE_COTYPIST:-1}" == 1 ]]; then
+  COTYPIST_PATH="$APP_PATH/Contents/Library/Input Methods/MuesliCotypist.app"
+  if [[ ! -x "$COTYPIST_PATH/Contents/MacOS/MuesliCotypist" ]]; then
+    echo "Packaged app is missing the default Cotypist input method." >&2
+    exit 1
+  fi
+fi
+
 MACOS_DIR="$APP_PATH/Contents/MacOS"
 if ! muesli_localvqe_runtime_is_complete "$MACOS_DIR"; then
   echo "Packaged app is missing a complete LocalVQE runtime under Contents/MacOS." >&2

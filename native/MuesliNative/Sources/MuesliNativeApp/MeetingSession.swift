@@ -1054,7 +1054,7 @@ final class MeetingSession {
                 previousMeetingNotes: previousMeetingNotes
             )
         } catch {
-            fputs("[meeting] summary generation failed: \(error.localizedDescription)\n", stderr)
+            fputs("[meeting] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: rawTranscript,
                 meetingTitle: generatedTitle,

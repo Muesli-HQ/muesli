@@ -92,6 +92,7 @@ extension MuesliController {
     }
 
     func openDictationFormattingSettings() {
+        NewFeatureDiscovery.shared.markUsed(.appFormatting)
         dismissDictationFormattingSetup()
         appState.selectedSettingsPane = .dictation
         openSettingsTab()

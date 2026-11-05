@@ -44,6 +44,9 @@ struct MeetingMediaView: View {
             if memory.isPreparing || memory.isFinalizing {
                 HStack { ProgressView().controlSize(.small); Text(memory.isFinalizing ? "Saving screen recording…" : memory.isAwaitingConfirmation ? "Choose a screen to record…" : "Preparing screen recording…") }
             }
+            if memory.messageMeetingID == meeting.id, memory.recordingNeedsScreenPermission {
+                Button("Review permissions", action: controller.showPermissionsSettings)
+            }
             if memory.messageMeetingID == meeting.id, let message = memory.message {
                 HStack { Text(message).font(MuesliTheme.font(.caption)).foregroundStyle(.orange); Spacer(); Button("Dismiss") { memory.message = nil } }
             }

@@ -372,7 +372,9 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsPermissionsSettings = false
     var requestsTimeTurnerSetup = false
+    var requestsTimeTurnerPermissionSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
     var credentialStorageError: String?
     var pendingFeatureTourInvitation: FeatureTour?

@@ -23,6 +23,38 @@ Support directory. Common locations are:
 Use `muesli-cli info` to resolve the active database instead of assuming a path.
 Do not edit a user's database directly while Muesli is running.
 
+### Feature-discovery preferences outside SQLite
+
+Feature-discovery badges use bundle-local UserDefaults key
+`featureDiscovery.0.8.6.seen`, an array of stable feature IDs. Missing means no
+features discovered; unknown IDs are preserved. Each feature is marked on explicit
+navigation or interaction, independently of the What's New tour. This preference
+is not user activity and is not stored in SQLite, synced, exported or sent to telemetry.
+
+### Permission restart navigation outside SQLite
+
+`PermissionRestartResumeStore` owns the bundle-local UserDefaults string
+`permissionRestart.destination` and Date `permissionRestart.requestedAt`.
+Time Turner saves `timeTurnerPermissions` and the request time when
+requesting access or opening Manage permissions from setup. The next launch
+consumes the marker and opens Time Turner's permission step, including launches
+initiated by macOS Quit & Reopen without app-specific arguments. Intent expires
+after 15 minutes; missing, malformed or future timestamps (including legacy
+destination-only values) cannot restore navigation. Explicitly
+leaving or advancing past that step clears both keys. Missing or unknown values fall
+back to ordinary launch behavior (or General → Permissions for the explicit
+permission-recovery launch argument); unknown values are discarded. This is
+navigation intent only, never a cached grant or feature-enable flag. It is not
+synced, exported, included in history/CLI output, or sent to telemetry.
+
+### Formatting suggestion preferences outside SQLite
+
+App Formatting suggestion dismissal uses the bundle-local UserDefaults array
+`dictationFormatting.dismissedSuggestions`, containing application bundle IDs.
+Missing means none dismissed. This presentation preference does not alter usage
+records or formatting rules and is not synced, exported or sent to telemetry.
+Dismissed apps remain available through Add App.
+
 ### Anonymous analytics preference outside SQLite
 
 The About opt-out uses bundle-local UserDefaults keys

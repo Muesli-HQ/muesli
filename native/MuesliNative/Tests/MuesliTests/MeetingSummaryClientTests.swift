@@ -5,6 +5,52 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    @Test("summary log categories exclude provider fields and nested private error details")
+    func summaryLogCategoriesAreContentFree() {
+        let secret = "Synthetic confidential meeting detail /private/meeting.txt"
+        let nested = NSError(domain: secret, code: 42, userInfo: [NSLocalizedDescriptionKey: secret])
+        let cases: [(Error, String)] = [
+            (MeetingSummaryError.notConfigured(backend: secret), "not_configured"),
+            (MeetingSummaryError.backendFailed(backend: secret, statusCode: 500, message: secret), "provider_failed"),
+            (MeetingSummaryError.emptyResponse(backend: secret), "empty_response"),
+            (MeetingSummaryError.requestFailed(backend: secret, underlying: nested), "request_failed"),
+            (MeetingSummaryPersistenceError.failedToSaveSummary(underlying: nested), "persistence_failed"),
+            (URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: secret]), "transport_failed"),
+            (nested, "unclassified_failure"),
+            (CancellationError(), "cancelled"),
+        ]
+        for (error, expected) in cases {
+            #expect(MeetingSummaryLog.category(for: error) == expected)
+        }
+    }
+
+    @Test("summary retries log only categories and retain provider errors for the app")
+    func summaryRetryLogsRedactContentWithoutChangingError() async {
+        let secret = "Synthetic confidential acquisition discussion"
+        var logs: [String] = []
+        var attempts = 0
+        do {
+            _ = try await MeetingSummaryClient.withSummaryRetries(
+                maxRetries: 1,
+                sleep: { _ in },
+                log: { logs.append($0) }
+            ) { _ in
+                attempts += 1
+                throw MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: 500, message: secret)
+            }
+            Issue.record("Expected the detailed provider error after retry exhaustion")
+        } catch {
+            guard case MeetingSummaryError.backendFailed(let backend, let status, let message) = error else {
+                Issue.record("Provider error type was changed")
+                return
+            }
+            #expect(backend == "OpenAI" && status == 500 && message == secret)
+            #expect(error.localizedDescription.contains(secret))
+        }
+        #expect(attempts == 2)
+        #expect(logs == ["[summary] retrying summary generation after failure (1/1): provider_failed"])
+    }
+
     @Test("Anthropic output uses the model maximum unless a smaller cap is requested")
     func anthropicOutputLimits() async throws {
         let url = URL(string: "https://summary.example.test/v1/messages")!

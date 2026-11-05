@@ -89,7 +89,7 @@ enum MuesliTheme {
     static var onAccent: Color { appearance.ultraDark ? Color(hex: darkInkHex) : accentPalette.onFill }
     /// Accent-hued text and meaningful icons on neutral surfaces and on accent tints up to
     /// `accentTintPressed`. A same-hue shade of the saved accent, deepened in Light and
-    /// lightened in Dark only as far as needed for 4.5:1. Never use it as a fill.
+    /// lightened in Dark only as far as needed for 6:1. Never use it as a fill.
     static var accentText: Color { appearance.ultraDark ? .white : accentPalette.text }
     /// Hover/pressed overlay for `accent` fills; it moves the fill away from `onAccent`.
     static var accentStateShade: Color { appearance.ultraDark ? Color(hex: darkInkHex) : accentPalette.stateShade }

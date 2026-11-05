@@ -32,63 +32,65 @@ struct TimeTurnerSettingsView: View {
                         Button("Review access…") { setup = true }
                     }
                 }
-                subsection("Capture")
-                SettingsRow(label: "Pause on inactivity", description: "Pause after 1 minute without keyboard or mouse input. Resume when you return.", controlWidth: nil) {
-                    MuesliSettingControl(controller: controller, id: "time_turner_pause_on_inactivity")
-                }
-                SettingsRow(label: "Check screen every") {
-                    MuesliSettingControl(controller: controller, id: "time_turner_interval")
-                }
-                SettingsNote("Saves changed screens only. Automatically resumes after lock or sleep; pauses during meeting screen recording.")
-                    .padding(.top, MuesliTheme.spacing8)
-                subsection("Excluded apps")
-                SettingsRow(label: "App exclusions", controlWidth: nil) {
-                    Button("Add app…") { chooseExcludedApp() }
-                }
-                ForEach(exclusions, id: \.self) { bundle in
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        TargetApplicationIconView(appName: bundle, bundleIdentifier: bundle).accessibilityLabel(bundle)
-                        Text(exclusionNames[bundle] ?? bundle).font(MuesliTheme.body()).lineLimit(1)
-                        Spacer()
-                        Button("Remove") { saveExclusions(exclusions.filter { $0 != bundle }) }
-                            .accessibilityLabel("Remove \(exclusionNames[bundle] ?? bundle) exclusion")
+                if appState.config.timeTurnerEnabled {
+                    subsection("Capture")
+                    SettingsRow(label: "Pause on inactivity", description: "Pause after 1 minute without keyboard or mouse input. Resume when you return.", controlWidth: nil) {
+                        MuesliSettingControl(controller: controller, id: "time_turner_pause_on_inactivity")
                     }
-                    .padding(.vertical, MuesliTheme.spacing4)
-                }
-                SettingsNote("Sensitive apps and private windows are skipped where detected. Pause before opening private content.")
-                    .padding(.top, MuesliTheme.spacing8)
-                subsection("Storage & retention")
-                SettingsRow(label: "Keep screenshots for") {
-                    MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention")
-                }
-                SettingsRow(label: "Keep searchable history for") {
-                    MuesliSettingControl(controller: controller, id: "time_turner_history_retention")
-                }
-                SettingsRow(label: "Screenshot storage budget") {
-                    MuesliSettingControl(controller: controller, id: "time_turner_budget")
-                }
-                SettingsRow(label: "Screenshot storage", controlWidth: nil) {
-                    Text(ByteCountFormatter.string(fromByteCount: memory.usedBytes, countStyle: .file))
-                        .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
-                }
-                SettingsRow(label: "Available disk space", controlWidth: nil) {
-                    Text(ByteCountFormatter.string(fromByteCount: memory.freeBytes, countStyle: .file))
-                        .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
-                }
-                SettingsNote(estimate).padding(.top, MuesliTheme.spacing8)
-                DisclosureGroup("How retention works") {
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                        SettingsNote("Screenshots expire sooner if the budget fills. Searchable text uses separate storage.")
-                        SettingsNote("Retention starts at capture, even while paused or off. Shorter limits apply to existing history.")
-                        SettingsNote("History expiry or deletion also removes its screenshots and recaps, even below the storage budget.")
+                    SettingsRow(label: "Check screen every") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_interval")
                     }
+                    SettingsNote("Saves changed screens only. Automatically resumes after lock or sleep; pauses during meeting screen recording.")
+                        .padding(.top, MuesliTheme.spacing8)
+                    subsection("Excluded apps")
+                    SettingsRow(label: "App exclusions", controlWidth: nil) {
+                        Button("Add app…") { chooseExcludedApp() }
+                    }
+                    ForEach(exclusions, id: \.self) { bundle in
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            TargetApplicationIconView(appName: bundle, bundleIdentifier: bundle).accessibilityLabel(bundle)
+                            Text(exclusionNames[bundle] ?? bundle).font(MuesliTheme.body()).lineLimit(1)
+                            Spacer()
+                            Button("Remove") { saveExclusions(exclusions.filter { $0 != bundle }) }
+                                .accessibilityLabel("Remove \(exclusionNames[bundle] ?? bundle) exclusion")
+                        }
+                        .padding(.vertical, MuesliTheme.spacing4)
+                    }
+                    SettingsNote("Sensitive apps and private windows are skipped where detected. Pause before opening private content.")
+                        .padding(.top, MuesliTheme.spacing8)
+                    subsection("Storage & retention")
+                    SettingsRow(label: "Keep screenshots for") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_screenshot_retention")
+                    }
+                    SettingsRow(label: "Keep searchable history for") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_history_retention")
+                    }
+                    SettingsRow(label: "Screenshot storage budget") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_budget")
+                    }
+                    SettingsRow(label: "Screenshot storage", controlWidth: nil) {
+                        Text(ByteCountFormatter.string(fromByteCount: memory.usedBytes, countStyle: .file))
+                            .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    SettingsRow(label: "Available disk space", controlWidth: nil) {
+                        Text(ByteCountFormatter.string(fromByteCount: memory.freeBytes, countStyle: .file))
+                            .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    SettingsNote(estimate).padding(.top, MuesliTheme.spacing8)
+                    DisclosureGroup("How retention works") {
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                            SettingsNote("Screenshots expire sooner if the budget fills. Searchable text uses separate storage.")
+                            SettingsNote("Retention starts at capture, even while paused or off. Shorter limits apply to existing history.")
+                            SettingsNote("History expiry or deletion also removes its screenshots and recaps, even below the storage budget.")
+                        }
+                        .padding(.top, MuesliTheme.spacing8)
+                    }
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
                     .padding(.top, MuesliTheme.spacing8)
-                }
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .padding(.top, MuesliTheme.spacing8)
-                if let message = memory.message {
-                    SettingsNote(message, tone: .warning).padding(.top, MuesliTheme.spacing8)
+                    if let message = memory.message {
+                        SettingsNote(message, tone: .warning).padding(.top, MuesliTheme.spacing8)
+                    }
                 }
             }
         }
@@ -163,6 +165,10 @@ struct TimeTurnerSettingsView: View {
     }
 }
 
+enum TimeTurnerSetupStep: Int {
+    case introduction, permissions, storage
+}
+
 struct TimeTurnerSetupView: View {
     let controller: MuesliController
     let appState: AppState
@@ -175,6 +181,13 @@ struct TimeTurnerSetupView: View {
     @State private var error: String?
     @State private var permissionRefresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     private var ready: Bool { screen && accessibility }
+
+    init(controller: MuesliController, appState: AppState, initialStep: TimeTurnerSetupStep = .introduction) {
+        self.controller = controller
+        self.appState = appState
+        _step = State(initialValue: initialStep.rawValue)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -193,17 +206,25 @@ struct TimeTurnerSetupView: View {
             } else if step == 1 {
                 Text(ready ? "You're already set" : "A couple of permissions").font(MuesliTheme.font(.title).bold())
                 Text(ready ? "Muesli already has the permissions Time Turner needs. No need to grant them again." : "Allow the missing permissions below, then return here. We'll check again automatically.").foregroundStyle(.secondary)
-                permissionRow("Screen Recording", detail: "Save an image of the focused window.", granted: screen) {
-                    if !CGRequestScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
+                permissionRow(.screenRecording, detail: "Save an image of the focused window.", granted: screen) {
+                    PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
+                    FeaturePermission.screenRecording.request()
                     refresh()
                 }
-                permissionRow("Accessibility", detail: "Identify the focused window and help detect secure fields.", granted: accessibility) {
-                    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    if !AXIsProcessTrustedWithOptions(options) { openPrivacy("Privacy_Accessibility") }
+                permissionRow(.accessibility, detail: "Identify the focused window and help detect secure fields.", granted: accessibility) {
+                    PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
+                    FeaturePermission.accessibility.request()
                     refresh()
                 }
-                Text("If macOS asks you to quit and reopen Muesli, do that, then return to setup. Your choices are saved. OCR needs no separate permission.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
-                Button("Check again", action: refresh)
+                HStack {
+                    Button("Check again", action: refresh)
+                    Spacer()
+                    Button("Manage permissions") {
+                        PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
+                        dismiss()
+                        controller.showPermissionsSettings()
+                    }
+                }
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -227,11 +248,18 @@ struct TimeTurnerSetupView: View {
             if let error { Text(error).font(MuesliTheme.font(.caption)).foregroundStyle(.red) }
             Spacer(minLength: 0)
             HStack {
-                Button("Not now") { dismiss() }.keyboardShortcut(.cancelAction)
-                if step > 0 { Button("Back") { step -= 1 } }
+                Button("Not now") { PermissionRestartResumeStore.shared.clear(); dismiss() }.keyboardShortcut(.cancelAction)
+                if step > 0 { Button("Back") { PermissionRestartResumeStore.shared.clear(); step -= 1 } }
                 Spacer()
                 if step < 2 {
-                    Button("Continue") { refresh(); step += 1 }.buttonStyle(.borderedProminent).disabled(step == 1 && !ready)
+                    Button("Continue") {
+                        refresh()
+                        if step == TimeTurnerSetupStep.permissions.rawValue {
+                            guard ready else { return }
+                            PermissionRestartResumeStore.shared.clear()
+                        }
+                        step += 1
+                    }.buttonStyle(.borderedProminent).disabled(step == 1 && !ready)
                 } else {
                     Button(appState.config.timeTurnerEnabled ? "Finish" : "Start Time Turner") { enable() }
                         .buttonStyle(.borderedProminent).disabled(!ready || enabling)
@@ -247,15 +275,15 @@ struct TimeTurnerSetupView: View {
         if screen != nextScreen { screen = nextScreen }
         if accessibility != nextAccessibility { accessibility = nextAccessibility }
     }
-    private func openPrivacy(_ pane: String) {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
-    }
-    private func permissionRow(_ title: String, detail: String, granted: Bool, request: @escaping () -> Void) -> some View {
+    private func permissionRow(_ permission: FeaturePermission, detail: String, granted: Bool, request: @escaping () -> Void) -> some View {
         HStack {
             Image(systemName: granted ? "checkmark.circle.fill" : "circle").foregroundStyle(granted ? Color.green : Color.secondary)
-            VStack(alignment: .leading) { Text(title).bold(); Text(detail).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary) }
+            VStack(alignment: .leading) { Text(permission.rawValue).bold(); Text(detail).font(MuesliTheme.font(.caption)).foregroundStyle(.secondary) }
             Spacer()
-            if granted { Text("Allowed").font(MuesliTheme.font(.caption)) } else { Button("Allow…", action: request) }
+            if granted { Text("Allowed").font(MuesliTheme.font(.caption)) }
+            else {
+                Button("Allow…", action: request)
+            }
         }.padding(14).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
     private func enable() {
@@ -269,6 +297,7 @@ struct TimeTurnerSetupView: View {
             do {
                 try await controller.applySetting("time_turner_enabled", value: "on")
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .success)
+                PermissionRestartResumeStore.shared.clear()
                 dismiss()
             } catch {
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .failed, fields: [.stage: .setup])

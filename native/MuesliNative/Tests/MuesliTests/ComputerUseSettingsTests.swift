@@ -43,6 +43,38 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("Completed onboarding keeps dashboard destinations accessible without recording setup")
+    func dashboardAfterDeferredPermissions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try database.migrateIfNeeded()
+        let configStore = makeTestConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.hasCompletedOnboarding = true
+        config.onboardingUseCase = OnboardingUseCase.everything.rawValue
+        config.enablePushToTalk = false
+        configStore.save(config)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: database, configStore: configStore)
+        // No startup, permission grants or capture. Navigation must work independently.
+        for tab: DashboardTab in [.timeline, .meetingChat, .meetings, .settings] {
+            controller.openHistoryWindow(tab: tab)
+            #expect(controller.appState.selectedTab == tab)
+        }
+        controller.appState.selectedSettingsPane = .experimental
+        controller.showPermissionsSettings()
+        #expect(controller.appState.selectedTab == .settings)
+        #expect(controller.appState.selectedSettingsPane == .general)
+        #expect(controller.appState.requestsPermissionsSettings)
+        let settings = controller.settingsDefinitions()
+        for id in ["ocr_context", "cotypist_screen_context"] {
+            #expect(settings.first { $0.id == id }?.requestPermission != nil)
+        }
+    }
+
     @Test("Recap sources use canonical settings with mandatory screen history")
     func recapSourceDefinitions() async throws {
         try await withShortcutSettings { controller, _ in

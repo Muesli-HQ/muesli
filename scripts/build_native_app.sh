@@ -433,13 +433,10 @@ bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME
 
 # Cotypist (experimental): the typeahead input method lives inside the app and is registered by
 # Muesli at launch. It owns keys and the inline ghost; Muesli does the rest. Muesli enables the
-# feature only when this helper is bundled, so this flag is the single switch. Dev bundle IDs get
-# it by default; a public release opts in with MUESLI_INCLUDE_COTYPIST=1 and then goes through the
-# same Developer ID signing, hardened runtime, timestamp and notarization as the app.
-INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-}"
-if [[ -z "$INCLUDE_COTYPIST" ]]; then
-  [[ "$BUNDLE_ID" == com.muesli.dev* ]] && INCLUDE_COTYPIST=1 || INCLUDE_COTYPIST=0
-fi
+# feature only when this helper is bundled. Include it in all builds by default; users still
+# enable Cotypist in Settings. MUESLI_INCLUDE_COTYPIST=0 explicitly omits the helper.
+# Release helpers use the app's Developer ID signing, hardened runtime and notarization.
+INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-1}"
 if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"

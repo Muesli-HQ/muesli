@@ -40,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if controller.appState.config.hasCompletedOnboarding,
+               let destination = PermissionRestartResumeStore.shared.consume(
+                   fallbackToPermissions: ProcessInfo.processInfo.arguments.contains(ApplicationRelaunch.permissionsArgument)
+               ) {
+                controller.restorePermissionRestartDestination(destination)
+            }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
@@ -76,8 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if terminationTask != nil {
             return .terminateLater
         }
-        if controller?.shouldTerminateApplication() == false {
-            return .terminateCancel
+        if let controller {
+            if controller.isRelaunchRequested {
+                guard controller.prepareRequestedRelaunch() else { return .terminateCancel }
+            } else if !controller.shouldTerminateApplication() {
+                return .terminateCancel
+            }
         }
         guard let controller else { return .terminateNow }
 

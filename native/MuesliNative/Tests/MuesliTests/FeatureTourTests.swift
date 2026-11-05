@@ -7,6 +7,31 @@ import SwiftUI
 struct FeatureTourTests {
     private let tour = FeatureTourCatalog.latest
 
+    @MainActor @Test("new badges dismiss individually and remain dismissed across relaunches")
+    func featureDiscoveryPersistence() throws {
+        let suite = "muesli.feature-discovery.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = NewFeatureDiscovery(defaults: defaults)
+        #expect(NewFeature.allCases.allSatisfy(store.isNew))
+        store.markUsed(.chat)
+        store.markUsed(.chat)
+        #expect(!store.isNew(.chat))
+        #expect(store.isNew(.timeTurner))
+        let reopened = NewFeatureDiscovery(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(!reopened.isNew(.chat))
+        #expect(reopened.isNew(.granolaImport))
+        #expect(defaults.stringArray(forKey: "featureDiscovery.0.8.6.seen") == ["chat"])
+        #expect(NewFeatureDiscovery(defaults: defaults, release: "next").isNew(.chat))
+        #expect(NewFeature.sidebar(.meetingChat) == .chat)
+        #expect(NewFeature.sidebar(.timeTurner) == .timeTurner)
+        #expect(NewFeature.sidebar(.settings) == nil)
+        #expect(NewFeature.setting("buffered_live_dictation") == .liveDictation)
+        #expect(NewFeature.setting("cotypist_enabled") == .cotypist)
+        #expect(NewFeature.setting("dictation_format_preset_com.example") == .appFormatting)
+        #expect(NewFeature.setting("quill_enabled") == nil)
+    }
+
     @Test("settings tour scrolling only targets its mounted destination pane")
     func settingsScrollOwnership() {
         #expect(SettingsTourScrollRequest(target: .meetingSummaryProvider, pane: .meetings).scrollTarget == .meetingSummaryProvider)

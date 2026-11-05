@@ -752,7 +752,10 @@ struct MeetingsView: View {
 
             Menu {
                 Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
-                Button("Granola…") { isGranolaImportPresented = true }
+                Button("Granola…") {
+                    NewFeatureDiscovery.shared.markUsed(.granolaImport)
+                    isGranolaImportPresented = true
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
@@ -760,6 +763,7 @@ struct MeetingsView: View {
                     Text("Import")
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
+                    NewFeatureBadge(feature: .granolaImport)
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
