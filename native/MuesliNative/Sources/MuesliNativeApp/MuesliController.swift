@@ -6038,7 +6038,8 @@ public final class MuesliController: NSObject {
 
     private func ensureRecordingAccess(pastesText: Bool) -> Bool {
         guard let missing = FeaturePermission.missingForRecording(
-            currentOnboardingPermissionSnapshot(), pastesText: pastesText
+            currentOnboardingPermissionSnapshot(), pastesText: pastesText,
+            isDictationTest: isDictationTestMode
         ) else { return true }
         let alert = NSAlert()
         alert.messageText = "Allow \(missing.rawValue) to record"
@@ -11900,7 +11901,8 @@ public final class MuesliController: NSObject {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction,
               FeaturePermission.missingForRecording(currentOnboardingPermissionSnapshot(),
-                  pastesText: defaultDictationOutputMode == .paste) == nil else { return }
+                  pastesText: defaultDictationOutputMode == .paste,
+                  isDictationTest: isDictationTestMode) == nil else { return }
         guard ensureDictationBackendReady() else { return }
         if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }

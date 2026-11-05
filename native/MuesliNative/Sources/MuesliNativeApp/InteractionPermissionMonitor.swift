@@ -125,9 +125,15 @@ enum FeaturePermission: String, Equatable, Sendable {
         }
     }
 
-    static func missingForRecording(_ permissions: OnboardingPermissionSnapshot, pastesText: Bool) -> Self? {
+    static func missingForRecording(
+        _ permissions: OnboardingPermissionSnapshot,
+        pastesText: Bool,
+        isDictationTest: Bool = false
+    ) -> Self? {
         if !permissions.microphone { return .microphone }
-        if pastesText && !permissions.accessibility { return .accessibility }
+        // Onboarding tests display their result through a callback and never paste,
+        // even before the selected use case is saved to the configuration.
+        if pastesText && !isDictationTest && !permissions.accessibility { return .accessibility }
         return nil
     }
 

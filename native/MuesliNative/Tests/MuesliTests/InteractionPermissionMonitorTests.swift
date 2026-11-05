@@ -188,6 +188,20 @@ struct InteractionPermissionMonitorTests {
         #expect(FeaturePermission.missingForScreenHistory(screen: true, accessibility: true) == nil)
     }
 
+    @Test("Onboarding recording tests need microphone but never paste access", arguments: [false, true])
+    func onboardingTestRecordingPermissions(configuredToPaste: Bool) {
+        var permissions = OnboardingPermissionSnapshot(microphone: false, accessibility: false,
+            inputMonitoring: true, systemAudio: false, screenRecording: false)
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: configuredToPaste,
+            isDictationTest: true) == .microphone)
+        permissions.microphone = true
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: configuredToPaste,
+            isDictationTest: true) == nil)
+        // Leaving the in-app test must restore the normal paste prerequisite.
+        #expect(FeaturePermission.missingForRecording(permissions, pastesText: configuredToPaste,
+            isDictationTest: false) == (configuredToPaste ? .accessibility : nil))
+    }
+
     @Test("A failed System Audio request can observe a later grant on return from Settings")
     @MainActor
     func systemAudioGrantAfterDenial() async {
