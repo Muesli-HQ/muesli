@@ -1,9 +1,27 @@
+import AppKit
 import Foundation
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("Permission restart recovery")
 struct PermissionRestartRecoveryTests {
+    @Test("restart notice is hosted above an open feature setup sheet")
+    @MainActor
+    func noticeUsesVisibleSetupSheet() {
+        _ = NSApplication.shared
+        let dashboard = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 500),
+                                 styleMask: [.titled], backing: .buffered, defer: false)
+        let setup = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        dashboard.isReleasedWhenClosed = false
+        setup.isReleasedWhenClosed = false
+        defer { dashboard.endSheet(setup); setup.orderOut(nil); dashboard.close() }
+        #expect(PermissionRestartPresentation.host(in: dashboard) === dashboard)
+        dashboard.beginSheet(setup)
+        #expect(dashboard.attachedSheet === setup)
+        #expect(PermissionRestartPresentation.host(in: dashboard) === setup)
+    }
+
     @Test("only new requests for restart-sensitive permissions queue a notice")
     @MainActor
     func requestsCoalesceWithoutClaimingAccess() {

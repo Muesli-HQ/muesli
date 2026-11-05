@@ -2,6 +2,15 @@ import AppKit
 import AVFoundation
 import Foundation
 
+enum PermissionRestartPresentation {
+    /// A feature's setup sheet must not hide or queue the restart notice.
+    @MainActor static func host(in window: NSWindow) -> NSWindow {
+        var host = window
+        while let sheet = host.attachedSheet { host = sheet }
+        return host
+    }
+}
+
 /// A request is not proof of a grant: macOS can keep reporting false until relaunch.
 /// Keep recovery intent in memory, without persisting or overriding permission status.
 @MainActor

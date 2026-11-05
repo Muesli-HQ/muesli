@@ -5429,7 +5429,7 @@ public final class MuesliController: NSObject {
             if response == .alertFirstButtonReturn {
                 if let message = self.permissionRestartActivity.blockingMessage {
                     onLater()
-                    self.presentErrorAlert(title: "Finish your current work first", message: message)
+                    self.presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
                 } else {
                     beforeRestart()
                     self.relaunchApp()
@@ -5440,13 +5440,13 @@ public final class MuesliController: NSObject {
         if onboarding {
             if let window = onboardingWindowController?.presentationWindow {
                 onboardingWindowController?.bringToFront()
-                alert.beginSheetModal(for: window, completionHandler: completion)
+                alert.beginSheetModal(for: PermissionRestartPresentation.host(in: window), completionHandler: completion)
                 presented = true
             } else {
                 presented = false
             }
         } else {
-            presented = presentAlert(alert, fallbackLogContext: "permission restart", completion: completion)
+            presented = presentAlert(alert, fallbackLogContext: "permission restart", aboveExistingSheet: true, completion: completion)
         }
         if !presented {
             isPresentingPermissionRestart = false
@@ -5458,7 +5458,7 @@ public final class MuesliController: NSObject {
     func relaunchApp() {
         guard !isRelaunchRequested, !isShuttingDown else { return }
         if let message = permissionRestartActivity.blockingMessage {
-            presentErrorAlert(title: "Finish your current work first", message: message)
+            presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
             return
         }
         isRelaunchRequested = true
@@ -5471,7 +5471,7 @@ public final class MuesliController: NSObject {
         guard isRelaunchRequested else { return true }
         if let message = permissionRestartActivity.blockingMessage {
             isRelaunchRequested = false
-            presentErrorAlert(title: "Finish your current work first", message: message)
+            presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
             return false
         }
         do {
@@ -5482,7 +5482,7 @@ public final class MuesliController: NSObject {
             return true
         } catch {
             isRelaunchRequested = false
-            presentErrorAlert(title: "Couldn’t restart muesli", message: "Quit and reopen muesli to apply permission changes.")
+            presentErrorAlert(title: "Couldn’t restart muesli", message: "Quit and reopen muesli to apply permission changes.", aboveExistingSheet: true)
             return false
         }
     }
@@ -9744,6 +9744,7 @@ public final class MuesliController: NSObject {
         _ alert: NSAlert,
         fallbackLogContext: String,
         includeInformativeTextInFallbackLog: Bool = true,
+        aboveExistingSheet: Bool = false,
         completion: ((NSApplication.ModalResponse) -> Void)? = nil
     ) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
@@ -9758,7 +9759,8 @@ public final class MuesliController: NSObject {
             return false
         }
 
-        alert.beginSheetModal(for: window) { response in
+        let host = aboveExistingSheet ? PermissionRestartPresentation.host(in: window) : window
+        alert.beginSheetModal(for: host) { response in
             completion?(response)
         }
         return true
@@ -9779,13 +9781,13 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private func presentErrorAlert(title: String, message: String) {
+    private func presentErrorAlert(title: String, message: String, aboveExistingSheet: Bool = false) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
-        presentAlert(alert, fallbackLogContext: title)
+        presentAlert(alert, fallbackLogContext: title, aboveExistingSheet: aboveExistingSheet)
     }
 
     func copyToClipboard(_ text: String) {
