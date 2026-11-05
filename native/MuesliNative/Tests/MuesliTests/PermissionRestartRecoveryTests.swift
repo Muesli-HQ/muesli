@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+@testable import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Permission restart recovery")
@@ -162,6 +163,141 @@ struct PermissionRestartRecoveryTests {
     func protectsWork(activity: PermissionRestartActivity) {
         #expect(activity.blockingMessage != nil)
         #expect(PermissionRestartActivity().blockingMessage == nil)
+    }
+
+    @Test("re-summary blocks restart before task startup and through saving")
+    @MainActor
+    func protectsSummaryGenerationAndSave() async throws {
+        let directory = summaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try summaryController(directory: directory)
+        let generation = AsyncStream<Void>.makeStream()
+        let saveStarted = AsyncStream<Void>.makeStream()
+        let save = AsyncStream<Void>.makeStream()
+        var started = false
+        var saved = false
+        var completions = 0
+        let task = controller.runMeetingResummary(operation: {
+            started = true
+            for await _ in generation.stream { break }
+            saveStarted.continuation.yield(())
+            for await _ in save.stream { break }
+            saved = true
+        }, completion: { result in
+            #expect((try? result.get()) != nil)
+            #expect(saved)
+            completions += 1
+        })
+        // No suspension: the restart check can run before the task's first instruction.
+        #expect(!started)
+        #expect(controller.permissionRestartActivity.assistant)
+        #expect(controller.permissionRestartActivity.blockingMessage != nil)
+        generation.continuation.yield(())
+        for await _ in saveStarted.stream { break }
+        #expect(!saved)
+        #expect(controller.permissionRestartActivity.blockingMessage != nil)
+        save.continuation.yield(())
+        await task.value
+        #expect(saved && completions == 1)
+        #expect(controller.permissionRestartActivity.blockingMessage == nil)
+    }
+
+    @Test("generation and persistence failures release restart protection", arguments: [false, true])
+    @MainActor
+    func releasesFailedSummary(saveFailure: Bool) async throws {
+        let directory = summaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try summaryController(directory: directory)
+        var completions = 0
+        let task = controller.runMeetingResummary(operation: {
+            #expect(controller.permissionRestartActivity.blockingMessage != nil)
+            let error = NSError(domain: "synthetic-summary", code: 1)
+            if saveFailure { throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error) }
+            throw error
+        }, completion: { result in
+            guard case .failure(let error) = result else {
+                Issue.record("Failed summary unexpectedly succeeded")
+                return
+            }
+            #expect((error is MeetingSummaryPersistenceError) == saveFailure)
+            completions += 1
+        })
+        #expect(controller.permissionRestartActivity.assistant)
+        await task.value
+        #expect(completions == 1)
+        #expect(controller.permissionRestartActivity.blockingMessage == nil)
+    }
+
+    @Test("cancellation releases protection before startup or during generation", arguments: [false, true])
+    @MainActor
+    func releasesCancelledSummary(afterStartup: Bool) async throws {
+        let directory = summaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try summaryController(directory: directory)
+        let started = AsyncStream<Void>.makeStream()
+        let generation = AsyncStream<Void>.makeStream()
+        var completions = 0
+        var operationStarted = false
+        let task = controller.runMeetingResummary(operation: {
+            operationStarted = true
+            started.continuation.yield(())
+            for await _ in generation.stream { break }
+            try Task.checkCancellation()
+        }, completion: { result in
+            guard case .failure(let error) = result else {
+                Issue.record("Cancelled summary unexpectedly succeeded")
+                return
+            }
+            #expect(error is CancellationError)
+            completions += 1
+        })
+        #expect(controller.permissionRestartActivity.assistant)
+        if afterStartup {
+            for await _ in started.stream { break }
+        }
+        task.cancel()
+        await task.value
+        #expect(operationStarted == afterStartup)
+        #expect(completions == 1)
+        #expect(controller.permissionRestartActivity.blockingMessage == nil)
+    }
+
+    @Test("overlapping re-summaries remain protected when one finishes out of order")
+    @MainActor
+    func protectsOverlappingSummaries() async throws {
+        let directory = summaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try summaryController(directory: directory)
+        let firstGate = AsyncStream<Void>.makeStream()
+        let secondGate = AsyncStream<Void>.makeStream()
+        let first = controller.runMeetingResummary(operation: {
+            for await _ in firstGate.stream { break }
+        }, completion: { _ in })
+        let second = controller.runMeetingResummary(operation: {
+            for await _ in secondGate.stream { break }
+        }, completion: { _ in })
+        #expect(controller.permissionRestartActivity.assistant)
+        secondGate.continuation.yield(())
+        await second.value
+        #expect(controller.permissionRestartActivity.blockingMessage != nil)
+        firstGate.continuation.yield(())
+        await first.value
+        #expect(controller.permissionRestartActivity.blockingMessage == nil)
+    }
+
+    private func summaryTestDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("summary-restart-\(UUID())")
+    }
+
+    @MainActor
+    private func summaryController(directory: URL) throws -> MuesliController {
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        return MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store,
+            configStore: makeTestConfigStore(supportDirectory: directory)
+        )
     }
 
     @Test("relauncher waits for old process and passes the bundle path literally", arguments: [false, true])

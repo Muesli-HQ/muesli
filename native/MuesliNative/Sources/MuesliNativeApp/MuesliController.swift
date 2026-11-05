@@ -757,6 +757,7 @@ public final class MuesliController: NSObject {
     private var isPresentingMeetingTerminationConfirmation = false
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
+    private var activeMeetingResummaryCount = 0
     private var meetingRetranscriptionTasks: [Int64: Task<Void, Never>] = [:]
     private var isShuttingDown = false
     private var modelFileMutationTokens: Set<UUID> = []
@@ -5406,7 +5407,7 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private var permissionRestartActivity: PermissionRestartActivity {
+    var permissionRestartActivity: PermissionRestartActivity {
         PermissionRestartActivity(
             recording: isInteractiveAudioActivityInProgress || meetingTerminationState != .none
                 || isStartingMeetingRecording || isCapturingShortcut,
@@ -5414,7 +5415,7 @@ public final class MuesliController: NSObject {
                 || backgroundMeetingProcessingCount > 0 || importTask != nil
                 || appState.activeAudioImportCount > 0 || appState.modelFileMutationCount > 0
                 || dictationRecoveryTask != nil,
-            assistant: computerUseCommandTask != nil || quilTask != nil
+            assistant: activeMeetingResummaryCount > 0 || computerUseCommandTask != nil || quilTask != nil
                 || meetingChatCoordinator.isBusy || meetingChatCoordinator.isUpdatingChat
                 || meetingChatCoordinator.isPreparingFiles,
             unsentChat: meetingChatCoordinator.hasUnsentComposerContent
@@ -6482,45 +6483,55 @@ public final class MuesliController: NSObject {
             return
         }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
-        Task { [weak self] in
-            guard let self else { return }
+        runMeetingResummary(operation: { [self] in
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
-            let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
+            let participantNames = await summaryParticipantNames(meetingID: meeting.id)
+            let notes = try await MeetingSummaryClient.summarize(
+                transcript: meeting.rawTranscript,
+                meetingTitle: plan.promptTitle,
+                config: summaryConfig,
+                template: templateSnapshot,
+                existingNotes: notesContextForResummary(meeting),
+                manualNotesToRetain: meeting.manualNotes,
+                participantNames: participantNames,
+                openRouterAPIKeyOverride: openRouterKey
+            )
             do {
-                let notes = try await MeetingSummaryClient.summarize(
-                    transcript: meeting.rawTranscript,
-                    meetingTitle: plan.promptTitle,
-                    config: summaryConfig,
-                    template: templateSnapshot,
-                    existingNotes: self.notesContextForResummary(meeting),
-                    manualNotesToRetain: meeting.manualNotes,
-                    participantNames: participantNames,
-                    openRouterAPIKeyOverride: openRouterKey
+                try dictationStore.updateMeetingSummary(
+                    id: meeting.id,
+                    title: plan.persistedTitle,
+                    formattedNotes: notes,
+                    selectedTemplateID: templateSnapshot.id,
+                    selectedTemplateName: templateSnapshot.name,
+                    selectedTemplateKind: templateSnapshot.kind,
+                    selectedTemplatePrompt: templateSnapshot.prompt
                 )
-                do {
-                    try self.dictationStore.updateMeetingSummary(
-                        id: meeting.id,
-                        title: plan.persistedTitle,
-                        formattedNotes: notes,
-                        selectedTemplateID: templateSnapshot.id,
-                        selectedTemplateName: templateSnapshot.name,
-                        selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
-                    )
-                } catch {
-                    throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
-                }
-                await MainActor.run {
-                    self.scheduleICloudSyncAfterLocalChange()
-                    self.syncAppState()
-                    self.historyWindowController?.reload()
-                    completion(.success(()))
-                }
+            } catch {
+                throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
+            }
+            scheduleICloudSyncAfterLocalChange()
+            syncAppState()
+            historyWindowController?.reload()
+        }, completion: completion)
+    }
+
+    /// Protect the whole generation-and-save operation, including the gap before the task starts.
+    /// A count keeps overlapping requests protected until the last one settles.
+    @discardableResult
+    func runMeetingResummary(
+        operation: @escaping @MainActor () async throws -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> Task<Void, Never> {
+        activeMeetingResummaryCount += 1
+        return Task { @MainActor in
+            defer { activeMeetingResummaryCount -= 1 }
+            do {
+                try Task.checkCancellation()
+                try await operation()
+                completion(.success(()))
             } catch {
                 fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
-                await MainActor.run {
-                    completion(.failure(error))
-                }
+                completion(.failure(error))
             }
         }
     }
