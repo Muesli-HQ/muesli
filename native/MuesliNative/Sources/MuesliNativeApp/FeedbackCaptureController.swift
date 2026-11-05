@@ -26,6 +26,7 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
     private var phase = Phase.preparing
     private var resourcesInstalled = false
     let target: FeedbackCaptureTarget
+    let drawModifier: FeedbackCaptureDrawModifier
     let admittedAt: Date
     private var recordingStart: Date?
     let queue = DispatchQueue(label: "com.muesli.feedback-microphone", qos: .userInitiated)
@@ -33,21 +34,38 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
     private(set) var microphone: (any StreamingDictationRecording & MicrophoneCaptureReporting)?
     private var drainEndFrame: Int64?
     private var manifest: FeedbackCaptureManifest?
-    private var writer: MeetingRecordingWriter?
+    private var writer: (any FeedbackCaptureAudioWriting)?
+    private let makeAudioWriter: (URL) throws -> any FeedbackCaptureAudioWriting
     private(set) var video: ScreenVideoRecorder?
+    @MainActor private var inputMonitor: FeedbackCaptureInputMonitor?
     private var lastSample: Date?
     private var power: Float = -160
     let store: FeedbackCaptureStore
     var onFailure: (@Sendable (String) -> Void)?
 
-    init(target: FeedbackCaptureTarget, store: FeedbackCaptureStore, now: Date = Date()) {
+    init(target: FeedbackCaptureTarget, store: FeedbackCaptureStore, now: Date = Date(),
+         makeAudioWriter: @escaping (URL) throws -> any FeedbackCaptureAudioWriting = { try MeetingRecordingWriter(destination: $0) },
+         drawModifier: FeedbackCaptureDrawModifier = .shift) {
         self.target = target; self.store = store; admittedAt = now
+        self.makeAudioWriter = makeAudioWriter; self.drawModifier = drawModifier
     }
     var isCurrent: Bool { lock.withLock { phase != .stopping } }
     var hasResources: Bool { lock.withLock { resourcesInstalled } }
     var startedAt: Date? { lock.withLock { recordingStart } }
-    func didStart(at now: Date) {
-        lock.withLock { if phase == .preparing { phase = .recording; recordingStart = now } }
+    func didStart(at now: Date, frame: Int64 = MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time())) {
+        let didStart = lock.withLock { () -> Bool in
+            guard phase == .preparing else { return false }
+            phase = .recording; recordingStart = now
+            if manifest?.microphoneStartFrame == nil {
+                manifest?.microphoneStartFrame = frame
+                manifest?.alignClocks()
+            }
+            guard let origin = manifest?.microphoneStartFrame else { return false }
+            writer?.setMicrophoneOrigin(at: origin)
+            return true
+        }
+        guard didStart else { return }
+        checkpointClocks()
     }
     static func temporaryDirectoryNames(identity: String = AppIdentity.supportDirectoryName) -> [String] {
         ["muesli-feedback-mic-" + identity, "muesli-feedback-mic-fallback-" + identity]
@@ -84,7 +102,7 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
         }
         let created = try store.begin(target: target)
         lock.withLock { manifest = created }
-        let writer = try MeetingRecordingWriter(destination: store.mediaURL(id: created.id, path: "narration.wav"))
+        let writer = try makeAudioWriter(store.mediaURL(id: created.id, path: "narration.wav"))
         lock.withLock { self.writer = writer }
         let video = ScreenVideoRecorder(url: try store.mediaURL(id: created.id, path: "recording.mp4"), feedbackCapture: true)
         lock.withLock { self.video = video }
@@ -104,6 +122,20 @@ final class FeedbackCaptureAttempt: @unchecked Sendable {
             video.requestStop(at: CMTime(value: cutoff, timescale: 16_000))
         }
     }
+    @MainActor func startInputMonitoring() throws {
+        guard isCurrent, inputMonitor == nil, let id = snapshot()?.id else { return }
+        let monitor = FeedbackCaptureInputMonitor(target: target, url: try store.mediaURL(id: id, path: "events.jsonl"),
+            origin: { [weak self] in self?.snapshot()?.microphoneStartFrame },
+            admitted: { [weak self] in self?.isCurrent == true },
+            onFailure: { [weak self] in self?.addFailure(stage: "events", message: $0) },
+            onGap: { [weak self] gap in self?.lock.withLock { self?.manifest?.inputGaps.append(gap) } }, modifier: drawModifier)
+        inputMonitor = monitor; monitor.start()
+    }
+    @MainActor func stopInputMonitoring() {
+        if let cutoff = lock.withLock({ drainEndFrame }) { inputMonitor?.stop(frame: cutoff) }
+        else { inputMonitor?.stop() }
+    }
+    @MainActor func drainInput() async { await inputMonitor?.drain(); inputMonitor = nil }
     func startMicrophone() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
@@ -208,6 +240,7 @@ final class FeedbackCaptureController {
     private(set) var records: [FeedbackCaptureRecord] = []
     private(set) var errorMessage: String?
     private(set) var latestID: String?
+    private(set) var recoveryRevision: UInt64 = 0
     let store: FeedbackCaptureStore?
     var finalizer = FeedbackCaptureFinalizer()
     var onStateChanged: ((FeedbackCapturePillState?) -> Void)?
@@ -231,6 +264,7 @@ final class FeedbackCaptureController {
     private let dismissalDelay: Duration
     private let openCapture: (@MainActor (String?) -> Void)?
     private let now: () -> Date
+    private let observeInput: Bool
     private let repairAudio: @Sendable (URL) throws -> Int64?
     var hasAttempt: Bool { attempt != nil }
     var admittedAt: Date? { attempt.flatMap { $0.isCurrent ? $0.admittedAt : nil } }
@@ -243,6 +277,7 @@ final class FeedbackCaptureController {
          observeSystem: Bool = true, dismissalDelay: Duration = .seconds(25),
          openCapture: (@MainActor (String?) -> Void)? = nil, waiterTimeout: Duration = .seconds(8),
          repairAudio: @escaping @Sendable (URL) throws -> Int64? = { try WavWriter.repairIncrementalWAV(at: $0) }) {
+        observeInput = observeSystem
         self.repairAudio = repairAudio
         self.waiterTimeout = waiterTimeout
         self.dismissalDelay = dismissalDelay; self.openCapture = openCapture
@@ -268,20 +303,43 @@ final class FeedbackCaptureController {
             DistributedNotificationCenter.default().removeObserver(observer)
         }
     }
+    private var recoveryTask: Task<Void, Never>?
     func recover() async {
+        if let recoveryTask { await recoveryTask.value; return }
+        recoveryTask = Task { await resumeInterruptedCaptures() }
+        await recoveryTask?.value
+        recoveryTask = nil
+        recoveryRevision &+= 1
+    }
+    private func resumeInterruptedCaptures() async {
         guard let store else { return }
+        var presentation = presentationID
         do {
-            let recovery = try await Task.detached(priority: .utility) { () throws -> (recoveredID: String?, errorMessage: String?) in
-                let alreadyRecovered = Set(try store.list().filter { $0.state == .recovered }.map(\.id))
-                var recoveryError: String?
-                do { try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: Self.videoDuration) }
-                catch { recoveryError = error.localizedDescription }
-                let recoveredID = try store.list().first { $0.state == .recovered && !alreadyRecovered.contains($0.id) }?.id
-                return (recoveredID, recoveryError)
+            let (pending, recoveryErrors) = try await Task.detached(priority: .utility) {
+                var errors: [String] = []
+                let pending = try store.recover(audioDuration: WavWriter.repairIncrementalWAV, videoDuration: Self.videoDuration) {
+                    errors.append("\($0): \($1.localizedDescription)")
+                }
+                return (pending, errors)
             }.value
+            var errors = recoveryErrors
+            if !errors.isEmpty { errorMessage = errors.joined(separator: "\n") }
             await reload()
-            if let recoveryError = recovery.errorMessage { errorMessage = recoveryError }
-            if let recoveredID = recovery.recoveredID, attempt == nil { latestID = recoveredID; present(.recovered, captureID: recoveredID) }
+            for manifest in pending {
+                do {
+                    _ = try await finalizer.finish(manifest,
+                        context: .init(store: store, finishPasteboardChangeCount: NSPasteboard.general.changeCount), completionState: .recovered)
+                    if attempt == nil, presentationID == presentation {
+                        latestID = manifest.id; present(.recovered, captureID: manifest.id)
+                        presentation = presentationID
+                    }
+                } catch {
+                    errors.append("\(manifest.id): \(error.localizedDescription)")
+                    errorMessage = errors.joined(separator: "\n")
+                }
+                await Task.detached { store.release(id: manifest.id) }.value
+                await reload()
+            }
         } catch { errorMessage = error.localizedDescription }
     }
     nonisolated static func videoDuration(_ url: URL) throws -> Int64? {
@@ -301,7 +359,7 @@ final class FeedbackCaptureController {
     static func displayTarget(_ original: FeedbackCaptureTarget) -> FeedbackCaptureTarget? {
         NSScreen.screens.compactMap { target(screen: $0, appName: original.appName) }.first { $0.displayId == original.displayId }
     }
-    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?) -> Bool {
+    func start(permissions: InteractionPermissionSnapshot, busyActivity: String?, device: @escaping () -> AudioObjectID?, drawModifier: FeedbackCaptureDrawModifier = .shift) -> Bool {
         if let permission = FeedbackCaptureAdmission.missingPermission(permissions) {
             present(.blocked(permission: permission)); return false
         }
@@ -313,7 +371,7 @@ final class FeedbackCaptureController {
         guard let store, let target = pointerTarget() else {
             present(.failed(stage: "Preparation", message: errorMessage ?? "Display unavailable", retainedMedia: false)); return false
         }
-        let capture = FeedbackCaptureAttempt(target: target, store: store, now: now())
+        let capture = FeedbackCaptureAttempt(target: target, store: store, now: now(), drawModifier: drawModifier)
         errorMessage = nil
         attempt = capture; ownsMicrophone = true; present(.preparing)
         capture.onFailure = { [weak self, weak capture] message in
@@ -344,6 +402,7 @@ final class FeedbackCaptureController {
                 try await capture.startMicrophone()
                 guard self.attempt === capture, capture.isCurrent else { return }
                 capture.didStart(at: self.now()); self.startupDeadline?.cancel()
+                if self.observeInput { try capture.startInputMonitoring() }
                 self.present(.recording(seconds: 0, deadMicrophone: false))
                 let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
                     MainActor.assumeIsolated { self?.checkLifetime() }
@@ -395,7 +454,7 @@ final class FeedbackCaptureController {
     func finish(discard: Bool = false) {
         guard let capture = attempt, capture.isCurrent else { return }
         let changeCount = NSPasteboard.general.changeCount
-        capture.finishAdmission(); onAdmissionReset?()
+        capture.finishAdmission(); capture.stopInputMonitoring(); onAdmissionReset?()
         timer?.invalidate(); timer = nil; startupDeadline?.cancel(); startTask?.cancel()
         // No native acquisition has begun: invalidate immediately. Discovery may
         // remain suspended, but its attempt can never install or start resources.
@@ -417,6 +476,7 @@ final class FeedbackCaptureController {
         let repairAudio = self.repairAudio
         Task { [weak self] in
             await microphoneStop.value
+            await capture.drainInput()
             await Task.detached { capture.finishAudio() }.value
             await capture.finishVideo()
             await capture.drainJournal()
@@ -444,13 +504,11 @@ final class FeedbackCaptureController {
                         videoDuration: { manifest.video == nil ? try Self.videoDuration($0) : nil })
                 }.value
                 if let result {
-                    let completed = try await finalizer.finish(result.manifest,
-                        context: .init(store: capture.store, finishPasteboardChangeCount: changeCount))
+                    let context = FeedbackCaptureFinalizer.Context(store: capture.store, finishPasteboardChangeCount: changeCount)
+                    let completed = try await finalizer.finish(result.manifest, context: context)
                     if self.attempt === capture, self.presentationID == presentation {
-                        if let failure = completed.failures.first {
-                            self.present(.failed(stage: failure.stage, message: failure.message,
-                                retainedMedia: result.retainsContent || completed.audio != nil || completed.video != nil), captureID: id)
-                        } else { self.present(completed.state == .ready ? .ready : .failed(stage: "Recording", message: "No media captured", retainedMedia: false), captureID: id) }
+                        self.present(Self.completionState(completed, delivery: context.delivery.result,
+                            retainsContent: result.retainsContent), captureID: id)
                     }
                 } else if self.attempt === capture, self.presentationID == presentation { self.present(nil) }
             } catch {
@@ -490,7 +548,7 @@ final class FeedbackCaptureController {
     }
     @discardableResult func shutdown() async -> Bool {
         finish()
-        let completed = await waitUntil { attempt == nil }
+        let completed = await waitUntil { attempt == nil && recoveryTask == nil }
         if !completed { errorMessage = "Feedback finalization timed out" }
         return completed
     }
@@ -527,6 +585,54 @@ final class FeedbackCaptureController {
         await reload()
         if latestID == id { latestID = records.first?.id }
         if presentedCaptureID == id { present(nil) }
+    }
+    static func completionState(_ manifest: FeedbackCaptureManifest, delivery: FeedbackCaptureDelivery.Result?,
+                                retainsContent: Bool) -> FeedbackCapturePillState {
+        if let delivery {
+            var partial: [String] = []
+            for failure in manifest.failures where failure.stage != "copy" {
+                let name = failure.stage == "transcribe" ? "no transcript"
+                    : ["keyframes", "render"].contains(failure.stage) ? "frames failed" : "\(failure.stage) failed"
+                if !partial.contains(name) { partial.append(name) }
+            }
+            let detail = partial.isEmpty ? nil : partial.joined(separator: ", ")
+            switch delivery {
+            case .copied: return .copied(partial: detail)
+            case .skipped: return .readyToCopy(partial: detail)
+            case .failed:
+                return .failed(stage: "Copy", message: manifest.failures.last { $0.stage == "copy" }?.message ?? "Cannot copy feedback summary", retainedMedia: true)
+            }
+        }
+        if let failure = manifest.failures.first {
+            return .failed(stage: failure.stage, message: failure.message,
+                retainedMedia: retainsContent || manifest.audio != nil || manifest.video != nil || (!manifest.events.isEmpty || !manifest.strokes.isEmpty))
+        }
+        return manifest.state == .ready ? .ready : .failed(stage: "Recording", message: "No media captured", retainedMedia: false)
+    }
+    func copy(id: String, expectedPresentationID: UInt64? = nil, pasteboard: NSPasteboard = .general) async -> FeedbackCaptureDelivery.Result {
+        guard let store else { return .failed }
+        if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
+        let request = presentationID
+        do {
+            let summary = try await Task.detached(priority: .utility) {
+                try String(contentsOf: store.mediaURL(id: id, path: "summary.md"), encoding: .utf8)
+            }.value
+            guard !Task.isCancelled else { return .skipped }
+            if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
+            let result = FeedbackCaptureDelivery.write(summary, to: pasteboard)
+            if presentationID == request, presentedCaptureID == id, state?.isComplete == true {
+                if result == .copied {
+                    let manifest = try? await Task.detached { try store.manifest(id: id) }.value
+                    guard presentationID == request else { return result }
+                    if let manifest { present(Self.completionState(manifest, delivery: result, retainsContent: true), captureID: id) }
+                    else { present(.copied(partial: nil), captureID: id) }
+                } else { present(.failed(stage: "Copy", message: "Cannot copy feedback summary", retainedMedia: true), captureID: id) }
+            }
+            return result
+        } catch {
+            if !Task.isCancelled, presentationID == request { errorMessage = "Copy: " + error.localizedDescription }
+            return Task.isCancelled ? .skipped : .failed
+        }
     }
     func powerLevel() -> Float { attempt?.meter(now: Date()).1 ?? -160 }
     private func present(_ state: FeedbackCapturePillState?, captureID: String? = nil) {

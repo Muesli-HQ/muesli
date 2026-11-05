@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import Darwin.sys.file
 import SQLite3
 
 /// Local-only bundles. The journal remains authoritative until manifest AND row publication succeed.
@@ -42,6 +44,44 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         guard !path.hasPrefix("/"), result.path.hasPrefix(bundle.path + "/") else { throw failure("Invalid capture media path") }
         return result
     }
+    private func withCaptureMutationLock<T>(id: String, _ body: () throws -> T) throws -> T {
+        guard validID(id) else { throw failure("Invalid capture ID") }
+        _ = try bundleURL(id: id)
+        let directory = root.appendingPathComponent(".locks", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let url = directory.appendingPathComponent("\(id).lock", isDirectory: false)
+        let descriptor = Darwin.open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw failure("Open capture mutation lock") }
+        defer { _ = Darwin.close(descriptor) }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw failure("Lock capture mutation") }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+    private func captureRowExists(id: String) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM feedback_captures WHERE id=? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
+            throw failure("Prepare capture lookup")
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, id, -1, transient)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return true
+        case SQLITE_DONE: return false
+        default: throw failure("Check capture row")
+        }
+    }
+    /// Mutate an existing capture bundle while coordinating with deletion in every process.
+    /// `nil` means the row or bundle no longer exists; the body is never run in that case.
+    public func withExistingBundleMutation<T>(id: String, _ body: (URL) throws -> T) throws -> T? {
+        lock.lock(); defer { lock.unlock() }
+        let folder = try bundleURL(id: id)
+        let result: T? = try withCaptureMutationLock(id: id) {
+            guard try captureRowExists(id: id), FileManager.default.fileExists(atPath: folder.path) else { return nil }
+            return try body(folder)
+        }
+        return result
+    }
     public func begin(target: FeedbackCaptureTarget, now: Date = Date()) throws -> FeedbackCaptureManifest {
         lock.lock(); defer { lock.unlock() }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -58,6 +98,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     }
     public func checkpoint(_ manifest: FeedbackCaptureManifest) throws {
         lock.lock(); defer { lock.unlock() }
+        try validatePaths(manifest)
         try JSONEncoder().encode(manifest).write(to: mediaURL(id: manifest.id, path: "unfinished.json"), options: .atomic)
     }
     public func isActive(id: String) -> Bool { lock.withLock { active.contains(id) } }
@@ -70,20 +111,27 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         guard result.id == id else { throw failure("Capture identity mismatch") }
         return result
     }
+    private func validatePaths(_ manifest: FeedbackCaptureManifest) throws {
+        for path in [manifest.audio, manifest.video, manifest.contactSheet].compactMap({ $0 }) + manifest.keyframes.map(\.file) + manifest.marks.compactMap(\.frame) {
+            _ = try mediaURL(id: manifest.id, path: path)
+        }
+    }
     public func save(_ manifest: FeedbackCaptureManifest) throws {
         lock.lock(); defer { lock.unlock() }
         _ = try bundleURL(id: manifest.id)
-        for path in [manifest.audio, manifest.video].compactMap({ $0 }) { _ = try mediaURL(id: manifest.id, path: path) }
+        try validatePaths(manifest)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO feedback_captures VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
         defer { sqlite3_finalize(stmt) }
-        let body = String(decoding: try JSONSerialization.data(withJSONObject: ["keyframeCount": 0, "targetApp": manifest.target.appName]), as: UTF8.self)
+        var projection: [String: Any] = ["keyframeCount": manifest.keyframes.count, "targetApp": manifest.target.appName]
+        projection["transcriptSource"] = manifest.transcript?.source
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: projection), as: UTF8.self)
         sqlite3_bind_text(stmt, 1, manifest.id, -1, transient)
         sqlite3_bind_double(stmt, 2, Double(manifest.createdAtMs) / 1000)
         sqlite3_bind_int64(stmt, 3, manifest.durationMs)
         sqlite3_bind_text(stmt, 4, manifest.state.rawValue, -1, transient)
         sqlite3_bind_text(stmt, 5, "feedback-captures/\(manifest.id).capture", -1, transient)
-        sqlite3_bind_text(stmt, 6, manifest.target.appName, -1, transient)
+        sqlite3_bind_text(stmt, 6, manifest.transcript?.firstClause ?? manifest.target.appName, -1, transient)
         sqlite3_bind_text(stmt, 7, body, -1, transient)
         guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Save capture: \(String(cString: sqlite3_errmsg(db)))") }
     }
@@ -134,7 +182,25 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     public func reconcileMedia(_ recording: FeedbackCaptureManifest,
         audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?) -> (manifest: FeedbackCaptureManifest, retainsContent: Bool) {
         var m = recording
-        var retainsContent = false
+        var openGap: Int64?
+        let log = try? mediaURL(id: m.id, path: "events.jsonl")
+        if let log, FileManager.default.fileExists(atPath: log.path) {
+            do {
+                let replay = FeedbackCaptureEvents.replay(try Data(contentsOf: log), target: m.target)
+                m.events = replay.events; m.strokes = replay.strokes
+                var mergedGaps: [FeedbackCaptureInputGap] = []
+                for gap in m.inputGaps + replay.inputGaps where !mergedGaps.contains(gap) {
+                    mergedGaps.append(gap)
+                }
+                m.inputGaps = mergedGaps; openGap = replay.gapStart
+                m.durationMs = max(m.durationMs, replay.durationMs)
+                for issue in replay.failures where !m.failures.contains(issue) { m.failures.append(issue) }
+            } catch { m.failures.append(.init(stage: "events", message: error.localizedDescription)) }
+        }
+        m.durationMs = max(m.durationMs, m.events.map(\.end).max() ?? 0)
+        m.durationMs = max(m.durationMs, m.strokes.map(\.t1).max() ?? 0)
+        if m.marks.isEmpty { m.marks = FeedbackCaptureInk.marks(m.strokes) }
+        var retainsContent = !m.events.isEmpty || !m.strokes.isEmpty
         for (path, stage, probe) in [("narration.wav", "audio", audioDuration), ("recording.mp4", "video", videoDuration)] {
             do {
                 let url = try mediaURL(id: m.id, path: path)
@@ -155,25 +221,33 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
                 retainsContent = true
             }
         }
+        if let start = openGap {
+            let gap = FeedbackCaptureInputGap(t0: start, t1: max(start, m.durationMs))
+            if !m.inputGaps.contains(gap) { m.inputGaps.append(gap) }
+        }
         return (m, retainsContent)
     }
     public func delete(id: String) throws {
         lock.lock(); defer { lock.unlock() }
         guard !active.contains(id) else { throw failure("Capture is still recording or finalizing") }
         let folder = try bundleURL(id: id)
-        // Keep the row visible if filesystem removal fails.
-        if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, id, -1, transient)
-        guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
+        try withCaptureMutationLock(id: id) {
+            // Keep the row visible if filesystem removal fails.
+            if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, id, -1, transient)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
+        }
     }
-    /// Platform media probes repair WAV headers and validate fragmented MP4 playback.
-    public func recover(audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?) throws {
+    /// Repair and claim interrupted bundles. The caller resumes its finalizer before publication.
+    @discardableResult
+    public func recover(audioDuration: @escaping (URL) throws -> Int64?, videoDuration: @escaping (URL) throws -> Int64?,
+                        onError: (String, Error) -> Void = { _, _ in }) throws -> [FeedbackCaptureManifest] {
         lock.lock(); defer { lock.unlock() }
-        guard FileManager.default.fileExists(atPath: root.path) else { return }
-        var firstError: Error?
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        var pending: [FeedbackCaptureManifest] = []
         for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where folder.pathExtension == "capture" {
             let id = folder.deletingPathExtension().lastPathComponent
             do {
@@ -204,13 +278,16 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
                     }
                     try delete(id: id); continue
                 }
-                m.state = .recovered
+                m.state = .processing
                 if !m.failures.contains(where: { $0.stage == "recording" && $0.message == "Recording interrupted" }) {
                     m.failures.append(.init(stage: "recording", message: "Recording interrupted"))
                 }
-                try publish(m)
-            } catch { if firstError == nil { firstError = error } }
+                try checkpoint(m)
+                try save(m)
+                active.insert(id)
+                pending.append(m)
+            } catch { onError(id, error) }
         }
-        if let firstError { throw firstError }
+        return pending
     }
 }

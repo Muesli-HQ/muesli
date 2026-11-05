@@ -46,6 +46,7 @@ case "${shard}" in
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
+      CapturesCLITests
       ChatGPTAuthTests
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
@@ -65,6 +66,17 @@ case "${shard}" in
       MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      FeedbackCaptureInkTests
+      FeedbackCaptureInkOverlayTests
+      FeedbackCaptureInkPersistenceTests
+      FeedbackCaptureInkExportTests
+      FeedbackCaptureInkInputTests
+      FeedbackCaptureEventsTests
+      FeedbackCaptureContextTests
+      FeedbackCaptureInputTests
+      FeedbackCaptureRendererTests
+      FeedbackCaptureContextFinalizerTests
+      FeedbackCaptureTranscriptTests
       FeedbackCaptureStoreTests
       FeedbackCaptureLifecycleTests
       FeedbackCaptureFinalizerTests
@@ -186,6 +198,7 @@ case "${shard}" in
       DictationCorrectionMonitorTests
       DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
+      NemotronWavLoaderTests
     )
     ;;
   meetings)

@@ -721,7 +721,8 @@ struct SettingsView: View {
 
             settingsSection("Experimental") {
                 settingsRow("Scrawl") { settingsControl("feedback_capture") }
-                SettingsNote("Scrawl saves the display video and microphone narration locally. It does not save an interaction or keystroke log.")
+                settingsRow("Draw modifier") { settingsControl("feedback_capture_draw_modifier") }
+                SettingsNote("Scrawl saves display video, microphone narration, and on-device transcripts locally, along with ink or pins. It records pointer clicks, drags, and scrolls within the capture target. Keystrokes are not recorded.")
                 compactActionButton("Open Scrawl captures…") { controller.openFeedbackCaptures() }
             }
             syncSettingsPane
