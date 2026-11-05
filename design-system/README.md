@@ -414,6 +414,11 @@ text locally. Keep this disclosure at the shared 12pt helper-text size.
 
 ### Timeline sync presentation
 
+The activity filter shows its selected value without a separate visible label;
+retain its accessible name. Insights is reached through the Timeline and
+Dictations statistics tiles, not a sidebar destination. Saved sidebar orders
+ignore the retired Insights entry while preserving the other positions.
+
 Timeline does not display the inline iCloud companion/setup/status card. Keep
 the compact header sync control and Settings → General sync setup, status and
 recovery actions available. Background sync behavior and saved preferences are

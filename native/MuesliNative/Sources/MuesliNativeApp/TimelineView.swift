@@ -79,7 +79,10 @@ struct TimelineView: View {
                 TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
                     ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
-                }.frame(width: 180)
+                }
+                .labelsHidden()
+                .accessibilityLabel("Activity")
+                .frame(width: 180)
             }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
 
             filterBar
