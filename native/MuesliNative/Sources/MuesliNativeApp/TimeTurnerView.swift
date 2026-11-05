@@ -4,6 +4,26 @@ import AVFoundation
 import ImageIO
 import MuesliCore
 
+private struct TimeTurnerEmptyState: View {
+    let title: String
+    let symbol: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: MuesliTheme.spacing12) {
+            Image(systemName: symbol)
+                .font(.system(size: 28, weight: .regular))
+                .foregroundStyle(MuesliTheme.textSecondary)
+            Text(title).font(MuesliTheme.title2()).foregroundStyle(MuesliTheme.textPrimary)
+            Text(detail).font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .multilineTextAlignment(.center)
+        .padding(MuesliTheme.spacing24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 @MainActor private enum MemoryPreviewCache {
     static let images: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -79,6 +99,7 @@ struct TimeTurnerControls: View {
     var standalone = false
     @State private var showsSettings = false
     @State private var showsSetup = false
+    @State private var setupInitialStep = TimeTurnerSetupStep.introduction
     private var memory: VisualMemoryController { controller.visualMemory }
     var body: some View {
         HStack {
@@ -95,7 +116,7 @@ struct TimeTurnerControls: View {
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             }
             if memory.ambientMissingPermission != nil {
-                Button("Review access…") { showsSetup = true }
+                Button("Review access…") { setupInitialStep = .permissions; showsSetup = true }
             }
             Text(memory.ambientStatus)
                 .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary).lineLimit(1)
@@ -106,7 +127,7 @@ struct TimeTurnerControls: View {
                     .help(memory.ambientPaused ? "Resume screen history" : "Pause screen history")
             }
             if !appState.config.timeTurnerEnabled {
-                Button("Set up Time Turner") { showsSetup = true }
+                Button("Set up Time Turner") { setupInitialStep = .introduction; showsSetup = true }
             }
             Button { showsSettings = true } label: {
                 if standalone { Image(systemName: "gearshape") }
@@ -133,7 +154,19 @@ struct TimeTurnerControls: View {
                 ScrollView { TimeTurnerSettingsView(controller: controller, appState: appState).padding(20) }
             }.frame(width: 680, height: 650)
         }
-        .sheet(isPresented: $showsSetup) { TimeTurnerSetupView(controller: controller, appState: appState) }
+        .sheet(isPresented: $showsSetup) {
+            TimeTurnerSetupView(controller: controller, appState: appState, initialStep: setupInitialStep)
+        }
+        .onAppear { consumePermissionSetupRequest() }
+        .onChange(of: appState.requestsTimeTurnerPermissionSetup) { _, _ in consumePermissionSetupRequest() }
+    }
+
+    private func consumePermissionSetupRequest() {
+        guard standalone, appState.requestsTimeTurnerPermissionSetup else { return }
+        appState.requestsTimeTurnerPermissionSetup = false
+        setupInitialStep = .permissions
+        showsSettings = false
+        showsSetup = true
     }
 }
 
@@ -398,8 +431,8 @@ struct MemoryExplorerView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
-                ContentUnavailableView("No captures on this day", systemImage: "calendar", description: Text("Choose another day to browse your screen history."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                TimeTurnerEmptyState(title: "No captures on this day", symbol: "calendar",
+                                     detail: "Choose another day to browse your screen history.")
             }
         }
         .task(id: "\(day)|\(memory.catalogRevision)") {
@@ -470,8 +503,8 @@ private struct TimeTurnerSearchView: View {
                 Button("Retry") { page += 1 }
             }
             if results.isEmpty && cursor == nil && !loading && error == nil {
-                ContentUnavailableView("No matching captures", systemImage: "magnifyingglass",
-                    description: Text("Try different words, another app, or a wider date range."))
+                TimeTurnerEmptyState(title: "No matching captures", symbol: "magnifyingglass",
+                                     detail: "Try different words, another app, or a wider date range.")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {

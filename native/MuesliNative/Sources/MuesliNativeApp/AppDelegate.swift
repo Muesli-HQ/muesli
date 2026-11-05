@@ -40,9 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
-            if ProcessInfo.processInfo.arguments.contains(ApplicationRelaunch.permissionsArgument),
-               controller.appState.config.hasCompletedOnboarding {
-                controller.showPermissionsSettings()
+            if controller.appState.config.hasCompletedOnboarding,
+               let destination = PermissionRestartResumeStore.shared.consume(
+                   fallbackToPermissions: ProcessInfo.processInfo.arguments.contains(ApplicationRelaunch.permissionsArgument)
+               ) {
+                controller.restorePermissionRestartDestination(destination)
             }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {

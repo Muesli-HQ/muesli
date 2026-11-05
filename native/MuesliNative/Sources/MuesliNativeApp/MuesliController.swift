@@ -3315,6 +3315,16 @@ public final class MuesliController: NSObject {
         openHistoryWindow(tab: .settings)
     }
 
+    func restorePermissionRestartDestination(_ destination: PermissionRestartDestination) {
+        switch destination {
+        case .permissions:
+            showPermissionsSettings()
+        case .timeTurnerPermissions:
+            appState.requestsTimeTurnerPermissionSetup = true
+            openHistoryWindow(tab: .timeTurner)
+        }
+    }
+
     func requestPushToTalkSettingsPermissions() { showPermissionsSettings() }
 
     func requestSettingsPermissions() { showPermissionsSettings() }

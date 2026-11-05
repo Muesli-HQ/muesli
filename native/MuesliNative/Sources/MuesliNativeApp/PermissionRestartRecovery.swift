@@ -2,6 +2,34 @@ import AppKit
 import AVFoundation
 import Foundation
 
+enum PermissionRestartDestination: String {
+    case permissions
+    case timeTurnerPermissions
+}
+
+/// One-shot navigation intent survives both our relaunch and macOS Quit & Reopen.
+/// It stores no permission status and never enables a feature.
+@MainActor
+final class PermissionRestartResumeStore {
+    static let shared = PermissionRestartResumeStore()
+    private static let key = "permissionRestart.destination"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func save(_ destination: PermissionRestartDestination) {
+        defaults.set(destination.rawValue, forKey: Self.key)
+    }
+
+    func clear() { defaults.removeObject(forKey: Self.key) }
+
+    func consume(fallbackToPermissions: Bool) -> PermissionRestartDestination? {
+        let destination = defaults.string(forKey: Self.key).flatMap(PermissionRestartDestination.init(rawValue:))
+        clear()
+        return destination ?? (fallbackToPermissions ? .permissions : nil)
+    }
+}
+
 enum PermissionRestartPresentation {
     /// Permission setup must allow the system's Quit & Reopen action to reach
     /// our normal termination delegate. AppKit otherwise rejects it before

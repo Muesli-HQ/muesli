@@ -69,7 +69,10 @@ retention lifecycle. The explicit setup flow still explains capture before enabl
 Permission setup offers Set up later and finishes on Timeline. Completed onboarding
 never makes dashboard navigation depend on recording permissions. Block only the
 requested capture or paste action, with Open permissions and Not now actions.
-Post-onboarding recovery opens Settings → General and scrolls directly to Permissions.
+Post-onboarding recovery defaults to Settings → General → Permissions. A restart
+requested from Time Turner setup returns to Time Turner with its permission step
+(2 of 3) open and freshly checked. This one-shot return also handles macOS Quit &
+Reopen; it never enables capture or skips the final setup step.
 Feature controls show the missing prerequisite beside Review access, including when
 a previously enabled feature loses permission. Guided setup retains a visible exit
 and a Manage permissions action; returning refreshes permission state.
@@ -79,7 +82,7 @@ restart notice on returning from System Settings, with Restart muesli and Later.
 Do not infer a grant from the request: use conditional copy when macOS still
 reports access unavailable. Settings → General → Permissions keeps a Restart
 action for already-enabled access that needs a fresh process. Restart uses normal
-shutdown, reopens Permissions after exit, and refuses to interrupt recordings,
+shutdown, restores the originating permission step or Permissions, and refuses to interrupt recordings,
 transcription, imports, AI requests or an unsent chat draft. Never reset permissions
 or restart automatically on a background permission poll.
 Present restart notices and blocking errors above any open setup sheet, never
@@ -89,6 +92,11 @@ for recovery after choosing Later; do not add feature-specific restart controls.
 Permission dialogs must allow AppKit termination so System Settings' Quit &
 Reopen and the shared restart notice reach normal shutdown safeguards. If a quit
 is rejected before shutdown starts, clear the pending restart and allow retry.
+
+Time Turner empty states use the shared Nunito Sans hierarchy: a 20pt semibold
+title, 14pt body detail and semantic primary/secondary text colors. SF Symbols
+retain their system symbol font. Do not use the platform's default empty-state
+text styling, which differs from the dashboard typography.
 
 ### Recording interactions
 

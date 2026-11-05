@@ -5,6 +5,30 @@ import Testing
 
 @Suite("Permission restart recovery")
 struct PermissionRestartRecoveryTests {
+    @Test("permission setup destination survives a new store and is consumed once")
+    @MainActor
+    func restoresOriginWithoutRepeatingOrAssumingAccess() throws {
+        let suite = "permission-restart-test-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = PermissionRestartResumeStore(defaults: defaults)
+        #expect(store.consume(fallbackToPermissions: false) == nil)
+        store.save(.timeTurnerPermissions)
+        let reopened = PermissionRestartResumeStore(defaults: defaults)
+        // macOS Quit & Reopen supplies no muesli-specific launch argument.
+        #expect(reopened.consume(fallbackToPermissions: false) == .timeTurnerPermissions)
+        #expect(reopened.consume(fallbackToPermissions: false) == nil)
+        store.save(.timeTurnerPermissions)
+        #expect(reopened.consume(fallbackToPermissions: true) == .timeTurnerPermissions)
+        #expect(reopened.consume(fallbackToPermissions: true) == .permissions)
+        store.save(.timeTurnerPermissions)
+        store.clear() // Explicitly leaving or finishing setup cancels restoration.
+        #expect(reopened.consume(fallbackToPermissions: false) == nil)
+        defaults.set("future-destination", forKey: "permissionRestart.destination")
+        #expect(reopened.consume(fallbackToPermissions: true) == .permissions)
+        #expect(defaults.object(forKey: "permissionRestart.destination") == nil)
+    }
+
     @Test("restart notice is hosted above an open feature setup sheet")
     @MainActor
     func noticeUsesVisibleSetupSheet() {

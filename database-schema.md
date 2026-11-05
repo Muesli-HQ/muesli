@@ -31,6 +31,19 @@ features discovered; unknown IDs are preserved. Each feature is marked on explic
 navigation or interaction, independently of the What's New tour. This preference
 is not user activity and is not stored in SQLite, synced, exported or sent to telemetry.
 
+### Permission restart navigation outside SQLite
+
+`PermissionRestartResumeStore` owns the bundle-local UserDefaults string
+`permissionRestart.destination`. Time Turner saves `timeTurnerPermissions` when
+requesting access or opening Manage permissions from setup. The next launch
+consumes the marker and opens Time Turner's permission step, including launches
+initiated by macOS Quit & Reopen without app-specific arguments. Explicitly
+leaving or advancing past that step clears it. Missing or unknown values fall
+back to ordinary launch behavior (or General → Permissions for the explicit
+permission-recovery launch argument); unknown values are discarded. This is
+navigation intent only, never a cached grant or feature-enable flag. It is not
+synced, exported, included in history/CLI output, or sent to telemetry.
+
 ### Formatting suggestion preferences outside SQLite
 
 App Formatting suggestion dismissal uses the bundle-local UserDefaults array
