@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/scripts" "$fixture/bin" "$fixture/cache/localvqe"
+mkdir -p "$fixture/scripts" "$fixture/cache/localvqe"
 cp "$ROOT/scripts/run_ci_macos_check.sh" "$fixture/scripts/"
 printf '# fixture runtime revision\n' > "$fixture/scripts/build_localvqe.sh"
 cat > "$fixture/scripts/test_packaged_cli.sh" <<'SH'
@@ -27,18 +27,23 @@ PY
 bash "$fixture/scripts/run_ci_macos_check.sh" cli-smoke
 test "$(find "$fixture/cache/localvqe" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 4
 test -d "$fixture/cache/localvqe/keep-unrelated"
-test ! -e "$fixture/cache/localvqe/.lock"
 if SMOKE_RESULT=17 bash "$fixture/scripts/run_ci_macos_check.sh" cli-smoke; then
   echo "Packaging failure was hidden" >&2; exit 1
 else
   test "$?" = 17
 fi
-test ! -e "$fixture/cache/localvqe/.lock"
-mkdir "$fixture/cache/localvqe/.lock"
-if bash "$fixture/scripts/run_ci_macos_check.sh" cli-smoke; then
-  echo "Concurrent cache access was allowed" >&2; exit 1
-fi
-rmdir "$fixture/cache/localvqe/.lock"
+python3 - "$fixture" <<'PY'
+import fcntl
+from pathlib import Path
+import subprocess
+import sys
+root = Path(sys.argv[1])
+with (root / "cache/localvqe/.lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    assert subprocess.run(["bash", str(root / "scripts/run_ci_macos_check.sh"), "cli-smoke"]).returncode != 0
+# The lock file remains, but a later job can acquire the released kernel lock.
+assert subprocess.run(["bash", str(root / "scripts/run_ci_macos_check.sh"), "cli-smoke"]).returncode == 0
+PY
 if bash "$fixture/scripts/run_ci_macos_check.sh" unknown; then
   echo "Unknown check was accepted" >&2; exit 1
 fi

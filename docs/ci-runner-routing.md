@@ -165,5 +165,4 @@ The private all-macOS job has a 75-minute execution limit. Its dispatcher
 allows 90 minutes for queueing and completion, and the public check polls
 for up to 100 minutes. These are failure bounds, not intentional delays.
 LocalVQE retains the current fingerprint plus two older entries under an
-exclusive cache lock. A hard-killed process may leave that lock behind;
-remove it only after confirming no job uses that runner's cache.
+exclusive kernel cache lock that releases when its process exits.

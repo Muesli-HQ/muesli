@@ -26,29 +26,33 @@ PY
     ;;
   cli-smoke)
     mkdir -p "$MUESLI_CI_CACHE_ROOT/localvqe"
-    # Refuse concurrent use of this runner's LocalVQE cache during pruning/builds.
-    lock="$MUESLI_CI_CACHE_ROOT/localvqe/.lock"
-    mkdir "$lock" || { echo "LocalVQE cache is already in use" >&2; exit 1; }
-    trap 'rmdir "$lock"' EXIT
     fingerprint="$(shasum -a 256 scripts/build_localvqe.sh | cut -d ' ' -f 1)"
     export LOCALVQE_REPO="$MUESLI_CI_CACHE_ROOT/localvqe/$fingerprint/source"
     export MUESLI_LOCALVQE_LIB_DIR="$MUESLI_CI_CACHE_ROOT/localvqe/$fingerprint/lib"
     mkdir -p "$(dirname "$LOCALVQE_REPO")"
     python3 - "$MUESLI_CI_CACHE_ROOT/localvqe" "$fingerprint" <<'PY'
 from pathlib import Path
+import fcntl
 import os
+import subprocess
 import re
 import shutil
 import sys
 root, current = Path(sys.argv[1]), sys.argv[2]
-entries = [p for p in root.iterdir() if re.fullmatch(r"[0-9a-f]{64}", p.name)
-           and p.is_dir() and not p.is_symlink() and p.name != current]
-for old in sorted(entries, key=lambda p: p.stat().st_mtime, reverse=True)[2:]:
-    shutil.rmtree(old)
-(root / current).mkdir(exist_ok=True)
-os.utime(root / current, None)
+with (root / ".lock").open("a") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("LocalVQE cache is already in use")
+    entries = [p for p in root.iterdir() if re.fullmatch(r"[0-9a-f]{64}", p.name)
+               and p.is_dir() and not p.is_symlink() and p.name != current]
+    for old in sorted(entries, key=lambda p: p.stat().st_mtime, reverse=True)[2:]:
+        shutil.rmtree(old)
+    (root / current).mkdir(exist_ok=True)
+    os.utime(root / current, None)
+    # Keep the kernel lock through packaging. Process exit releases it after a crash.
+    sys.exit(subprocess.run(["bash", "scripts/test_packaged_cli.sh"]).returncode)
 PY
-    bash scripts/test_packaged_cli.sh
     ;;
   *)
     echo "Unknown macOS check: ${1:-}" >&2
