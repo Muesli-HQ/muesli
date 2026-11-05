@@ -2412,6 +2412,9 @@ struct AppConfig: Codable, Equatable {
     var timeTurnerBudget: String = "10"
     var timeTurnerScreenshotRetention: String = "7"
     var timeTurnerHistoryRetention: String = "30"
+    var recapModelSelection: FeatureTextModelSelection? = nil
+    var recapSchedule: String = "off"
+    var recapScheduleHour: String = "8"
     var recapIncludeMeetings: Bool = true
     var recapIncludeDictations: Bool = false
     var recapIncludeCommands: Bool = false
@@ -2598,6 +2601,9 @@ struct AppConfig: Codable, Equatable {
         case timeTurnerBudget = "time_turner_budget"
         case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
         case timeTurnerHistoryRetention = "time_turner_history_retention"
+        case recapModelSelection = "recap_model_selection"
+        case recapSchedule = "recap_schedule"
+        case recapScheduleHour = "recap_schedule_hour"
         case recapIncludeMeetings = "recap_include_meetings"
         case recapIncludeDictations = "recap_include_dictations"
         case recapIncludeCommands = "recap_include_commands"
@@ -2899,6 +2905,9 @@ struct AppConfig: Codable, Equatable {
         timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
         timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
         timeTurnerHistoryRetention = (try? c.decode(String.self, forKey: .timeTurnerHistoryRetention)) ?? "30"
+        recapModelSelection = try? c.decode(FeatureTextModelSelection.self, forKey: .recapModelSelection)
+        recapSchedule = (try? c.decode(String.self, forKey: .recapSchedule)) ?? "off"
+        recapScheduleHour = (try? c.decode(String.self, forKey: .recapScheduleHour)) ?? "8"
         recapIncludeMeetings = (try? c.decode(Bool.self, forKey: .recapIncludeMeetings)) ?? true
         recapIncludeDictations = (try? c.decode(Bool.self, forKey: .recapIncludeDictations)) ?? false
         recapIncludeCommands = (try? c.decode(Bool.self, forKey: .recapIncludeCommands)) ?? false

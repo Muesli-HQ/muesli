@@ -120,6 +120,38 @@ public final class MuesliHistoryReader {
         return output.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date }
     }
 
+    /// Streaming digest of the selected day's eligible content, including rows
+    /// outside the opening sample. Used only on explicit/scheduled recap checks.
+    public func recapRevision(kinds: Set<MuesliHistoryKind>, interval: DateInterval) throws -> String {
+        var digest = SHA256()
+        for kind in MuesliHistoryKind.allCases where kinds.contains(kind) {
+            let source: String?
+            if kind == .meetings {
+                source = try exists("meetings") ? """
+                    SELECT CAST(id AS TEXT) AS id,round((julianday(start_time)-2440587.5)*86400.0,3) AS event_time,
+                        title,coalesce(raw_transcript,'') || char(10) || coalesce(formatted_notes,'') || char(10) || coalesce(manual_notes,'') AS text
+                    FROM meetings WHERE deleted_at IS NULL
+                    """ : nil
+            } else { source = try query(kind) }
+            guard let source else { continue }
+            let s = try prepare("SELECT id,event_time,title,text FROM (\(source)) WHERE event_time>=? AND event_time<? ORDER BY event_time,id")
+            defer { sqlite3_finalize(s) }
+            sqlite3_bind_double(s, 1, interval.start.timeIntervalSince1970)
+            sqlite3_bind_double(s, 2, interval.end.timeIntervalSince1970)
+            var status = sqlite3_step(s)
+            while status == SQLITE_ROW {
+                try Task.checkCancellation()
+                let fields = [kind.rawValue] + (0..<4).map { column in
+                    sqlite3_column_text(s, Int32(column)).map { String(cString: $0) } ?? ""
+                }
+                digest.update(data: try JSONEncoder().encode(fields))
+                status = sqlite3_step(s)
+            }
+            guard status == SQLITE_DONE else { throw Self.failure }
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     public func read(kind: MuesliHistoryKind, id: String, fullText: Bool = false) throws -> MuesliHistorySource? {
         guard let query = try query(kind) else { return nil }
         let s = try prepare("SELECT id,parent_id,event_time,title,text FROM (\(query)) WHERE id=?")

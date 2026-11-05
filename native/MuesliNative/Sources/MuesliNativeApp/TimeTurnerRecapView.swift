@@ -16,11 +16,16 @@ struct TimeTurnerRecapView: View {
     @State private var model = TimeTurnerRecapModel()
     @State private var expanded = true
     @State private var copied = false
+    @State private var schedulePresented = false
     @State private var sourcesPresented = false
+    @State private var confirmRerun = false
+    @State private var availabilityMessage: String? = "Checking history…"
+    private var gatedRecap: Bool { template == .dailyRecap && invocation == nil }
+    private var generationUnavailable: Bool { gatedRecap && availabilityMessage != nil }
     @State private var selectedSource: TimeTurnerRecapSource?
     private var memory: VisualMemoryController { controller.visualMemory }
-    private var provider: MeetingSummaryBackendOption { .resolved(controller.config.meetingSummaryBackend) }
-    private var selectedModel: String { MeetingTextGenerationClient.model(controller.config) }
+    private var provider: MeetingSummaryBackendOption { .resolved(controller.config.timeTurnerGenerationConfig.meetingSummaryBackend) }
+    private var selectedModel: String { MeetingTextGenerationClient.model(controller.config.timeTurnerGenerationConfig) }
     private var selectionID: String {
         template.id + "|" + query + "|" + (selection?.key ?? SavedTimeTurnerRecap.key(dayStart: Calendar.current.startOfDay(for: day), timeZone: Calendar.current.timeZone.identifier))
     }
@@ -31,11 +36,13 @@ struct TimeTurnerRecapView: View {
                 VStack(alignment: .leading, spacing: 10) { heading; actions }
             }
             if model.hasGenerated, Set(model.includedInputs) != Set(TimeTurnerRecapInput.selected(controller.config)) {
-                SettingsNote("Sources changed. Regenerate to apply.")
+                SettingsNote("Sources changed. Update when ready.")
             }
+            if model.reused { SettingsNote("Up to date") }
+            if model.hasGenerated, generationUnavailable, let availabilityMessage { SettingsNote(availabilityMessage) }
             if model.isLoading { ProgressView("Loading recap…").font(MuesliTheme.body()) }
             if !model.hasGenerated && !model.isGenerating && !model.isLoading {
-                Text(invocation != nil ? "Uses the sources needed for your request." : "Generate from this day’s selected sources using \(provider.label).")
+                Text(gatedRecap ? (availabilityMessage ?? "Generate from this day’s selected sources using \(provider.label).") : "Uses the sources needed for your request.")
                     .font(MuesliTheme.caption()).foregroundStyle(.secondary)
             }
             if model.isGenerating {
@@ -53,7 +60,19 @@ struct TimeTurnerRecapView: View {
                     let insights = model.insights.filter { $0.section == section }
                     if !insights.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
-                            if template.templatePrompt == nil { Text(section.title).font(MuesliTheme.headline()) }
+                            if template.templatePrompt == nil {
+                                HStack {
+                                    Text(section.title).font(MuesliTheme.headline())
+                                    if section == .followUps, model.savedKey != nil {
+                                        Spacer()
+                                        Button {
+                                            controller.appState.timeTurnerFocusedTodo = nil
+                                            controller.appState.timeTurnerSection = .todos
+                                        } label: { Image(systemName: "checklist") }
+                                        .controlSize(.small).help("View to-dos").accessibilityLabel("View to-dos")
+                                    }
+                                }
+                            }
                             ForEach(insights) { insight in
                                 VStack(alignment: .leading, spacing: 7) {
                                     if template.templatePrompt != nil {
@@ -87,6 +106,28 @@ struct TimeTurnerRecapView: View {
                 await model.revalidate(root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
             }
         }
+        .task(id: selectionID + "|\(memory.catalogRevision)|\(String(describing: memory.captureReadyAt))") {
+            guard gatedRecap else { availabilityMessage = nil; return }
+            availabilityMessage = "Checking history…"
+            guard let interval = selection?.interval ?? Calendar.current.dateInterval(of: .day, for: day) else { return }
+            let root = memory.store?.root
+            while !Task.isCancelled {
+                do {
+                    let availability = try await Task.detached(priority: .utility) {
+                        try TimeTurnerRecapAvailability.read(root: root, interval: interval)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    availabilityMessage = availability.message
+                    // Catalog changes restart this task. Only warmup needs a timer.
+                    guard case .waiting(let deadline) = availability else { return }
+                    try await Task.sleep(for: .seconds(max(0.1, deadline.timeIntervalSinceNow)))
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    availabilityMessage = "Screen history is temporarily unavailable."
+                    do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                }
+            }
+        }
         .task(id: copied) {
             guard copied else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -95,6 +136,16 @@ struct TimeTurnerRecapView: View {
         .sheet(item: $selectedSource) { source in
             if let history = source.history {
                 RecapHistoryPreview(source: history, databaseURL: controller.timeTurnerRecapDatabaseURL)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .timeTurnerRecapSaved)) { event in
+            guard template == .dailyRecap, invocation == nil else { return }
+            let key = selection?.key ?? SavedTimeTurnerRecap.key(dayStart: Calendar.current.startOfDay(for: day), timeZone: Calendar.current.timeZone.identifier)
+            guard event.object as? String == key else { return }
+            let requested = selectionID
+            Task {
+                guard requested == selectionID, !model.isGenerating else { return }
+                await model.load(day: day, selection: selection, root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL)
             }
         }
         .onChange(of: model.requestID) { _, _ in selectedSource = nil }
@@ -115,14 +166,20 @@ struct TimeTurnerRecapView: View {
                 Text("Generated \(date.formatted(date: .abbreviated, time: .shortened))").font(MuesliTheme.caption()).foregroundStyle(.secondary)
             }
             Text(model.hasGenerated ? "\(model.providerLabel) · \(model.modelLabel)" : "\(provider.label) · \(selectedModel)").font(MuesliTheme.caption()).foregroundStyle(.secondary)
-                .help("Generation sends text from your selected sources to your meeting provider. Local endpoints process according to their configuration. Screenshots are not uploaded.")
+                .help("Generation sends text from your selected sources to your selected Time Turner provider. Local endpoints process according to their configuration. Screenshots are not uploaded.")
         }
     }
     private var actions: some View {
         HStack(spacing: 10) {
-            Button { sourcesPresented.toggle() } label: {
-                Label("Sources", systemImage: "slider.horizontal.3")
+            if template == .dailyRecap && invocation == nil {
+                Button { schedulePresented.toggle() } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("Daily recap settings").help("Model and automatic recap schedule")
+                    .popover(isPresented: $schedulePresented) { RecapScheduleSettings(controller: controller) }
             }
+            Button { sourcesPresented.toggle() } label: {
+                Image(systemName: "square.stack")
+            }
+            .accessibilityLabel("Recap sources").help("Choose sources")
             .accessibilityIdentifier("recap.sources")
             .popover(isPresented: $sourcesPresented) {
                 RecapSourceSettings(controller: controller).disabled(model.isGenerating)
@@ -142,21 +199,50 @@ struct TimeTurnerRecapView: View {
                         if copied { ProductAnalytics.event(.recap, .result_action, fields: [.action: .copy]) }
                     }
                 } label: {
-                    Label(copied ? "Copied" : "Copy summary", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 }
+                .accessibilityLabel(copied ? "Copied" : "Copy summary")
                 .disabled(model.isGenerating || model.isLoading || model.insights.isEmpty)
                 .help("Copy summary text without screenshot references or model details")
             }
             if model.isGenerating {
-                Button("Cancel") { model.cancel() }
-            } else {
-                Button(model.hasGenerated ? "Regenerate" : (template == .dailyRecap ? "Generate recap" : "Run skill")) {
-                    expanded = true
-                    generate()
+                Button { model.cancel() } label: { Image(systemName: "stop.fill") }
+                    .accessibilityLabel("Cancel generation").help("Cancel generation")
+            } else if !model.hasGenerated || model.providerLabel != provider.label || model.modelLabel != selectedModel
+                        || Set(model.includedInputs) != Set(TimeTurnerRecapInput.selected(controller.config)) {
+                Button { expanded = true; generate() } label: {
+                    Label(model.hasGenerated ? "Update" : "Generate", systemImage: "sparkles")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isLoading)
-                .help("Use \(selectedModel) with the selected sources")
+                .buttonStyle(.borderedProminent).disabled(model.isLoading || generationUnavailable)
+                .help("Use \(selectedModel); keep previous versions")
+            }
+            if model.hasGenerated {
+                Menu {
+                    Button { generate() } label: { Label("Check for updates", systemImage: "arrow.clockwise") }
+                        .disabled(generationUnavailable)
+                    if model.versions.count > 1 {
+                        Menu("Versions") {
+                            ForEach(model.versions, id: \.key) { version in
+                                Button {
+                                    Task { await model.load(day: day, selection: TimeTurnerRecapSelection(version),
+                                        root: memory.store?.root, databaseURL: controller.timeTurnerRecapDatabaseURL) }
+                                } label: {
+                                    Label(version.model + " · " + version.generatedAt.formatted(date: .abbreviated, time: .shortened),
+                                          systemImage: model.savedKey == version.key ? "checkmark" : "clock")
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Generate again…") { confirmRerun = true }.disabled(generationUnavailable)
+                } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).fixedSize()
+                .accessibilityLabel("Recap options").help("Updates and saved versions")
+                .disabled(model.isGenerating || model.isLoading)
+                .confirmationDialog("Generate another version?", isPresented: $confirmRerun) {
+                    Button("Generate") { generate(force: true) }.disabled(generationUnavailable)
+                    Button("Cancel", role: .cancel) {}
+                } message: { Text("This runs the model again and may use paid credits. Your saved versions and to-do state are preserved.") }
             }
             if model.hasGenerated {
                 Button { expanded.toggle() } label: { Image(systemName: expanded ? "chevron.up" : "chevron.down") }
@@ -164,10 +250,10 @@ struct TimeTurnerRecapView: View {
             }
         }
     }
-    private func generate() {
+    private func generate(force: Bool = false) {
         model.generate(day: day, selection: selection, root: memory.store?.root,
             databaseURL: controller.timeTurnerRecapDatabaseURL, config: controller.config,
-            template: template, query: query, skillPrompt: invocation?.prompt, meetingScope: meetingScope)
+            template: template, query: query, skillPrompt: invocation?.prompt, meetingScope: meetingScope, force: force)
     }
 
     @ViewBuilder private func sourceButtons(_ insight: TimeTurnerRecapInsight) -> some View {
@@ -269,7 +355,7 @@ private struct RecapSourceSettings: View {
                     MuesliSettingControl(controller: controller, id: source.settingID)
                 }
             }
-            SettingsNote("Used by all skills. Saved recaps change only when regenerated.")
+            SettingsNote("Used by all skills. Saved recaps change only when updated.")
             SettingsNote("Saved chats use the conversation’s update date; messages may be older.")
         }
         .padding(20).frame(width: 360)

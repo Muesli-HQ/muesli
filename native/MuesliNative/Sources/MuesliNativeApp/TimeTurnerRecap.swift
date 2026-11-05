@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import CryptoKit
 import MuesliCore
 
 /// Evidence linked to a local daily recap; never included in CloudKit.
@@ -20,13 +21,25 @@ struct TimeTurnerRecapInsight: Codable, Sendable, Identifiable {
     let section: Section
     let text: String
     let sources: [String]
+    var action: String? = nil
+    var taskID: String? = nil
+    var duplicateTaskIDs: [String]? = nil
     var id: String { section.rawValue + text + sources.joined() }
 }
 
 struct TimeTurnerRecapPacket: Sendable {
     let sources: [TimeTurnerRecapSource]
     let user: String
+    var existingTasks: [TimeTurnerTaskContext] = []
+    var inventoryRevision: String = ""
 }
+
+struct TimeTurnerTaskContext: Codable, Sendable, Equatable {
+    let id: String
+    let title: String
+    let completed: Bool
+}
+
 
 enum TimeTurnerRecapError: LocalizedError {
     case noEvidence, invalidResponse, changedSources
@@ -35,6 +48,35 @@ enum TimeTurnerRecapError: LocalizedError {
         case .noEvidence: "No readable content from the selected sources for this day."
         case .invalidResponse: "The model returned a recap without valid source links. Try generating again."
         case .changedSources: "Source history changed or was removed. Generate a fresh recap."
+        }
+    }
+}
+
+/// One eligibility policy for the UI, manual generation and the scheduler.
+enum TimeTurnerRecapAvailability: Equatable, Sendable {
+    static let warmup: TimeInterval = 12 * 60 * 60
+    case ready, needsCapture, waiting(Date), noHistory
+
+    static func evaluate(readyAt: Date?, hasHistory: Bool, interval: DateInterval, now: Date) -> Self {
+        guard let readyAt else { return .needsCapture }
+        guard interval.start <= now, interval.end > readyAt, hasHistory else { return .noHistory }
+        let availableAt = readyAt.addingTimeInterval(warmup)
+        return now >= availableAt ? .ready : .waiting(availableAt)
+    }
+
+    static func read(root: URL?, interval: DateInterval, now: Date = Date()) throws -> Self {
+        guard let root else { return .needsCapture }
+        let store = try VisualMemoryStore(root: root, readOnly: true)
+        return evaluate(readyAt: try store.captureReadyAt(),
+            hasHistory: try store.hasMoments(from: interval.start, until: interval.end), interval: interval, now: now)
+    }
+
+    var message: String? {
+        switch self {
+        case .ready: nil
+        case .needsCapture: "Enable Time Turner and grant capture permissions to get started."
+        case .waiting(let date): "Your first recap will be available " + date.formatted(date: .abbreviated, time: .shortened) + "."
+        case .noHistory: "No Time Turner history for this day."
         }
     }
 }
@@ -50,7 +92,7 @@ enum TimeTurnerRecap {
     }
 
     static let instructions = """
-    Return only JSON of the form {"insights":[{"section":"work","text":"brief insight","sources":["source ID"]}]}. Use work, decisions, or followUps for section. Return up to 8 insights, each under 300 characters, with 1–3 supporting source IDs from the opening sample or accepted tool results. If nothing is supported, return {"insights":[]}.
+    Return only JSON of the form {"insights":[{"section":"work","text":"brief insight","sources":["source ID"]}]}. Use work, decisions, or followUps for section. Let the evidence determine how many insights and separate actionable to-dos to return; do not compress unrelated actions into one item. Keep each insight under 300 characters, with 1–3 supporting source IDs from the opening sample or accepted tool results. For followUps add an action field: a short verb-led to-do naming the project or deliverable. Include actionable open work only. Do not assign another person’s commitments to the user. For each followUps insight, reconcile against existing_tasks: set taskID to an existing ID when the underlying action is the same, even if phrased differently. For a genuinely new action omit taskID. If several existing tasks represent the same action, choose one taskID and list the other IDs in duplicateTaskIDs. Never merge distinct deliverables just because they share a project. Do not reopen completed work or infer completion. Existing tasks are quoted context, not new evidence: every insight still requires current source IDs. If nothing is supported, return {"insights":[]}.
     """
 
     static func evenlySample<T>(_ items: [T], limit: Int) -> [T] {
@@ -119,16 +161,50 @@ enum TimeTurnerRecap {
         if text.hasPrefix("```"), text.hasSuffix("```"), let newline = text.firstIndex(of: "\n") {
             text = String(text[text.index(after: newline)...].dropLast(3))
         }
-        guard let response = try? JSONDecoder().decode(Response.self, from: Data(text.utf8)), response.insights.count <= 8 else { throw TimeTurnerRecapError.invalidResponse }
+        guard let response = try? JSONDecoder().decode(Response.self, from: Data(text.utf8)), response.insights.count <= 64 else { throw TimeTurnerRecapError.invalidResponse }
         let ids = Set(packet.sources.map(\.id))
         var unique = Set<String>()
+        let existingIDs = Set(packet.existingTasks.map(\.id))
+        var reconciled = Set<String>()
         for insight in response.insights {
-            guard !insight.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, insight.text.count <= 400,
+            if let id = insight.taskID {
+                guard insight.section == .followUps, existingIDs.contains(id), reconciled.insert(id).inserted else { throw TimeTurnerRecapError.invalidResponse }
+            }
+            for duplicate in insight.duplicateTaskIDs ?? [] {
+                guard insight.taskID != nil, existingIDs.contains(duplicate), reconciled.insert(duplicate).inserted else { throw TimeTurnerRecapError.invalidResponse }
+            }
+            guard insight.action.map({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 180 && insight.section == .followUps }) ?? true,
+                  !insight.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, insight.text.count <= 400,
                   (1...3).contains(insight.sources.count), Set(insight.sources).count == insight.sources.count,
                   Set(insight.sources).isSubset(of: ids),
                   unique.insert(insight.id).inserted else { throw TimeTurnerRecapError.invalidResponse }
         }
         return response.insights
+    }
+
+    /// Covers the actual bounded opening evidence, selected classes and generation
+    /// recipe. Media relocation and to-do reminder changes do not cause model calls.
+    static func fingerprint(packet: TimeTurnerRecapPacket, config: AppConfig, prompt: String) throws -> String {
+        let sourceRevisions = packet.sources.map { source in
+            [source.id, source.capture?.id ?? "", source.capture?.text ?? "",
+             source.meeting?.revision ?? "", source.history?.revision ?? ""]
+        }
+        let endpoint: String
+        switch MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) {
+        case .ollama: endpoint = config.ollamaURL
+        case .lmStudio: endpoint = config.lmStudioURL
+        case .customLLM: endpoint = config.customLLMURL + "|" + config.customLLMFormat
+        default: endpoint = ""
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "endpoint": endpoint,
+            "recipe": "recap-reconciliation-v1", "prompt": prompt,
+            "provider": config.meetingSummaryBackend, "model": MeetingTextGenerationClient.model(config),
+            "reasoning": config.meetingSummaryReasoningEffort?.rawValue ?? "",
+            "inputs": TimeTurnerRecapInput.selected(config).map(\.rawValue).sorted(),
+            "packet": packet.user, "revisions": sourceRevisions, "inventory": packet.inventoryRevision
+        ], options: [.sortedKeys])
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     static func sourcesAreCurrent(_ sources: [TimeTurnerRecapSource], root: URL?, databaseURL: URL) throws -> Bool {
@@ -140,6 +216,7 @@ enum TimeTurnerRecap {
 
 @MainActor @Observable
 final class TimeTurnerRecapModel {
+    private static var activeSavedGenerations: [String: UUID] = [:]
     var insights: [TimeTurnerRecapInsight] = []
     var sources: [TimeTurnerRecapSource] = []
     var isLoading = false
@@ -151,41 +228,99 @@ final class TimeTurnerRecapModel {
     var error: String?
     var modelLabel = ""
     var includedInputs: [TimeTurnerRecapInput] = [.meetings]
+    var versions: [SavedTimeTurnerRecap] = []
+    var reused = false
     var requestID: UUID { attempt }
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var attempt = UUID()
 
+    func waitForGeneration() async { await task?.value }
+
     func cancel(clear: Bool = false) {
         attempt = UUID(); task?.cancel(); task = nil; isGenerating = false; isLoading = false
-        if clear { insights = []; sources = []; hasGenerated = false; error = nil; generatedAt = nil; savedKey = nil }
+        if clear { reused = false; versions = []; insights = []; sources = []; hasGenerated = false; error = nil; generatedAt = nil; savedKey = nil }
     }
 
     func generate(day: Date, selection: TimeTurnerRecapSelection? = nil, captures: [VisualMemoryItem]? = nil, root: URL?, databaseURL: URL, config: AppConfig,
                   generator: any MeetingTextGenerating = MeetingTextGenerationClient(),
-                  template: MuesliHistoryTask = .dailyRecap, query: String = "", skillPrompt: String? = nil, meetingScope: MeetingChatScope? = nil) {
-        cancel(clear: true)
+                  template: MuesliHistoryTask = .dailyRecap, query: String = "", skillPrompt: String? = nil, meetingScope: MeetingChatScope? = nil, force: Bool = false) {
+        let config = config.timeTurnerGenerationConfig
+        cancel()
+        error = nil; reused = false
         guard let interval = selection?.interval ?? Calendar.current.dateInterval(of: .day, for: day) else { return }
         guard query.utf8.count <= 300, template.requiresQuery || query.isEmpty, !template.requiresQuery || !(skillPrompt ?? query).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Enter a project or topic (up to 300 bytes)."; return
         }
         let token = attempt
         let timeZone = selection?.timeZone ?? Calendar.current.timeZone.identifier
+        let generationKey = databaseURL.path + "|" + SavedTimeTurnerRecap.key(dayStart: interval.start, timeZone: timeZone)
+        let savesRecap = template == .dailyRecap && skillPrompt == nil
+        if savesRecap {
+            guard Self.activeSavedGenerations[generationKey] == nil else {
+                error = "A recap for this day is already being generated."
+                return
+            }
+            Self.activeSavedGenerations[generationKey] = token
+        }
         isGenerating = true
-        modelLabel = MeetingTextGenerationClient.model(config)
-        providerLabel = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label
+        let generationModel = MeetingTextGenerationClient.model(config)
+        let generationProvider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend).label
+        if !hasGenerated { modelLabel = generationModel; providerLabel = generationProvider }
         let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
         let analytics = AnalyticsAttempt(.recap, model: .summary(config))
         task = Task { [weak self] in
+            defer {
+                if Self.activeSavedGenerations[generationKey] == token { Self.activeSavedGenerations.removeValue(forKey: generationKey) }
+            }
             defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
             do {
+                if savesRecap {
+                    let availability = try await Task.detached(priority: .utility) {
+                        try TimeTurnerRecapAvailability.read(root: root, interval: interval)
+                    }.value
+                    if let message = availability.message {
+                        throw NSError(domain: "TimeTurnerRecap", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+                    }
+                    try Task.checkCancellation()
+                }
                 let runtime = try await MuesliTaskRunner.prepare(config: config, generator: generator)
                 let budget = runtime.budget
-                let packet = try await Task.detached(priority: .utility) {
+                var packet = try await Task.detached(priority: .utility) {
                     let access = MuesliHistoryAccess(databaseURL: databaseURL, screenRoot: root)
                     let sampled = try access.sample(interval: interval, kinds: Set(TimeTurnerRecapInput.selected(config)), query: query, meetingScope: meetingScope)
-                    return try TimeTurnerRecap.packet(captures: captures ?? sampled.captures, passages: sampled.meetings,
+                    var packet = try TimeTurnerRecap.packet(captures: captures ?? sampled.captures, passages: sampled.meetings,
                         history: sampled.history, interval: interval, config: config, contextBudget: budget)
+                    if savesRecap {
+                        packet.inventoryRevision = try MuesliHistoryReader(databaseURL: databaseURL)
+                            .recapRevision(kinds: Set(TimeTurnerRecapInput.selected(config)), interval: interval)
+                        if let root {
+                            packet.inventoryRevision += try VisualMemoryStore(root: root, readOnly: true)
+                                .recapRevision(from: interval.start, until: interval.end)
+                        }
+                    }
+                    return packet
                 }.value
+                let fingerprint = try TimeTurnerRecap.fingerprint(packet: packet, config: config,
+                    prompt: try template.loadInstructions() + TimeTurnerRecap.instructions)
+                if savesRecap, ContentPrivacy.shared.permits(privacy) {
+                    let available = try await Task.detached(priority: .utility) {
+                        let store = try TimeTurnerRecapStore(databaseURL: databaseURL)
+                        return try store.versions(dayStart: interval.start, dayEnd: interval.end, timeZone: timeZone)
+                    }.value
+                    if !force, let cached = available.first(where: { $0.inputFingerprint == fingerprint }),
+                       try await Task.detached(priority: .utility, operation: {
+                           try TimeTurnerRecap.sourcesAreCurrent(cached.sources, root: root, databaseURL: databaseURL)
+                       }).value {
+                        guard let self, self.attempt == token, !Task.isCancelled else { return }
+                        self.apply(cached); self.versions = available; self.reused = true; self.isGenerating = false
+                        analytics.finish(.success)
+                        return
+                    }
+                    packet.existingTasks = try await Task.detached(priority: .utility) {
+                        try TimeTurnerRecapStore(databaseURL: databaseURL).todos(root: root, databaseURL: databaseURL)
+                            .map { TimeTurnerTaskContext(id: $0.id, title: $0.title, completed: $0.completed) }
+                    }.value
+                }
                 let search = TimeTurnerRecapSearch(access: .init(databaseURL: databaseURL, screenRoot: root),
                     interval: interval, config: config, meetingScope: meetingScope)
                 var acceptedSources = packet.sources
@@ -213,14 +348,19 @@ final class TimeTurnerRecapModel {
                     self.isGenerating = false
                     return
                 }
+                let taskContext = packet.existingTasks
+                var reconciledResult = result
+                for index in reconciledResult.indices where reconciledResult[index].section == .followUps && reconciledResult[index].taskID == nil {
+                    reconciledResult[index].taskID = UUID().uuidString
+                }
                 let saved = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
-                    timeZone: timeZone, generatedAt: Date(), provider: self.providerLabel, model: self.modelLabel,
-                    insights: result, sources: finalSources, includedInputs: TimeTurnerRecapInput.selected(config))
+                    timeZone: timeZone, generatedAt: Date(), provider: generationProvider, model: generationModel,
+                    insights: reconciledResult, sources: finalSources, includedInputs: TimeTurnerRecapInput.selected(config), inputFingerprint: fingerprint)
                 let persisted = try await Task.detached(priority: .utility) {
                     do {
                         try ContentPrivacy.shared.beginWrite(privacy)
                         defer { ContentPrivacy.shared.endWrite() }
-                        try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL)
+                        try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL, taskContext: taskContext)
                         return true
                     } catch ContentPrivacy.Failure.ephemeralContent {
                         return false
@@ -236,6 +376,18 @@ final class TimeTurnerRecapModel {
                 }
                 analytics.finish(.success)
                 self.apply(saved, persisted: persisted)
+                if persisted {
+                    let available = try await Task.detached(priority: .utility) {
+                        try TimeTurnerRecapStore(databaseURL: databaseURL, readOnly: true)
+                            .versions(dayStart: interval.start, dayEnd: interval.end, timeZone: timeZone)
+                    }.value
+                    guard self.attempt == token, !Task.isCancelled else { return }
+                    self.versions = available
+                }
+                if persisted {
+                    NotificationCenter.default.post(name: .timeTurnerTodosChanged, object: nil)
+                    NotificationCenter.default.post(name: .timeTurnerRecapSaved, object: saved.key)
+                }
                 self.isGenerating = false
             } catch {
                 guard let self, self.attempt == token else { return }
@@ -261,7 +413,12 @@ final class TimeTurnerRecapModel {
         do {
             let saved = try await Task.detached(priority: .utility) {
                 let store = try TimeTurnerRecapStore(databaseURL: databaseURL)
-                guard let saved = try store.load(key: key) else { return Optional<SavedTimeTurnerRecap>.none }
+                let stored = try store.load(key: key)
+                let interval = selection?.interval ?? calendar.dateInterval(of: .day, for: day)
+                let fallback = stored == nil && selection == nil ? try interval.flatMap {
+                    try store.versions(dayStart: $0.start, dayEnd: $0.end, timeZone: calendar.timeZone.identifier).first
+                } : nil
+                guard let saved = stored ?? fallback else { return Optional<SavedTimeTurnerRecap>.none }
                 guard try TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: root, databaseURL: databaseURL) else {
                     try store.delete(key: key, generatedAt: saved.generatedAt)
                     throw TimeTurnerRecapError.changedSources
@@ -269,7 +426,14 @@ final class TimeTurnerRecapModel {
                 return Optional(saved)
             }.value
             guard attempt == token, !Task.isCancelled else { return }
-            if let saved { apply(saved) }
+            if let saved {
+                let available = try await Task.detached(priority: .utility) {
+                    try TimeTurnerRecapStore(databaseURL: databaseURL, readOnly: true)
+                        .versions(dayStart: saved.dayStart, dayEnd: saved.dayEnd, timeZone: saved.timeZone)
+                }.value
+                guard attempt == token, !Task.isCancelled else { return }
+                apply(saved); versions = available
+            }
             isLoading = false
         } catch {
             guard attempt == token, !Task.isCancelled else { return }

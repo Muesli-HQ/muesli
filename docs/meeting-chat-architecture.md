@@ -40,7 +40,7 @@ Chat → **Skills** is an explicit skill picker. The built-in
 `MuesliHistoryTask` registry offers `daily-recap`, `resume-work`, `project-brief`, `follow-ups`, and `find-meetings`, each with a stable ID and version. `MuesliHistorySkill` provides
 one trusted history-access instruction set. The project brief additionally takes
 a user-entered topic; it is quoted as user data, never appended to system instructions.
-These tasks use the selected meeting model (including supported local models),
+Chat skills use the selected Chat/meeting model; Time Turner can select its own backend and model in Recap → Settings (including supported local models). Both use
 `MuesliTaskRunner`, the same source picker, citation renderer and output validator.
 Time Turner’s Recap page persists a day result. In Chat the normal coordinator saves tagged questions, Markdown answers and consulted dependencies as conversation turns. Reopening a chat or switching models preserves those turns and their eligibility for rolling memory.
 
@@ -379,3 +379,21 @@ The wire contracts follow [Ollama tool calling](https://docs.ollama.com/capabili
 [Ollama model details](https://docs.ollama.com/api-reference/show-model-details),
 [LM Studio model capabilities](https://lmstudio.ai/docs/developer/rest/list) and
 [LM Studio OpenAI-compatible tools](https://lmstudio.ai/docs/developer/openai-compat/tools).
+
+### Recap reuse and task reconciliation
+
+Manual and scheduled recaps share the same generation gate. Identical model,
+source selection, skill recipe and day-content fingerprint reuse a validated
+saved result. Explicit updates and model changes preserve prior versions; a
+forced rerun is a secondary, confirmed action. Saved versions inherit ordinary
+source invalidation, including explicit deletion.
+
+The generating model also reconciles its actions with existing task identities.
+Its JSON may reference an existing `taskID` and identify `duplicateTaskIDs`.
+The executor accepts only IDs issued in that attempt, revalidates the task
+snapshot before publication, and transactionally preserves completion, creation
+order, reminders and evidence links. There is no fuzzy wording matcher or
+secondary reconciliation model. Existing task context is subject to the same
+model input budget; oversized context fails explicitly rather than silently
+omitting old tasks and claiming complete reconciliation. Actions still require
+current evidence citations; old task wording is not fresh evidence.

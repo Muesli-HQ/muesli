@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import CoreGraphics
 import SQLite3
 
@@ -70,6 +71,9 @@ public final class VisualMemoryStore: @unchecked Sendable {
         try migrateCaptureTable()
         try migrateRetention()
         try migrateSearchRowIDs()
+        try execute("CREATE TABLE IF NOT EXISTS time_turner_lifecycle(id INTEGER PRIMARY KEY CHECK(id=1), capture_ready_at REAL NOT NULL)")
+        // Existing captures prove capture was ready before this version was installed.
+        try execute("INSERT OR IGNORE INTO time_turner_lifecycle SELECT 1,captured FROM evidence WHERE kind='moment' ORDER BY captured LIMIT 1")
 
     }
     deinit { sqlite3_close(db) }
@@ -86,6 +90,46 @@ public final class VisualMemoryStore: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw failure() }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    /// Set once, when capture is enabled and permissions are ready. Pausing and
+    /// retention do not restart this clock; this contains no captured content.
+    @discardableResult public func markCaptureReady(at date: Date) throws -> Date {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO time_turner_lifecycle VALUES(1,?)", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, date.timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw failure() }
+        return try captureReadyAt() ?? date
+    }
+
+    public func captureReadyAt() throws -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        let installed = try scalar("SELECT count(*) FROM sqlite_master WHERE name='time_turner_lifecycle'") > 0
+        let sql = installed ? "SELECT capture_ready_at FROM time_turner_lifecycle WHERE id=1"
+            : "SELECT min(captured) FROM evidence WHERE kind='moment'"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE { return nil }
+        guard result == SQLITE_ROW else { throw failure() }
+        guard sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: sqlite3_column_double(statement, 0))
+    }
+
+    /// Indexed existence check. Retired screenshots still count as retained history.
+    public func hasMoments(from: Date, until: Date) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM evidence WHERE kind='moment' AND captured>=? AND captured<? LIMIT 1", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, from.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, until.timeIntervalSince1970)
+        let result = sqlite3_step(statement)
+        guard result == SQLITE_ROW || result == SQLITE_DONE else { throw failure() }
+        return result == SQLITE_ROW
     }
 
     /// Versioned, transactional projection for SQL consumers. Evidence remains the
@@ -343,6 +387,9 @@ public final class VisualMemoryStore: @unchecked Sendable {
                 sqlite3_bind_text(search, 3, item.id, -1, transient)
                 guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
             }
+            if let first = items.filter({ $0.kind == .moment }).map(\.capturedAt).min() {
+                try markCaptureReady(at: first)
+            }
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -388,6 +435,29 @@ public final class VisualMemoryStore: @unchecked Sendable {
         sqlite3_bind_double(statement, 1, from.timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, until.timeIntervalSince1970)
         return try decodeItems(statement)
+    }
+
+    /// Content identity excludes media paths, so compression is not new evidence.
+    public func recapRevision(from: Date, until: Date) throws -> String {
+        lock.lock(); defer { lock.unlock() }
+        var statement: OpaquePointer?
+        let sql = "SELECT id,captured,json_extract(body,'$.source'),json_extract(body,'$.bundleID'),json_extract(body,'$.text') FROM evidence WHERE kind='moment' AND captured>=? AND captured<? ORDER BY captured,id"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, from.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, until.timeIntervalSince1970)
+        var digest = SHA256()
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            try Task.checkCancellation()
+            let fields = (0..<5).map { column in
+                sqlite3_column_text(statement, Int32(column)).map { String(cString: $0) } ?? ""
+            }
+            digest.update(data: try JSONEncoder().encode(fields))
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else { throw failure() }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     public struct Summary: Sendable {

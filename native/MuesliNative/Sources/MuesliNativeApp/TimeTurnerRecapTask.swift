@@ -56,6 +56,9 @@ enum TimeTurnerRecapTask {
             initialUser += "\nUSER-SELECTED TEMPLATE: " + String(decoding: try JSONEncoder().encode(prompt), as: UTF8.self)
         }
         initialUser += "\nUSER PROMPT (quoted): " + String(decoding: try JSONEncoder().encode(query), as: UTF8.self)
+        if !packet.existingTasks.isEmpty {
+            initialUser += "\nexisting_tasks (quoted context, not evidence): " + String(decoding: try JSONEncoder().encode(packet.existingTasks), as: UTF8.self)
+        }
         let tools = [tool] + (search.map { [$0.definition] } ?? [])
         let instructions = [
             isTemplate ? "Apply the user's selected template to the day's evidence." : prompt,
@@ -66,7 +69,7 @@ enum TimeTurnerRecapTask {
         ].compactMap { $0 }.joined(separator: "\n\n")
         var sources = packet.sources
         var pending: [TimeTurnerRecapSource] = []
-        func currentPacket() -> TimeTurnerRecapPacket { .init(sources: sources, user: packet.user) }
+        func currentPacket() -> TimeTurnerRecapPacket { .init(sources: sources, user: packet.user, existingTasks: packet.existingTasks) }
 
         func parseCall(_ name: String, _ arguments: String) throws -> Call {
             if name == "search_history", let search { return .search(try search.parse(arguments)) }
@@ -127,7 +130,7 @@ enum TimeTurnerRecapTask {
         let repair = "Retrieval is finished. Answer from the evidence already supplied. " + format
         if runtime.generator.supportsNativeTools(config: config) {
             let task = MuesliNativeTask<Call, [TimeTurnerRecapInsight]>(
-                instructions: instructions, user: initialUser, tools: tools, maximumOutputTokens: 2000, requiresMeetingAnswerFormat: false,
+                instructions: instructions, user: initialUser, tools: tools, maximumOutputTokens: 8000, requiresMeetingAnswerFormat: false,
                 parse: parseCall, execute: { call in
                     try await validateSources()
                     return try await execute(call)
@@ -151,7 +154,7 @@ enum TimeTurnerRecapTask {
             try await validateSources()
             try Task.checkCancellation()
             let raw = try await runtime.generator.generate(.init(system: system + toolGuide, user: user, config: config,
-                maxOutputTokens: min(2000, runtime.budget.maximumOutputTokens), sessionID: sessionID,
+                maxOutputTokens: min(8000, runtime.budget.maximumOutputTokens), sessionID: sessionID,
                 outputTokenLimit: runtime.budget.maximumOutputTokens))
             try Task.checkCancellation()
             try await validateSources()

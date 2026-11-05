@@ -439,12 +439,18 @@ struct MuesliTaskRunnerTests {
         var config = AppConfig()
         config.recapIncludeMeetings = true
         config.recapIncludeDictations = false
-        let access = MuesliHistoryAccess(databaseURL: db, screenRoot: nil)
+        let screenRoot = directory.appendingPathComponent("visual-memory")
+        let memory = try VisualMemoryStore(root: screenRoot)
+        let capture = VisualMemoryItem(kind: .moment, capturedAt: interval.start.addingTimeInterval(30),
+            source: "Synthetic editor", text: "Reviewed release checklist", path: "sample.png")
+        try Data([1]).write(to: screenRoot.appendingPathComponent(capture.path))
+        try memory.save([capture])
+        let access = MuesliHistoryAccess(databaseURL: db, screenRoot: screenRoot)
         let scoped = TimeTurnerRecapSearch(access: access, interval: interval, config: config, meetingScope: nil)
         #expect(throws: MeetingChatHarnessError.self) { try scoped.parse(#"{"kind":"dictation","query":"Bluejay"}"#) }
         #expect(throws: MeetingChatHarnessError.self) { try scoped.parse(#"{"kind":"meeting","query":"Bluejay","from":"2000-01-01"}"#) }
         let initial = try access.sample(interval: interval, kinds: [.meetings])
-        let opening = try TimeTurnerRecap.packet(captures: [], passages: initial.meetings, interval: interval, config: config)
+        let opening = try TimeTurnerRecap.packet(captures: [capture], passages: initial.meetings, interval: interval, config: config)
         #expect(!opening.sources.contains { $0.meeting?.meetingID == decision })
         let handle = "R" + String(opening.sources.count + 1)
         let args = #"{"kind":"meeting","query":"Bluejay"}"#
@@ -460,9 +466,8 @@ struct MuesliTaskRunnerTests {
                 #"{"tool":"read_history","handle":"\#(handle)","offset":0}"#, final])
         }
         let model = TimeTurnerRecapModel()
-        model.generate(day: interval.start, root: nil, databaseURL: db, config: config, generator: generator)
-        let deadline = Date().addingTimeInterval(10)
-        while model.isGenerating && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        model.generate(day: interval.start, root: screenRoot, databaseURL: db, config: config, generator: generator)
+        await model.waitForGeneration()
         #expect(model.error == nil)
         let disk = try TimeTurnerRecapStore(databaseURL: db)
         let key = SavedTimeTurnerRecap.key(dayStart: interval.start, timeZone: Calendar.current.timeZone.identifier)
@@ -471,7 +476,7 @@ struct MuesliTaskRunnerTests {
         #expect(saved.sources.first { $0.id == handle }?.meeting?.meetingID == decision)
         #expect(saved.sources.allSatisfy { $0.date >= interval.start && $0.date < interval.end })
         try store.deleteMeeting(id: decision)
-        #expect(try !TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: nil, databaseURL: db))
+        #expect(try !TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: screenRoot, databaseURL: db))
     }
 
     @MainActor @Test func recapUsesNativeCallsAndCorrelatedReplay() async throws {

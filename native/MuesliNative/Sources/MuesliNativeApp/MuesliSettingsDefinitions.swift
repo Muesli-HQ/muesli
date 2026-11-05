@@ -11,6 +11,7 @@ extension MuesliController {
         UserDefaults.standard.set(enabled, forKey: ContentPrivacy.preferenceKey)
         resetChatForPrivacyTransition()
         appState.privateMode = enabled
+        configureRecapClock()
         visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
         CotypistService.shared.privacyChanged()
     }
@@ -291,6 +292,46 @@ extension MuesliController {
                 self.updateConfig { $0.timeTurnerEnabled = value == "on" }
             }
         toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
+        let recapConfig = config.timeTurnerGenerationConfig
+        let recapProvider = MeetingSummaryBackendOption.resolved(recapConfig.meetingSummaryBackend)
+        let recapProviders = MeetingSummaryBackendOption.selectable(config: config, selected: recapProvider,
+            claudeCodeAvailable: (availability ?? appState.settingsModelAvailability).claudeCodeAvailable)
+        add("recap_provider", "Time Turner backend",
+            [Choice(id: "inherit", label: "Use meeting settings")] + recapProviders.map { Choice(id: $0.backend, label: $0.label) },
+            read: { $0.recapModelSelection?.backend ?? "inherit" }, unavailable: { value in
+                if value == MeetingSummaryBackendOption.gemmaMLX.backend {
+                    if #available(macOS 15, *) { return nil }
+                    return "On-device Gemma requires macOS 15 or later."
+                }
+                return nil
+            }) { value in
+                self.updateConfig { config in
+                    config.recapModelSelection = value == "inherit" ? nil : FeatureTextModelSelection(
+                        backend: value, model: config[keyPath: MeetingSummaryBackendOption.resolved(value).modelKeyPath])
+                }
+            }
+        add("recap_model", "Time Turner model",
+            recapProvider.summaryModels(config: recapConfig, openRouterModels: appState.openRouterSummaryModels).map { Choice(id: $0.id, label: $0.label) },
+            read: { MeetingTextGenerationClient.model($0.timeTurnerGenerationConfig) }, unavailable: { value in
+                guard self.config.recapModelSelection != nil else { return "Choose a Time Turner backend first." }
+                if self.config.recapModelSelection?.backend == MeetingSummaryBackendOption.gemmaMLX.backend {
+                    let ids = (availability ?? self.appState.settingsModelAvailability).gemmaIDs
+                    return Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == value }.map { ids.contains($0.repoID) } == true
+                        ? nil : "Download this Gemma model from Models first."
+                }
+                return nil
+            }) { value in self.updateConfig { $0.recapModelSelection?.model = value } }
+        add("recap_schedule", "Automatic recap", [.init(id: "off", label: "Off"),
+            .init(id: "previous", label: "Previous day"), .init(id: "today", label: "Current day")],
+            read: { $0.recapSchedule }, voiceRestriction: "Configure scheduled generation manually in Time Turner.") { value in
+                self.updateConfig {
+                    if $0.recapSchedule == "off" { $0.recapScheduleHour = value == "today" ? "18" : "8" }
+                    $0.recapSchedule = value
+                }
+            }
+        textMenu("recap_schedule_hour", "Generate at", (0..<24).map {
+            Choice(id: String($0), label: String(format: "%02d:00", $0))
+        }, \.recapScheduleHour)
         for source in TimeTurnerRecapInput.allCases {
             toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
         }
