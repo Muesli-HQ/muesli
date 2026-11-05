@@ -18,6 +18,7 @@ private struct TimeTurnerEmptyState: View {
             Text(detail).font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
         }
         .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
         .padding(MuesliTheme.spacing24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
@@ -454,7 +455,8 @@ struct MemoryExplorerView: View {
             }
         }
         .onChange(of: playhead) { _, value in onNavigate?(day, value) }
-        .frame(width: inline ? nil : (focusedSize?.width ?? 1000), height: inline ? (ordered.isEmpty ? 140 : 520) : (focusedSize?.height ?? 760))
+        .frame(width: inline ? nil : (focusedSize?.width ?? 1000), height: inline ? (ordered.isEmpty ? nil : 520) : (focusedSize?.height ?? 760))
+        .frame(minHeight: inline && ordered.isEmpty ? 220 : nil)
         .modifier(TimeTurnerGlass(cornerRadius: inline ? 18 : 24))
         .confirmationDialog("Forget this recording chunk?", isPresented: $confirmForget) {
             Button("Delete chunk, history and recaps", role: .destructive) { if let selected { memory.delete(selected) }; closeExplorer() }
