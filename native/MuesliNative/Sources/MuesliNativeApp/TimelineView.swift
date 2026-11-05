@@ -318,6 +318,7 @@ struct TimelineView: View {
             TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
                 revision: appState.timelineHistoryRevision, playingID: $playingVidshotID,
                 onSelect: { controller.feedbackCapture.open(id: record.id) },
+                onCopy: { await controller.feedbackCapture.copy(id: record.id) },
                 onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
         }
     }
@@ -343,7 +344,14 @@ private struct TimelineVidshotRow: View {
     let revision: UInt64
     @Binding var playingID: String?
     let onSelect: () -> Void
+    let onCopy: () async -> FeedbackCaptureDelivery.Result
     let onDelete: () async throws -> Void
+    private enum RowAction: Hashable { case copy, delete }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var focusedAction: RowAction?
+    @State private var isHovered = false
+    @State private var copyConfirmation: UUID?
+    @State private var copyError = false
     @State private var transcript = ""
     @State private var appName = ""
     @State private var preview: NSImage?
@@ -370,13 +378,39 @@ private struct TimelineVidshotRow: View {
                         .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
                     Spacer(minLength: 0)
                     Button("Open", action: onSelect)
-                    Button("Delete…", role: .destructive) { confirmDelete = true }
-                        .disabled(deleting || record.state == .recording || record.state == .processing)
+                    HStack(spacing: 2) {
+                        if copyConfirmation != nil {
+                            Text("Copied").font(MuesliTheme.captionMedium())
+                                .foregroundStyle(MuesliTheme.successText).padding(.trailing, 4)
+                        }
+                        TimelineRowActionButton(
+                            symbol: copyConfirmation == nil ? "doc.on.doc" : "checkmark",
+                            label: "Copy Vidshot context", help: copyConfirmation == nil ? "Copy Vidshot context" : "Vidshot context copied",
+                            color: copyConfirmation == nil ? MuesliTheme.textTertiary : MuesliTheme.successText
+                        ) {
+                            Task {
+                                switch await onCopy() {
+                                case .copied:
+                                    copyConfirmation = UUID()
+                                    AccessibilityNotification.Announcement("Copied").post()
+                                case .failed: copyError = true
+                                case .skipped: break
+                                }
+                            }
+                        }
+                        .disabled(record.state == .recording || record.state == .processing)
+                        .focused($focusedAction, equals: .copy)
+                        TimelineRowActionButton(symbol: "trash", label: "Delete Vidshot", help: "Delete Vidshot",
+                                                color: MuesliTheme.destructiveText) { confirmDelete = true }
+                            .disabled(deleting || record.state == .recording || record.state == .processing)
+                            .focused($focusedAction, equals: .delete)
+                    }
+                    .opacity(isHovered || focusedAction != nil || copyConfirmation != nil ? 1 : 0)
                 }
                 if let player {
                     MeetingVideoPlayerView(player: player)
-                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
                         .frame(maxWidth: 480)
+                        .frame(height: 220)
                         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
                 HStack(alignment: .top, spacing: 12) {
@@ -409,6 +443,24 @@ private struct TimelineVidshotRow: View {
             }
         }
         .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { isHovered = hovering }
+        }
+        .task(id: copyConfirmation) {
+            guard copyConfirmation != nil else { return }
+            do { try await Task.sleep(for: .seconds(1.6)) } catch { return }
+            copyConfirmation = nil
+        }
+        .alert("Couldn’t copy Vidshot", isPresented: $copyError) {
+            Button("OK", role: .cancel) {}
+        } message: { Text("The Vidshot context could not be copied.") }
         .confirmationDialog("Delete this Vidshot and all its files?", isPresented: $confirmDelete) {
             Button("Delete Vidshot", role: .destructive) {
                 player?.pause(); player = nil
@@ -611,26 +663,14 @@ private struct TimelineCotypistRow: View {
             }
 
             HStack(spacing: 2) {
-                Button(action: onCopy) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.muesli(.quiet))
-                .focused($focusedAction, equals: .copy)
-                .help("Copy the sentences with the accepted text")
-                .accessibilityLabel("Copy Cotypist sentences")
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MuesliTheme.destructiveText)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.muesli(.quiet))
-                .focused($focusedAction, equals: .delete)
-                .help("Remove from timeline")
-                .accessibilityLabel("Remove from timeline")
+                TimelineRowActionButton(symbol: "doc.on.doc", label: "Copy Cotypist sentences",
+                                        help: "Copy the sentences with the accepted text", color: MuesliTheme.textTertiary,
+                                        action: onCopy)
+                    .focused($focusedAction, equals: .copy)
+                TimelineRowActionButton(symbol: "trash", label: "Remove from timeline",
+                                        help: "Remove from timeline", color: MuesliTheme.destructiveText,
+                                        action: onDelete)
+                    .focused($focusedAction, equals: .delete)
             }
             .opacity(isHovered || focusedAction != nil ? 1 : 0)
         }
