@@ -160,6 +160,8 @@ implicitly belong in CloudKit, telemetry, exports, or CLI output.
 Read [docs/meeting-chat-architecture.md](docs/meeting-chat-architecture.md) for
 provider adapters, tool contracts, memory budgets, and source validation.
 
+- Let the model interpret prompts, choose applicable skills and tools, and supply structured arguments. Never match words or phrases in a user question to route intent, infer dates or silently change retrieval scope. The harness validates arguments and permissions, executes registered operations, and verifies evidence. Explicit UI selections and skill tags are structured user input.
+- For new analytical questions over existing history, expose a documented relation or reusable data primitive when needed and let the model compose its SQL. A new question alone does not warrant a new tool, mode, or keyword rule. Exercise the same query contract on both provider paths.
 - Keep thread identity, selected/anchor meetings, and evidence dependencies
   separate. Follow-ups may use valid conversation context without new attachments;
   new meeting-based claims require retrieval and current citations. An empty

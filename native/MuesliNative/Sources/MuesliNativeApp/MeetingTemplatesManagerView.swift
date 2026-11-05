@@ -1,10 +1,41 @@
 import SwiftUI
 import MuesliCore
 
+struct SkillEditorDraft: Identifiable {
+    let id = UUID()
+    var editID: String?
+    var name = ""
+    var prompt = ""
+    var icon = MeetingTemplates.customIconFallback
+    var importNote: String?
+}
+
+extension SkillEditorDraft {
+    init(importing url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 65_537) ?? Data()
+        guard data.count <= 65_536, let text = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "Skills", code: 1, userInfo: [NSLocalizedDescriptionKey: "Choose a UTF-8 Markdown file under 64 KB."])
+        }
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        self.init(name: url.deletingPathExtension().lastPathComponent, prompt: text)
+        if lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---") {
+            if let line = lines[1..<end].first(where: { $0.hasPrefix("name:") }) {
+                name = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\"'")))
+            }
+            prompt = lines.dropFirst(end + 1).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        importNote = "Imports the instructions only. Scripts, supporting files and external tools aren’t available in muesli."
+    }
+}
+
 struct MeetingTemplatesManagerView: View {
     let appState: AppState
     let controller: MuesliController
     let onClose: () -> Void
+    var initialDraft: SkillEditorDraft?
+    var onSaved: ((String) -> Void)?
 
     @State private var isCreatingTemplate = false
     @State private var editingTemplateID: String?
@@ -19,10 +50,10 @@ struct MeetingTemplatesManagerView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Manage Templates")
+                    Text(initialDraft == nil ? "Manage Templates" : (initialDraft?.editID == nil ? "New skill" : "Edit skill"))
                         .font(MuesliTheme.title2())
                         .foregroundStyle(MuesliTheme.textPrimary)
-                    Text("Create reusable prompt-based note formats for meetings.")
+                    Text(initialDraft?.importNote ?? "Available in Chat and meeting summaries.")
                         .font(MuesliTheme.callout())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
@@ -30,7 +61,9 @@ struct MeetingTemplatesManagerView: View {
                 Spacer()
 
                 HStack(spacing: MuesliTheme.spacing8) {
-                    if isCreatingTemplate || editingTemplateID != nil {
+                    if initialDraft != nil {
+                        actionButton("Cancel", systemImage: "xmark", action: onClose)
+                    } else if isCreatingTemplate || editingTemplateID != nil {
                         actionButton("Cancel", systemImage: "xmark") {
                             resetTemplateEditor()
                         }
@@ -40,16 +73,19 @@ struct MeetingTemplatesManagerView: View {
                         }
                     }
 
+                    if initialDraft == nil {
                     actionButton("Done", systemImage: "checkmark") {
                         onClose()
                     }
                     .disabled(isEditingTemplateInProgress)
                     .help(isEditingTemplateInProgress ? "Finish or cancel template editing before closing." : "Close template manager")
+                    }
                 }
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                    if !isEditingTemplateInProgress && initialDraft == nil {
                     if controller.customMeetingTemplates().isEmpty {
                         emptyState
                     } else {
@@ -60,6 +96,7 @@ struct MeetingTemplatesManagerView: View {
                         }
                     }
 
+                    }
                     if isCreatingTemplate || editingTemplateID != nil {
                         customTemplateEditor
                     }
@@ -68,7 +105,16 @@ struct MeetingTemplatesManagerView: View {
             }
         }
         .padding(MuesliTheme.spacing24)
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: initialDraft == nil ? 760 : 480, minHeight: initialDraft == nil ? 520 : 420)
+        .onAppear {
+            if let initialDraft {
+                editingTemplateID = initialDraft.editID
+                isCreatingTemplate = initialDraft.editID == nil
+                draftTemplateName = initialDraft.name
+                draftTemplatePrompt = initialDraft.prompt
+                draftTemplateIcon = initialDraft.icon
+            }
+        }
         .background(MuesliTheme.backgroundBase)
         .alert(
             "Delete \"\(templateToDelete?.name ?? "")\"?",
@@ -154,10 +200,11 @@ struct MeetingTemplatesManagerView: View {
     @ViewBuilder
     private var customTemplateEditor: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            Text(isCreatingTemplate ? "New template" : "Edit template")
+            if initialDraft == nil { Text(isCreatingTemplate ? "New template" : "Edit template")
                 .font(MuesliTheme.captionMedium())
                 .foregroundStyle(MuesliTheme.textPrimary)
 
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Name")
                     .font(MuesliTheme.caption())
@@ -183,12 +230,8 @@ struct MeetingTemplatesManagerView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Icon")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                customIconPicker
-            }
+            DisclosureGroup("Icon") { customIconPicker }
+                .font(MuesliTheme.caption())
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Prompt")
@@ -224,7 +267,7 @@ struct MeetingTemplatesManagerView: View {
             HStack {
                 Spacer()
                 actionButton(
-                    isCreatingTemplate ? "Create template" : "Save changes",
+                    initialDraft != nil ? "Save" : (isCreatingTemplate ? "Create template" : "Save changes"),
                     systemImage: isCreatingTemplate ? "plus.circle" : "checkmark.circle"
                 ) {
                     saveTemplateEditor()
@@ -281,12 +324,14 @@ struct MeetingTemplatesManagerView: View {
                 prompt: trimmedPrompt,
                 icon: draftTemplateIcon
             )
+            onSaved?(editingTemplateID)
         } else {
-            controller.createCustomMeetingTemplate(
+            let createdID = controller.createCustomMeetingTemplate(
                 name: trimmedName,
                 prompt: trimmedPrompt,
                 icon: draftTemplateIcon
             )
+            if let createdID { onSaved?(createdID) }
         }
         resetTemplateEditor()
     }

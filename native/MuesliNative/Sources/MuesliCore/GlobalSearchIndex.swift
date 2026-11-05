@@ -198,6 +198,41 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         } catch { try? execute("ROLLBACK"); throw error }
     }
 
+    /// Stable newest-first pages for one permitted class. Only identities leave this boundary;
+    /// Chat re-reads and validates each source before exposing text or metadata.
+    package func historyIDs(kind: GlobalSearchKind, phrase: String, from: Date, until: Date,
+                            app: String?, after: VisualMemoryCursor?, limit: Int, refreshSchema: Bool = true) throws -> [(id: String, date: Date)] {
+        lock.lock(); defer { lock.unlock() }
+        guard (1...20).contains(limit), from < until, phrase.utf8.count <= 512 else { throw Self.error }
+        if refreshSchema { try installAvailableSources() }
+        let match = phrase.isEmpty ? "" : " AND d.rowid IN (SELECT rowid FROM global_search_fts WHERE global_search_fts MATCH ?)"
+        let byApp = app == nil ? "" : " AND (d.app_name=? COLLATE NOCASE OR d.bundle_id=? COLLATE NOCASE)"
+        let cursor = after == nil ? "" : " AND (d.timestamp<? OR (d.timestamp=? AND d.source_id>?))"
+        let s = try prepare("SELECT d.source_id,d.timestamp FROM global_search_documents d WHERE d.kind=? AND d.timestamp>=? AND d.timestamp<?" + match + byApp + cursor + " ORDER BY d.timestamp DESC,d.source_id LIMIT ?")
+        defer { sqlite3_finalize(s) }
+        bind(kind.rawValue, s, 1)
+        sqlite3_bind_double(s, 2, from.timeIntervalSince1970)
+        sqlite3_bind_double(s, 3, until.timeIntervalSince1970)
+        var slot: Int32 = 4
+        if !phrase.isEmpty {
+            bind("\"" + phrase.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, slot); slot += 1
+        }
+        if let app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
+        if let after {
+            sqlite3_bind_double(s, slot, after.capturedAtUnix); sqlite3_bind_double(s, slot + 1, after.capturedAtUnix)
+            bind(after.id, s, slot + 2); slot += 3
+        }
+        sqlite3_bind_int(s, slot, Int32(limit))
+        var rows: [(String, Date)] = []
+        var status = sqlite3_step(s)
+        while status == SQLITE_ROW {
+            rows.append((String(cString: sqlite3_column_text(s, 0)), Date(timeIntervalSince1970: sqlite3_column_double(s, 1))))
+            status = sqlite3_step(s)
+        }
+        guard status == SQLITE_DONE else { throw Self.error }
+        return rows
+    }
+
     /// Bounded, literal phrase search. An empty kind set means no results, never all content.
     /// Chat and recaps require the application's current-source validator before any derived text is exposed.
     public func search(_ query: GlobalSearchQuery, validateDerived: ((GlobalSearchKind, String) throws -> Bool)? = nil) throws -> [GlobalSearchResult] {
