@@ -634,7 +634,8 @@ struct ComputerUseSettingsTests {
         configStore.save(initial)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: configStore)
+            dictationStore: store, configStore: configStore,
+            downloadedBackendOptions: { BackendOption.bodhanFamily })
         let definitions = controller.settingsDefinitions()
         #expect(definitions.first { $0.id == "bodhan_language" }?.availability("en") == nil)
         #expect(definitions.first { $0.id == "bodhan_output" }?.availability(BodhanOutputMode.native.rawValue) == nil)
