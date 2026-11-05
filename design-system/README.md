@@ -87,6 +87,9 @@ the shared restart notice even if the running process still reports old access.
 
 Requests for Accessibility, Input Monitoring and Screen Recording offer a single
 restart notice on returning from System Settings, with Restart muesli and Later.
+Require an observed System Settings visit after the request; dismissing a native
+prompt or switching to another app is not enough. Pending notices and saved setup
+destinations expire after 15 minutes, so abandoned setup cannot reappear later.
 Do not infer a grant from the request: use conditional copy when macOS still
 reports access unavailable. Settings → General → Permissions keeps a Restart
 action for already-enabled access that needs a fresh process. Restart uses normal

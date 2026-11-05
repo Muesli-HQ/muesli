@@ -736,6 +736,7 @@ public final class MuesliController: NSObject {
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
+    private var permissionSettingsActivationObserver: NSObjectProtocol?
     private var isStartingMeetingRecording: Bool {
         meetingCapture?.session.capturePhase == .preparing || importSessionID != nil
     }
@@ -1295,6 +1296,10 @@ public final class MuesliController: NSObject {
         if let iCloudWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(iCloudWakeObserver)
             self.iCloudWakeObserver = nil
+        }
+        if let permissionSettingsActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(permissionSettingsActivationObserver)
+            self.permissionSettingsActivationObserver = nil
         }
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
@@ -2634,6 +2639,14 @@ public final class MuesliController: NSObject {
 
     private func installICloudPersistentSyncObservers() {
         guard iCloudAppActiveObserver == nil else { return }
+        permissionSettingsActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { notification in
+            let bundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor in
+                PermissionRestartRecovery.shared.applicationActivated(bundleID: bundleID)
+            }
+        }
         iCloudAppActiveObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,

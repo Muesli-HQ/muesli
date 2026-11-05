@@ -7,26 +7,48 @@ enum PermissionRestartDestination: String {
     case timeTurnerPermissions
 }
 
+enum PermissionRecoveryIntentLifetime {
+    // Allow time for System Settings and authentication, but not a later session.
+    static let maximumAge: TimeInterval = 15 * 60
+
+    static func isCurrent(requestedAt: Date, now: Date) -> Bool {
+        let age = now.timeIntervalSince(requestedAt)
+        return age.isFinite && age >= 0 && age < maximumAge
+    }
+}
+
 /// One-shot navigation intent survives both our relaunch and macOS Quit & Reopen.
 /// It stores no permission status and never enables a feature.
 @MainActor
 final class PermissionRestartResumeStore {
     static let shared = PermissionRestartResumeStore()
     private static let key = "permissionRestart.destination"
+    private static let timestampKey = "permissionRestart.requestedAt"
     private let defaults: UserDefaults
+    private let now: () -> Date
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
+        self.defaults = defaults
+        self.now = now
+    }
 
     func save(_ destination: PermissionRestartDestination) {
+        defaults.set(now(), forKey: Self.timestampKey)
         defaults.set(destination.rawValue, forKey: Self.key)
     }
 
-    func clear() { defaults.removeObject(forKey: Self.key) }
+    func clear() {
+        defaults.removeObject(forKey: Self.key)
+        defaults.removeObject(forKey: Self.timestampKey)
+    }
 
+    /// Consume only a recent setup intent; legacy or malformed timestamps fail closed.
     func consume(fallbackToPermissions: Bool) -> PermissionRestartDestination? {
         let destination = defaults.string(forKey: Self.key).flatMap(PermissionRestartDestination.init(rawValue:))
+        let requestedAt = defaults.object(forKey: Self.timestampKey) as? Date
+        let current = requestedAt.map { PermissionRecoveryIntentLifetime.isCurrent(requestedAt: $0, now: now()) } ?? false
         clear()
-        return destination ?? (fallbackToPermissions ? .permissions : nil)
+        return (current ? destination : nil) ?? (fallbackToPermissions ? .permissions : nil)
     }
 }
 
@@ -56,15 +78,33 @@ enum PermissionRestartPresentation {
 @MainActor
 final class PermissionRestartRecovery {
     static let shared = PermissionRestartRecovery()
-    private var pendingNotice = Set<FeaturePermission>()
+    private struct PendingNotice {
+        let requestedAt: Date
+        var visitedSettings = false
+    }
+    private var pendingNotice: [FeaturePermission: PendingNotice] = [:]
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = Date.init) { self.now = now }
 
     func requested(_ permission: FeaturePermission, wasGranted: Bool) {
         guard permission.mayNeedRestart, !wasGranted else { return }
-        pendingNotice.insert(permission)
+        pendingNotice[permission] = PendingNotice(requestedAt: now())
+    }
+
+    /// Native prompt dismissal alone is not a visit to the permission settings.
+    func applicationActivated(bundleID: String?) {
+        guard bundleID == AccessibilityPermissionGuidePresentationPolicy.systemSettingsBundleID else { return }
+        for permission in Array(pendingNotice.keys) {
+            pendingNotice[permission]?.visitedSettings = true
+        }
     }
 
     func takeNotice() -> [FeaturePermission] {
-        let permissions = pendingNotice.sorted { $0.rawValue < $1.rawValue }
+        let date = now()
+        let permissions = pendingNotice.filter {
+            $0.value.visitedSettings && PermissionRecoveryIntentLifetime.isCurrent(requestedAt: $0.value.requestedAt, now: date)
+        }.keys.sorted { $0.rawValue < $1.rawValue }
         pendingNotice.removeAll()
         return permissions
     }
