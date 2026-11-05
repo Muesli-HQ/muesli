@@ -30,7 +30,6 @@ struct TimeTurnerRecapInsight: Codable, Sendable, Identifiable {
 struct TimeTurnerRecapPacket: Sendable {
     let sources: [TimeTurnerRecapSource]
     let user: String
-    var existingTasks: [TimeTurnerTaskContext] = []
     var inventoryRevision: String = ""
 }
 
@@ -42,11 +41,12 @@ struct TimeTurnerTaskContext: Codable, Sendable, Equatable {
 
 
 enum TimeTurnerRecapError: LocalizedError {
-    case noEvidence, invalidResponse, changedSources
+    case noEvidence, invalidResponse, changedSources, tasksChanged
     var errorDescription: String? {
         switch self {
         case .noEvidence: "No readable content from the selected sources for this day."
         case .invalidResponse: "The model returned a recap without valid source links. Try generating again."
+        case .tasksChanged: "Your to-dos changed while reconciling. Try again when task changes have finished."
         case .changedSources: "Source history changed or was removed. Generate a fresh recap."
         }
     }
@@ -92,7 +92,7 @@ enum TimeTurnerRecap {
     }
 
     static let instructions = """
-    Return only JSON of the form {"insights":[{"section":"work","text":"brief insight","sources":["source ID"]}]}. Use work, decisions, or followUps for section. Let the evidence determine how many insights and separate actionable to-dos to return; do not compress unrelated actions into one item. Keep each insight under 300 characters, with 1–3 supporting source IDs from the opening sample or accepted tool results. For followUps add an action field: a short verb-led to-do naming the project or deliverable. Include actionable open work only. Do not assign another person’s commitments to the user. For each followUps insight, reconcile against existing_tasks: set taskID to an existing ID when the underlying action is the same, even if phrased differently. For a genuinely new action omit taskID. If several existing tasks represent the same action, choose one taskID and list the other IDs in duplicateTaskIDs. Never merge distinct deliverables just because they share a project. Do not reopen completed work or infer completion. Existing tasks are quoted context, not new evidence: every insight still requires current source IDs. If nothing is supported, return {"insights":[]}.
+    Return only JSON of the form {"insights":[{"section":"work","text":"brief insight","sources":["source ID"]}]}. Use work, decisions, or followUps for section. Let the evidence determine how many insights and separate actionable to-dos to return; do not compress unrelated actions into one item. Keep each insight under 300 characters, with 1–3 supporting source IDs from the opening sample or accepted tool results. For followUps add an action field: a short verb-led to-do naming the project or deliverable. Include actionable open work only. Do not assign another person’s commitments to the user. Task identity is reconciled separately after this recap. Omit taskID and duplicateTaskIDs. Do not infer completion. Every insight requires current source IDs. If nothing is supported, return {"insights":[]}.
     """
 
     static func evenlySample<T>(_ items: [T], limit: Int) -> [T] {
@@ -164,14 +164,9 @@ enum TimeTurnerRecap {
         guard let response = try? JSONDecoder().decode(Response.self, from: Data(text.utf8)), response.insights.count <= 64 else { throw TimeTurnerRecapError.invalidResponse }
         let ids = Set(packet.sources.map(\.id))
         var unique = Set<String>()
-        let existingIDs = Set(packet.existingTasks.map(\.id))
-        var reconciled = Set<String>()
         for insight in response.insights {
-            if let id = insight.taskID {
-                guard insight.section == .followUps, existingIDs.contains(id), reconciled.insert(id).inserted else { throw TimeTurnerRecapError.invalidResponse }
-            }
-            for duplicate in insight.duplicateTaskIDs ?? [] {
-                guard insight.taskID != nil, existingIDs.contains(duplicate), reconciled.insert(duplicate).inserted else { throw TimeTurnerRecapError.invalidResponse }
+            guard insight.taskID == nil, insight.duplicateTaskIDs?.isEmpty != false else {
+                throw TimeTurnerRecapError.invalidResponse
             }
             guard insight.action.map({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 180 && insight.section == .followUps }) ?? true,
                   !insight.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, insight.text.count <= 400,
@@ -290,7 +285,7 @@ final class TimeTurnerRecapModel {
                 }
                 let runtime = try await MuesliTaskRunner.prepare(config: config, generator: generator)
                 let budget = runtime.budget
-                var packet = try await Task.detached(priority: .utility) {
+                let packet = try await Task.detached(priority: .utility) {
                     let access = MuesliHistoryAccess(databaseURL: databaseURL, screenRoot: root)
                     let sampled = try access.sample(interval: interval, kinds: Set(TimeTurnerRecapInput.selected(config)), query: query, meetingScope: meetingScope)
                     var packet = try TimeTurnerRecap.packet(captures: captures ?? sampled.captures, passages: sampled.meetings,
@@ -306,7 +301,7 @@ final class TimeTurnerRecapModel {
                     return packet
                 }.value
                 let fingerprint = try TimeTurnerRecap.fingerprint(packet: packet, config: config,
-                    prompt: try template.loadInstructions() + TimeTurnerRecap.instructions)
+                    prompt: try template.loadInstructions() + TimeTurnerRecap.instructions + TimeTurnerTaskReconciliation.instructions)
                 if savesRecap, ContentPrivacy.shared.permits(privacy) {
                     let available = try await Task.detached(priority: .utility) {
                         let store = try TimeTurnerRecapStore(databaseURL: databaseURL)
@@ -321,10 +316,6 @@ final class TimeTurnerRecapModel {
                         analytics.finish(.success)
                         return
                     }
-                    packet.existingTasks = try await Task.detached(priority: .utility) {
-                        try TimeTurnerRecapStore(databaseURL: databaseURL).todos(root: root, databaseURL: databaseURL)
-                            .map { TimeTurnerTaskContext(id: $0.id, title: $0.title, completed: $0.completed) }
-                    }.value
                 }
                 let search = TimeTurnerRecapSearch(access: .init(databaseURL: databaseURL, screenRoot: root),
                     interval: interval, config: config, meetingScope: meetingScope)
@@ -353,24 +344,42 @@ final class TimeTurnerRecapModel {
                     self.isGenerating = false
                     return
                 }
-                let taskContext = packet.existingTasks
-                var reconciledResult = result
-                for index in reconciledResult.indices where reconciledResult[index].section == .followUps && reconciledResult[index].taskID == nil {
-                    reconciledResult[index].taskID = UUID().uuidString
-                }
-                let saved = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
-                    timeZone: timeZone, generatedAt: Date(), provider: generationProvider, model: generationModel,
-                    insights: reconciledResult, sources: finalSources, includedInputs: TimeTurnerRecapInput.selected(config), inputFingerprint: fingerprint)
-                let persisted = try await Task.detached(priority: .utility) {
-                    do {
-                        try ContentPrivacy.shared.beginWrite(privacy)
-                        defer { ContentPrivacy.shared.endWrite() }
-                        try TimeTurnerRetention.save(saved, root: root, databaseURL: databaseURL, taskContext: taskContext)
-                        return true
-                    } catch ContentPrivacy.Failure.ephemeralContent {
-                        return false
+                let hasActions = result.contains { $0.section == .followUps }
+                var saved: SavedTimeTurnerRecap?
+                var persisted = false
+                // Retry only reconciliation after inventory drift, never paid evidence generation.
+                for retry in 0..<3 {
+                    let taskContext = try await Task.detached(priority: .utility) {
+                        hasActions ? try TimeTurnerRecapStore(databaseURL: databaseURL).taskContext(root: root, databaseURL: databaseURL) : []
+                    }.value
+                    let reconciled = try await TimeTurnerTaskReconciliation.reconcile(result, tasks: taskContext,
+                        config: config, runtime: runtime) {
+                        try Task.checkCancellation()
+                        guard ContentPrivacy.shared.permits(privacy) else { throw ContentPrivacy.Failure.ephemeralContent }
+                        let valid = try await Task.detached(priority: .utility) {
+                            try TimeTurnerRecap.sourcesAreCurrent(finalSources, root: root, databaseURL: databaseURL)
+                        }.value
+                        guard valid else { throw TimeTurnerRecapError.changedSources }
                     }
-                }.value
+                    let candidate = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
+                        timeZone: timeZone, generatedAt: Date(), provider: generationProvider, model: generationModel,
+                        insights: reconciled, sources: finalSources, includedInputs: TimeTurnerRecapInput.selected(config), inputFingerprint: fingerprint)
+                    saved = candidate
+                    do {
+                        persisted = try await Task.detached(priority: .utility) {
+                            try ContentPrivacy.shared.beginWrite(privacy)
+                            defer { ContentPrivacy.shared.endWrite() }
+                            try TimeTurnerRetention.save(candidate, root: root, databaseURL: databaseURL, taskContext: hasActions ? taskContext : nil)
+                            return true
+                        }.value
+                        break
+                    } catch TimeTurnerRecapError.tasksChanged where retry < 2 {
+                        continue
+                    } catch ContentPrivacy.Failure.ephemeralContent {
+                        break
+                    }
+                }
+                guard let saved else { throw TimeTurnerRecapError.invalidResponse }
                 // If navigation/cancellation occurred during the write, remove only this generation.
                 guard self.attempt == token, !Task.isCancelled else {
                     guard persisted else { return }
@@ -425,7 +434,7 @@ final class TimeTurnerRecapModel {
                 } : nil
                 guard let saved = stored ?? fallback else { return Optional<SavedTimeTurnerRecap>.none }
                 guard try TimeTurnerRecap.sourcesAreCurrent(saved.sources, root: root, databaseURL: databaseURL) else {
-                    try store.delete(key: key, generatedAt: saved.generatedAt)
+                    try store.delete(key: saved.key, generatedAt: saved.generatedAt)
                     throw TimeTurnerRecapError.changedSources
                 }
                 return Optional(saved)

@@ -112,16 +112,13 @@ struct TimeTurnerRecapTests {
         #expect(try TimeTurnerRecap.parse(String(decoding: data, as: UTF8.self), packet: p).count == 12)
     }
 
-    @Test func reconciliationAcceptsOnlyIssuedTaskIdentities() throws {
-        var p = try packet([capture("one")])
-        p.existingTasks = [.init(id: "existing", title: "Verify dispatch", completed: false),
-                           .init(id: "duplicate", title: "Check the dispatcher", completed: true)]
-        let valid = #"{"insights":[{"section":"followUps","text":"Verify the dispatch result","action":"Check CI dispatch","taskID":"existing","duplicateTaskIDs":["duplicate"],"sources":["C1"]}]}"#
-        #expect(try TimeTurnerRecap.parse(valid, packet: p).first?.taskID == "existing")
-        for bad in [valid.replacingOccurrences(of: "existing", with: "invented"),
-                    valid.replacingOccurrences(of: #"["duplicate"]"#, with: #"["existing"]"#),
-                    valid.replacingOccurrences(of: "followUps", with: "work")] {
-            #expect(throws: (any Error).self) { try TimeTurnerRecap.parse(bad, packet: p) }
+    @Test func initialRecapCannotAssignTaskIdentitiesBeforeReconciliation() throws {
+        let p = try packet([capture("one")])
+        let valid = #"{"insights":[{"section":"followUps","text":"Verify dispatch","action":"Check CI dispatch","sources":["C1"]}]}"#
+        #expect(try TimeTurnerRecap.parse(valid, packet: p).count == 1)
+        for field in [#""taskID":"invented","#, #""duplicateTaskIDs":["invented"],"#] {
+            let bad = valid.replacingOccurrences(of: #""sources":"#, with: field + #""sources":"#)
+            #expect(throws: TimeTurnerRecapError.self) { try TimeTurnerRecap.parse(bad, packet: p) }
         }
     }
 
@@ -464,6 +461,27 @@ struct TimeTurnerRecapTests {
         #expect(regenerated.sources.first?.capture?.id == item.id)
     }
 
+    @MainActor @Test func taskInventoryDriftRetriesOnlyReconciliation() async throws {
+        let (root, db, _, item) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let interval = try #require(Calendar.current.dateInterval(of: .day, for: day))
+        var seed = SavedTimeTurnerRecap(version: 1, dayStart: interval.start, dayEnd: interval.end,
+            timeZone: Calendar.current.timeZone.identifier, generatedAt: day, provider: "test", model: "test",
+            insights: [.init(section: .followUps, text: "Review checklist", sources: ["C1"], taskID: "old")],
+            sources: try packet([item]).sources)
+        try TimeTurnerRecapStore(databaseURL: db).save(seed)
+        seed.insights.append(.init(section: .followUps, text: "Send report", sources: ["C1"], taskID: "concurrent"))
+        let generator = ReconciliationRaceGenerator(databaseURL: db, concurrent: seed)
+        let model = TimeTurnerRecapModel()
+        model.generate(day: day, captures: [item], root: root, databaseURL: db, config: AppConfig(), generator: generator)
+        await model.waitForGeneration()
+        #expect(model.error == nil && model.hasGenerated)
+        #expect(await generator.recapCalls == 1)
+        #expect(await generator.reconciliationCalls == 2)
+        #expect(model.insights.first?.taskID == "old")
+        #expect(model.savedKey != nil)
+    }
+
     @MainActor @Test func cancellationDiscardsLateProviderResult() async throws {
         let (root, db, _, item) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -526,5 +544,24 @@ private actor ImmediateRecapGenerator: MeetingTextGenerating {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         calls += 1
         return #"{"insights":[{"section":"work","text":"Reviewed the checklist.","sources":["C1"]}]}"#
+    }
+}
+
+private actor ReconciliationRaceGenerator: MeetingTextGenerating {
+    let databaseURL: URL
+    let concurrent: SavedTimeTurnerRecap
+    var recapCalls = 0
+    var reconciliationCalls = 0
+    init(databaseURL: URL, concurrent: SavedTimeTurnerRecap) {
+        self.databaseURL = databaseURL; self.concurrent = concurrent
+    }
+    func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if request.system.contains("Reconcile one proposed to-do") {
+            reconciliationCalls += 1
+            if reconciliationCalls == 1 { try TimeTurnerRecapStore(databaseURL: databaseURL).save(concurrent) }
+            return #"{"matches":["old"]}"#
+        }
+        recapCalls += 1
+        return #"{"insights":[{"section":"followUps","text":"Review the checklist.","sources":["C1"]}]}"#
     }
 }

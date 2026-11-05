@@ -44,6 +44,19 @@ struct MuesliHistorySkillTests {
         #expect(try HistorySample.date("2026-11-04T12:00:00+05:30") == HistorySample.date("2026-11-04T06:30:00Z"))
     }
 
+    @Test func malformedSkillPreferencesReturnStructuredCLIError() throws {
+        let (root, _, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config.json")
+        try Data("{broken".utf8).write(to: config)
+        do {
+            try SkillsGet.parse(["daily-recap", "--support-dir", root.path]).run()
+            Issue.record("Corrupt config should fail")
+        } catch let error as CLIError {
+            #expect(error.errorBody.code == "database_error")
+        }
+    }
+
     @Test func agentDatesUseExplicitTimezoneAndFractionalSeconds() throws {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = historyDateEncoding
         let date = try HistorySample.date("2026-11-04T06:30:00.123Z")
@@ -59,6 +72,10 @@ struct MuesliHistorySkillTests {
         #expect(query("/ski")?.matches.count == 5)
         #expect(query("/project")?.matches == [.projectBrief])
         #expect(query("/no-match")?.matches.isEmpty == true)
+        for text in ["/etc", "/v2", "/no-match"] {
+            #expect(query(text)?.interceptsSubmission(in: MuesliHistoryTask.allCases) == false)
+        }
+        #expect(query("/project")?.interceptsSubmission(in: MuesliHistoryTask.allCases) == true)
         #expect(query("https://example.com/") == nil)
         #expect(query("/Users/example") == nil)
         #expect(query("some /project") == nil)

@@ -101,6 +101,8 @@ private func skillCatalog(options: GlobalOptions) throws -> [MuesliHistoryTask] 
         return MuesliHistoryTask.catalog(custom: config.custom_meeting_templates ?? [])
     } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
         return MuesliHistoryTask.catalog(custom: [])
+    } catch {
+        throw CLIError.databaseError("Could not read skill preferences: " + error.localizedDescription)
     }
 }
 struct SkillsList: ParsableCommand {

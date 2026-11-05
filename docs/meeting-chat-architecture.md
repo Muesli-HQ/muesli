@@ -67,7 +67,7 @@ an installable SKILL.md without installing it. The CLI returns evidence and task
 instructions; Codex/Claude supplies its own inference. The app runs the same tasks
 internally. See [history skills](history-skills.md) for commands and installation.
 
-The user can tag a skill, or the model can load one from the catalog to guide its answer. Only registered tools execute. Skills do not schedule themselves; Time Turner owns the daily recap schedule. There is no user-supplied skill loader.
+The user can tag a skill, or the model can load one from the catalog to guide its answer. Only registered tools execute. Skills do not schedule themselves; Time Turner owns the daily recap schedule. Personal skills and imported SKILL.md instructions use the custom meeting-template catalog. They supply instruction text only: supporting scripts, extra tools and permission changes are not imported.
 Ordinary chat turns retain their existing meeting/document scope; opening Skills does not silently broaden that scope or inject new source types into persisted
 conversation memory.
 
@@ -389,11 +389,23 @@ forced rerun is a secondary, confirmed action. Saved versions inherit ordinary
 source invalidation, including explicit deletion.
 
 The generating model also reconciles its actions with existing task identities.
-Its JSON may reference an existing `taskID` and identify `duplicateTaskIDs`.
+Bounded reconciliation responses identify equivalent issued task IDs; the executor
+projects them into `taskID` and `duplicateTaskIDs` for persistence.
 The executor accepts only IDs issued in that attempt, revalidates the task
 snapshot before publication, and transactionally preserves completion, creation
 order, reminders and evidence links. There is no fuzzy wording matcher or
 secondary reconciliation model. Existing task context is subject to the same
-model input budget; oversized context fails explicitly rather than silently
-omitting old tasks and claiming complete reconciliation. Actions still require
+model input budget and is split into batches rather than silently omitting older
+tasks. Larger task histories require additional requests to the same model; a
+single task that cannot fit fails explicitly. Actions still require
 current evidence citations; old task wording is not fresh evidence.
+
+General Chat starts with access to the supported saved-history classes and labels
+that scope “Saved history”. Explicit meeting/folder selections, including an empty
+selection, retain their boundaries. Imported skills cannot expand those permissions.
+
+Daily recaps reconcile proposed actions against existing task identities in bounded
+requests through the same prepared model. Every batch includes the instruction and
+protocol budget; older and completed tasks are not silently omitted. Task mutations
+can retry reconciliation independently of recap generation. Completion, reminders
+and deletion remain user-owned state throughout publication.

@@ -166,6 +166,54 @@ struct TimeTurnerRecapSourceTests {
         #expect(try store.versions(dayStart: first.dayStart, dayEnd: first.dayEnd, timeZone: "UTC").isEmpty)
     }
 
+    @Test func concurrentCompletionAndDeletionPreserveRecapAndUserState() throws {
+        let (root, db, rows) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = try rows.insertDictation(text: "Synthetic task evidence", durationSeconds: 1, startedAt: day, endedAt: day)
+        let source = try #require(try MuesliHistoryReader(databaseURL: db).read(kind: .dictations, id: String(id)))
+        var recap = saved(source)
+        recap.insights = [.init(section: .followUps, text: "Review", sources: ["H1"], taskID: "review"),
+                          .init(section: .followUps, text: "Send", sources: ["H1"], taskID: "send")]
+        let store = try TimeTurnerRecapStore(databaseURL: db)
+        try store.save(recap)
+        let context = try store.taskContext(root: nil, databaseURL: db)
+        try store.setTodo("send", completed: true)
+        try store.deleteTodo("review")
+        try TimeTurnerRetention.save(recap, root: nil, databaseURL: db, taskContext: context)
+        let todos = try store.todos(root: nil, databaseURL: db)
+        #expect(todos.count == 1 && todos.first?.id == "send" && todos.first?.completed == true)
+        let current = try store.taskContext(root: nil, databaseURL: db)
+        #expect(current.count == 2 && current.allSatisfy(\.completed))
+        // A newly added task requires model reconciliation again, not a heuristic merge.
+        recap.insights.append(.init(section: .followUps, text: "New task", sources: ["H1"], taskID: "new"))
+        try store.save(recap)
+        #expect(throws: TimeTurnerRecapError.self) {
+            try TimeTurnerRetention.save(recap, root: nil, databaseURL: db, taskContext: context)
+        }
+    }
+
+    @MainActor @Test func invalidArchivedFallbackIsRemovedByItsOwnKey() async throws {
+        let (root, db, rows) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = try rows.insertDictation(text: "Synthetic", durationSeconds: 1, startedAt: day, endedAt: day)
+        let history = try #require(try MuesliHistoryReader(databaseURL: db).read(kind: .dictations, id: String(id)))
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.startOfDay(for: day)
+        var recap = SavedTimeTurnerRecap(version: 1, dayStart: start, dayEnd: start.addingTimeInterval(86400),
+            timeZone: "GMT", generatedAt: day, provider: "test", model: "test", insights: [], sources: [
+                .init(id: "H1", title: "Missing screenshot", date: day, excerpt: "Synthetic", capture:
+                    VisualMemoryItem(kind: .moment, capturedAt: day, source: "Test", text: history.text, path: "missing.png"), meeting: nil)
+            ])
+        recap.storageKey = recap.dayKey + "|version|archive"
+        let store = try TimeTurnerRecapStore(databaseURL: db)
+        try store.save(recap)
+        let memory = try VisualMemoryStore(root: root.appendingPathComponent("visual"))
+        let model = TimeTurnerRecapModel()
+        await model.load(day: day, root: memory.root, databaseURL: db, calendar: calendar)
+        #expect(model.error != nil)
+        #expect(try store.load(key: recap.key) == nil)
+    }
+
     @Test func featureModelSelectionDoesNotChangeMeetingOrComputerUseDefaults() throws {
         var config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
         #expect(config.recapModelSelection == nil)

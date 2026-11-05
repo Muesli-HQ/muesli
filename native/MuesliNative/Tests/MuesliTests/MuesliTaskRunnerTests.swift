@@ -75,6 +75,110 @@ struct MuesliTaskRunnerTests {
         #expect(throws: HistoryQueryWork.Limit.self) { try ChatHistorySQL(work: .init(seconds: 0)) }
     }
 
+    @Test func sqlDatesUseTheSharedLegacyInterpretationAndUTCProjection() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db"), rows = DictationStore(databaseURL: dir.appendingPathComponent("muesli.db"))
+        try rows.migrateIfNeeded()
+        let rawDates = ["2026-11-05T00:30:00+05:30", "2026-11-04T19:00:00Z", "2026-11-05T00:30:00.000000"]
+        for raw in rawDates {
+            let id = try rows.insertMeeting(title: raw, calendarEventID: nil, startTime: Date(), endTime: Date(),
+                rawTranscript: "Synthetic", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+            try rows.withChatDatabase { connection in
+                try MeetingChatSQL.execute("UPDATE meetings SET start_time=? WHERE id=?", [.text(raw), .integer(id)], db: connection)
+            }
+        }
+        let query = try ChatHistorySQL()
+        let statement = "SELECT title,date FROM meetings ORDER BY id"
+        let tables = try query.plan(statement)
+        try query.populate(tables, databaseURL: db, currentSession: UUID()) { _, _, _ in }
+        let output = try #require(JSONSerialization.jsonObject(with: Data(query.run(statement).utf8)) as? [String: Any])
+        let values = try #require(output["rows"] as? [[String]])
+        #expect(values.count == 3)
+        for row in values {
+            let expected = try #require(MeetingChatSQL.parseDate(row[0]))
+            #expect(row[1] == expected.ISO8601Format(.init(includingFractionalSeconds: true)))
+        }
+        let india = MeetingHistoryDateParser(timeZone: try #require(TimeZone(identifier: "Asia/Kolkata")))
+        #expect(india.date(rawDates[2]) == india.date(rawDates[0]))
+    }
+
+    @Test func sqlSnapshotDriftIsRetryableButScopeAndAttemptFailuresAreNot() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db"), rows = DictationStore(databaseURL: dir.appendingPathComponent("muesli.db"))
+        try rows.migrateIfNeeded()
+        let store = MeetingChatStore(databaseURL: db), scope = MeetingChatScope(selection: .meetings([]))
+        let session = try store.createSession(scope: scope, title: "General", allowsRequestedMeetingDiscovery: true)
+        let turn = try store.beginTurn(sessionID: session.id, question: "Query", scope: scope, provider: "test", model: "test")
+        let evidence = MeetingChatEvidence(scope: scope, passages: [], dependencies: [],
+            coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
+        let version = try HistorySQLVersion(url: db)
+        _ = try rows.insertDictation(text: "Concurrent save", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        #expect(try !version.isCurrent())
+        let tools = ChatLibraryTools(turn: turn, databaseURL: db, observeQueryVersion: { _ in { try version.isCurrent() } })
+        let rejected = try await tools.execute(.sql("SELECT count(*) FROM dictations"), evidence: evidence)
+        #expect(rejected.documentOutput?.contains("\"retryable\":true") == true)
+        #expect(!rejected.hasLibraryEvidence)
+        let retry = try await ChatLibraryTools(turn: turn, databaseURL: db).execute(.sql("SELECT count(*) FROM dictations"), evidence: evidence)
+        #expect(retry.hasLibraryEvidence)
+        #expect(try store.finishTurn(turnID: turn.id, answer: "Done", citations: [], dependencies: []))
+        await #expect(throws: MeetingChatError.self) { try await tools.execute(.sql("SELECT count(*) FROM dictations"), evidence: evidence) }
+        let scoped = try store.createSession(scope: scope, title: "Explicit empty")
+        let scopedTurn = try store.beginTurn(sessionID: scoped.id, question: "Query", scope: scope, provider: "test", model: "test")
+        await #expect(throws: MeetingChatError.self) {
+            try await ChatLibraryTools(turn: scopedTurn, databaseURL: db).execute(.sql("SELECT count(*) FROM dictations"), evidence: evidence)
+        }
+    }
+
+    @MainActor @Test func taskReconciliationBatchesAllHistoryAndUsesTheRecapModel() async throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "ollama"
+        let budget = MeetingChatContextBudget(config: config, contextWindowTokens: 4096)
+        let tasks = (0..<150).map { TimeTurnerTaskContext(id: "task-\($0)", title: String(repeating: "Synthetic task ", count: 8) + String($0), completed: $0 % 2 == 0) }
+        let batches = try TimeTurnerTaskReconciliation.batches(action: "Verify dispatch", tasks: tasks, budget: budget)
+        #expect(batches.count > 1)
+        #expect(batches.flatMap { $0 }.map(\.id) == tasks.map(\.id))
+        let responses = batches.map { batch in
+            "{\"matches\":[\"" + batch.last!.id + "\"]}"
+        }
+        let generator = TaskPlainProbe(responses: responses)
+        let result = try await TimeTurnerTaskReconciliation.reconcile([
+            .init(section: .followUps, text: "Verify dispatch", sources: ["C1"])
+        ], tasks: tasks, config: config, runtime: .init(generator: generator, budget: budget), validate: {})
+        #expect(result.first?.taskID == batches.first?.last?.id)
+        #expect(result.first?.duplicateTaskIDs == batches.dropFirst().compactMap { $0.last?.id })
+        for request in await generator.requests {
+            #expect(request.config.meetingSummaryBackend == config.meetingSummaryBackend)
+            #expect(MeetingChatContextBudget.estimateTokens(request.system + request.user) <= budget.maximumInputTokens)
+        }
+        let invalid = TaskPlainProbe(responses: ["{\"matches\":[\"invented\"]}", "{\"matches\":[\"invented\"]}"])
+        await #expect(throws: MeetingChatHarnessError.self) {
+            try await TimeTurnerTaskReconciliation.reconcile([.init(section: .followUps, text: "Task", sources: ["C1"])],
+                tasks: [tasks[0]], config: config, runtime: .init(generator: invalid, budget: budget), validate: {})
+        }
+    }
+
+    @MainActor @Test func reconciliationNormalizesNewProposalAliasesBeforePersistence() async throws {
+        actor Probe: MeetingTextGenerating {
+            var calls = 0
+            func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+                calls += 1
+                if calls == 1 { return #"{"matches":[]}"# }
+                let input = try JSONSerialization.jsonObject(with: Data(request.user.utf8)) as! [String: Any]
+                let tasks = input["tasks"] as! [[String: Any]]
+                return String(decoding: try JSONSerialization.data(withJSONObject: ["matches": tasks.map { $0["id"] as! String }]), as: UTF8.self)
+            }
+        }
+        let config = AppConfig(), probe = Probe()
+        let result = try await TimeTurnerTaskReconciliation.reconcile([
+            .init(section: .followUps, text: "Check dispatch", sources: ["C1"]),
+            .init(section: .followUps, text: "Verify dispatcher", sources: ["C1"])
+        ], tasks: [.init(id: "persisted", title: "Verify CI", completed: false)], config: config,
+            runtime: .init(generator: probe, budget: .init(config: config)), validate: {})
+        #expect(result.map(\.taskID) == ["persisted", "persisted"])
+        #expect(result.allSatisfy { $0.duplicateTaskIDs?.isEmpty == true })
+    }
+
     @Test func unrelatedDeletionPreservesRebuiltSummaryAndItsDependents() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

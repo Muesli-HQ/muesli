@@ -24,6 +24,9 @@ struct MuesliSkillQuery: Equatable {
 
     var matches: [MuesliHistoryTask] { matches(in: MuesliHistoryTask.allCases) }
 
+    /// Only an actual suggestion may take over Return/Tab/Send.
+    func interceptsSubmission(in catalog: [MuesliHistoryTask]) -> Bool { !matches(in: catalog).isEmpty }
+
     func matches(in catalog: [MuesliHistoryTask]) -> [MuesliHistoryTask] {
         let key = query.lowercased()
         if key.isEmpty || "skills".hasPrefix(key) { return catalog }

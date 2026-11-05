@@ -732,7 +732,7 @@ before first use is valid.
 
 | Column | Contract |
 |---|---|
-| `day_key` | Primary key: day/zone identity for the current recap; prior versions append `|version|` and a UUID. `storageKey` in the JSON records that version identity. |
+| `day_key` | Primary key: day/zone identity for the current recap; prior versions append `\|version\|` and a UUID. `storageKey` in the JSON records that version identity. |
 | `day_start`, `day_end` | REAL Unix seconds, half-open calendar interval; supports 23/25-hour DST days. |
 | `time_zone` | Calendar time-zone identifier captured when generating. |
 | `generated_at` | REAL Unix seconds for this generation, also guards late cancellation cleanup. |
@@ -1003,12 +1003,12 @@ honor `textIsTruncated` and the packet's explicit partial-coverage notice.
 
 Versioned task definitions live in code (`MuesliHistoryTask`/`MuesliHistorySkill`),
 not in captured evidence or SQLite. Daily recap retains the existing dependency
-projection and deletion behavior above. Resume work, Project brief and Follow-ups
-are transient task results: they add no table, CloudKit field, chat turn or memory
-record. App/CLI sampling selects the same bounded source set and uses the same
+projection and deletion behavior above. Resume work, Project brief and Follow-ups invoked in Chat use ordinary
+persisted chat turns, history and evidence dependencies; they add no separate
+task-results table or CloudKit field. App/CLI sampling selects the same bounded source set and uses the same
 source validation. CLI exports are explicit commands; no background export occurs.
 
-Tagged skill requests are ordinary local meeting chat turns. Optional JSON fields
+Tagged skill requests are ordinary local meeting chat turns.
 Session JSON records `allowsRequestedMeetingDiscovery` for new implicit drafts. A manual scope choice clears it; older sessions without the field keep their existing scope. The per-turn discovery permission is stored in `skillRecentMeetingScope` for ordinary and tagged turns. Discovered title citations use the `title` source kind and the meeting revision. Model-supplied date filters are tool arguments scoped to a single call. Older turns may also carry their original selection in `composerScopeAtSend`.
 
 `skillTitle` and `skillRecentMeetingScope` capture the displayed skill and the
@@ -1039,3 +1039,20 @@ with the next deadline based on delivery time rather than replaying missed inter
 Scheduled generation keeps a local UserDefaults lease (`timeTurner.scheduledRecapAttempt`) separate from successful notification delivery. Failures retry after five then ten minutes, up to three attempts per daily slot; abandoned leases expire after fifteen minutes. A concurrent manual generation does not consume an attempt. A validated manual recap generated after the first scheduled attempt satisfies delivery even during backoff or after retry exhaustion. Successful persisted or reused recaps complete generation; only a displayed notification marks delivery. This state is local-only and contains no source text.
 The model chooses the number of supported actions; the response validator retains
 a 64-insight safety bound and the provider's token budget.
+
+Recap generation and task reconciliation use the same prepared provider/model.
+Reconciliation reads all supported task identities in bounded, token-budgeted batches,
+including completed tasks and deletion markers that still have supporting recaps.
+Task matching is model-authored; deterministic publication only normalizes those
+identities and preserves live completion, deletion and reminder state. New identities
+or changed task titles during generation retry reconciliation up to twice without
+regenerating the recap evidence/summary. Publication still validates evidence and
+inventory atomically; continuous changes fail explicitly without publishing stale work.
+Deleted task markers prevent a matching generated task from being restored. They are
+not exposed as open tasks and disappear with their supporting records.
+
+SQL meeting dates are normalized to UTC using the same historical date parser as
+meeting retrieval (timezone-less legacy timestamps retain their existing local-time
+interpretation). A concurrent snapshot change returns a retryable tool error without
+attaching query evidence. Cancellation, invalid attempt ownership and revoked scope
+remain hard failures.

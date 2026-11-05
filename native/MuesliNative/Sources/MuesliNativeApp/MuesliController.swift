@@ -10022,13 +10022,15 @@ public final class MuesliController: NSObject {
               let schedule = TimeTurnerDailySchedule(config: config, now: Date()),
               !visualMemory.locked, !isMeetingRecording(), canShowMeetingCompletionNotification,
               let root = visualMemory.store?.root else { return }
+        let defaults = UserDefaults.standard
+        let delivered = "timeTurner.lastRecapReminderSlot"
+        guard defaults.string(forKey: delivered) != schedule.slot else { return }
         guard let interval = Calendar.current.dateInterval(of: .day, for: schedule.target) else { return }
         let availability = try? await Task.detached(priority: .utility) {
             try TimeTurnerRecapAvailability.read(root: root, interval: interval)
         }.value
         // A blocked attempt must not consume the scheduled slot; retry after warmup.
         guard availability == .ready, !Task.isCancelled, !ContentPrivacy.shared.isEnabled else { return }
-        let defaults = UserDefaults.standard
         let attemptKey = "timeTurner.scheduledRecapAttempt"
         func readAttempt() -> TimeTurnerDailyAttempt {
             defaults.data(forKey: attemptKey).flatMap { try? JSONDecoder().decode(TimeTurnerDailyAttempt.self, from: $0) } ?? .init()
@@ -10036,8 +10038,6 @@ public final class MuesliController: NSObject {
         func writeAttempt(_ attempt: TimeTurnerDailyAttempt) {
             if let data = try? JSONEncoder().encode(attempt) { defaults.set(data, forKey: attemptKey) }
         }
-        let delivered = "timeTurner.lastRecapReminderSlot"
-        guard defaults.string(forKey: delivered) != schedule.slot else { return }
         let db = timeTurnerRecapDatabaseURL
         let model = TimeTurnerRecapModel()
         await model.load(day: schedule.target, root: root, databaseURL: db)

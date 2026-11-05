@@ -334,13 +334,14 @@ final class TimeTurnerRecapStore {
         let createdAt: Date
         let reminderInterval: TimeInterval?
         let remindAt: Date?
+        var deleted = false
     }
 
-    func todos(root: URL?, databaseURL: URL) throws -> [Todo] {
+    func todos(root: URL?, databaseURL: URL, includeDeleted: Bool = false) throws -> [Todo] {
         let query = try statement("""
-            SELECT t.task_key,l.title,t.completed,r.day_key,t.created_at,t.reminder_interval,t.remind_at FROM time_turner_todos t
+            SELECT t.task_key,l.title,t.completed,r.day_key,t.created_at,t.reminder_interval,t.remind_at,t.deleted_at FROM time_turner_todos t
             JOIN time_turner_todo_links l USING(task_key) JOIN time_turner_recaps r USING(day_key)
-            WHERE t.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL OR \(includeDeleted ? 1 : 0)=1
             ORDER BY t.completed,t.created_at DESC,t.task_key,r.day_start DESC,r.generated_at DESC
             """)
         var candidates: [Todo] = []
@@ -350,7 +351,8 @@ final class TimeTurnerRecapStore {
                 completed: sqlite3_column_int(query, 2) != 0, recapKey: String(cString: sqlite3_column_text(query, 3)),
                 createdAt: Date(timeIntervalSince1970: sqlite3_column_double(query, 4)),
                 reminderInterval: sqlite3_column_type(query, 5) == SQLITE_NULL ? nil : sqlite3_column_double(query, 5),
-                remindAt: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 6))))
+                remindAt: sqlite3_column_type(query, 6) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 6)),
+                deleted: sqlite3_column_type(query, 7) != SQLITE_NULL))
             step = sqlite3_step(query)
         }
         sqlite3_finalize(query)
@@ -375,6 +377,13 @@ final class TimeTurnerRecapStore {
             }
             return seen.insert(item.id).inserted
         }
+    }
+
+    /// Deleted task identities remain reconciliation context while their supporting
+    /// recaps exist. Matching them cannot restore a deleted task or reminder.
+    func taskContext(root: URL?, databaseURL: URL) throws -> [TimeTurnerTaskContext] {
+        try todos(root: root, databaseURL: databaseURL, includeDeleted: true)
+            .map { .init(id: $0.id, title: $0.title, completed: $0.completed || $0.deleted) }
     }
 
     private func supportingSourcesExist(_ item: Todo, root: URL?, databaseURL: URL) throws -> Bool {
@@ -463,6 +472,7 @@ final class TimeTurnerRecapStore {
                 try run("""
                     UPDATE time_turner_todos SET
                         completed=max(completed,(SELECT completed FROM time_turner_todos WHERE task_key=?2)),
+                        deleted_at=coalesce(deleted_at,(SELECT deleted_at FROM time_turner_todos WHERE task_key=?2)),
                         created_at=min(created_at,(SELECT created_at FROM time_turner_todos WHERE task_key=?2)),
                         reminder_interval=CASE WHEN remind_at IS NULL OR remind_at>(SELECT remind_at FROM time_turner_todos WHERE task_key=?2)
                             THEN coalesce((SELECT reminder_interval FROM time_turner_todos WHERE task_key=?2),reminder_interval) ELSE reminder_interval END,
@@ -476,7 +486,7 @@ final class TimeTurnerRecapStore {
                 try run("UPDATE time_turner_todo_redirects SET task_id=?1 WHERE task_id=?2")
                 try run("INSERT OR REPLACE INTO time_turner_todo_redirects VALUES(?2,?1)")
                 try run("DELETE FROM time_turner_todo_links WHERE task_key=?2")
-                try run("UPDATE time_turner_todos SET remind_at=NULL,reminder_interval=NULL WHERE task_key=?1 AND completed=1")
+                try run("UPDATE time_turner_todos SET remind_at=NULL,reminder_interval=NULL WHERE task_key=?1 AND (completed=1 OR deleted_at IS NOT NULL)")
             }
         }
     }
@@ -638,9 +648,13 @@ enum TimeTurnerRetention {
         let store = try TimeTurnerRecapStore(databaseURL: databaseURL)
         try store.publish(recap, reconcile: {
             if let taskContext {
-                let current = try store.todos(root: root, databaseURL: databaseURL)
-                    .map { TimeTurnerTaskContext(id: $0.id, title: $0.title, completed: $0.completed) }
-                guard current == taskContext else { throw TimeTurnerRecapError.changedSources }
+                let current = try store.taskContext(root: root, databaseURL: databaseURL)
+                // Completion, deletion and reminders remain user-owned. Only identity
+                // additions/removal or title changes need another model reconciliation.
+                let titles = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0.title) })
+                guard titles == Dictionary(uniqueKeysWithValues: taskContext.map { ($0.id, $0.title) }) else {
+                    throw TimeTurnerRecapError.tasksChanged
+                }
                 try store.reconcile(recap.insights)
             }
         }) {

@@ -155,7 +155,15 @@ actor ChatLibraryTools {
     private var handles: [String: Hit] = [:]
     private var cursors: [String: (ChatLibraryCall.Search, VisualMemoryCursor)] = [:]
 
-    init(turn: MeetingChatTurn, databaseURL: URL) {
+    private struct QuerySnapshotChanged: Error {}
+    private let observeQueryVersion: (URL) throws -> (() throws -> Bool)
+
+    init(turn: MeetingChatTurn, databaseURL: URL,
+         observeQueryVersion: @escaping (URL) throws -> (() throws -> Bool) = { url in
+             let version = try HistorySQLVersion(url: url)
+             return { try version.isCurrent() }
+         }) {
+        self.observeQueryVersion = observeQueryVersion
         self.turn = turn
         store = MeetingChatStore(databaseURL: databaseURL)
         root = databaseURL.deletingLastPathComponent().appendingPathComponent("visual-memory")
@@ -297,10 +305,10 @@ actor ChatLibraryTools {
             return try sql.withWork {
             let tables = try sql.plan(query)
             let db = store.databaseURL
-            let version = try HistorySQLVersion(url: db)
+            let version = try observeQueryVersion(db)
             let catalog = root.appendingPathComponent("catalog.sqlite")
             let usesScreen = !tables.isDisjoint(with: ["screens","recaps"])
-            let screenVersion = usesScreen && FileManager.default.fileExists(atPath:catalog.path) ? try HistorySQLVersion(url:catalog) : nil
+            let screenVersion = usesScreen && FileManager.default.fileExists(atPath:catalog.path) ? try observeQueryVersion(catalog) : nil
             var extra: [ChatHistoryDependency] = []
             var retained = evidence
             try sql.populate(tables,databaseURL:db,currentSession:turn.sessionID) { table,id,date in
@@ -328,9 +336,12 @@ actor ChatLibraryTools {
             try Task.checkCancellation()
             let refs = try sql.dependencies(tables) + extra
             try store.recordHistory(refs,turn:turn, work: work) {
-                guard try store.permitsLibrary(sessionID:turn.sessionID), try version.isCurrent() else { return false }
-                if let screenVersion { return try screenVersion.isCurrent() }
-                return !usesScreen || !FileManager.default.fileExists(atPath:catalog.path)
+                guard try store.permitsLibrary(sessionID:turn.sessionID) else { return false }
+                // Snapshot drift is retryable; attempt ownership and scope failures are not.
+                guard try version(), try screenVersion?() ?? (!usesScreen || !FileManager.default.fileExists(atPath:catalog.path)) else {
+                    throw QuerySnapshotChanged()
+                }
+                return true
             }
             retained.dependencies = Array(Set(retained.dependencies))
             if !retained.dependencies.isEmpty {
@@ -338,6 +349,9 @@ actor ChatLibraryTools {
             }
             return .init(evidence:retained,documentOutput:output,hasLibraryEvidence:true)
             }
+        } catch is QuerySnapshotChanged {
+            try Task.checkCancellation()
+            return .init(evidence: evidence, documentOutput: #"{"query_error":"History changed while querying. Retry the query against the current snapshot.","retryable":true}"#)
         } catch let error as HistoryQueryWork.Limit {
             return .init(evidence:evidence,documentOutput:String(decoding:try JSONEncoder().encode(["query_error":error.localizedDescription]),as:UTF8.self))
         } catch let error as ChatHistorySQL.Failure {

@@ -42,6 +42,18 @@ final class ChatHistorySQL {
             )
         }
         try exec("CREATE TABLE stop_words(language TEXT,word TEXT, PRIMARY KEY(language,word)) WITHOUT ROWID")
+        // Host-only function: model SQL cannot invoke it through the authorizer.
+        let parser = Unmanaged.passRetained(MeetingHistoryDateParser())
+        guard sqlite3_create_function_v2(db, "muesli_utc_date", 1, SQLITE_UTF8, parser.toOpaque(), { context, _, args in
+            guard let context, let pointer = sqlite3_user_data(context), let raw = args?[0].flatMap(sqlite3_value_text),
+                  let date = Unmanaged<MeetingHistoryDateParser>.fromOpaque(pointer).takeUnretainedValue().date(String(cString: raw)) else {
+                sqlite3_result_null(context); return
+            }
+            let text = date.ISO8601Format(.init(includingFractionalSeconds: true))
+            sqlite3_result_text(context, text, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        }, nil, nil, { pointer in
+            if let pointer { Unmanaged<MeetingHistoryDateParser>.fromOpaque(pointer).release() }
+        }) == SQLITE_OK else { throw failure }
         // Connect the built-in virtual table before applying the model authorizer.
         try exec("SELECT value FROM json_each('[]')")
         guard
@@ -177,7 +189,7 @@ final class ChatHistorySQL {
             "commands":
                 "SELECT id,id,timestamp,target_app_name,'Computer Use',raw_text,duration_seconds FROM source.dictations WHERE deleted_at IS NULL AND source='cua'",
             "meetings": """
-            SELECT id,id,start_time,'',title,coalesce(manual_notes,'')||char(10)||coalesce(formatted_notes,'')||char(10)||coalesce(raw_transcript,''),NULL
+            SELECT id,id,muesli_utc_date(start_time),'',title,coalesce(manual_notes,'')||char(10)||coalesce(formatted_notes,'')||char(10)||coalesce(raw_transcript,''),NULL
             FROM source.meetings WHERE deleted_at IS NULL AND meeting_status NOT IN ('recording','processing')
             """,
             "quill": """

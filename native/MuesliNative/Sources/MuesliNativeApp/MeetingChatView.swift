@@ -66,7 +66,7 @@ struct MeetingChatView: View {
         case .all: return "All saved meetings"
         case .folder(let id): return "\(appState.folders.first { $0.id == id }?.name ?? "Folder") · This folder only"
         case .meetings(let ids):
-            if ids.isEmpty { return "Choose meetings" }
+            if ids.isEmpty { return coordinator.scopeForRecentMeetingRequest.selection == .all ? "Saved history" : "Choose meetings" }
             if ids.count == 1, let source = coordinator.sourceChoices.first(where: { $0.id == ids[0] }) { return source.title }
             return "\(ids.count) selected meeting\(ids.count == 1 ? "" : "s")"
         }
@@ -407,7 +407,7 @@ struct MeetingChatView: View {
                             }
                         }.padding(.horizontal, 6).frame(height: 28)
                     }
-                        .buttonStyle(.muesli(.quiet)).help("Meeting context: " + scopeLabel)
+                        .buttonStyle(.muesli(.quiet)).help("Search scope: " + scopeLabel)
                         .accessibilityLabel("Choose meeting context").accessibilityIdentifier("meeting-chat-scope")
                         .disabled(footerControlsDisabled)
                     Spacer(minLength: 4)
@@ -686,7 +686,7 @@ struct MeetingChatView: View {
     }
 
     private func handleComposerKey(_ key: MeetingChatComposerEditor.Key) -> Bool {
-        if let query = skillQuery {
+        if let query = skillQuery, query.interceptsSubmission(in: catalog) {
             switch key {
             case .up: skillIndex = max(0, skillIndex - 1)
             case .down: skillIndex = min(max(0, query.matches(in: catalog).count - 1), skillIndex + 1)
@@ -719,7 +719,7 @@ struct MeetingChatView: View {
     }
 
     private func send() {
-        if let query = skillQuery {
+        if let query = skillQuery, query.interceptsSubmission(in: catalog) {
             if query.matches(in: catalog).indices.contains(skillIndex) { chooseSkill(query.matches(in: catalog)[skillIndex], query: query) }
             return
         }

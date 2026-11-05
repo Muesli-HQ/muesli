@@ -365,16 +365,36 @@ enum MeetingChatSQL {
         }
     }
     static func parseDate(_ raw: String) -> Date? {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: raw) { return date }
-        iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: raw) { return date }
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss"] {
+        MeetingHistoryDateParser().date(raw)
+    }
+}
+
+/// Same historical timestamp interpretation for retrieval and SQL projections.
+/// Owned by a single query; formatters are reused rather than created per row.
+package final class MeetingHistoryDateParser {
+    private let timeZone: TimeZone
+    private lazy var fractional: ISO8601DateFormatter = {
+        let value = ISO8601DateFormatter()
+        value.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return value
+    }()
+    private lazy var iso: ISO8601DateFormatter = {
+        let value = ISO8601DateFormatter()
+        value.formatOptions = [.withInternetDateTime]
+        return value
+    }()
+    private lazy var legacy: [DateFormatter] = {
+        ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss"].map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = timeZone
             formatter.dateFormat = format
-            if let date = formatter.date(from: raw) { return date }
+            return formatter
         }
-        return nil
+    }()
+    package init(timeZone: TimeZone = .current) { self.timeZone = timeZone }
+    package func date(_ raw: String) -> Date? {
+        if let value = fractional.date(from: raw) ?? iso.date(from: raw) { return value }
+        return legacy.lazy.compactMap { $0.date(from: raw) }.first
     }
 }
