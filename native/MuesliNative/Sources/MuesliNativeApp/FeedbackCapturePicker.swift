@@ -112,6 +112,11 @@ final class FeedbackCapturePicker: FeedbackCaptureSelecting {
                 NSGraphicsContext.current?.compositingOperation = .clear
                 NSBezierPath(rect: rect).fill()
                 NSGraphicsContext.restoreGraphicsState()
+                // Fully transparent window pixels pass mouse-down events through to the
+                // app below. Keep the highlight nearly clear but hit-testable so a
+                // region drag can begin over a highlighted window.
+                NSColor.black.withAlphaComponent(0.02).setFill()
+                NSBezierPath(rect: rect).fill()
                 NSColor.white.withAlphaComponent(0.95).setStroke()
                 let outline = NSBezierPath(rect: rect); outline.lineWidth = 2; outline.stroke()
             }
