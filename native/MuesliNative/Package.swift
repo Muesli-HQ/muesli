@@ -49,7 +49,7 @@ let package = Package(
             name: "MuesliCore",
             dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")],
             path: "Sources/MuesliCore",
-            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt"), .copy("Resources/MedASR")],
+            resources: [.copy("Resources/ZIPFoundation-LICENSE.txt"), .copy("Resources/MedASR"), .copy("Resources/Skills")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

@@ -202,7 +202,10 @@ struct MemoryExplorerView: View {
     @State private var scrubScale = VisualMemoryScrubScale(dates: [])
     private var appNames: [String] { Array(Set(ordered.map(\.bundleID))).sorted() }
     private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt }
-    private func moveDay(_ amount: Int) { if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = next } }
+    private var earliestDay: Date { Calendar.current.startOfDay(for: min(memory.captureReadyAt ?? Date(), Date())) }
+    private func moveDay(_ amount: Int) {
+        if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = max(earliestDay, min(Date(), next)) }
+    }
     private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
         TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
             .accessibilityLabel(item.source).help(item.source)
@@ -316,8 +319,8 @@ struct MemoryExplorerView: View {
                 Spacer()
                 if externalDay == nil {
                 HStack(spacing: 8) {
-                Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day")
-                DatePicker("Day", selection: $day, in: ...Date(), displayedComponents: .date).labelsHidden().fixedSize()
+                Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day").disabled(Calendar.current.startOfDay(for: day) <= earliestDay)
+                DatePicker("Day", selection: $day, in: earliestDay...Date(), displayedComponents: .date).labelsHidden().fixedSize()
                 Button { moveDay(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("Next day").disabled(Calendar.current.isDateInToday(day))
                 }
                 .padding(inline ? 0 : 6)

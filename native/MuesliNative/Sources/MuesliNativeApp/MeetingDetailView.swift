@@ -763,7 +763,7 @@ struct MeetingDetailView: View {
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
-                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
+                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript || $0.citation.kind == .title ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
@@ -795,7 +795,7 @@ struct MeetingDetailView: View {
     }
 
     private func citationText(_ meeting: MeetingRecord, kind: MeetingChatSourceKind) -> String {
-        switch kind { case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
+        switch kind { case .title: meeting.title; case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
     }
 
     private func citationTarget(for meeting: MeetingRecord) -> MeetingChatDocumentTarget? {

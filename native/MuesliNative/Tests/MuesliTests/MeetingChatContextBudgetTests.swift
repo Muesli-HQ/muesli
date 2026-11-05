@@ -177,7 +177,7 @@ private actor SmallContextCompatibilityProbe: MeetingTextGenerating {
     private(set) var requests: [MeetingTextGenerationRequest] = []
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         requests.append(request)
-        if requests.count == 1 { return #"{"tool":"browse_meeting_sources"}"# }
+        if requests.count == 1 { return #"{"tool":"search_history","kind":"meeting"}"# }
         return #"{"status":"answered","markdown":"The plan is recorded [[S1]]."}"#
     }
 }

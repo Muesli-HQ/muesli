@@ -91,6 +91,8 @@ struct ContentPrivacyTests {
         let token = ContentPrivacy(enabled: true).capture()
         let chat = ContentPrivacy.$session.withValue(token) { MeetingChatStore(databaseURL: store.resolvedDatabaseURL) }
         let retrieval = ContentPrivacy.$session.withValue(token) { MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL) }
+        let general = try chat.createSession(scope: .init(selection: .meetings([])), title: "Private general", allowsRequestedMeetingDiscovery: true)
+        #expect(try !chat.permitsLibrary(sessionID: general.id))
         let scope = MeetingChatScope(selection: .meetings([meeting]))
         let session = try chat.createSession(scope: scope, title: "Private test")
         let turn = try chat.beginTurn(sessionID: session.id, question: "When is the feature shipping?", scope: scope, provider: "test", model: "test")

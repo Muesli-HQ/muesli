@@ -517,6 +517,9 @@ public final class MuesliController: NSObject {
     private let calendarMonitor = CalendarMonitor()
     private let calendarEventQuery = CalendarEventQuery()
     private let meetingMonitor = MeetingMonitor()
+    private var recapClock: Task<Void, Never>?
+    private var scheduledRecapModel: TimeTurnerRecapModel?
+    private var recapClockConfig = ""
     private let meetingNotification = MeetingNotificationController()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
@@ -1420,6 +1423,7 @@ public final class MuesliController: NSObject {
         }
 
         if canRunMainApp {
+            configureRecapClock()
             PostInstallChecker.check()
             if let automaticFeatureTour {
                 DispatchQueue.main.async { [weak self] in
@@ -1459,6 +1463,8 @@ public final class MuesliController: NSObject {
         _ = dictationBackendPreparation.begin(isHosted: true)
         // AppDelegate's deadline must cover the entire discard, including video
         // finalization and database/file cleanup, not just the work after it.
+        recapClock?.cancel()
+        scheduledRecapModel?.cancel()
         shutdownStep = "screen recording discard"
         if let discardScreenRecording {
             await discardScreenRecording()
@@ -1980,6 +1986,7 @@ public final class MuesliController: NSObject {
         appState.selectedPostProcessorBackend = selectedPostProcessorBackend
         appState.activePostProcessor = PostProcessorOption.resolve(id: config.activePostProcessorId)
         publishConfig()
+        if hasStarted { configureRecapClock() }
         visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
         appState.isMeetingRecording = isMeetingRecording()
         appState.isMeetingRecordingPaused = isMeetingRecordingPaused()
@@ -4258,19 +4265,14 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func createCustomMeetingTemplate(name: String, prompt: String, icon: String) {
+    @discardableResult
+    func createCustomMeetingTemplate(name: String, prompt: String, icon: String) -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return }
-        updateConfig {
-            $0.customMeetingTemplates.append(
-                CustomMeetingTemplate(
-                    name: trimmedName,
-                    prompt: trimmedPrompt,
-                    icon: MeetingTemplates.normalizedCustomIcon(named: icon)
-                )
-            )
-        }
+        guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return nil }
+        let template = CustomMeetingTemplate(name: trimmedName, prompt: trimmedPrompt, icon: icon)
+        updateConfig { $0.customMeetingTemplates.append(template) }
+        return template.id
     }
 
     func updateCustomMeetingTemplate(id: String, name: String, prompt: String, icon: String) {
@@ -10240,6 +10242,138 @@ public final class MuesliController: NSObject {
     private func updateMeetingNotificationVisibility() {
         meetingMonitor.refreshState()
         showPendingMeetingCompletionNotificationIfPossible()
+    }
+
+    func configureRecapClock() {
+        let enabled = !isShuttingDown && config.hasCompletedOnboarding && !ContentPrivacy.shared.isEnabled
+        let signature = enabled ? [String(config.timeTurnerEnabled), config.recapSchedule, config.recapScheduleHour,
+            config.recapModelSelection?.backend ?? "inherit", config.recapModelSelection?.model ?? "",
+            TimeTurnerRecapInput.selected(config).map(\.rawValue).joined(separator: ",")].joined(separator: "|") : ""
+        guard signature != recapClockConfig else { return }
+        recapClockConfig = signature
+        if meetingNotification.currentPromptID?.hasPrefix("time-turner-") == true { meetingNotification.close() }
+        recapClock?.cancel()
+        scheduledRecapModel?.cancel()
+        recapClock = nil
+        guard enabled else { return }
+        recapClock = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkDailyRecap()
+                await self?.checkTodoReminders()
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
+    }
+
+    private func checkDailyRecap() async {
+        guard !Task.isCancelled, !isShuttingDown, !ContentPrivacy.shared.isEnabled,
+              let schedule = TimeTurnerDailySchedule(config: config, now: Date()),
+              !visualMemory.locked, !isMeetingRecording(), canShowMeetingCompletionNotification,
+              let root = visualMemory.store?.root else { return }
+        let defaults = UserDefaults.standard
+        let delivered = "timeTurner.lastRecapReminderSlot"
+        guard defaults.string(forKey: delivered) != schedule.slot else { return }
+        guard let interval = Calendar.current.dateInterval(of: .day, for: schedule.target) else { return }
+        let availability = try? await Task.detached(priority: .utility) {
+            try TimeTurnerRecapAvailability.read(root: root, interval: interval)
+        }.value
+        // A blocked attempt must not consume the scheduled slot; retry after warmup.
+        guard availability == .ready, !Task.isCancelled, !ContentPrivacy.shared.isEnabled else { return }
+        let attemptKey = "timeTurner.scheduledRecapAttempt"
+        func readAttempt() -> TimeTurnerDailyAttempt {
+            defaults.data(forKey: attemptKey).flatMap { try? JSONDecoder().decode(TimeTurnerDailyAttempt.self, from: $0) } ?? .init()
+        }
+        func writeAttempt(_ attempt: TimeTurnerDailyAttempt) {
+            if let data = try? JSONEncoder().encode(attempt) { defaults.set(data, forKey: attemptKey) }
+        }
+        let db = timeTurnerRecapDatabaseURL
+        let model = TimeTurnerRecapModel()
+        await model.load(day: schedule.target, root: root, databaseURL: db)
+        guard !Task.isCancelled, !ContentPrivacy.shared.isEnabled else { return }
+        var attempt = readAttempt()
+        if model.savedKey != nil, let generatedAt = model.generatedAt,
+           attempt.acceptPersisted(slot: schedule.slot, generatedAt: generatedAt) {
+            writeAttempt(attempt)
+        }
+        if attempt.slot != schedule.slot || !attempt.completed {
+            // A manual run owns this day's generation. Wait without spending a retry.
+            guard !TimeTurnerRecapModel.isGenerating(day: schedule.target, databaseURL: db),
+                  let lease = attempt.begin(slot: schedule.slot, now: Date()) else { return }
+            writeAttempt(attempt)
+            scheduledRecapModel = model
+            // The same reuse/reconciliation gate serves manual and scheduled runs.
+            model.generate(day: schedule.target, root: root, databaseURL: db, config: config)
+            let requestID = model.requestID
+            await model.waitForGeneration()
+            let succeeded = !Task.isCancelled && requestID == model.requestID && model.error == nil && model.savedKey != nil
+            var current = readAttempt()
+            current.finish(token: lease, succeeded: succeeded, now: Date())
+            writeAttempt(current)
+            if scheduledRecapModel === model { scheduledRecapModel = nil }
+            guard succeeded else { return }
+        }
+        guard !Task.isCancelled, !isShuttingDown, !ContentPrivacy.shared.isEnabled, !visualMemory.locked else { return }
+        let selectedVersionKey = model.savedKey
+        do {
+            let recap = try await Task.detached(priority: .utility) {
+                let store = try TimeTurnerRecapStore(databaseURL: db)
+                let key = selectedVersionKey ?? SavedTimeTurnerRecap.key(dayStart: schedule.target, timeZone: Calendar.current.timeZone.identifier)
+                let recap = try store.load(key: key)
+                let valid = try recap.map { try TimeTurnerRecap.sourcesAreCurrent($0.sources, root: root, databaseURL: db) } ?? false
+                return valid ? recap : nil
+            }.value
+            guard !Task.isCancelled, !ContentPrivacy.shared.isEnabled, !visualMemory.locked, canShowMeetingCompletionNotification else { return }
+            guard let recap else { return }
+            let shown = meetingNotification.show(promptID: "time-turner-daily", title: "Daily recap ready",
+                subtitle: schedule.target.formatted(date: .abbreviated, time: .omitted),
+                actionLabel: "View recap", opensFromBody: true,
+                onStartRecording: { [weak self] in
+                    guard let self, !ContentPrivacy.shared.isEnabled else { return }
+                    self.appState.openTimeTurnerRecap(recap)
+                    self.openHistoryWindow(tab: .timeTurner)
+                }, onClose: { [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() })
+            if shown { defaults.set(schedule.slot, forKey: delivered) }
+        } catch { return } // Transient storage errors can be retried on the next clock tick.
+    }
+
+    private func checkTodoReminders() async {
+        guard !Task.isCancelled, !isShuttingDown, !ContentPrivacy.shared.isEnabled,
+              !visualMemory.locked, !isMeetingRecording(), canShowMeetingCompletionNotification else { return }
+        let db = timeTurnerRecapDatabaseURL
+        let root = visualMemory.store?.root
+        let now = Date()
+        do {
+            let item = try await Task.detached(priority: .utility) {
+                // Empty ticks use an indexed read, without migrating or scanning the catalog.
+                guard try TimeTurnerRecapStore(databaseURL: db, readOnly: true).hasDueTodos(now: now) else {
+                    return Optional<TimeTurnerRecapStore.Todo>.none
+                }
+                return try TimeTurnerRecapStore(databaseURL: db).todos(root: root, databaseURL: db)
+                    .filter { !$0.completed && ($0.remindAt ?? .distantFuture) <= now }
+                    .min { ($0.remindAt ?? .distantFuture) < ($1.remindAt ?? .distantFuture) }
+            }.value
+            guard let item, !Task.isCancelled, !isShuttingDown, !ContentPrivacy.shared.isEnabled,
+                  !visualMemory.locked, !isMeetingRecording(), canShowMeetingCompletionNotification else { return }
+            let shown = showTodoReminder(item)
+            if shown {
+                try await Task.detached(priority: .utility) {
+                    try TimeTurnerRecapStore(databaseURL: db).deliveredTodo(item, now: now)
+                }.value
+                NotificationCenter.default.post(name: .timeTurnerTodosChanged, object: nil)
+            }
+        } catch { return }
+    }
+
+    private func showTodoReminder(_ item: TimeTurnerRecapStore.Todo) -> Bool {
+        guard !isShuttingDown, !ContentPrivacy.shared.isEnabled,
+              !visualMemory.locked, !isMeetingRecording(), canShowMeetingCompletionNotification else { return false }
+        return meetingNotification.show(promptID: "time-turner-todo", title: "To-do reminder",
+                subtitle: item.title, actionLabel: "View to-do", opensFromBody: true,
+                onStartRecording: { [weak self] in
+                    guard let self, !ContentPrivacy.shared.isEnabled else { return }
+                    self.appState.openTimeTurnerTodo(item.id)
+                    self.openHistoryWindow(tab: .timeTurner)
+                }, onClose: { [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() })
     }
 
     private func enqueueOrShowMeetingCompletionNotification(meetingID: Int64?, title: String) {

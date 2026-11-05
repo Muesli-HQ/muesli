@@ -107,10 +107,10 @@ private actor NativeBudgetProbe: MeetingTextGenerating {
             return .init(outputItems: Data("[]".utf8), calls: [], text: text)
         }
         let id = "call-\(requests.count)"
-        let arguments = "{\"meeting_id\":1,\"page\":\(requests.count - 1)}"
-        var output: [[String: Any]] = [["type": "function_call", "name": "read_full_meeting", "call_id": id, "arguments": arguments]]
+        let arguments = "{\"handle\":\"meeting:1\",\"offset\":\(requests.count - 1)}"
+        var output: [[String: Any]] = [["type": "function_call", "name": "read_history", "call_id": id, "arguments": arguments]]
         if mode == .oversizedReplay { output.insert(["type": "reasoning", "encrypted_content": String(repeating: "x", count: 400_000)], at: 0) }
         return .init(outputItems: try JSONSerialization.data(withJSONObject: output),
-            calls: [.init(id: id, name: "read_full_meeting", arguments: arguments)], text: "")
+            calls: [.init(id: id, name: "read_history", arguments: arguments)], text: "")
     }
 }

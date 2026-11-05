@@ -1,13 +1,94 @@
 # Meeting chat architecture
 
+## Shared task execution
+
+`MuesliTaskRunner` owns the native function-call/replay loop and the bounded
+compatibility loop used by both Chat and Time Turner's Generate recap action.
+Provider preparation, capability detection and context-budget selection are shared.
+Native execution enforces registered tools, unique call IDs, input/replay budgets,
+cancellation, final-only repair and explicit budget exhaustion. It does not own
+SQLite writes or UI navigation.
+
+Task adapters supply instructions, scoped tool implementations, source validation
+and a typed final result. Chat retains its meeting/document permissions, current
+citation validation, dependency tracking and conversation persistence. Daily recap
+retains its sampled day scope, source IDs and existing local recap storage. Registered history tasks load their own bundled `Skills/<id>/SKILL.md` on invocation. Chat gives the model the available skill catalog and a scoped `read_skill` tool. A tag restricts the reader to the chosen skill. The tool supplies the selected instructions on demand. Tagged skills use the same retrieval tools and captured permissions as ordinary Chat. The Recap button starts with the selected day's sample. It registers `search_history(kind, query)` for the enabled classes and `read_history(handle, offset)` for issued sources. Search intersects the saved day with the current generation's permitted meeting scope. Accepted results join the citation registry and are revalidated and saved alongside the opening sources.
+Unicode-scalar offsets and 4 KB pages bound reads;
+these reads never imply complete day or meeting coverage. Both native and
+compatibility providers use this capability. Recap source validity is checked
+before and after inference and before persistence. No screenshots are uploaded.
+
+The Recap page's Sources menu persists optional Meetings, Dictations, Computer Use
+commands, Quill, accepted Cotypist text and saved Chat preferences. Time Turner is
+always selected. Meetings default on; newly supported inputs require opt-in.
+Generation snapshots preferences, queries only enabled classes in the selected
+half-open day interval and preserves typed source references. Changing preferences
+does not rewrite an existing recap. Chat is dated by conversation update time,
+not message time (the schema has no message timestamps), and excludes file-derived
+or stale-evidence conversations. Optional source links open revalidated text
+previews. See [the data schema](../database-schema.md#time-turner-daily-recaps) for persistence,
+sampling limits and mutation invalidation.
+
+Recaps keep their `insights` JSON output contract; they do not masquerade as chat
+turns or use the meeting-answer schema. Native recap output is validated by the
+same recap parser, with one final-only repair, rather than the meeting-specific
+constrained decoding format. Provider failures never trigger a protocol fallback.
+
+## History skill and task templates
+
+Chat → **Skills** is an explicit skill picker. The built-in
+`MuesliHistoryTask` registry offers `daily-recap`, `resume-work`, `project-brief`, `follow-ups`, and `find-meetings`, each with a stable ID and version. `MuesliHistorySkill` provides
+one trusted history-access instruction set. The project brief additionally takes
+a user-entered topic; it is quoted as user data, never appended to system instructions.
+Chat skills use the selected Chat/meeting model; Time Turner can select its own backend and model in Recap → Settings (including supported local models). Both use
+`MuesliTaskRunner`, the same source picker, citation renderer and output validator.
+Time Turner’s Recap page persists a day result. In Chat the normal coordinator saves tagged questions, Markdown answers and consulted dependencies as conversation turns. Reopening a chat or switching models preserves those turns and their eligibility for rolling memory.
+
+`MuesliHistoryAccess` in MuesliCore is the shared retrieval/validation boundary for
+app tasks and `muesli-cli history sample`. It takes an explicit half-open interval
+(up to 31 days) and selected optional source classes. Screen history is always
+included. It samples six equal intervals (up to six captures per interval and two
+records per optional class per interval); meetings use the existing scoped,
+revisioned passage retriever. Topic filtering happens before sampling. This is
+bounded partial evidence, not exhaustive history or a new search index. Existing
+Time Turner cursor commands remain the exhaustive screen-history interface.
+
+`MuesliHistoryReader` provides read-only current text and content revisions for
+optional sources. The app and CLI share exclusion of deleted records, stale chat
+evidence, file-derived chats and unaccepted Cotypist suggestions. Selected-source
+read failures stop task generation with an error; they are not reported as an empty
+day. Shared validation checks OCR identity/content, full optional-text revisions,
+and meeting dependencies before publishing; individual media expiry does not
+invalidate surviving OCR. No general filesystem, shell or network tool is granted.
+
+External agents discover compact task IDs with `muesli-cli skills list`, then load
+instructions with `skills get <id>`. `skills get muesli-history --markdown` exports
+an installable SKILL.md without installing it. The CLI returns evidence and task
+instructions; Codex/Claude supplies its own inference. The app runs the same tasks
+internally. See [history skills](history-skills.md) for commands and installation.
+
+The user can tag a skill, or the model can load one from the catalog to guide its answer. Only registered tools execute. Skills do not schedule themselves; Time Turner owns the daily recap schedule. Personal skills and imported SKILL.md instructions use the custom meeting-template catalog. They supply instruction text only: supporting scripts, extra tools and permission changes are not imported.
+Ordinary chat turns retain their existing meeting/document scope; opening Skills does not silently broaden that scope or inject new source types into persisted
+conversation memory.
+
+## Searching saved user history
+
+Fresh general chats can search all eight classes of saved user content. Meetings use their existing citation and passage tools. For dictations, Computer Use command inputs, Quill conversations, accepted Cotypist text, saved Chat, Time Turner OCR, and daily recaps, the model uses three shared operations on native and compatibility transports:
+
+- `search_history(kind, query, from, until, app, cursor)` returns up to five recent, verified text previews. Null query browses the chosen class. The date interval uses inclusive start and exclusive end in local civil time. App filtering applies where app metadata exists.
+  A continuation uses the same tool with the issued cursor. Consecutive pages share one activity row. An empty page with a cursor can occur when derived records fail validation.
+- `query_history_sql(sql)` executes model-authored SELECTs in an isolated in-memory SQLite database. SQLite identifies the public tables referenced during preparation. The host loads eligible rows, detaches the read-only source database, and executes with a default-deny authorizer, cancellation, and work/output limits. Tables cover all eight content classes; rows carry stable IDs, parents, UTC dates and text. SQL can join sources, group, filter and aggregate. `json_each(tokens(text))` and optional `stop_words(language,word)` support lexical queries. The 50-row result cap applies after aggregation; a truncated output is labeled. Dependencies conservatively cover all eligible rows of referenced tables, including rows that may affect an aggregate without appearing in the result. One ten-second deadline spans materialization, SQL execution and dependency publication, with SQLite progress cancellation and a 100,000-row materialization limit. Dependency writes reuse a prepared statement and have a two-second transactional sub-budget. Limit/cancellation failures return no partial analysis; dependency writes roll back. Metadata-only screen queries omit OCR from their projection.
+- `read_history(handle, offset)` loads the current original and returns up to 900 Unicode scalars. Follow `next_offset` until null. Both cursor and handle belong to the active turn. The model can refine or combine searches within its tool and context budget.
+
+The main database uses its existing FTS index; OCR uses the Time Turner catalog. The selected model receives returned text. The current chat and conversations with file-dependent completed answers are excluded from saved-chat retrieval. Source dependencies follow search previews as well as full reads. Scoped meeting chats keep their meeting tools; selecting All saved meetings is distinct from starting a general Chat.
+
 ## Retrieval harness
 
-Meeting chat uses a bounded inference → retrieval → inference loop. For an initial meeting question, local FTS5 retrieval supplies a small evidence packet. Explicitly attached meetings also supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); native on-device Gemma uses the same bounded harness with the pinned MLX runtime. Ollama, LM Studio and OpenAI-compatible custom endpoints use native HTTP tool calling after capability detection. Other transports retain the compatibility protocol. Available retrieval operations:
+Meeting chat uses a bounded inference → retrieval → inference loop. The model chooses retrieval for archive or folder requests, starting with no passages. Explicitly attached meetings supply transcript and summary context when the question has no lexical matches; standalone Markdown headings are excluded. Follow-ups with usable history start without fresh retrieval. ChatGPT, OpenAI, and OpenRouter OpenAI GPT/o-series models use native Responses function calling (up to twelve calls); native on-device Gemma uses the same bounded harness with the pinned MLX runtime. Ollama, LM Studio and OpenAI-compatible custom endpoints use native HTTP tool calling after capability detection. Other transports retain the compatibility protocol. Available retrieval operations:
 
-- `search_meeting_sources(query)`: searches transcripts, written notes, and generated notes inside the immutable scope captured on the turn. Queries are limited to 300 characters.
-- `browse_meeting_sources()`: requests bounded representative passages for broad recaps without inventing a lexical query; partial coverage remains explicit.
-- `read_meeting_source(source)`: reads up to two neighboring passages on either side of an issued source marker, restricted to the same meeting, revision, and source kind.
-- `read_full_meeting(meeting_id, page)` (native providers): reads the transcript, written notes, and generated summary in original order. Pages are bounded at 40 KB with explicit `next_page`; meeting IDs must remain inside the captured scope and date range. Exact passage offsets and citation markers are preserved.
+- `search_history` searches one permitted class. For meetings it returns representative passages, searches passage text, or discovers recent titles and IDs with title, limit and local calendar filters.
+- `read_history(handle, offset)` opens issued history records, expands citation markers within their source revision, or reads a scoped meeting in original order using `meeting:<id>` and the returned next page.
+- General Chat also exposes `query_history_sql` for analysis across history classes. `read_skill` loads registered instructions. Attachments add document tools according to model capability.
 
 The application validates tool names and arguments, dispatches local operations, accumulates source dependencies before subsequent provider calls, and bounds execution by provider mode. Native call IDs cannot be reused; the compatibility loop also rejects repeated tool signatures. Source markers are not recycled when context is evicted. Empty lexical searches can be retried with different terms and preserve previously gathered evidence; the tool transcript explicitly records the zero-match result. An explicit empty meeting selection with no conversation or files still rejects Send/Retry without reserving busy state. With usable conversation, follow-ups begin with history only and no fresh source packet. The model can transform or explain existing content without retrieval; new meeting-based facts require read-only retrieval inside the current scope and current citations. Empty-scope follow-ups can return conversational answers or explain that new research needs a meeting. Cancellation and request-attempt checks prevent stopped or superseded work from publishing an answer.
 
@@ -162,12 +243,12 @@ Retry rereads only pages requested by the model from the original file.
 
 Documents participate in the existing inference → tool → inference loop. Native
 providers receive strict function schemas and matching call/result replay;
-compatibility providers receive the same four operations through the existing
+compatibility providers receive the same operations through the existing
 JSON protocol. Both allow up to twelve total tools when documents are available;
 meeting-only compatibility chats retain their three-call limit. File-only chats
 can use document tools even with zero eligible meetings, without widening scope.
 
-- `inspect_document(document_id)` returns format, byte count and total pages.
+- `read_document` with a null page, null end page and offset zero returns only document metadata, including total pages.
 - `search_document(document_id, query, start_page)` performs literal,
   case-insensitive text search over at most 64 pages per call. It returns the first
   matching excerpt per page, up to eight hits, plus the scanned range and
@@ -247,7 +328,7 @@ Native chat uses standard SDK decoding, bounded output, chunked prefill and a
 context ceiling before inference, in addition to the harness's conservative budget.
 
 This engine currently loads the language/audio backbone without the vision tower.
-It supports all four meeting tools and three document text/OCR tools; PDF rendering
+It supports meeting search and reads and both document text/OCR tools; PDF rendering
 and image inputs stay unavailable. Other providers' image behavior is unchanged.
 Meeting summaries, rolling memory and generated titles use the same local provider
 without tool exposure; plain summary/title output does not pass through the chat
@@ -298,3 +379,33 @@ The wire contracts follow [Ollama tool calling](https://docs.ollama.com/capabili
 [Ollama model details](https://docs.ollama.com/api-reference/show-model-details),
 [LM Studio model capabilities](https://lmstudio.ai/docs/developer/rest/list) and
 [LM Studio OpenAI-compatible tools](https://lmstudio.ai/docs/developer/openai-compat/tools).
+
+### Recap reuse and task reconciliation
+
+Manual and scheduled recaps share the same generation gate. Identical model,
+source selection, skill recipe and day-content fingerprint reuse a validated
+saved result. Explicit updates and model changes preserve prior versions; a
+forced rerun is a secondary, confirmed action. Saved versions inherit ordinary
+source invalidation, including explicit deletion.
+
+The generating model also reconciles its actions with existing task identities.
+Bounded reconciliation responses identify equivalent issued task IDs; the executor
+projects them into `taskID` and `duplicateTaskIDs` for persistence.
+The executor accepts only IDs issued in that attempt, revalidates the task
+snapshot before publication, and transactionally preserves completion, creation
+order, reminders and evidence links. There is no fuzzy wording matcher or
+secondary reconciliation model. Existing task context is subject to the same
+model input budget and is split into batches rather than silently omitting older
+tasks. Larger task histories require additional requests to the same model; a
+single task that cannot fit fails explicitly. Actions still require
+current evidence citations; old task wording is not fresh evidence.
+
+General Chat starts with access to the supported saved-history classes and labels
+that scope “Saved history”. Explicit meeting/folder selections, including an empty
+selection, retain their boundaries. Imported skills cannot expand those permissions.
+
+Daily recaps reconcile proposed actions against existing task identities in bounded
+requests through the same prepared model. Every batch includes the instruction and
+protocol budget; older and completed tasks are not silently omitted. Task mutations
+can retry reconciliation independently of recap generation. Completion, reminders
+and deletion remain user-owned state throughout publication.

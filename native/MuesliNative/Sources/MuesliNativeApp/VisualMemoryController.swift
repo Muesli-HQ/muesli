@@ -26,6 +26,7 @@ final class VisualMemoryController {
         let name: String
     }
     var historyApps: [HistoryApp] = []
+    var captureReadyAt: Date?
     var catalogRevision = 0
     var message: String?
     var messageMeetingID: Int64?
@@ -80,7 +81,7 @@ final class VisualMemoryController {
     @ObservationIgnored private var token = UUID()
     @ObservationIgnored private var ambientTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    private var locked: Bool { ambientPauseState.systemSuspended }
+    var locked: Bool { ambientPauseState.systemSuspended }
     @ObservationIgnored private var ambientConfig: AppConfig?
     @ObservationIgnored private var ambientGeneration = UUID()
     @ObservationIgnored private var lastFingerprint: Data?
@@ -172,9 +173,10 @@ final class VisualMemoryController {
                 let store = self.store, meetingStore = self.meetingStore
                 do {
                     let snapshot = try await Task.detached(priority: .utility) {
-                        (try meetingStore?.items() ?? [], try store?.summary())
+                        (try meetingStore?.items() ?? [], try store?.summary(), try store?.captureReadyAt())
                     }.value
                     if generation == self.reloadGeneration {
+                        self.captureReadyAt = snapshot.2
                         if self.items != snapshot.0 { self.items = snapshot.0 }
                         if self.summaryRevision != snapshot.1?.revision {
                             self.summaryRevision = snapshot.1?.revision
@@ -507,6 +509,13 @@ final class VisualMemoryController {
         let privacy = ContentPrivacy.shared.capture()
         guard ContentPrivacy.shared.permits(privacy) else { return }
         guard generation == ambientGeneration, !Task.isCancelled else { return }
+        if captureReadyAt == nil, ambientConfig?.timeTurnerEnabled == true,
+           CGPreflightScreenCaptureAccess(), AXIsProcessTrusted(), let store {
+            let ready = Date()
+            let recorded = try? await Task.detached(priority: .utility) { try store.markCaptureReady(at: ready) }.value
+            guard generation == ambientGeneration, !Task.isCancelled, ContentPrivacy.shared.permits(privacy) else { return }
+            captureReadyAt = recorded
+        }
         guard !ambientPaused, !locked else { ambientStatus = "Paused"; return }
         guard !isInactive else { ambientStatus = "Paused — inactive"; return }
         guard recordingMeetingID == nil else { ambientStatus = "Paused during screen recording"; return }

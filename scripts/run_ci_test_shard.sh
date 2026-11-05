@@ -24,6 +24,8 @@ case "${shard}" in
       CredentialMigrationTests
       TimeTurnerPauseStateTests
       TimeTurnerRecapTests
+      TimeTurnerRecapSourceTests
+      MuesliHistorySkillTests
       VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
@@ -254,6 +256,7 @@ case "${shard}" in
       MeetingChatClientTests
       MeetingChatContextBudgetTests
       MeetingChatNativeBudgetTests
+      MuesliTaskRunnerTests
       MeetingChatNavigationTests
       MeetingChatExporterTests
       MeetingChatNotesActionTests
