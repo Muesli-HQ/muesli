@@ -203,12 +203,8 @@ struct TimeTurnerSetupView: View {
                     FeaturePermission.accessibility.request()
                     refresh()
                 }
-                Text("Access enabled in System Settings but still missing here? Restart muesli to apply it.")
-                    .font(MuesliTheme.caption()).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Check again", action: refresh)
-                    Button("Restart muesli…") { controller.confirmPermissionRestart() }
                     Spacer()
                     Button("Manage permissions") {
                         dismiss()

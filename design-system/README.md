@@ -83,8 +83,9 @@ shutdown, reopens Permissions after exit, and refuses to interrupt recordings,
 transcription, imports, AI requests or an unsent chat draft. Never reset permissions
 or restart automatically on a background permission poll.
 Present restart notices and blocking errors above any open setup sheet, never
-queued behind it. Time Turner's permission step also offers Restart muesli so
-users can recover after choosing Later without leaving setup.
+queued behind it. Keep the manual restart action only in Settings → General →
+Permissions. Feature setup screens use their existing Manage permissions action
+for recovery after choosing Later; do not add feature-specific restart controls.
 
 ### Recording interactions
 
