@@ -1,6 +1,7 @@
 import SwiftUI
 import MuesliCore
 import AIElementsSwift
+import AVFoundation
 
 struct TimelineView: View {
     let appState: AppState
@@ -78,7 +79,7 @@ struct TimelineView: View {
             HStack {
                 TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
-                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
+                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill", "Vidshots"], id: \.self) { Text($0) }
                 }.frame(width: 180)
             }.padding(.horizontal, MuesliTheme.pageInset).padding(.bottom, 12)
 
@@ -312,6 +313,9 @@ struct TimelineView: View {
                 onCopy: { controller.copyToClipboard(record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")) },
                 onDelete: { controller.deleteCotypistSession(id: record.id) }
             )
+        case .vidshot(let record):
+            TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
+                revision: appState.timelineHistoryRevision) { controller.feedbackCapture.open(id: record.id) }
         }
     }
 
@@ -327,6 +331,79 @@ struct TimelineView: View {
             return MeetingBrowserLogic.formatStartTime(raw)
         }
         return timeFormatter.string(from: date)
+    }
+}
+
+private struct TimelineVidshotRow: View {
+    let record: FeedbackCaptureRecord
+    let store: FeedbackCaptureStore?
+    let revision: UInt64
+    let onSelect: () -> Void
+    @State private var transcript = ""
+    @State private var targetName = ""
+    @State private var preview: NSImage?
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
+                Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 80, alignment: .leading).padding(.top, 2)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
+                        Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
+                        if !targetName.isEmpty {
+                            Text(targetName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
+                            .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    HStack(alignment: .top, spacing: 12) {
+                        Group {
+                            if let preview { Image(nsImage: preview).resizable().scaledToFill() }
+                            else { Image(systemName: "video").foregroundStyle(MuesliTheme.textTertiary) }
+                        }
+                        .frame(width: 120, height: 68).background(MuesliTheme.backgroundRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                        .accessibilityHidden(true)
+                        Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
+                            .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
+                            .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
+            .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).onHover { isHovered = $0 }
+        .accessibilityHint("Open Vidshot capture")
+        .task(id: "\(record.id):\(revision)") {
+            guard let store else { return }
+            let id = record.id
+            let result = await Task.detached(priority: .utility) { () -> (String, String, Data?) in
+                guard let manifest = try? store.manifest(id: id) else { return ("", "", nil) }
+                let text = manifest.transcript?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if let path = manifest.video, let url = try? store.mediaURL(id: id, path: path) {
+                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+                    generator.appliesPreferredTrackTransform = true
+                    generator.maximumSize = CGSize(width: 480, height: 270)
+                    if let image = try? generator.copyCGImage(at: .zero, actualTime: nil),
+                       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                        return (text, manifest.target.appName, data)
+                    }
+                }
+                if let frame = manifest.keyframes.first?.file, let url = try? store.mediaURL(id: id, path: frame),
+                   let data = try? Data(contentsOf: url) { return (text, manifest.target.appName, data) }
+                return (text, manifest.target.appName, nil)
+            }.value
+            guard !Task.isCancelled else { return }
+            transcript = result.0; targetName = result.1; preview = result.2.flatMap(NSImage.init(data:))
+        }
     }
 }
 

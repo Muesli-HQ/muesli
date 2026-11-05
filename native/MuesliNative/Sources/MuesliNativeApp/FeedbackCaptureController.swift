@@ -244,6 +244,7 @@ final class FeedbackCaptureController {
     let store: FeedbackCaptureStore?
     var finalizer = FeedbackCaptureFinalizer()
     var onStateChanged: ((FeedbackCapturePillState?) -> Void)?
+    var onCatalogChanged: (() -> Void)?
     var onMicrophoneReleased: (() -> Void)?
     var onAdmissionReset: (() -> Void)?
     private var attempt: FeedbackCaptureAttempt?
@@ -611,7 +612,7 @@ final class FeedbackCaptureController {
                 return records
             }.value
             guard catalogRequestID == request else { return false }
-            records = loaded; return true
+            records = loaded; onCatalogChanged?(); return true
         } catch {
             if catalogRequestID == request { errorMessage = error.localizedDescription }
             return false

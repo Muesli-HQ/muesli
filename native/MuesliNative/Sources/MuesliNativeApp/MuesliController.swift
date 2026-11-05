@@ -574,11 +574,13 @@ public final class MuesliController: NSObject {
     private(set) var selectedPostProcessorBackend: TranscriptCleanupBackendOption
     // One retained capture owns phase and identity through native retirement.
     private var storedFeedbackCapture: FeedbackCaptureController?
+    private var vidshotTimelineRequest: UInt64 = 0
     var feedbackCaptureOwnsMicrophone: Bool { storedFeedbackCapture?.ownsMicrophone == true }
     var feedbackCapture: FeedbackCaptureController {
         if let storedFeedbackCapture { return storedFeedbackCapture }
         let capture = makeFeedbackCapture(dictationStore.resolvedDatabaseURL, configStore.supportDirectory())
         storedFeedbackCapture = capture
+        capture.onCatalogChanged = { [weak self] in self?.refreshVidshotTimeline() }
         capture.finalizer.stages.append(.init(name: .transcribe) { [weak self] manifest, context in
             guard let self else { throw CancellationError() }
             let coordinator = self.transcriptionCoordinator
@@ -7316,6 +7318,27 @@ public final class MuesliController: NSObject {
         )) ?? []
         appState.dictationRows.append(contentsOf: more)
         appState.hasMoreDictations = more.count >= appState.dictationPageSize
+    }
+
+    private func refreshVidshotTimeline() {
+        vidshotTimelineRequest &+= 1
+        let request = vidshotTimelineRequest
+        let store = dictationStore
+        let from = appState.timelineFromDate, to = appState.timelineToDate
+        let origin = appState.timelineOriginFilter, application = appState.timelineApplicationFilter
+        let limit = max(appState.timelinePageSize, appState.timelineRows.count)
+        Task { [weak self] in
+            let rows = try? await Task.detached(priority: .utility) {
+                try store.timelineEntries(limit: limit, fromDate: from, toDate: to,
+                    origin: origin, targetApplication: application)
+            }.value
+            guard let self, self.vidshotTimelineRequest == request,
+                  self.appState.timelineFromDate == from, self.appState.timelineToDate == to,
+                  self.appState.timelineOriginFilter == origin, self.appState.timelineApplicationFilter == application,
+                  let rows else { return }
+            self.appState.timelineRows = rows
+            self.appState.hasMoreTimelineEntries = rows.count >= limit
+        }
     }
 
     func searchTimeline(text: String, activity: String, limit: Int) async throws -> [TimelineEntry] {

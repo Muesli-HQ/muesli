@@ -310,6 +310,7 @@ public enum TimelineEntry: Identifiable, Sendable {
     case meeting(MeetingRecord)
     case cotypist(CotypistSessionRecord)
     case quill(QuillConversationRecord)
+    case vidshot(FeedbackCaptureRecord)
 
     public var id: String {
         switch self {
@@ -321,6 +322,8 @@ public enum TimelineEntry: Identifiable, Sendable {
             return "cotypist:\(record.id)"
         case .quill(let record):
             return "quill:\(record.id)"
+        case .vidshot(let record):
+            return "vidshot:\(record.id)"
         }
     }
 
@@ -334,6 +337,8 @@ public enum TimelineEntry: Identifiable, Sendable {
             return record.timestamp
         case .quill(let record):
             return record.timestamp
+        case .vidshot(let record):
+            return Date(timeIntervalSince1970: record.createdAt).ISO8601Format()
         }
     }
 }

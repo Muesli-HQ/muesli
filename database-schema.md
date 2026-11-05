@@ -614,7 +614,7 @@ The idempotent migration creates `feedback_captures` and the
 - `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
 - `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
 
-Captures have no meeting/dictation foreign key and never enter CloudKit, search,
+Captures have no meeting/dictation foreign key and never enter CloudKit, global search,
 telemetry, or automatic exports. Media lives in mode-0700
 `feedback-captures/fc-<epochms>-<4 hex>.capture/` directories. `capture.json`
 uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
@@ -624,6 +624,10 @@ The optional target `region` is in display-relative points and `windowID` identi
 the selected window for the recording attempt; optional `windowFrame` stores
 its initial bounds. Older targets without these fields remain display captures.
 These fields do not change the database projection or reacquire a window during recovery.
+
+Timeline reads the local capture rows alongside other activity, ordering and
+paginating them by `created_at`. Transcript search reads the capture manifest;
+the Timeline does not copy transcripts or media into the dictation tables.
 
 Readers ignore unknown fields and reject unsupported versions. Version 1 also
 contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional

@@ -47,6 +47,30 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Vidshot storage")
 struct FeedbackCaptureStoreTests {
+    @Test func timelineIncludesVidshotsInOrderAndSearchesTranscriptBeforePagination() throws {
+        try withFeedbackStore { captures, _, root in
+            let database = DictationStore(databaseURL: root.appendingPathComponent("muesli.db"))
+            let base = Date(timeIntervalSince1970: 1_776_000_000)
+            let dictation = try database.insertDictation(text: "Older dictation", durationSeconds: 1,
+                startedAt: base.addingTimeInterval(-61), endedAt: base.addingTimeInterval(-60))
+            var capture = try captures.begin(target: feedbackTarget(), now: base)
+            capture.state = .ready
+            capture.transcript = .init(source: "fixture", text: "First sentence. A searchable needle later.", words: [], segments: [], estimated: false)
+            try captures.publish(capture); captures.release(id: capture.id)
+            let rows = try database.timelineEntries(limit: 10)
+            #expect(rows.map(\.id) == ["vidshot:\(capture.id)", "dictation:\(dictation)"])
+            #expect(try database.timelineEntries(limit: 1, offset: 1).map(\.id) == ["dictation:\(dictation)"])
+            #expect(try database.timelineEntries(searchText: "needle", activity: "Vidshots").map(\.id) == ["vidshot:\(capture.id)"])
+            #expect(try database.timelineEntries(origin: .fromIPhone).isEmpty)
+            #expect(try database.timelineEntries(origin: .thisMac, activity: "Vidshots").map(\.id) == ["vidshot:\(capture.id)"])
+            let formatter = ISO8601DateFormatter()
+            #expect(try database.timelineEntries(fromDate: formatter.string(from: base.addingTimeInterval(1)), activity: "Vidshots").isEmpty)
+            #expect(try database.timelineEntries(toDate: formatter.string(from: base.addingTimeInterval(-1)), activity: "Vidshots").isEmpty)
+            #expect(try database.timelineEntries(activity: "Dictations").map(\.id) == ["dictation:\(dictation)"])
+            try captures.delete(id: capture.id)
+            #expect(try database.timelineEntries().map(\.id) == ["dictation:\(dictation)"])
+        }
+    }
     @Test func selectedTargetsRoundTripAndOlderTargetsRemainReadable() throws {
         let original = feedbackTarget()
         let region = FeedbackCaptureTarget.Frame(x: 20, y: 30, width: 400, height: 250, scale: 2)
