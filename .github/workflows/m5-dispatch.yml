@@ -17,7 +17,7 @@ jobs:
   dispatch:
     if: vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.ref == 'refs/heads/main' && ((github.event_name == 'workflow_dispatch' && github.actor == 'pHequals7') || (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.actor.login == 'pHequals7' && github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
-    timeout-minutes: 44
+    timeout-minutes: 100
     environment: m5-dispatch
     permissions:
       actions: read
@@ -57,9 +57,11 @@ jobs:
           [[ "$state" == in_progress ]] || exit 0
           merge=${job##* }
           [[ "$merge" =~ ^[0-9a-f]{40}$ ]]
+          polls=100
           workflow=pr-tests.yml
           context="m5/$RUN/$ATTEMPT/$merge"
           if [[ "$job" == *$'\t'm5-macos\ * ]]; then
+            polls=270
             workflow=pr-macos.yml
             context="m5-macos/$RUN/$ATTEMPT/$merge"
           fi
@@ -79,7 +81,7 @@ jobs:
           if [[ -z "$private_id" ]]; then
             private workflow run "$workflow" -R "$repo" --ref main -f "pr=$pr" -f "revision=$merge" -f "request=$RUN-$ATTEMPT"
           fi
-          for ((i=0; i<100; i++)); do
+          for ((i=0; i<polls; i++)); do
             [[ -n "$private_id" ]] || private_id=$(matching_run)
             result=""
             if [[ -n "$private_id" ]]; then

@@ -397,7 +397,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.self_host == 'true' && needs.changes.outputs.native_or_packaging == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 105
     permissions:
       statuses: read
     steps:
@@ -407,7 +407,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           context="m5-macos/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA"
-          for ((i=0; i<120; i++)); do
+          for ((i=0; i<300; i++)); do
             state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/statuses?per_page=100" |
               jq -r --arg context "$context" 'map(select(.context == $context and .creator.login == "github-actions[bot]")) | first.state // "pending"')
             case "$state" in
