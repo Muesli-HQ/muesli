@@ -205,6 +205,60 @@ struct TimeTurnerRecapSourceTests {
         #expect(TimeTurnerDailySchedule(config: config, now: evening, calendar: calendar) == nil)
     }
 
+    @Test func scheduledRecapFailuresRetryWithBackoffAcrossRestart() throws {
+        var attempt = TimeTurnerDailyAttempt()
+        let first = try #require({ attempt.begin(slot: "day-one", now: day) }())
+        #expect({ attempt.begin(slot: "day-one", now: day.addingTimeInterval(60)) }() == nil)
+        attempt.finish(token: first, succeeded: false, now: day)
+        attempt = try JSONDecoder().decode(TimeTurnerDailyAttempt.self, from: JSONEncoder().encode(attempt))
+        #expect(!attempt.completed)
+        #expect({ attempt.begin(slot: "day-one", now: day.addingTimeInterval(299)) }() == nil)
+        let second = try #require({ attempt.begin(slot: "day-one", now: day.addingTimeInterval(300)) }())
+        attempt.finish(token: second, succeeded: true, now: day.addingTimeInterval(301))
+        #expect(attempt.completed)
+        #expect({ attempt.begin(slot: "day-one", now: day.addingTimeInterval(3600)) }() == nil)
+        #expect({ attempt.begin(slot: "day-two", now: day.addingTimeInterval(86400)) }() != nil)
+        // A cancelled older run cannot consume a newer slot's lease.
+        attempt.finish(token: first, succeeded: true, now: day)
+        #expect(attempt.slot == "day-two" && !attempt.completed)
+    }
+
+    @Test func abandonedScheduledRecapLeaseExpiresAndRetriesAreBounded() throws {
+        var attempt = TimeTurnerDailyAttempt()
+        _ = try #require({ attempt.begin(slot: "day", now: day) }())
+        attempt = try JSONDecoder().decode(TimeTurnerDailyAttempt.self, from: JSONEncoder().encode(attempt))
+        #expect({ attempt.begin(slot: "day", now: day.addingTimeInterval(899)) }() == nil)
+        _ = try #require({ attempt.begin(slot: "day", now: day.addingTimeInterval(900)) }())
+        let third = try #require({ attempt.begin(slot: "day", now: day.addingTimeInterval(1800)) }())
+        attempt.finish(token: third, succeeded: false, now: day.addingTimeInterval(1800))
+        #expect({ attempt.begin(slot: "day", now: day.addingTimeInterval(7200)) }() == nil)
+        #expect(!attempt.completed)
+    }
+
+    @MainActor @Test func manualRecapRecoversScheduledDeliveryAfterRetryExhaustion() async throws {
+        let (root, db, rows) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = try rows.insertDictation(text: "Synthetic recap evidence", durationSeconds: 1, startedAt: day, endedAt: day)
+        let source = try #require(try MuesliHistoryReader(databaseURL: db).read(kind: .dictations, id: String(id)))
+        var attempt = TimeTurnerDailyAttempt()
+        for offset in [0.0, 300.0, 900.0] {
+            let token = try #require({ attempt.begin(slot: "today", now: day.addingTimeInterval(offset)) }())
+            attempt.finish(token: token, succeeded: false, now: day.addingTimeInterval(offset))
+        }
+        #expect(!{ attempt.acceptPersisted(slot: "today", generatedAt: day.addingTimeInterval(-1)) }())
+        let seed = saved(source)
+        let recap = SavedTimeTurnerRecap(version: 1, dayStart: seed.dayStart, dayEnd: seed.dayEnd, timeZone: seed.timeZone,
+            generatedAt: day.addingTimeInterval(1200), provider: seed.provider, model: seed.model, insights: seed.insights, sources: seed.sources)
+        try TimeTurnerRecapStore(databaseURL: db).save(recap)
+        let model = TimeTurnerRecapModel()
+        await model.load(day: recap.dayStart, selection: TimeTurnerRecapSelection(recap), root: root, databaseURL: db)
+        let generatedAt = try #require(model.generatedAt)
+        #expect(model.savedKey == recap.key)
+        #expect({ attempt.acceptPersisted(slot: "today", generatedAt: generatedAt) }())
+        #expect(attempt.completed && attempt.attempts == 3)
+        #expect({ attempt.begin(slot: "today", now: day.addingTimeInterval(7200)) }() == nil)
+    }
+
     @Test func latestMeetingRequestSpansDaysAndHonorsSelection() throws {
         let (root, db, store) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         var ids: [Int64] = []

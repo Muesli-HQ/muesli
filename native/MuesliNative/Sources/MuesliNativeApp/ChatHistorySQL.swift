@@ -16,8 +16,7 @@ final class ChatHistorySQL {
     private let db: OpaquePointer
     private var referenced = Set<String>()
     private var usedColumns: [String: Set<String>] = [:]
-    private var steps = 0
-    private var deadline = ProcessInfo.processInfo.systemUptime
+    private let work: HistoryQueryWork
     private static let allowedFunctions = Set(
         """
         abs avg ceil ceiling char coalesce concat concat_ws count cume_dist date datetime dense_rank exp first_value floor format_date
@@ -26,7 +25,8 @@ final class ChatHistorySQL {
         total trim typeof unicode unixepoch unlikely upper json json_array_length json_extract json_type tokens -> ->>
         """.split(separator: " ").map(String.init))
 
-    init() throws {
+    init(work: HistoryQueryWork = HistoryQueryWork()) throws {
+        self.work = work
         var connection: OpaquePointer?
         guard sqlite3_open_v2(":memory:", &connection, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, nil) == SQLITE_OK,
             let connection
@@ -75,7 +75,13 @@ final class ChatHistorySQL {
     }
     deinit { sqlite3_close(db) }
     private var failure: Failure { Failure(message: String(cString: sqlite3_errmsg(db))) }
+    func withWork<T>(_ operation: () throws -> T) throws -> T {
+        try work.withProgress(db: db, operation)
+    }
+    func needsText(in table: String) -> Bool { usedColumns[table]?.contains("text") == true }
+
     private func exec(_ sql: String) throws {
+        try work.check()
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw failure }
     }
     private func bound(_ sql: String, _ values: [String]) throws {
@@ -91,6 +97,7 @@ final class ChatHistorySQL {
     }
     func add(_ table: String, id: String, date: Date, app: String = "", title: String, text: String) throws {
         precondition(Self.tables.contains(table))
+        try work.account(rows: 1)
         try bound("INSERT INTO \(table) VALUES(?,?,?,?,?,?,NULL)", [id, id, date.ISO8601Format(), app, title, text])
     }
 
@@ -119,19 +126,7 @@ final class ChatHistorySQL {
                 default: return SQLITE_DENY
                 }
             }, pointer)
-        steps = 0
-        deadline = ProcessInfo.processInfo.systemUptime + 4
-        sqlite3_progress_handler(
-            db, 1000,
-            { raw in
-                let owner = Unmanaged<ChatHistorySQL>.fromOpaque(raw!).takeUnretainedValue()
-                owner.steps += 1
-                return owner.steps > 5000 || Task.isCancelled || ProcessInfo.processInfo.systemUptime >= owner.deadline ? 1 : 0
-            }, pointer)
-        defer {
-            sqlite3_set_authorizer(db, nil, nil)
-            sqlite3_progress_handler(db, 0, nil, nil)
-        }
+        defer { sqlite3_set_authorizer(db, nil, nil) }
         let limits: [(Int32, Int32)] = [
             (SQLITE_LIMIT_LENGTH, 1_000_000), (SQLITE_LIMIT_COLUMN, 64), (SQLITE_LIMIT_EXPR_DEPTH, 40),
             (SQLITE_LIMIT_COMPOUND_SELECT, 12), (SQLITE_LIMIT_VDBE_OP, 50_000), (SQLITE_LIMIT_VARIABLE_NUMBER, 0),
@@ -154,6 +149,7 @@ final class ChatHistorySQL {
     }
     func plan(_ sql: String) throws -> Set<String> {
         referenced.removeAll()
+        usedColumns.removeAll()
         try authorized(sql) { _ in }
         return referenced
     }
@@ -161,6 +157,10 @@ final class ChatHistorySQL {
         _ tables: Set<String>, databaseURL: URL, currentSession: UUID,
         derived: (String, String, Date) throws -> Void
     ) throws {
+        try withWork { try populateRows(tables, databaseURL: databaseURL, currentSession: currentSession, derived: derived) }
+    }
+    private func populateRows(_ tables: Set<String>, databaseURL: URL, currentSession: UUID,
+                              derived: (String, String, Date) throws -> Void) throws {
         if tables.contains("stop_words") {
             for (language, words) in InsightsWordAnalyzer.queryStopWords {
                 for word in words { try bound("INSERT INTO stop_words VALUES(?,?)", [language, word]) }
@@ -195,8 +195,9 @@ final class ChatHistorySQL {
             let needed = (usedColumns[table] ?? []).union(["id", "parent_id"])
             let selected = columns.map { needed.contains($0) ? $0 : "NULL" }.joined(separator: ",")
             try exec(
-                "WITH projected(\(columns.joined(separator:","))) AS (\(select)) INSERT INTO main.\(table) SELECT \(selected) FROM projected"
+                "WITH projected(\(columns.joined(separator:","))) AS (\(select)) INSERT INTO main.\(table) SELECT \(selected) FROM projected LIMIT \(work.remainingRows + 1)"
             )
+            try work.account(rows: Int(sqlite3_changes(db)))
         }
         for table in ["chats", "recaps"] where tables.contains(table) {
             let query =
@@ -239,6 +240,7 @@ final class ChatHistorySQL {
             defer { sqlite3_finalize(stmt) }
             var rc = sqlite3_step(stmt)
             while rc == SQLITE_ROW {
+                try work.check()
                 result.append(
                     .init(
                         kind: kind, id: String(cString: sqlite3_column_text(stmt, 0)),
@@ -252,7 +254,7 @@ final class ChatHistorySQL {
 
     func run(_ query: String) throws -> String {
         try exec("PRAGMA query_only=ON")
-        return try authorized(query) { stmt in
+        return try withWork { try authorized(query) { stmt in
             let columns = (0..<sqlite3_column_count(stmt)).map { String(cString: sqlite3_column_name(stmt, $0)) }
             var rows: [[Any]] = []
             var bytes = 0
@@ -295,7 +297,7 @@ final class ChatHistorySQL {
             // Unquoted aliases can be arbitrary user SQL; bound metadata too.
             let payload: [String: Any] = ["columns": columns.map { String($0.prefix(80)) }, "rows": rows, "truncated": truncated]
             return String(decoding: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self)
-        }
+        } }
     }
 }
 

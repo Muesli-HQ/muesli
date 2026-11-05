@@ -556,7 +556,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// in ascending order in both modes. A cursor must use the same order and filters.
     /// This does not expose SQL or FTS expression syntax to callers.
     public func searchMoments(text: String = "", from: Date = .distantPast,
-                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100, after: VisualMemoryCursor? = nil, chronological: Bool = false) throws -> [VisualMemoryItem] {
+                              until: Date = .distantFuture, app: String? = nil, limit: Int = 100, after: VisualMemoryCursor? = nil, chronological: Bool = false, includeText: Bool = true) throws -> [VisualMemoryItem] {
         lock.lock(); defer { lock.unlock() }
         let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchClause = phrase.isEmpty ? "" : " AND id IN (SELECT id FROM evidence_search WHERE evidence_search MATCH ?)"
@@ -568,7 +568,8 @@ public final class VisualMemoryStore: @unchecked Sendable {
         let direction = chronological ? "ASC" : "DESC"
         let cursorClause = after == nil ? "" : " AND (captured\(comparison)? OR (captured=? AND id>?))"
         var stmt: OpaquePointer?
-        let sql = "SELECT body FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + cursorClause + " ORDER BY captured \(direction),id LIMIT ?"
+        let projection = includeText ? "body" : "json_set(body,'$.text','')"
+        let sql = "SELECT \(projection) FROM evidence WHERE kind='moment' AND captured>=? AND captured<?" + searchClause + appClause + cursorClause + " ORDER BY captured \(direction),id LIMIT ?"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_double(stmt, 1, from.timeIntervalSince1970)

@@ -236,6 +236,11 @@ final class TimeTurnerRecapModel {
 
     func waitForGeneration() async { await task?.value }
 
+    static func isGenerating(day: Date, databaseURL: URL, calendar: Calendar = .current) -> Bool {
+        let key = databaseURL.path + "|" + SavedTimeTurnerRecap.key(dayStart: calendar.startOfDay(for: day), timeZone: calendar.timeZone.identifier)
+        return activeSavedGenerations[key] != nil
+    }
+
     func cancel(clear: Bool = false) {
         attempt = UUID(); task?.cancel(); task = nil; isGenerating = false; isLoading = false
         if clear { reused = false; versions = []; insights = []; sources = []; hasGenerated = false; error = nil; generatedAt = nil; savedKey = nil }

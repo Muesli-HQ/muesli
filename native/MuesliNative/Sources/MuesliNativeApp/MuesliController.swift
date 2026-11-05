@@ -10029,20 +10029,40 @@ public final class MuesliController: NSObject {
         // A blocked attempt must not consume the scheduled slot; retry after warmup.
         guard availability == .ready, !Task.isCancelled, !ContentPrivacy.shared.isEnabled else { return }
         let defaults = UserDefaults.standard
-        let claim = "timeTurner.lastScheduledRecapSlot"
+        let attemptKey = "timeTurner.scheduledRecapAttempt"
+        func readAttempt() -> TimeTurnerDailyAttempt {
+            defaults.data(forKey: attemptKey).flatMap { try? JSONDecoder().decode(TimeTurnerDailyAttempt.self, from: $0) } ?? .init()
+        }
+        func writeAttempt(_ attempt: TimeTurnerDailyAttempt) {
+            if let data = try? JSONEncoder().encode(attempt) { defaults.set(data, forKey: attemptKey) }
+        }
         let delivered = "timeTurner.lastRecapReminderSlot"
         guard defaults.string(forKey: delivered) != schedule.slot else { return }
         let db = timeTurnerRecapDatabaseURL
         let model = TimeTurnerRecapModel()
         await model.load(day: schedule.target, root: root, databaseURL: db)
         guard !Task.isCancelled, !ContentPrivacy.shared.isEnabled else { return }
-        if defaults.string(forKey: claim) != schedule.slot {
-            defaults.set(schedule.slot, forKey: claim)
+        var attempt = readAttempt()
+        if model.savedKey != nil, let generatedAt = model.generatedAt,
+           attempt.acceptPersisted(slot: schedule.slot, generatedAt: generatedAt) {
+            writeAttempt(attempt)
+        }
+        if attempt.slot != schedule.slot || !attempt.completed {
+            // A manual run owns this day's generation. Wait without spending a retry.
+            guard !TimeTurnerRecapModel.isGenerating(day: schedule.target, databaseURL: db),
+                  let lease = attempt.begin(slot: schedule.slot, now: Date()) else { return }
+            writeAttempt(attempt)
             scheduledRecapModel = model
             // The same reuse/reconciliation gate serves manual and scheduled runs.
             model.generate(day: schedule.target, root: root, databaseURL: db, config: config)
+            let requestID = model.requestID
             await model.waitForGeneration()
+            let succeeded = !Task.isCancelled && requestID == model.requestID && model.error == nil && model.savedKey != nil
+            var current = readAttempt()
+            current.finish(token: lease, succeeded: succeeded, now: Date())
+            writeAttempt(current)
             if scheduledRecapModel === model { scheduledRecapModel = nil }
+            guard succeeded else { return }
         }
         guard !Task.isCancelled, !isShuttingDown, !ContentPrivacy.shared.isEnabled, !visualMemory.locked else { return }
         let selectedVersionKey = model.savedKey
@@ -10055,10 +10075,7 @@ public final class MuesliController: NSObject {
                 return valid ? recap : nil
             }.value
             guard !Task.isCancelled, !ContentPrivacy.shared.isEnabled, !visualMemory.locked, canShowMeetingCompletionNotification else { return }
-            guard let recap else {
-                defaults.set(schedule.slot, forKey: delivered)
-                return
-            }
+            guard let recap else { return }
             let shown = meetingNotification.show(promptID: "time-turner-daily", title: "Daily recap ready",
                 subtitle: schedule.target.formatted(date: .abbreviated, time: .omitted),
                 actionLabel: "View recap", opensFromBody: true,

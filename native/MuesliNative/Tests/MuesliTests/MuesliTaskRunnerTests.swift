@@ -1,10 +1,163 @@
 import Foundation
 import Testing
+import SQLite3
 @testable import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Shared muesli task execution")
 struct MuesliTaskRunnerTests {
+    @Test func dependencyMigrationFailurePreservesExistingTrigger() throws {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(":memory:", &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try MeetingChatSQL.execute("CREATE TABLE meeting_chat_turns(id TEXT PRIMARY KEY, session_id TEXT, state TEXT, body TEXT)", db: db)
+        try MeetingChatSQL.migrateChatHistoryDependencies(db: db)
+        sqlite3_set_authorizer(db, { _, operation, _, _, _, _ in
+            operation == SQLITE_CREATE_TRIGGER ? SQLITE_DENY : SQLITE_OK
+        }, nil)
+        #expect(throws: (any Error).self) {
+            try MeetingChatSQL.migrateChatHistoryDependencies(db: db)
+        }
+        sqlite3_set_authorizer(db, nil, nil)
+        #expect(sqlite3_get_autocommit(db) == 1)
+        let triggers = try MeetingChatSQL.rows("SELECT name FROM sqlite_master WHERE type='trigger' AND name='chat_history_dependency_removed'", db: db) {
+            MeetingChatSQL.text($0, 0)
+        }
+        #expect(triggers == ["chat_history_dependency_removed"])
+    }
+
+    @Test func deletingSourceInvalidatesTransitiveChatQuotes() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db")
+        let rows = DictationStore(databaseURL: db)
+        try rows.migrateIfNeeded()
+        let source = try rows.insertDictation(text: "Synthetic secret", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let chats = MeetingChatStore(databaseURL: db)
+        let scope = MeetingChatScope(selection: .meetings([]))
+        var sessions: [UUID] = []
+        for _ in 0..<4 {
+            let session = try chats.createSession(scope: scope, title: "Fixture", allowsRequestedMeetingDiscovery: true)
+            let turn = try chats.beginTurn(sessionID: session.id, question: "Summarize", scope: scope, provider: "test", model: "test")
+            let ref = sessions.last.map { ChatHistoryDependency(kind: "chat", id: $0.uuidString, parent: $0.uuidString) }
+                ?? .init(kind: "dictations", id: String(source), parent: String(source))
+            try chats.recordHistory([ref], turn: turn) { true }
+            #expect(try chats.finishTurn(turnID: turn.id, answer: "Synthetic secret", citations: [], dependencies: []))
+            sessions.append(session.id)
+        }
+        // Production connections leave recursive_triggers disabled. The closure
+        // must invalidate the full chain before mutation triggers remove edges.
+        try rows.deleteDictation(id: source)
+        for session in sessions {
+            let turn = try #require(try chats.turns(sessionID: session).first)
+            #expect(turn.state == .sourceDeleted && turn.originalAnswer == nil)
+        }
+    }
+
+    @Test func sqlProjectionHonorsWholeOperationBudget() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db")
+        let rows = DictationStore(databaseURL: db)
+        try rows.migrateIfNeeded()
+        for _ in 0..<20 {
+            _ = try rows.insertDictation(text: "Synthetic", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        }
+        let query = try ChatHistorySQL(work: .init(maximumRows: 2))
+        let tables = try query.plan("SELECT count(*) FROM dictations")
+        #expect(throws: HistoryQueryWork.Limit.self) {
+            try query.populate(tables, databaseURL: db, currentSession: UUID()) { _, _, _ in }
+        }
+        // The host copies only the allowance plus one overflow-detection row,
+        // rather than materializing the archive and rejecting it afterwards.
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(query.run("SELECT count(*) FROM dictations").utf8)) as? [String: Any])
+        #expect((payload["rows"] as? [[Int]]) == [[3]])
+        #expect(throws: HistoryQueryWork.Limit.self) { try ChatHistorySQL(work: .init(seconds: 0)) }
+    }
+
+    @Test func unrelatedDeletionPreservesRebuiltSummaryAndItsDependents() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db"), rows = DictationStore(databaseURL: dir.appendingPathComponent("muesli.db"))
+        try rows.migrateIfNeeded()
+        let old = try rows.insertDictation(text: "Old", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let other = try rows.insertDictation(text: "Unrelated", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+        let chats = MeetingChatStore(databaseURL: db), scope = MeetingChatScope(selection: .meetings([]))
+        func session() throws -> MeetingChatSession { try chats.createSession(scope: scope, title: "Fixture", allowsRequestedMeetingDiscovery: true) }
+        func begin(_ session: UUID) throws -> MeetingChatTurn {
+            try chats.beginTurn(sessionID: session, question: "Summarize", scope: scope, provider: "test", model: "test")
+        }
+        func finish(_ turn: MeetingChatTurn, ref: ChatHistoryDependency? = nil) throws {
+            if let ref { try chats.recordHistory([ref], turn: turn) { true } }
+            #expect(try chats.finishTurn(turnID: turn.id, answer: "Synthetic answer", citations: [], dependencies: []))
+        }
+        let a = try session()
+        try finish(begin(a.id), ref: .init(kind: "dictations", id: String(old), parent: String(old)))
+        try rows.deleteDictation(id: old)
+        let valid = try begin(a.id)
+        try finish(valid)
+        let rewrite = try begin(a.id)
+        let context = try chats.historyContext(before: rewrite)
+        #expect(try chats.saveRollingSummary(text: "Valid rebuilt summary", coveredTurns: context.turns, for: rewrite))
+        try finish(rewrite)
+        let b = try session(), dependent = try begin(b.id)
+        try finish(dependent, ref: .init(kind: "chat", id: a.id.uuidString, parent: a.id.uuidString))
+        let c = try session()
+        try finish(begin(c.id), ref: .init(kind: "dictations", id: String(other), parent: String(other)))
+        try rows.deleteDictation(id: other)
+        #expect(try chats.sessions().first { $0.id == a.id }?.rollingSummary?.text == "Valid rebuilt summary")
+        #expect(try chats.turns(sessionID: b.id).first?.state == .completed)
+        // Its dependency must remain attached for a later real source mutation.
+        try chats.saveDraft(turnID: valid.id, text: "Edited source answer")
+        #expect(try chats.turns(sessionID: b.id).first?.state == .sourceDeleted)
+    }
+
+    @Test func cancellingSQLiteWorkInterruptsBulkCopy() async throws {
+        let started = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            var db: OpaquePointer?
+            guard sqlite3_open(":memory:", &db) == SQLITE_OK else { throw MeetingChatError.invalidResponse }
+            defer { sqlite3_close(db) }
+            let work = HistoryQueryWork()
+            try work.withProgress(db: db) {
+                started.signal()
+                // Represents host materialization, before model SQL is authorized.
+                let rc = sqlite3_exec(db, "CREATE TABLE sample(n); INSERT INTO sample WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<10000000) SELECT n FROM x", nil, nil, nil)
+                guard rc == SQLITE_OK else { throw MeetingChatError.invalidResponse }
+            }
+        }
+        #expect(started.wait(timeout: .now() + 5) == .success)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test func cancelledDependencyPublicationRollsBackAndReleasesWriter() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db")
+        let rows = DictationStore(databaseURL: db)
+        try rows.migrateIfNeeded()
+        let chats = MeetingChatStore(databaseURL: db)
+        let scope = MeetingChatScope(selection: .meetings([]))
+        let session = try chats.createSession(scope: scope, title: "Fixture", allowsRequestedMeetingDiscovery: true)
+        let turn = try chats.beginTurn(sessionID: session.id, question: "Count", scope: scope, provider: "test", model: "test")
+        let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            let refs = (0..<30_000).map { ChatHistoryDependency(kind: "dictations", id: String($0), parent: String($0)) }
+            try MeetingChatStore(databaseURL: db).recordHistory(refs, turn: turn) {
+                entered.signal(); resume.wait(); return true
+            }
+        }
+        #expect(entered.wait(timeout: .now() + 5) == .success)
+        task.cancel(); resume.signal()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        try rows.withChatDatabase { db in
+            let counts = try MeetingChatSQL.rows("SELECT count(*) FROM meeting_chat_history_dependencies", db: db) { sqlite3_column_int($0, 0) }
+            #expect(counts == [0])
+        }
+        // A normal save must succeed immediately after the cancelled transaction.
+        _ = try rows.insertDictation(text: "Still writable", durationSeconds: 1, startedAt: Date(), endedAt: Date())
+    }
     @Test func taggingSkillsPreservesTheGeneralCatalog() throws {
         let expected: Set<String> = ["search_history", "read_history", "read_skill", "query_history_sql"]
         for tag: MuesliHistoryTask? in [nil, .dailyRecap] {

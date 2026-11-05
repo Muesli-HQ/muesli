@@ -291,8 +291,10 @@ actor ChatLibraryTools {
 
     // Keep a single observer connection per source until dependencies are committed.
     private func querySQL(_ query: String, evidence: MeetingChatEvidence) throws -> MeetingChatToolResult {
-        let sql = try ChatHistorySQL()
+        let work = HistoryQueryWork()
+        let sql = try ChatHistorySQL(work: work)
         do {
+            return try sql.withWork {
             let tables = try sql.plan(query)
             let db = store.databaseURL
             let version = try HistorySQLVersion(url: db)
@@ -313,7 +315,7 @@ actor ChatLibraryTools {
                 var cursor: VisualMemoryCursor?
                 while true {
                     try Task.checkCancellation()
-                    let page = try screen.searchMoments(limit:128,after:cursor)
+                    let page = try screen.searchMoments(limit:128,after:cursor, includeText: sql.needsText(in: "screens"))
                     for record in page {
                         try sql.add("screens",id:record.id,date:record.capturedAt,app:record.appName ?? record.bundleID,
                                     title:record.windowTitle ?? record.source,text:record.text)
@@ -325,7 +327,7 @@ actor ChatLibraryTools {
             let output = try sql.run(query)
             try Task.checkCancellation()
             let refs = try sql.dependencies(tables) + extra
-            try store.recordHistory(refs,turn:turn) {
+            try store.recordHistory(refs,turn:turn, work: work) {
                 guard try store.permitsLibrary(sessionID:turn.sessionID), try version.isCurrent() else { return false }
                 if let screenVersion { return try screenVersion.isCurrent() }
                 return !usesScreen || !FileManager.default.fileExists(atPath:catalog.path)
@@ -335,6 +337,9 @@ actor ChatLibraryTools {
                 try store.attachEvidence(turnID:turn.id,dependencies:retained.dependencies,attemptID:turn.attemptID)
             }
             return .init(evidence:retained,documentOutput:output,hasLibraryEvidence:true)
+            }
+        } catch let error as HistoryQueryWork.Limit {
+            return .init(evidence:evidence,documentOutput:String(decoding:try JSONEncoder().encode(["query_error":error.localizedDescription]),as:UTF8.self))
         } catch let error as ChatHistorySQL.Failure {
             return .init(evidence:evidence,documentOutput:String(decoding:try JSONEncoder().encode(["query_error":String(error.message.prefix(240))]),as:UTF8.self))
         }

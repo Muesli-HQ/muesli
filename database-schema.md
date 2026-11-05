@@ -1019,9 +1019,9 @@ identities and propagates them to subsequent turns using that conversation.
 Source changes and the capture deletion outbox invalidate derived turns.
 
 
-General Chat history discovery uses `global_search_documents`, its FTS index, and Time Turner's existing OCR index. The temporary result handles and cursors live only for a provider attempt. The existing `meeting_chat_history_dependencies` table also accepts `quillSession`, `cotypistSession`, and `recap` for whole-source reads. Recap reads include the underlying source dependencies. Source invalidation applies to the saved answer and dependent conversation history.
+General Chat history discovery uses `global_search_documents`, its FTS index, and Time Turner's existing OCR index. The temporary result handles and cursors live only for a provider attempt. The existing `meeting_chat_history_dependencies` table also accepts `quillSession`, `cotypistSession`, and `recap` for whole-source reads. Recap reads include the underlying source dependencies. Source invalidation applies to the saved answer and dependent conversation history. The dependency-removal trigger computes the transitive chat dependency closure before clearing answers; it does not rely on SQLite recursive triggers being enabled. The transaction-local worklist `meeting_chat_history_invalidations` snapshots affected turn/session IDs before any mutation, restricts rolling-summary and generated-title cleanup to those sessions, and is emptied before the trigger returns; it stores no content and is not a retrieval source. Trigger replacement runs in a write transaction so concurrent source mutations cannot bypass invalidation during migration.
 
-General Chat SQL materializes permitted columns into an ephemeral SQLite database. SQL meeting dependencies use kind `sqlMeeting`; edits or deletion invalidate dependent chat answers. No model-authored statement executes on a user database.
+General Chat SQL materializes permitted columns into an ephemeral SQLite database. SQL meeting dependencies use kind `sqlMeeting`; edits or deletion invalidate dependent chat answers. No model-authored statement executes on a user database. Materialization, query execution and dependency publication share a ten-second work deadline and a 100,000-row projection ceiling (at most one extra row detects overflow); failed/cancelled dependency publication rolls back. The writer transaction has a two-second sub-budget and reuses its insert statement. These limits return an explicit query error, never partial aggregate results.
 
 ### Time Turner generation and reminders
 
@@ -1036,5 +1036,6 @@ the Recap tab. Per-task reminders independently open To-dos, even with automatic
 recaps disabled. Both defer while locked, recording, in private mode, or while
 another notification is visible. Overdue reminders resume after wake or launch,
 with the next deadline based on delivery time rather than replaying missed intervals.
+Scheduled generation keeps a local UserDefaults lease (`timeTurner.scheduledRecapAttempt`) separate from successful notification delivery. Failures retry after five then ten minutes, up to three attempts per daily slot; abandoned leases expire after fifteen minutes. A concurrent manual generation does not consume an attempt. A validated manual recap generated after the first scheduled attempt satisfies delivery even during backoff or after retry exhaustion. Successful persisted or reused recaps complete generation; only a displayed notification marks delivery. This state is local-only and contains no source text.
 The model chooses the number of supported actions; the response validator retains
 a 64-insight safety bound and the provider's token budget.
