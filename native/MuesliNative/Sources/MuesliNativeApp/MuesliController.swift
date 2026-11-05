@@ -665,7 +665,6 @@ public final class MuesliController: NSObject {
         updateConfig { $0.feedbackCaptureDrawModifier = modifier }
     }
     @objc func finishFeedbackCapture() { storedFeedbackCapture?.finish() }
-    @objc func openFeedbackCaptures() { feedbackCapture.open() }
 
     private func repairFeedbackCapturePermission() {
         guard case .blocked(let permission) = storedFeedbackCapture?.state else { return }

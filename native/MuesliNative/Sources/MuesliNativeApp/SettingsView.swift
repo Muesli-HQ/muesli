@@ -2340,11 +2340,8 @@ struct SettingsView: View {
                     settingsControl("feedback_capture")
                 }
                 settingsRow("Draw modifier") { settingsControl("feedback_capture_draw_modifier") }
-                HStack {
-                    compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
-                        .disabled(!appState.config.enableFeedbackCapture)
-                    compactActionButton("Open Vidshot captures…") { controller.openFeedbackCaptures() }
-                }
+                compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
+                    .disabled(!appState.config.enableFeedbackCapture)
             }
             TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
