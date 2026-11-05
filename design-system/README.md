@@ -81,12 +81,13 @@ the white action fill. Preserve semantic recording, warning, error and success
 colors.
 
 Fills keep the raw saved accent and semantic hues; foregrounds use a role
-matched to the surface beneath them (4.5:1 for labels, 3:1 for state glyphs):
+matched to the surface beneath them (6:1 for accent text on neutral/tinted
+surfaces, at least 4.5:1 for filled-button labels, 3:1 for state glyphs):
 
 | Role | Use |
 | --- | --- |
 | `onAccent` | Text and glyphs on `accent` fills. Black or white, whichever contrasts more with the resolved fill, so Dark Default and light presets get dark ink. |
-| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark only as needed. Never a fill. White in Ultra Dark. |
+| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark to reach 6:1 on neutral surfaces and all accent-tint states. Never a fill. White in Ultra Dark. |
 | `accentStateShade` | Hover/pressed overlay on accent fills (8%/16%), always moving away from `onAccent`. |
 | `onSuccess` | Dark ink on `success` fills (Donate, onboarding confirmations). Never `onAccent`. |
 | `recordingFill` | #DC2626 with white labels for labelled Stop/Record. `recording` (#EF4444) remains for dots, waveforms and badges. |
@@ -410,3 +411,11 @@ context; explicit choices, typed drafts and existing chats remain stable.
 Attachment originals stay in place. The selected provider receives images and
 only the document pages requested through tools; on-device Gemma reads document
 text locally. Keep this disclosure at the shared 12pt helper-text size.
+
+### Timeline sync presentation
+
+Timeline does not display the inline iCloud companion/setup/status card. Keep
+the compact header sync control and Settings → General sync setup, status and
+recovery actions available. Background sync behavior and saved preferences are
+unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
+never use the raw saved accent as a label color on a neutral surface.

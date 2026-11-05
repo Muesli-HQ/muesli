@@ -46,15 +46,15 @@ struct MuesliAccentPalette {
         let fill: Int
         /// Black or white, whichever contrasts more with `fill`.
         let onFill: Int
-        /// Same-hue shade with at least 4.5:1 on neutral surfaces and accent tints.
+        /// Same-hue shade with at least 6:1 on neutral surfaces and accent tints.
         let text: Int
         /// Overlay for hover/pressed fills that increases contrast with `onFill`.
         let stateShade: Int
     }
 
-    static let minimumTextContrast = 4.5
-    /// Derivation aims slightly above 4.5:1 so 8-bit blending cannot land below it.
-    private static let derivationTarget = 4.6
+    static let minimumTextContrast = 6.0
+    /// Leave headroom above the text target for 8-bit blending and color conversion.
+    private static let derivationTarget = minimumTextContrast + 0.1
     private static let shadeSteps = 50
 
     let light: Values

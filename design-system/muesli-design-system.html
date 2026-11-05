@@ -380,12 +380,12 @@
   /* Accessible roles for the Default accent. Native values are derived per saved accent by
      MuesliAccentPalette; these specimens approximate the Default result. */
   :root {
-    --toggle-accent:#6BA3F7; --on-toggle-accent:#000; --on-accent:#000; --accent-shade:#FFF; --accent-text:#89B5F9;
+    --toggle-accent:#6BA3F7; --on-toggle-accent:#000; --on-accent:#000; --accent-shade:#FFF; --accent-text:#B2CFFB;
     --recording-fill:#DC2626; --on-success:#000; --join-action:#33B887; --join-action-secondary:#26946B;
     --destructive-text:#F87171; --success-text:#34D399; --warning-text:#F59E0B;
   }
   :root[data-theme="light"] {
-    --toggle-accent:#2563EB; --on-toggle-accent:#FFF; --on-accent:#FFF; --accent-shade:#000; --accent-text:#1C4BB3;
+    --toggle-accent:#2563EB; --on-toggle-accent:#FFF; --on-accent:#FFF; --accent-shade:#000; --accent-text:#163B8D;
     --destructive-text:#B91C1C; --success-text:#065F46; --warning-text:#92400E;
   }
   :root[data-theme="ultra"] {
@@ -551,12 +551,12 @@
   </div>
 
   <h3 id="color-roles">Accessible foreground roles</h3>
-  <p class="section-desc">Fills keep the raw saved accent and semantic hues. Text and glyphs use a role chosen for the surface they sit on, so every enabled label reaches 4.5:1 and state glyphs 3:1 in Light, Dark and Ultra Dark.</p>
+  <p class="section-desc">Fills keep the raw saved accent and semantic hues. Text and glyphs use a role chosen for the surface they sit on, so accent labels reach 6:1 on neutral and tinted surfaces, filled-button labels at least 4.5:1, and state glyphs 3:1 in Light, Dark and Ultra Dark.</p>
   <table>
     <tr><th>Role</th><th>Rule</th><th>Ultra Dark</th></tr>
     <tr><td><code>accent</code> / <code>toggleAccent</code></td><td>Raw saved accent (adaptive blue by default) for fills, selection and switches</td><td>Actions white; switches keep the saved accent</td></tr>
     <tr><td><code>onAccent</code></td><td>Black or white, whichever contrasts more with the resolved fill (Default: white in Light, black in Dark)</td><td>Black</td></tr>
-    <tr><td><code>accentText</code></td><td>Same-hue shade of the saved accent, deepened in Light and lightened in Dark only until it reaches 4.5:1 on every neutral surface and on accent tints up to the pressed state. Never a fill.</td><td>White</td></tr>
+    <tr><td><code>accentText</code></td><td>Same-hue shade of the saved accent, deepened in Light and lightened in Dark only until it reaches 6:1 on every neutral surface and on accent tints up to the pressed state. Never a fill.</td><td>White</td></tr>
     <tr><td><code>accentStateShade</code></td><td>Hover/pressed overlay on accent fills (8% / 16%), moving the fill away from its label</td><td>Black</td></tr>
     <tr><td><code>onSuccess</code></td><td>Dark ink on <code>success</code> fills; never <code>onAccent</code></td><td>Same</td></tr>
     <tr><td><code>recordingFill</code></td><td>#DC2626 with white labels for labelled Stop/Record; <code>recording</code> stays for dots, waveforms and badges</td><td>Same</td></tr>
@@ -1163,6 +1163,7 @@
   <p class="pattern-note">Use the shared compact switch, off by default, and wrapping helper text. The privacy preference is separate from automatic issue-reporting prompts. The enabled switch retains the saved accent in Ultra Dark.</p>
 
   <h3>Timeline Privacy Mode</h3>
+  <p class="pattern-note">Timeline omits the inline iCloud companion/status card. The compact header sync control and Settings → General retain sync setup, status and recovery actions.</p>
   <div class="settings-card">
     <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:12px">
       <label style="font-size:12px">Privacy <input type="checkbox" role="switch" aria-label="Privacy mode" style="accent-color:var(--accent)"></label>

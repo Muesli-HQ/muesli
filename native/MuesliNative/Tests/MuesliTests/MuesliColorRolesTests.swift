@@ -34,14 +34,14 @@ struct MuesliColorRolesTests {
         }
     }
 
-    @Test("accent text is legible on neutral surfaces and accent tints in Light and Dark")
+    @Test("accent text has strong contrast on neutral surfaces and accent tints in Light and Dark")
     func accentTextContrast() {
         for hex in Self.accentHexes {
             let palette = MuesliAccentPalette.palette(forHex: hex)
             for dark in [false, true] {
                 let values = palette.values(dark: dark)
                 for background in MuesliAccentPalette.textBackgrounds(fill: values.fill, dark: dark) {
-                    #expect(MuesliContrast.ratio(values.text, background) >= Self.minimumText,
+                    #expect(MuesliContrast.ratio(values.text, background) >= 6.0,
                             "accentText for \(hex ?? "default") dark=\(dark) on \(String(format: "%06X", background))")
                 }
             }
@@ -118,10 +118,10 @@ struct MuesliColorRolesTests {
             #expect(MuesliContrast.ratio(label, pressed) >= Self.minimumText)
             let tints = [MuesliTheme.accentTintRest, MuesliTheme.accentTintHover, MuesliTheme.accentTintPressed]
             for surface in Self.ultraDarkSurfaces {
-                #expect(MuesliContrast.ratio(text, surface) >= Self.minimumText)
+                #expect(MuesliContrast.ratio(text, surface) >= 6.0)
                 for tint in tints {
                     let tinted = MuesliContrast.composite(fill, opacity: tint, over: surface)
-                    #expect(MuesliContrast.ratio(text, tinted) >= Self.minimumText)
+                    #expect(MuesliContrast.ratio(text, tinted) >= 6.0)
                 }
             }
         }
