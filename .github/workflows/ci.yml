@@ -124,6 +124,9 @@ jobs:
       - name: Test append-only appcast updates
         run: python3 ./scripts/test_merge_appcast_item.py
 
+      - name: Test private macOS check failure propagation and cache retention
+        run: bash scripts/test_ci_macos_check.sh
+
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
