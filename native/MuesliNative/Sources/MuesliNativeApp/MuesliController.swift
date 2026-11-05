@@ -5414,6 +5414,7 @@ public final class MuesliController: NSObject {
         guard !isPresentingPermissionRestart, !isRelaunchRequested else { return }
         let alert = NSAlert()
         alert.messageText = "Restart muesli to apply permissions?"
+        alert.window.preventsApplicationTerminationWhenModal = false
         let names = permissions.map(\.rawValue).joined(separator: ", ")
         alert.informativeText = onboarding
             ? "muesli will restart to apply permissions, then reopen at your recording test."
@@ -5439,6 +5440,7 @@ public final class MuesliController: NSObject {
         let presented: Bool
         if onboarding {
             if let window = onboardingWindowController?.presentationWindow {
+                PermissionRestartPresentation.allowTermination(from: window)
                 onboardingWindowController?.bringToFront()
                 alert.beginSheetModal(for: PermissionRestartPresentation.host(in: window), completionHandler: completion)
                 presented = true
@@ -5462,7 +5464,15 @@ public final class MuesliController: NSObject {
             return
         }
         isRelaunchRequested = true
-        ApplicationTermination.request()
+        ApplicationTermination.request(afterTerminate: { [weak self] in
+            guard let self, self.isRelaunchRequested, !self.isShuttingDown else { return }
+            self.isRelaunchRequested = false
+            self.presentErrorAlert(
+                title: "muesli couldn’t restart",
+                message: "Close any other open dialogs, then try Restart muesli again in Permissions.",
+                aboveExistingSheet: true
+            )
+        })
     }
 
     /// Revalidate at termination admission: work may have started after the notice.
@@ -9760,6 +9770,7 @@ public final class MuesliController: NSObject {
         }
 
         let host = aboveExistingSheet ? PermissionRestartPresentation.host(in: window) : window
+        if aboveExistingSheet { PermissionRestartPresentation.allowTermination(from: host) }
         alert.beginSheetModal(for: host) { response in
             completion?(response)
         }

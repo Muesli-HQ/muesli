@@ -20,6 +20,14 @@ struct PermissionRestartRecoveryTests {
         dashboard.beginSheet(setup)
         #expect(dashboard.attachedSheet === setup)
         #expect(PermissionRestartPresentation.host(in: dashboard) === setup)
+        let unrelated = NSWindow()
+        unrelated.preventsApplicationTerminationWhenModal = true
+        dashboard.preventsApplicationTerminationWhenModal = true
+        setup.preventsApplicationTerminationWhenModal = true
+        PermissionRestartPresentation.allowTermination(from: dashboard)
+        #expect(!setup.preventsApplicationTerminationWhenModal)
+        #expect(!dashboard.preventsApplicationTerminationWhenModal)
+        #expect(unrelated.preventsApplicationTerminationWhenModal)
     }
 
     @Test("only new requests for restart-sensitive permissions queue a notice")

@@ -3,6 +3,18 @@ import AVFoundation
 import Foundation
 
 enum PermissionRestartPresentation {
+    /// Permission setup must allow the system's Quit & Reopen action to reach
+    /// our normal termination delegate. AppKit otherwise rejects it before
+    /// applicationShouldTerminate while the setup sheet remains open.
+    @MainActor static func allowTermination(from window: NSWindow?) {
+        guard let window else { return }
+        var current: NSWindow? = host(in: window)
+        while let window = current {
+            window.preventsApplicationTerminationWhenModal = false
+            current = window.sheetParent
+        }
+    }
+
     /// A feature's setup sheet must not hide or queue the restart notice.
     @MainActor static func host(in window: NSWindow) -> NSWindow {
         var host = window

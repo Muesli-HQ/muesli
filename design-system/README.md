@@ -86,6 +86,9 @@ Present restart notices and blocking errors above any open setup sheet, never
 queued behind it. Keep the manual restart action only in Settings → General →
 Permissions. Feature setup screens use their existing Manage permissions action
 for recovery after choosing Later; do not add feature-specific restart controls.
+Permission dialogs must allow AppKit termination so System Settings' Quit &
+Reopen and the shared restart notice reach normal shutdown safeguards. If a quit
+is rejected before shutdown starts, clear the pending restart and allow retry.
 
 ### Recording interactions
 

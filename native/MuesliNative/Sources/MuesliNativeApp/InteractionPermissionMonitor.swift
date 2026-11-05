@@ -146,6 +146,7 @@ enum FeaturePermission: String, Equatable, Sendable {
     @MainActor private static var requested = Set<FeaturePermission>()
 
     @MainActor func openSettings() {
+        if mayNeedRestart { PermissionRestartPresentation.allowTermination(from: NSApp.keyWindow) }
         PermissionRestartRecovery.shared.requested(self, wasGranted: isGranted)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacyPane)") {
             NSWorkspace.shared.open(url)
@@ -153,6 +154,7 @@ enum FeaturePermission: String, Equatable, Sendable {
     }
 
     @MainActor func request() {
+        if mayNeedRestart { PermissionRestartPresentation.allowTermination(from: NSApp.keyWindow) }
         PermissionRestartRecovery.shared.requested(self, wasGranted: isGranted)
         switch self {
         case .microphone:
