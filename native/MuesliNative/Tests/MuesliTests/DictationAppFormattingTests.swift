@@ -421,6 +421,28 @@ struct DictationAppFormattingTests {
         #expect(ranked[1].suggestsLowercaseChat)
         #expect(DictationFormattingSuggestion.ranked(usage: usage,
             excluding: [.init(bundleID: "com.apple.mail", appName: "Mail")]).count == 1)
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: ["com.apple.mail"]).map(\.bundleID) == ["net.whatsapp.WhatsApp"])
+    }
+
+    @MainActor @Test("Dismissed app suggestions stay hidden after relaunch without changing other preferences")
+    func dismissedSuggestionsPersist() throws {
+        let suite = "muesli.formatting-suggestions.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("unchanged", forKey: "unrelated")
+        let preferences = DictationFormattingSuggestionPreferences(defaults: defaults)
+        preferences.dismiss("com.example.one")
+        preferences.dismiss("com.example.one")
+        let reopened = DictationFormattingSuggestionPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(reopened.dismissed == ["com.example.one"])
+        #expect(defaults.string(forKey: "unrelated") == "unchanged")
+        let usage: [InsightsUsage] = [
+            .init(id: "bundle:com.example.one", name: "One", sessions: 10, words: 100),
+            .init(id: "bundle:com.example.two", name: "Two", sessions: 2, words: 20)
+        ]
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: reopened.dismissed).map(\.appName) == ["Two"])
     }
 
     @Test("Output formatting uses the dispatch target and preserves clipboard restoration")

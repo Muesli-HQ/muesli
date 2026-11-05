@@ -52,6 +52,18 @@ Order tabs General, Dictations, Meetings, Appearance, Experimental. iCloud Sync
 lives in General; Computer Use, Quill and Cotypist live in Experimental. The
 meeting-chat destination is labeled Chat.
 
+### Progressive Settings detail
+
+Within App Formatting, use sentence-case callout text for “Most-used apps”,
+body text for app names and caption text for usage. Each suggestion has a small
+accessible dismiss action beside Customize. Dismissal persists locally; Add App
+can still select any app. Omit repeated explanations from individual rows.
+
+Time Turner shows only its Screen history description and Set up action while
+disabled. Capture, exclusions, storage/retention controls and their status details
+appear once enabled. Hiding these controls does not change saved options or the
+retention lifecycle. The explicit setup flow still explains capture before enablement.
+
 ### Recording interactions
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow

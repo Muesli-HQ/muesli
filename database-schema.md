@@ -31,6 +31,14 @@ features discovered; unknown IDs are preserved. Each feature is marked on explic
 navigation or interaction, independently of the What's New tour. This preference
 is not user activity and is not stored in SQLite, synced, exported or sent to telemetry.
 
+### Formatting suggestion preferences outside SQLite
+
+App Formatting suggestion dismissal uses the bundle-local UserDefaults array
+`dictationFormatting.dismissedSuggestions`, containing application bundle IDs.
+Missing means none dismissed. This presentation preference does not alter usage
+records or formatting rules and is not synced, exported or sent to telemetry.
+Dismissed apps remain available through Add App.
+
 ### Anonymous analytics preference outside SQLite
 
 The About opt-out uses bundle-local UserDefaults keys
