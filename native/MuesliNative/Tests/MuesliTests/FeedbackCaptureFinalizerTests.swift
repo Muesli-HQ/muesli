@@ -8,6 +8,88 @@ import os
 @Suite("Vidshot finalizer", .serialized)
 @MainActor
 struct FeedbackCaptureFinalizerTests {
+    @Test func redundantAudioIsRemovedOnlyAfterSuccessfulDurableTranscription() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            for mode in ["success", "failed", "unsafeVideo"] {
+                var manifest = try store.begin(target: feedbackTarget())
+                manifest.audio = "narration.wav"; manifest.video = "recording.mp4"
+                manifest.videoOffsetMs = 0
+                let wav = try store.mediaURL(id: manifest.id, path: "narration.wav")
+                try Data([1, 2, 3]).write(to: wav)
+                try Data([4, 5, 6]).write(to: store.mediaURL(id: manifest.id, path: "recording.mp4"))
+                manifest.transcript = mode == "failed" ? .unavailable("transcription failed") :
+                    .init(source: "fixture", text: "hello", words: [], segments: [], estimated: false)
+                var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages().filter { $0.name == .summary })
+                finalizer.audioIsSafelyInVideo = { _, _, _ in mode != "unsafeVideo" }
+                let result = try await finalizer.finish(manifest, context: .init(store: store, finishPasteboardChangeCount: 0))
+                let persisted = try store.manifest(id: manifest.id)
+                let summary = try String(contentsOf: store.mediaURL(id: manifest.id, path: "summary.md"), encoding: .utf8)
+                if mode == "success" {
+                    #expect(result.audio == nil && persisted.audio == nil)
+                    #expect(!FileManager.default.fileExists(atPath: wav.path))
+                    #expect(!summary.contains("Narration: narration.wav"))
+                } else {
+                    #expect(result.audio == "narration.wav" && persisted.audio == "narration.wav")
+                    #expect(FileManager.default.fileExists(atPath: wav.path))
+                    #expect(summary.contains("Narration: narration.wav"))
+                }
+                store.release(id: manifest.id)
+            }
+        }
+    }
+
+    @Test func invalidVideoNeverAuthorizesRemovingWAV() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            let wav = try store.mediaURL(id: capture.id, path: "narration.wav")
+            let video = try store.mediaURL(id: capture.id, path: "recording.mp4")
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: wav)
+            try Data([1, 2, 3]).write(to: video)
+            #expect(!(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, 0)))
+            #expect(!(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, nil)))
+        }
+    }
+
+    @Test func failedVidshotTranscriptionCanBeRetriedInPlace() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var capture = try store.begin(target: feedbackTarget())
+            capture.audio = "narration.wav"
+            capture.transcript = .unavailable("model unavailable")
+            capture.failures.append(.init(stage: "transcribe", message: "model unavailable"))
+            capture.state = .ready
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: store.mediaURL(id: capture.id, path: "narration.wav"))
+            try store.publish(capture); store.release(id: capture.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root, observeSystem: false)
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in .unavailable("still unavailable") }]
+            await #expect(throws: (any Error).self) { try await controller.retryTranscription(id: capture.id) }
+            #expect(try store.manifest(id: capture.id) == capture)
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: capture.id, path: "narration.wav").path))
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in
+                .init(source: "fixture", text: "Retried successfully", words: [], segments: [], estimated: true)
+            }]
+            try await controller.retryTranscription(id: capture.id)
+            let saved = try store.manifest(id: capture.id)
+            #expect(saved.transcript?.text == "Retried successfully")
+            #expect(saved.audio == "narration.wav") // There is no verified video to replace it.
+            #expect(!saved.failures.contains { $0.stage == "transcribe" })
+            #expect(try store.list().count == 1)
+            let summary = try String(contentsOf: store.mediaURL(id: capture.id, path: "summary.md"), encoding: .utf8)
+            #expect(summary.contains("Retried successfully"))
+            var second = try store.begin(target: feedbackTarget())
+            second.audio = "narration.wav"; second.video = "recording.mp4"; second.videoOffsetMs = 0
+            second.transcript = .unavailable("model unavailable"); second.state = .ready
+            let secondAudio = try store.mediaURL(id: second.id, path: "narration.wav")
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: secondAudio)
+            try Data([1, 2, 3]).write(to: store.mediaURL(id: second.id, path: "recording.mp4"))
+            try store.publish(second); store.release(id: second.id)
+            controller.finalizer.audioIsSafelyInVideo = { _, _, _ in true }
+            try await controller.retryTranscription(id: second.id)
+            #expect(try store.manifest(id: second.id).audio == nil)
+            #expect(!FileManager.default.fileExists(atPath: secondAudio.path))
+            #expect(try store.manifest(id: second.id).transcript?.text == "Retried successfully")
+        }
+    }
+
     @Test func clipboardCanCarryVideoAndContextAsTwoFiles() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

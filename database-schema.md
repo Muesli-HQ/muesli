@@ -630,8 +630,15 @@ paginating them by `created_at`. Transcript search reads the capture manifest;
 the Timeline does not copy transcripts or media into the dictation tables.
 Deleting a Vidshot from Timeline uses the capture store to remove its capture
 directory and row, including the video, narration, transcript, and derived files.
-The separately stored narration WAV preserves microphone samples for transcription
-and interrupted-recording recovery, including audio before the first video frame.
+Narration is initially recorded to a separate WAV for transcription and recovery.
+After a nonempty transcript is durably published, finalization removes the WAV only
+if the saved video is playable and its audio decodes across the full microphone
+timeline (allowing small AAC padding differences). The manifest and summary then
+omit the removed WAV; original capture-clock offsets remain unchanged. If decoding,
+coverage, publication or transcription fails, the WAV is retained. Failed narration
+can be retried in the Vidshot using the same local transcription coordinator; a
+successful retry updates that capture and applies the same retention check. Existing
+captures are not bulk-migrated.
 
 Readers ignore unknown fields and reject unsupported versions. Version 1 also
 contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional

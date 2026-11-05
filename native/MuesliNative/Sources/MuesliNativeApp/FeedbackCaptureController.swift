@@ -238,6 +238,7 @@ final class FeedbackCaptureController {
     private(set) var state: FeedbackCapturePillState?
     private(set) var ownsMicrophone = false
     private(set) var records: [FeedbackCaptureRecord] = []
+    private(set) var retryingTranscriptionIDs: Set<String> = []
     private(set) var errorMessage: String?
     private(set) var latestID: String?
     private(set) var recoveryRevision: UInt64 = 0
@@ -627,7 +628,55 @@ final class FeedbackCaptureController {
             windowController?.show(id: requested)
         }
     }
+    /// Retry in place, using the same local transcription stage as initial capture.
+    /// The expensive work holds no storage lock; commit rechecks the exact source.
+    func retryTranscription(id: String) async throws {
+        guard let store, !retryingTranscriptionIDs.contains(id), !store.isActive(id: id),
+              let stage = finalizer.stages.first(where: { $0.name == .transcribe }) else {
+            throw ScreenVideoRecorder.error("This Vidshot cannot be transcribed right now.")
+        }
+        retryingTranscriptionIDs.insert(id)
+        defer { retryingTranscriptionIDs.remove(id) }
+        let original = try await Task.detached(priority: .utility) { try store.manifest(id: id) }.value
+        guard original.audio != nil, original.transcript == nil || original.transcript?.missing != nil else {
+            throw ScreenVideoRecorder.error("No failed narration is available to retry.")
+        }
+        var updated = original
+        updated.transcript = nil
+        updated.failures.removeAll { $0.stage == "transcribe" }
+        let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: NSPasteboard.general.changeCount)
+        try await stage.run(&updated, context)
+        try Task.checkCancellation()
+        guard let transcript = updated.transcript, transcript.missing == nil,
+              !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ScreenVideoRecorder.error(updated.transcript?.missing?.reason ?? "No text was recognized. The narration is still available.")
+        }
+        let ranges = FeedbackCaptureContext.partition(transcript: transcript, anchors: updated.keyframes.map(\.t))
+        for index in updated.keyframes.indices where ranges.indices.contains(index) {
+            let range = ranges[index]
+            updated.keyframes[index].saidRange = range
+            updated.keyframes[index].said = transcript.words[range.from..<range.to].map(\.text).joined(separator: " ")
+        }
+        let final = updated
+        let worker = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            return try store.withExistingBundleMutation(id: id) { _ in
+                guard try store.manifest(id: id) == original else { throw ScreenVideoRecorder.error("The Vidshot changed while transcribing. Try again.") }
+                try Task.checkCancellation()
+                let summary = FeedbackCaptureContext.summary(final, bundle: try store.bundleURL(id: id))
+                try Data(summary.utf8).write(to: store.mediaURL(id: id, path: "summary.md"), options: .atomic)
+                try store.publish(final)
+                return true
+            } ?? false
+        }
+        let saved = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+        guard saved else { throw ScreenVideoRecorder.error("This Vidshot is no longer available.") }
+        _ = await finalizer.discardRedundantAudioIfSafe(final, store: store)
+        recoveryRevision &+= 1
+        await reload()
+    }
     func delete(id: String) async throws {
+        guard !retryingTranscriptionIDs.contains(id) else { throw ScreenVideoRecorder.error("Transcription is still in progress.") }
         if let store { try await Task.detached { try store.delete(id: id) }.value }
         await reload()
         if latestID == id { latestID = records.first?.id }

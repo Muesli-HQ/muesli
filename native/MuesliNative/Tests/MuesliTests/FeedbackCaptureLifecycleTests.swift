@@ -215,6 +215,25 @@ struct FeedbackCaptureLifecycleTests {
         Issue.record("Native frame was never accepted by the recorder")
     }
 
+    @Test func audioRetentionVerifiesARealRecordedVideo() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            let video = try store.mediaURL(id: capture.id, path: "recording.mp4")
+            let wav = try store.mediaURL(id: capture.id, path: "narration.wav")
+            let recorder = ScreenVideoRecorder(url: video, feedbackCapture: true)
+            let start: Int64 = 16_000
+            try await Self.startVideoFixture(recorder, at: start)
+            let samples = [Int16](repeating: 3000, count: 1600)
+            recorder.appendAudio(samples, microphone: true, startFrame: start)
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.09, count: 1600), to: wav)
+            recorder.requestStop(at: CMTime(value: start + 1600, timescale: 16_000))
+            _ = try await recorder.stop()
+            #expect(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, 0))
+            #expect(!(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, 200)))
+            store.release(id: capture.id)
+        }
+    }
+
     @Test("Completion retains video and reports the narration writer outcome", arguments: ["samples", "empty", "drain failure"])
     func completedMediaReflectsNarration(mode: String) async throws {
         let samples = mode != "empty", drainFailure = mode == "drain failure"

@@ -102,7 +102,19 @@ struct FeedbackCaptureView: View {
                     }
                     if let manifest {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Narration").font(MuesliTheme.font(size: 15, weight: .semibold))
+                            HStack {
+                                Text("Narration").font(MuesliTheme.font(size: 15, weight: .semibold))
+                                if manifest.audio != nil && (manifest.transcript == nil || manifest.transcript?.missing != nil) {
+                                    Button(controller.retryingTranscriptionIDs.contains(selected.id) ? "Transcribing…" : "Retry transcription") {
+                                        let id = selected.id
+                                        Task {
+                                            do { try await controller.retryTranscription(id: id) }
+                                            catch { if self.selected?.id == id { message = error.localizedDescription } }
+                                        }
+                                    }
+                                    .disabled(loading || activeWriter || controller.retryingTranscriptionIDs.contains(selected.id))
+                                }
+                            }
                             if let transcript = manifest.transcript, !transcript.text.isEmpty {
                                 Text(transcript.text)
                                     .font(MuesliTheme.font(size: 14))
@@ -151,7 +163,7 @@ struct FeedbackCaptureView: View {
                         Button("Delete…", role: .destructive) { confirmDelete = true }
                             .disabled(loading || activeWriter)
                     }
-                    if manifest?.audio == nil, manifest?.video != nil { Text("Video only · narration unavailable").foregroundStyle(.secondary) }
+                    if manifest?.audio == nil, manifest?.video != nil, manifest?.transcript?.missing != nil { Text("Narration unavailable").foregroundStyle(.secondary) }
                     if manifest?.video == nil, manifest?.audio != nil { Text("Audio only · video unavailable").foregroundStyle(.secondary) }
                     ForEach(Array((manifest?.failures ?? []).enumerated()), id: \.offset) { _, failure in
                         Text("\(failure.stage): \(failure.message)").font(.caption).foregroundStyle(.orange)

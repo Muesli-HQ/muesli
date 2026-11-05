@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import MuesliCore
 
@@ -18,6 +19,7 @@ struct FeedbackCaptureFinalizer {
     }
     var stages: [Stage] = []
     var prepareThumbnails: ((FeedbackCaptureManifest, Context) async throws -> [FeedbackCaptureContext.Thumbnail])?
+    var audioIsSafelyInVideo: @Sendable (URL, URL, Int64?) async -> Bool = FeedbackCaptureAudioRetention.audioIsSafelyInVideo
 
     private struct SavedImages: Sendable {
         let keyframes: [FeedbackCaptureKeyframe]
@@ -74,6 +76,7 @@ struct FeedbackCaptureFinalizer {
         manifest.state = manifest.audio != nil || manifest.video != nil || (!manifest.events.isEmpty || !manifest.strokes.isEmpty) ? completionState : .failed
         let published = manifest
         try await Task.detached { try store.publish(published) }.value
+        manifest = await discardRedundantAudioIfSafe(manifest, store: store)
         // Recovery reconstructs local artifacts but never replaces the user's clipboard.
         for stage in stages where stage.name == .copy && completionState != .recovered && manifest.state != .failed {
             do { try await stage.run(&manifest, context) }
@@ -85,6 +88,89 @@ struct FeedbackCaptureFinalizer {
             try await Task.detached { try store.publish(delivered) }.value
         }
         return manifest
+    }
+    func discardRedundantAudioIfSafe(_ manifest: FeedbackCaptureManifest, store: FeedbackCaptureStore) async -> FeedbackCaptureManifest {
+        guard let audio = manifest.audio, let video = manifest.video,
+              let transcript = manifest.transcript, transcript.missing == nil,
+              !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !manifest.failures.contains(where: { $0.stage == "transcribe" }), !Task.isCancelled,
+              let audioURL = try? store.mediaURL(id: manifest.id, path: audio),
+              let videoURL = try? store.mediaURL(id: manifest.id, path: video),
+              await audioIsSafelyInVideo(audioURL, videoURL, manifest.videoOffsetMs), !Task.isCancelled else { return manifest }
+        var compact = manifest; compact.audio = nil
+        let updated = compact
+        let worker = Task.detached(priority: .utility) { () -> Bool in
+            try Task.checkCancellation()
+            return try store.withExistingBundleMutation(id: manifest.id) { _ in
+                guard try store.manifest(id: manifest.id) == manifest else { return false }
+                try Task.checkCancellation()
+                let summaryURL = try store.mediaURL(id: updated.id, path: "summary.md")
+                let hadSummary = FileManager.default.fileExists(atPath: summaryURL.path)
+                if hadSummary {
+                    let summary = FeedbackCaptureContext.summary(updated, bundle: try store.bundleURL(id: updated.id))
+                    try Data(summary.utf8).write(to: summaryURL, options: .atomic)
+                }
+                do {
+                    try store.publish(updated)
+                    try FileManager.default.removeItem(at: audioURL)
+                } catch {
+                    try? store.publish(manifest)
+                    if hadSummary {
+                        let summary = FeedbackCaptureContext.summary(manifest, bundle: try store.bundleURL(id: manifest.id))
+                        try? Data(summary.utf8).write(to: summaryURL, options: .atomic)
+                    }
+                    throw error
+                }
+                return true
+            } ?? false
+        }
+        do {
+            let removed = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            return removed ? updated : manifest
+        } catch { return manifest }
+    }
+
+}
+
+/// Preserve the WAV unless the MP4 has a decodable audio track covering the
+/// complete microphone timeline. AAC has a small encoder padding tolerance.
+enum FeedbackCaptureAudioRetention {
+    static func audioIsSafelyInVideo(_ wav: URL, _ video: URL, _ offsetMs: Int64?) async -> Bool {
+        guard let offsetMs, offsetMs <= 20, !Task.isCancelled,
+              let wavFile = try? AVAudioFile(forReading: wav), wavFile.length > 0,
+              wavFile.processingFormat.sampleRate > 0 else { return false }
+        let wavDuration = Double(wavFile.length) / wavFile.processingFormat.sampleRate
+        do {
+            let asset = AVURLAsset(url: video)
+            guard try await asset.load(.isPlayable),
+                  try await !asset.loadTracks(withMediaType: .video).isEmpty,
+                  let track = try await asset.loadTracks(withMediaType: .audio).first else { return false }
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000,
+                AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false, AVLinearPCMIsNonInterleaved: false
+            ])
+            guard reader.canAdd(output) else { return false }
+            reader.add(output)
+            guard reader.startReading() else { return false }
+            var samples: Int64 = 0
+            var first: Double?, lastEnd: Double?
+            while let buffer = output.copyNextSampleBuffer() {
+                if Task.isCancelled { reader.cancelReading(); return false }
+                let start = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer))
+                let count = Int64(CMSampleBufferGetNumSamples(buffer))
+                guard start.isFinite, count > 0 else { reader.cancelReading(); return false }
+                if let lastEnd, start > lastEnd + 0.020 { reader.cancelReading(); return false }
+                if first == nil { first = start }
+                lastEnd = start + Double(count) / 16_000
+                samples += count
+            }
+            guard reader.status == .completed, let first, let lastEnd else { return false }
+            let offset = Double(offsetMs) / 1000
+            return first + offset <= 0.020 && lastEnd + offset >= wavDuration - 0.020
+                && Double(samples) / 16_000 >= wavDuration - 0.040
+        } catch { return false }
     }
 }
 
