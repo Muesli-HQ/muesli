@@ -192,12 +192,18 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
     @MainActor static func write(_ summary: String, image: Data? = nil, video: URL? = nil,
                                  to pasteboard: NSPasteboard, unchangedSince: Int? = nil) -> Result {
         if let unchangedSince, pasteboard.changeCount != unchangedSince { return .skipped }
-        let item = NSPasteboardItem()
-        guard item.setString(summary, forType: .string) else { return .failed }
-        if let image, NSBitmapImageRep(data: image) != nil { _ = item.setData(image, forType: .png) }
-        if let video { _ = item.setString(video.absoluteString, forType: .fileURL) }
+        let text = NSPasteboardItem()
+        guard text.setString(summary, forType: .string) else { return .failed }
+        var items = [text]
+        if let video {
+            let file = NSPasteboardItem()
+            guard file.setString(video.absoluteString, forType: .fileURL) else { return .failed }
+            items.insert(file, at: 0)
+        } else if let image, NSBitmapImageRep(data: image) != nil {
+            _ = text.setData(image, forType: .png)
+        }
         pasteboard.clearContents()
-        return pasteboard.writeObjects([item]) ? .copied : .failed
+        return pasteboard.writeObjects(items) ? .copied : .failed
     }
     @MainActor static func writeImage(_ image: Data, to pasteboard: NSPasteboard) -> Result {
         guard NSBitmapImageRep(data: image) != nil else { return .failed }

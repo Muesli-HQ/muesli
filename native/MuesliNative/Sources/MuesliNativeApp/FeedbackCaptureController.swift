@@ -663,8 +663,9 @@ final class FeedbackCaptureController {
         do {
             let payload = try await Task.detached(priority: .utility) { () -> (String, Data?, URL?) in
                 let summaryURL = try store.mediaURL(id: id, path: "summary.md")
-                let summary = imageOnly ? ((try? String(contentsOf: summaryURL, encoding: .utf8)) ?? "")
+                let savedSummary = imageOnly ? ((try? String(contentsOf: summaryURL, encoding: .utf8)) ?? "")
                                         : try String(contentsOf: summaryURL, encoding: .utf8)
+                let summary = FeedbackCaptureContext.clipboardSummary(savedSummary, bundle: try store.bundleURL(id: id))
                 let manifest = try? store.manifest(id: id)
                 if video {
                     guard let path = manifest?.video, let url = try? store.mediaURL(id: id, path: path),

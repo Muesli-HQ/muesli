@@ -223,7 +223,7 @@ struct FeedbackCaptureContextTests {
         m.transcript = .init(source: "legacy", text: "Legacy narration", words: [], segments: [], estimated: true)
         #expect(FeedbackCaptureContext.unillustratedNarration(m).text == "Legacy narration")
     }
-    @Test func summaryUsesAbsoluteArtifactPathsAndRetainsUnillustratedNarration() {
+    @Test func summaryUsesOneCaptureFolderAndRetainsUnillustratedNarration() {
         var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
         m.durationMs = 33_000
         m.transcript = .init(source: "fixture", text: "Open this. Then stop.", words: [
@@ -234,14 +234,15 @@ struct FeedbackCaptureContextTests {
             said: "Open this.", saidRange: .init(from: 0, to: 2))]
         m.contactSheet = "contact-sheet.png"
         let summary = FeedbackCaptureContext.summary(m, bundle: URL(fileURLWithPath: "/tmp/fixture.capture"))
-        #expect(summary.contains("[muesli Vidshot 0:33"))
-        #expect(summary.contains("0:33 · Fixture Editor · /tmp/fixture.capture"))
-        #expect(summary.contains("/tmp/fixture.capture/contact-sheet.png"))
-        #expect(summary.contains("/tmp/fixture.capture/frames/frame-01.png"))
+        #expect(summary.contains("Vidshot · 0:33 · Fixture Editor"))
+        #expect(summary.contains("Capture folder: /tmp/fixture.capture"))
+        #expect(summary.components(separatedBy: "/tmp/fixture.capture").count == 2)
+        #expect(summary.contains("Contact sheet: contact-sheet.png"))
+        #expect(summary.contains("frames/frame-01.png"))
         #expect(summary.contains("[clicked x 0.51, y 0.12]"))
         #expect(summary.contains("Unillustrated narration: “Then stop.”"))
         #expect(summary.components(separatedBy: "Open this.").count == 2)
-        #expect(summary.contains("muesli-cli captures zoom \(m.id) --at M:SS"))
+        #expect(!summary.contains("captures zoom"))
     }
     @Test("Summary identifies estimated narration timing even when all words are illustrated")
     func summaryMarksEstimatedTimingForFullyIllustratedNarration() {
@@ -255,5 +256,25 @@ struct FeedbackCaptureContextTests {
         let summary = FeedbackCaptureContext.summary(m, bundle: URL(fileURLWithPath: "/tmp/fixture.capture"))
 
         #expect(summary.contains("Estimated timing: word-to-image matches use approximate timestamps."))
+    }
+
+    @Test func legacyClipboardSummaryKeepsOneResolvableFolder() {
+        let folder = URL(fileURLWithPath: "/tmp/fixture.capture")
+        let legacy = """
+        [muesli Vidshot 0:05 · Screen region · /tmp/fixture.capture]
+        Manifest: /tmp/fixture.capture/capture.json
+        Zoom Vidshot: `muesli-cli captures zoom fixture --at M:SS` shows a moment in detail; use --mark N for mark mN.
+        Contact sheet: /tmp/fixture.capture/contact-sheet.png
+        Open the contact sheet and frames before changing anything: the words make sense on the images.
+        Video: /tmp/fixture.capture/recording.mp4
+        - #1 (0:00) “Hello.” — /tmp/fixture.capture/frames/frame-01.png
+
+        """
+        let compact = FeedbackCaptureContext.clipboardSummary(legacy, bundle: folder)
+        #expect(compact.components(separatedBy: folder.path).count == 2)
+        #expect(compact.contains("Video: recording.mp4"))
+        #expect(compact.contains("“Hello.” — frames/frame-01.png"))
+        #expect(!compact.contains("Zoom Vidshot"))
+        #expect(FeedbackCaptureContext.clipboardSummary(compact, bundle: folder) == compact)
     }
 }

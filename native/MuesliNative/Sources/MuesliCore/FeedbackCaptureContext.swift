@@ -340,17 +340,36 @@ public enum FeedbackCaptureContext {
             : words.enumerated().filter { !illustrated.contains($0.offset) }.map(\.element.text).joined(separator: " ")
         return (text, transcript?.estimated == true && transcript?.missing == nil, transcript?.missing?.reason)
     }
-    public static func summary(_ m: FeedbackCaptureManifest, bundle: URL) -> String {
-        func path(_ relative: String) -> String { bundle.appendingPathComponent(relative).path }
-        var lines = ["[muesli Vidshot \(stamp(m.durationMs)) · \(m.target.appName) · \(bundle.path)]",
-            "Manifest: \(path("capture.json"))"]
-        lines.append("Zoom Vidshot: `muesli-cli captures zoom \(m.id) --at M:SS` shows a moment in detail; use --mark N for mark mN.")
-        if let sheet = m.contactSheet {
-            lines.append("Contact sheet: \(path(sheet))")
-            lines.append("Open the contact sheet and frames before changing anything: the words make sense on the images.")
+    /// Keep existing saved summaries readable without changing the original files.
+    public static func clipboardSummary(_ summary: String, bundle: URL) -> String {
+        var lines = summary.components(separatedBy: "\n")
+        let prefix = "[muesli Vidshot ", suffix = " · \(bundle.path)]"
+        guard let header = lines.first, header.hasPrefix(prefix), header.hasSuffix(suffix) else { return summary }
+        let title = header.dropFirst(prefix.count).dropLast(suffix.count)
+        lines.removeFirst()
+        var result = ["Vidshot · \(title)", "Capture folder: \(bundle.path)", "Files below are relative to the capture folder."]
+        for var line in lines {
+            if line.hasPrefix("Manifest: ") || line.hasPrefix("Zoom Vidshot: ") ||
+                line == "Open the contact sheet and frames before changing anything: the words make sense on the images." { continue }
+            for label in ["Contact sheet: ", "Video: ", "Narration: "] where line.hasPrefix(label + bundle.path + "/") {
+                line = label + line.dropFirst((label + bundle.path + "/").count)
+            }
+            if let marker = line.range(of: " — \(bundle.path)/", options: .backwards),
+               line.hasPrefix("- #") {
+                line.replaceSubrange(marker, with: " — ")
+            }
+            result.append(line)
         }
-        if let video = m.video { lines.append("Video: \(path(video))") }
-        if let audio = m.audio { lines.append("Narration: \(path(audio))") }
+        return result.joined(separator: "\n")
+    }
+    public static func summary(_ m: FeedbackCaptureManifest, bundle: URL) -> String {
+        var lines = ["Vidshot · \(stamp(m.durationMs)) · \(m.target.appName)",
+            "Capture folder: \(bundle.path)", "Files below are relative to the capture folder."]
+        if let sheet = m.contactSheet {
+            lines.append("Contact sheet: \(sheet)")
+        }
+        if let video = m.video { lines.append("Video: \(video)") }
+        if let audio = m.audio { lines.append("Narration: \(audio)") }
         if let reason = m.transcript?.missing?.reason { lines.append("No transcript: \(reason)") }
         else if m.transcript == nil { lines.append("No transcript: narration unavailable") }
         var referenced: Set<Int> = []
@@ -362,7 +381,7 @@ public enum FeedbackCaptureContext {
             let marks = m.marks.filter { $0.frame == frame.file || $0.id == frame.markId }
             if !marks.isEmpty { line += " " + marks.map { "✎ " + $0.description }.joined(separator: "; ") }
             if !frame.said.isEmpty { line += " “\(frame.said)”" }
-            line += " — \(path(frame.file))"
+            line += " — \(frame.file)"
             lines.append(line)
         }
         let narration = unillustratedNarration(m)

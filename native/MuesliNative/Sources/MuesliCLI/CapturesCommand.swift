@@ -175,8 +175,7 @@ struct CapturesReader {
         else {
             snapshot.warnings.append("Vidshot saved summary unavailable; regenerated from available artifacts.")
             let generated = FeedbackCaptureContext.summary(snapshot.available, bundle: snapshot.bundle)
-            summary = generated.replacingOccurrences(of: "Manifest: \(snapshot.bundle.appendingPathComponent("capture.json").path)",
-                with: snapshot.paths.manifest.map { "Manifest: \($0)" } ?? "Manifest unavailable")
+            summary = generated + (snapshot.paths.manifest.map { "Manifest: \(URL(fileURLWithPath: $0).lastPathComponent)\n" } ?? "Manifest unavailable\n")
         }
         return (CaptureDetailPayload(id: m.id, createdAtMs: m.createdAtMs, durationMs: m.durationMs, state: m.state,
             title: m.transcript?.firstClause ?? snapshot.record.title, bundlePath: snapshot.bundle.path, summary: summary,

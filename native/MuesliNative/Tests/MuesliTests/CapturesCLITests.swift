@@ -158,7 +158,7 @@ struct CapturesCLITests {
             try FileManager.default.removeItem(at: store.mediaURL(id: m.id, path: "summary.md"))
             let fallback = try cli(["get", m.id], support: root)
             let text = try #require((fallback.json["data"] as? [String: Any])?["summary"] as? String)
-            #expect(text.contains("captures zoom") && !text.contains("frames/2.png") && !text.contains("recording.mp4"))
+            #expect(text.contains("Capture folder:") && !text.contains("captures zoom") && !text.contains("frames/2.png") && !text.contains("recording.mp4"))
         }
     }
     @Test func legacyAndVersionTwoManifestsAreValidatedBeforeDetailOutput() throws {

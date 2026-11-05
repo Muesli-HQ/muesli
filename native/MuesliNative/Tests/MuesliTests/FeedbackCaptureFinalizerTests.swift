@@ -15,6 +15,10 @@ struct FeedbackCaptureFinalizerTests {
         #expect(FeedbackCaptureDelivery.write("context", video: video, to: pasteboard) == .copied)
         #expect(pasteboard.string(forType: .string) == "context")
         #expect(pasteboard.string(forType: .fileURL) == video.absoluteString)
+        let items = try #require(pasteboard.pasteboardItems)
+        #expect(items.count == 2)
+        #expect(items[0].string(forType: .fileURL) == video.absoluteString)
+        #expect(items[1].string(forType: .string) == "context")
     }
 
     @Test func orderedStagesContinueAfterFailureAndCopyFollowsPublication() async throws {
