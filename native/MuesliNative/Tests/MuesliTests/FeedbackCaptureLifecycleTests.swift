@@ -833,12 +833,6 @@ struct FeedbackCaptureLifecycleTests {
             #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
             try await waitUntil { !(controller.state == .preparing) }
             controller.discard()
-            if case .discardConfirmation = controller.state {} else { Issue.record("Discard must ask for confirmation") }
-            controller.keepRecording()
-            if case .recording = controller.state {} else { Issue.record("Keep must resume the recording") }
-            #expect(controller.ownsMicrophone && mic.stops == 0)
-            controller.discard()
-            controller.discard()
             await controller.shutdown()
             #expect(!controller.ownsMicrophone)
             #expect(mic.stops == 1)

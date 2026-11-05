@@ -5,7 +5,6 @@ struct FeedbackCapturePillView: View {
     var power: () -> Float = { -160 }
     var finish: () -> Void = {}
     var discard: () -> Void = {}
-    var keepRecording: () -> Void = {}
     var open: () -> Void = {}
     var repairPermission: () -> Void = {}
     var copy: (() -> Void)?
@@ -20,13 +19,13 @@ struct FeedbackCapturePillView: View {
                         .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Cancel Vidshot")
-                .help("Cancel Vidshot…")
+                .help("Cancel Vidshot")
             }
             VidshotIcon().frame(width: 14, height: 14)
             switch state {
             case .preparing, .processing:
                 ProgressView().controlSize(.small)
-            case .recording(_, let dead), .discardConfirmation(_, let dead):
+            case .recording(_, let dead):
                 Circle().fill(.red).frame(width: 7, height: 7)
                 if dead {
                     Rectangle().fill(.red).frame(width: 32, height: 2).accessibilityLabel("No microphone samples")
@@ -41,9 +40,6 @@ struct FeedbackCapturePillView: View {
             switch state {
             case .recording:
                 Button("Finish", action: finish)
-            case .discardConfirmation:
-                Button("Keep", action: keepRecording).accessibilityLabel("Keep recording")
-                Button("Discard", action: discard).accessibilityLabel("Discard Vidshot")
             default:
                 switch state {
                 case .blocked: Button("Open Settings", action: repairPermission)

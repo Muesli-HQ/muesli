@@ -487,20 +487,13 @@ final class FeedbackCaptureController {
         guard state?.isRecording == true else { return }
         let seconds = Int(now.timeIntervalSince(start))
         let dead = capture.meter(now: now).0
-        let next: FeedbackCapturePillState
-        if case .discardConfirmation = state { next = .discardConfirmation(seconds: seconds, deadMicrophone: dead) }
-        else { next = .recording(seconds: seconds, deadMicrophone: dead) }
+        let next: FeedbackCapturePillState = .recording(seconds: seconds, deadMicrophone: dead)
         guard next != state else { return }
         present(next)
     }
     func discard() {
         guard state?.isRecording == true else { return }
-        if case .discardConfirmation = state { finish(discard: true) }
-        else { present(.discardConfirmation(seconds: 0, deadMicrophone: attempt?.meter(now: Date()).0 ?? true)) }
-    }
-    func keepRecording() {
-        guard case .discardConfirmation(let seconds, let dead) = state else { return }
-        present(.recording(seconds: seconds, deadMicrophone: dead))
+        finish(discard: true)
     }
     func finish(discard: Bool = false) {
         if let picker { picker.cancel(); return }

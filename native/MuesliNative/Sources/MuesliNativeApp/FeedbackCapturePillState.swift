@@ -4,7 +4,6 @@ import Foundation
 enum FeedbackCapturePillState: Equatable {
     case preparing
     case recording(seconds: Int, deadMicrophone: Bool)
-    case discardConfirmation(seconds: Int, deadMicrophone: Bool)
     case processing
     case ready
     case recovered
@@ -15,7 +14,7 @@ enum FeedbackCapturePillState: Equatable {
     case failed(stage: String, message: String, retainedMedia: Bool)
 
     var isRecording: Bool {
-        switch self { case .recording, .discardConfirmation: true; default: false }
+        switch self { case .recording: true; default: false }
     }
     var isComplete: Bool {
         switch self { case .ready, .recovered, .copied, .readyToCopy, .failed: true; default: false }
@@ -24,7 +23,6 @@ enum FeedbackCapturePillState: Equatable {
         switch self {
         case .preparing: "Preparing Vidshot"
         case .recording(let seconds, _): String(format: "%d:%02d", seconds / 60, seconds % 60)
-        case .discardConfirmation: "Discard?"
         case .processing: "Processing"
         case .ready: "Ready"
         case .recovered: "Recovered"
