@@ -139,7 +139,7 @@ final class FeedbackCaptureInputMonitor {
             } else {
                 bounds = windowBounds(id); cachedWindowBounds = (now, bounds)
             }
-            guard let bounds else { return nil }
+            guard let bounds else { overlay?.setCaptureBounds(.zero); return nil }
             current = bounds
         } else { current = original }
         overlay?.setCaptureBounds(current)
@@ -306,7 +306,7 @@ final class FeedbackCaptureInputMonitor {
         monitorUnavailable = monitor == nil || undoMonitor == nil
         if monitor == nil { report("Global pointer monitoring unavailable") }
         if undoMonitor == nil { report("Passive undo monitoring unavailable") }
-        overlay = FeedbackCaptureInkOverlay(target: inputTarget)
+        overlay = FeedbackCaptureInkOverlay(target: inputTarget, showsBoundary: target.region != nil || target.windowID != nil)
         let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }

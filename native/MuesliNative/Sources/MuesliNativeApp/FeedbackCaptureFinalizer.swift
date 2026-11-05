@@ -199,6 +199,13 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
         pasteboard.clearContents()
         return pasteboard.writeObjects([item]) ? .copied : .failed
     }
+    @MainActor static func writeImage(_ image: Data, to pasteboard: NSPasteboard) -> Result {
+        guard NSBitmapImageRep(data: image) != nil else { return .failed }
+        let item = NSPasteboardItem()
+        guard item.setData(image, forType: .png) else { return .failed }
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([item]) ? .copied : .failed
+    }
 }
 extension FeedbackCaptureFinalizer {
     static func prepareContextThumbnails(_ manifest: FeedbackCaptureManifest, context: Context) async throws -> [FeedbackCaptureContext.Thumbnail] {

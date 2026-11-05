@@ -30,7 +30,6 @@ struct FeedbackCapturePillView: View {
             }
             Text(state.title).fixedSize(horizontal: false, vertical: true)
             if state.isRecording {
-                Button(action: discard) { Image(systemName: "xmark") }.accessibilityLabel("Discard capture")
                 Button("Finish", action: finish)
             } else {
                 switch state {

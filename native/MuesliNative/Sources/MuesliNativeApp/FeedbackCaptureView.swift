@@ -161,6 +161,8 @@ struct FeedbackCaptureView: View {
                     HStack {
                         Button("Copy frames & context") { copy(selected.id) }
                             .disabled(loading || activeWriter || !summaryAvailable)
+                        Button("Copy image") { copy(selected.id, imageOnly: true) }
+                            .disabled(loading || activeWriter || contactSheet == nil)
                         Button("Copy video") { copy(selected.id, video: true) }
                             .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
                         if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
@@ -223,10 +225,10 @@ struct FeedbackCaptureView: View {
             Button("Cancel", role: .cancel) {}
         }
     }
-    private func copy(_ id: String, video: Bool = false) {
+    private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false) {
         copyTask?.cancel(); copyMessage = nil
         copyTask = Task {
-            let result = await controller.copy(id: id, video: video)
+            let result = await controller.copy(id: id, video: video, imageOnly: imageOnly)
             guard !Task.isCancelled, selected?.id == id else { return }
             copyMessage = result == .copied ? "Copied" : result == .failed ? "Copy failed" : nil
         }

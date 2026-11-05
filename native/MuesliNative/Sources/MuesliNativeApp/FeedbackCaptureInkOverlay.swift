@@ -5,10 +5,11 @@ import MuesliCore
 final class FeedbackCaptureInkOverlay {
     private var panels: [NSPanel] = []
     private var hadVisibleInk = false
-    init(target: FeedbackCaptureTarget) {
+    init(target: FeedbackCaptureTarget, showsBoundary: Bool = false) {
         for screen in NSScreen.screens {
             let panel = makeClickThroughOverlayPanel(frame: screen.frame)
             let view = FeedbackCaptureInkOverlayView(frame: CGRect(origin: .zero, size: screen.frame.size))
+            view.showsBoundary = showsBoundary
             panel.contentView = view
             panels.append(panel); panel.orderFrontRegardless()
         }
@@ -59,10 +60,19 @@ final class FeedbackCaptureInkOverlay {
 private final class FeedbackCaptureInkOverlayView: NSView {
     var targetRect: CGRect = .zero
     var strokes: [(FeedbackCaptureStroke, CGFloat)] = []
+    var showsBoundary = false
     override var isOpaque: Bool { false }
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         context.saveGState(); defer { context.restoreGState() }
+        if showsBoundary, targetRect.width > 2, targetRect.height > 2 {
+            context.setStrokeColor(NSColor.black.withAlphaComponent(0.75).cgColor)
+            context.setLineWidth(3)
+            context.stroke(targetRect.insetBy(dx: 1.5, dy: 1.5))
+            context.setStrokeColor(NSColor.systemRed.cgColor)
+            context.setLineWidth(1.5)
+            context.stroke(targetRect.insetBy(dx: 1.5, dy: 1.5))
+        }
         context.clip(to: targetRect)
         context.translateBy(x: targetRect.minX, y: targetRect.minY)
         for (stroke, alpha) in strokes {

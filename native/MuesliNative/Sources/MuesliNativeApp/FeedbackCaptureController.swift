@@ -656,13 +656,15 @@ final class FeedbackCaptureController {
         return manifest.state == .ready ? .ready : .failed(stage: "Recording", message: "No media captured", retainedMedia: false)
     }
     func copy(id: String, expectedPresentationID: UInt64? = nil, pasteboard: NSPasteboard = .general,
-              video: Bool = false) async -> FeedbackCaptureDelivery.Result {
+              video: Bool = false, imageOnly: Bool = false) async -> FeedbackCaptureDelivery.Result {
         guard let store else { return .failed }
         if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
         let request = presentationID
         do {
             let payload = try await Task.detached(priority: .utility) { () -> (String, Data?, URL?) in
-                let summary = try String(contentsOf: store.mediaURL(id: id, path: "summary.md"), encoding: .utf8)
+                let summaryURL = try store.mediaURL(id: id, path: "summary.md")
+                let summary = imageOnly ? ((try? String(contentsOf: summaryURL, encoding: .utf8)) ?? "")
+                                        : try String(contentsOf: summaryURL, encoding: .utf8)
                 let manifest = try? store.manifest(id: id)
                 if video {
                     guard let path = manifest?.video, let url = try? store.mediaURL(id: id, path: path),
@@ -677,7 +679,13 @@ final class FeedbackCaptureController {
             }.value
             guard !Task.isCancelled else { return .skipped }
             if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
-            let result = FeedbackCaptureDelivery.write(payload.0, image: payload.1, video: payload.2, to: pasteboard)
+            let result: FeedbackCaptureDelivery.Result
+            if imageOnly {
+                guard let image = payload.1 else { throw ScreenVideoRecorder.error("Frames unavailable") }
+                result = FeedbackCaptureDelivery.writeImage(image, to: pasteboard)
+            } else {
+                result = FeedbackCaptureDelivery.write(payload.0, image: payload.1, video: payload.2, to: pasteboard)
+            }
             if presentationID == request, presentedCaptureID == id, state?.isComplete == true {
                 if result == .copied {
                     let manifest = try? await Task.detached { try store.manifest(id: id) }.value

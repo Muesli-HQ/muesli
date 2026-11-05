@@ -137,11 +137,11 @@ struct FeedbackCapturePillTests {
                     }
                     hosting.layoutSubtreeIfNeeded()
                     let buttons = accessibilityElements(hosting).filter { $0.accessibilityRole() == .button }
-                    #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == (state.isRecording ? ["Discard capture", "Finish"] : state == .ready ? ["Open"] : []))
+                    #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == (state.isRecording ? ["Finish"] : state == .ready ? ["Open"] : []))
                     for button in buttons { #expect(button.accessibilityPerformPress()) }
                 }
             }
-            #expect(finishes == 3 && discards == 3 && opens == 1)
+            #expect(finishes == 3 && discards == 0 && opens == 1)
             update(.busy(activity: "Finish dictation"))
             #expect(first.contentView === hosting, "Busy must preserve the existing surface")
             update(.recording(seconds: 2, deadMicrophone: false))
@@ -227,7 +227,7 @@ struct FeedbackCapturePillTests {
                     #expect(elements.contains { ($0.accessibilityValue() as? String) == state.title || $0.accessibilityLabel() == state.title })
                     let expected: Set<String>
                     switch state {
-                    case .recording, .discardConfirmation: expected = ["Discard capture", "Finish"]
+                    case .recording, .discardConfirmation: expected = ["Finish"]
                     case .blocked: expected = ["Open Settings"]
                     case .readyToCopy: expected = ["Copy", "Open"]
                     case .ready, .recovered, .copied, .failed(_, _, true): expected = ["Open"]

@@ -122,6 +122,9 @@ struct FeedbackCaptureContextFinalizerTests {
             #expect(!summary.isEmpty)
             #expect(pasteboard.string(forType: .string) == summary && context.delivery.result == .copied)
             #expect(pasteboard.data(forType: .png) == (try Data(contentsOf: store.mediaURL(id: m.id, path: sheet))))
+            let image = try Data(contentsOf: store.mediaURL(id: m.id, path: sheet))
+            #expect(FeedbackCaptureDelivery.writeImage(image, to: pasteboard) == .copied)
+            #expect(pasteboard.data(forType: .png) == image && pasteboard.string(forType: .string) == nil)
             store.release(id: m.id)
         }
     }
