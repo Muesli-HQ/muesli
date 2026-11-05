@@ -79,35 +79,13 @@ struct FeedbackCaptureView: View {
                         Spacer()
                         Text(String(format: "%d:%02d", selected.durationMs / 60_000, (selected.durationMs / 1000) % 60)).monospacedDigit()
                     }
-                    if let contactSheet {
-                        Image(nsImage: contactSheet).resizable().scaledToFit().frame(maxHeight: 150)
-                            .accessibilityLabel("Vidshot contact sheet")
+                    ViewThatFits(in: .horizontal) {
+                        HStack { copyButtons(selected) }
+                        VStack(alignment: .leading, spacing: 8) { copyButtons(selected) }
                     }
-                    if let manifest, !manifest.keyframes.isEmpty {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 12) {
-                                ForEach(manifest.keyframes, id: \.index) { frame in
-                                    HStack(alignment: .top, spacing: 12) {
-                                        if let image = frames[frame.file] {
-                                            Image(nsImage: image).resizable().scaledToFit().frame(width: 220)
-                                                .accessibilityLabel("Frame \(frame.index)")
-                                        } else { Label("Frame unavailable", systemImage: "photo").frame(width: 220) }
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            Text(String(format: "#%d · %d:%02d", frame.index, frame.t / 60_000, (frame.t / 1000) % 60)).font(.headline)
-                                            Text(frame.said.isEmpty ? "No narration for this frame" : frame.said)
-                                        }.frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                }
-                            }.textSelection(.enabled)
-                        }.frame(maxHeight: 220)
-                    }
-                    if let manifest, !manifest.marks.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(manifest.marks, id: \.id) { mark in
-                                Text("✎ \(mark.description)")
-                            }
-                        }.textSelection(.enabled)
-                    }
+                    if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
+                    Text("To paste an attachment, use Copy video or Copy image. Paste behavior depends on the destination app.")
+                        .font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary)
                     if videoURL != nil && audioURL != nil {
                         Picker("Media", selection: $mode) {
                             Text("Video").tag("Screen")
@@ -123,59 +101,62 @@ struct FeedbackCaptureView: View {
                         ContentUnavailableView("Media unavailable", systemImage: "video.slash", description: Text("The saved media may be missing or still recording."))
                     }
                     if let manifest {
-                        let narration = FeedbackCaptureContext.unillustratedNarration(manifest)
                         VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(!manifest.keyframes.isEmpty && !narration.text.isEmpty ? "Unillustrated narration" : "Narration").font(.headline)
-                                if narration.estimated {
-                                    Text("Estimated timing").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            if let reason = narration.missingReason {
+                            Text("Narration").font(MuesliTheme.font(size: 15, weight: .semibold))
+                            if let transcript = manifest.transcript, !transcript.text.isEmpty {
+                                Text(transcript.text)
+                                    .font(MuesliTheme.font(size: 14))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            } else if let reason = FeedbackCaptureContext.unillustratedNarration(manifest).missingReason {
                                 Text("No transcript: \(reason)").foregroundStyle(.secondary)
-                            } else if let transcript = manifest.transcript {
-                                if !narration.text.isEmpty {
-                                    ScrollView {
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            if manifest.keyframes.isEmpty && !transcript.segments.isEmpty {
-                                                ForEach(Array(transcript.segments.enumerated()), id: \.offset) { _, segment in
-                                                    Text(String(format: "%d:%02d  %@", segment.t0 / 60_000,
-                                                        (segment.t0 / 1000) % 60, segment.text))
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                }
-                                            } else {
-                                                Text(narration.text).frame(maxWidth: .infinity, alignment: .leading)
-                                            }
-                                        }.textSelection(.enabled)
-                                    }.frame(maxHeight: 100)
-                                }
                             } else {
                                 Text(selected.state == .processing ? "Transcribing narration…" : "No transcript saved")
                                     .foregroundStyle(.secondary)
                             }
                         }
                     }
+                    if let manifest, !manifest.keyframes.isEmpty {
+                        DisclosureGroup("Frames and timestamps") {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 12) {
+                                    ForEach(manifest.keyframes, id: \.index) { frame in
+                                        HStack(alignment: .top, spacing: 12) {
+                                            if let image = frames[frame.file] {
+                                                Image(nsImage: image).resizable().scaledToFit().frame(width: 220)
+                                                    .accessibilityLabel("Frame \(frame.index)")
+                                            } else { Label("Frame unavailable", systemImage: "photo").frame(width: 220) }
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                Text(String(format: "#%d · %d:%02d", frame.index, frame.t / 60_000, (frame.t / 1000) % 60)).font(.headline)
+                                                Text(frame.said.isEmpty ? "No narration for this frame" : frame.said)
+                                            }.frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                }.textSelection(.enabled)
+                            }.frame(maxHeight: 220)
+                        }
+                    }
+                    if let manifest, !manifest.marks.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(manifest.marks, id: \.id) { mark in
+                                Text("✎ \(mark.description)")
+                            }
+                        }.textSelection(.enabled)
+                    }
                     Text(manifest?.state.rawValue.capitalized ?? selected.state.rawValue.capitalized).font(.headline)
+                    HStack {
+                        Button("Show in Finder") {
+                            if let url = bundleURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        }
+                        Button("Delete…", role: .destructive) { confirmDelete = true }
+                            .disabled(loading || activeWriter)
+                    }
                     if manifest?.audio == nil, manifest?.video != nil { Text("Video only · narration unavailable").foregroundStyle(.secondary) }
                     if manifest?.video == nil, manifest?.audio != nil { Text("Audio only · video unavailable").foregroundStyle(.secondary) }
                     ForEach(Array((manifest?.failures ?? []).enumerated()), id: \.offset) { _, failure in
                         Text("\(failure.stage): \(failure.message)").font(.caption).foregroundStyle(.orange)
                     }
-                    HStack {
-                        Button("Copy frames & context") { copy(selected.id) }
-                            .disabled(loading || activeWriter || !summaryAvailable)
-                        Button("Copy image") { copy(selected.id, imageOnly: true) }
-                            .disabled(loading || activeWriter || contactSheet == nil)
-                        Button("Copy video") { copy(selected.id, video: true) }
-                            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
-                        if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
-                        Button("Show in Finder") {
-                            if let url = bundleURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                        }
-                        Spacer()
-                        Button("Delete…", role: .destructive) { confirmDelete = true }
-                            .disabled(loading || activeWriter)
-                    }
+
                 } else if !loading {
                     ContentUnavailableView {
                         Label { Text("No Vidshots") } icon: { VidshotIcon().frame(width: 36, height: 36) }
@@ -231,6 +212,14 @@ struct FeedbackCaptureView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+    @ViewBuilder private func copyButtons(_ selected: FeedbackCaptureRecord) -> some View {
+        Button("Copy context") { copy(selected.id) }
+            .disabled(loading || activeWriter || !summaryAvailable)
+        Button("Copy image") { copy(selected.id, imageOnly: true) }
+            .disabled(loading || activeWriter || contactSheet == nil)
+        Button("Copy video") { copy(selected.id, video: true) }
+            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
     }
     private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false) {
         copyTask?.cancel(); copyMessage = nil
