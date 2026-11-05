@@ -57,6 +57,10 @@ struct FeedbackCaptureStoreTests {
             capture.state = .ready
             capture.transcript = .init(source: "fixture", text: "First sentence. A searchable needle later.", words: [], segments: [], estimated: false)
             try captures.publish(capture); captures.release(id: capture.id)
+            let folder = try captures.bundleURL(id: capture.id)
+            for path in ["recording.mp4", "narration.wav", "summary.md"] {
+                try Data("fixture".utf8).write(to: folder.appendingPathComponent(path))
+            }
             let rows = try database.timelineEntries(limit: 10)
             #expect(rows.map(\.id) == ["vidshot:\(capture.id)", "dictation:\(dictation)"])
             #expect(try database.timelineEntries(limit: 1, offset: 1).map(\.id) == ["dictation:\(dictation)"])
@@ -68,6 +72,8 @@ struct FeedbackCaptureStoreTests {
             #expect(try database.timelineEntries(toDate: formatter.string(from: base.addingTimeInterval(-1)), activity: "Vidshots").isEmpty)
             #expect(try database.timelineEntries(activity: "Dictations").map(\.id) == ["dictation:\(dictation)"])
             try captures.delete(id: capture.id)
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(try captures.list().isEmpty)
             #expect(try database.timelineEntries().map(\.id) == ["dictation:\(dictation)"])
         }
     }

@@ -220,11 +220,13 @@ struct FeedbackCaptureView: View {
             .disabled(loading || activeWriter || contactSheet == nil)
         Button("Copy video") { copy(selected.id, video: true) }
             .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
+        Button("Copy video + context files") { copy(selected.id, videoAndContextFiles: true) }
+            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
     }
-    private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false) {
+    private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false, videoAndContextFiles: Bool = false) {
         copyTask?.cancel(); copyMessage = nil
         copyTask = Task {
-            let result = await controller.copy(id: id, video: video, imageOnly: imageOnly)
+            let result = await controller.copy(id: id, video: video, imageOnly: imageOnly, videoAndContextFiles: videoAndContextFiles)
             guard !Task.isCancelled, selected?.id == id else { return }
             copyMessage = result == .copied ? "Copied" : result == .failed ? "Copy failed" : nil
         }

@@ -657,7 +657,7 @@ final class FeedbackCaptureController {
         return manifest.state == .ready ? .ready : .failed(stage: "Recording", message: "No media captured", retainedMedia: false)
     }
     func copy(id: String, expectedPresentationID: UInt64? = nil, pasteboard: NSPasteboard = .general,
-              video: Bool = false, imageOnly: Bool = false) async -> FeedbackCaptureDelivery.Result {
+              video: Bool = false, imageOnly: Bool = false, videoAndContextFiles: Bool = false) async -> FeedbackCaptureDelivery.Result {
         guard let store else { return .failed }
         if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
         let request = presentationID
@@ -668,7 +668,7 @@ final class FeedbackCaptureController {
                                         : try String(contentsOf: summaryURL, encoding: .utf8)
                 let summary = FeedbackCaptureContext.clipboardSummary(savedSummary, bundle: try store.bundleURL(id: id))
                 let manifest = try? store.manifest(id: id)
-                if video {
+                if video || videoAndContextFiles {
                     guard let path = manifest?.video, let url = try? store.mediaURL(id: id, path: path),
                           FileManager.default.fileExists(atPath: url.path) else { throw ScreenVideoRecorder.error("Video unavailable") }
                     return (summary, nil, url)
@@ -682,7 +682,11 @@ final class FeedbackCaptureController {
             guard !Task.isCancelled else { return .skipped }
             if let expectedPresentationID, presentationID != expectedPresentationID { return .skipped }
             let result: FeedbackCaptureDelivery.Result
-            if imageOnly {
+            if videoAndContextFiles {
+                guard let videoURL = payload.2 else { throw ScreenVideoRecorder.error("Video unavailable") }
+                let contextURL = try store.mediaURL(id: id, path: "summary.md")
+                result = FeedbackCaptureDelivery.writeVideoAndContextFiles(video: videoURL, context: contextURL, to: pasteboard)
+            } else if imageOnly {
                 guard let image = payload.1 else { throw ScreenVideoRecorder.error("Frames unavailable") }
                 result = FeedbackCaptureDelivery.writeImage(image, to: pasteboard)
             } else {

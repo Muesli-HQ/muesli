@@ -202,6 +202,11 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
         pasteboard.clearContents()
         return pasteboard.writeObjects([text]) ? .copied : .failed
     }
+    @MainActor static func writeVideoAndContextFiles(video: URL, context: URL, to pasteboard: NSPasteboard) -> Result {
+        guard video.isFileURL, context.isFileURL else { return .failed }
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([video as NSURL, context as NSURL]) ? .copied : .failed
+    }
     @MainActor static func writeImage(_ image: Data, to pasteboard: NSPasteboard) -> Result {
         guard NSBitmapImageRep(data: image) != nil else { return .failed }
         let item = NSPasteboardItem()

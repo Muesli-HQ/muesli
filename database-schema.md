@@ -628,6 +628,10 @@ These fields do not change the database projection or reacquire a window during 
 Timeline reads the local capture rows alongside other activity, ordering and
 paginating them by `created_at`. Transcript search reads the capture manifest;
 the Timeline does not copy transcripts or media into the dictation tables.
+Deleting a Vidshot from Timeline uses the capture store to remove its capture
+directory and row, including the video, narration, transcript, and derived files.
+The separately stored narration WAV preserves microphone samples for transcription
+and interrupted-recording recovery, including audio before the first video frame.
 
 Readers ignore unknown fields and reject unsupported versions. Version 1 also
 contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional

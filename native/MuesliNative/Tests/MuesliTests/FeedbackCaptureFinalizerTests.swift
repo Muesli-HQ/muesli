@@ -8,6 +8,18 @@ import os
 @Suite("Vidshot finalizer", .serialized)
 @MainActor
 struct FeedbackCaptureFinalizerTests {
+    @Test func clipboardCanCarryVideoAndContextAsTwoFiles() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let video = URL(fileURLWithPath: "/tmp/vidshot-fixture.mp4")
+        let context = URL(fileURLWithPath: "/tmp/vidshot-context.md")
+        #expect(FeedbackCaptureDelivery.writeVideoAndContextFiles(video: video, context: context, to: pasteboard) == .copied)
+        let items = try #require(pasteboard.pasteboardItems)
+        #expect(items.count == 2)
+        #expect(items[0].string(forType: .fileURL) == video.absoluteString)
+        #expect(items[1].string(forType: .fileURL) == context.absoluteString)
+    }
+
     @Test func clipboardVideoCarriesFileAndContext() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

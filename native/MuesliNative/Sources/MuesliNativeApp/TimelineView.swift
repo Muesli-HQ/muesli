@@ -7,6 +7,7 @@ struct TimelineView: View {
     let appState: AppState
     let controller: MuesliController
 
+    @State private var playingVidshotID: String?
     @State private var contentFilter = "All activity"
     @State private var search = ""
     @State private var searchRows: [TimelineEntry] = []
@@ -315,7 +316,9 @@ struct TimelineView: View {
             )
         case .vidshot(let record):
             TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
-                revision: appState.timelineHistoryRevision) { controller.feedbackCapture.open(id: record.id) }
+                revision: appState.timelineHistoryRevision, playingID: $playingVidshotID,
+                onSelect: { controller.feedbackCapture.open(id: record.id) },
+                onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
         }
     }
 
@@ -338,71 +341,125 @@ private struct TimelineVidshotRow: View {
     let record: FeedbackCaptureRecord
     let store: FeedbackCaptureStore?
     let revision: UInt64
+    @Binding var playingID: String?
     let onSelect: () -> Void
+    let onDelete: () async throws -> Void
     @State private var transcript = ""
-    @State private var targetName = ""
+    @State private var appName = ""
     @State private var preview: NSImage?
-    @State private var isHovered = false
+    @State private var videoURL: URL?
+    @State private var player: AVPlayer?
+    @State private var confirmDelete = false
+    @State private var deleting = false
+    @State private var deleteError: String?
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
-                Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-                    .frame(width: 80, alignment: .leading).padding(.top, 2)
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                    HStack(spacing: MuesliTheme.spacing8) {
-                        VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
-                        Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
-                        if !targetName.isEmpty {
-                            Text(targetName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
-                            .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+        HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
+            Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: 80, alignment: .leading).padding(.top, 2)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
+                    Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
+                    if !appName.isEmpty {
+                        Text(appName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
                     }
-                    HStack(alignment: .top, spacing: 12) {
-                        Group {
-                            if let preview { Image(nsImage: preview).resizable().scaledToFill() }
-                            else { Image(systemName: "video").foregroundStyle(MuesliTheme.textTertiary) }
-                        }
-                        .frame(width: 120, height: 68).background(MuesliTheme.backgroundRaised)
+                    Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                    Spacer(minLength: 0)
+                    Button("Open", action: onSelect)
+                    Button("Delete…", role: .destructive) { confirmDelete = true }
+                        .disabled(deleting || record.state == .recording || record.state == .processing)
+                }
+                if let player {
+                    MeetingVideoPlayerView(player: player)
+                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                        .frame(maxWidth: 480)
                         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                        .accessibilityHidden(true)
-                        Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
-                            .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
-                            .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack(alignment: .top, spacing: 12) {
+                    if player == nil {
+                        Button {
+                            guard let videoURL else { return }
+                            playingID = record.id
+                            let newPlayer = AVPlayer(url: videoURL)
+                            player = newPlayer
+                            newPlayer.play()
+                        } label: {
+                            ZStack {
+                                Group {
+                                    if let preview { Image(nsImage: preview).resizable().scaledToFill() }
+                                    else { Image(systemName: "video").foregroundStyle(MuesliTheme.textTertiary) }
+                                }
+                                .frame(width: 120, height: 68).background(MuesliTheme.backgroundRaised)
+                                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                                if videoURL != nil {
+                                    Image(systemName: "play.circle.fill").font(.system(size: 27))
+                                        .foregroundStyle(.white).shadow(radius: 3)
+                                }
+                            }
+                        }.buttonStyle(.plain).disabled(videoURL == nil).accessibilityLabel("Play Vidshot")
                     }
+                    Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
+                        .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
+                        .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
-            .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).onHover { isHovered = $0 }
-        .accessibilityHint("Open Vidshot capture")
+        .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
+        .confirmationDialog("Delete this Vidshot and all its files?", isPresented: $confirmDelete) {
+            Button("Delete Vidshot", role: .destructive) {
+                player?.pause(); player = nil
+                if playingID == record.id { playingID = nil }
+                deleting = true
+                Task {
+                    do { try await onDelete() }
+                    catch { deleteError = error.localizedDescription }
+                    deleting = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("The video, narration, transcript, frames, and capture data will be deleted.") }
+        .alert("Couldn’t delete Vidshot", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) { deleteError = nil }
+        } message: { Text(deleteError ?? "") }
+        .onChange(of: playingID) { _, id in
+            if id != record.id { player?.pause(); player = nil }
+        }
+        .onDisappear {
+            player?.pause(); player = nil
+            if playingID == record.id { playingID = nil }
+        }
         .task(id: "\(record.id):\(revision)") {
             guard let store else { return }
             let id = record.id
-            let result = await Task.detached(priority: .utility) { () -> (String, String, Data?) in
-                guard let manifest = try? store.manifest(id: id) else { return ("", "", nil) }
+            let result = await Task.detached(priority: .utility) { () -> (String, String, URL?, Data?) in
+                guard let manifest = try? store.manifest(id: id) else { return ("", "", nil, nil) }
+                let name = manifest.target.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let nameLabel = ["screen region", "screen capture", "screen"].contains(name.lowercased()) ? "" : name
                 let text = manifest.transcript?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if let path = manifest.video, let url = try? store.mediaURL(id: id, path: path) {
-                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+                let video = manifest.video.flatMap { path -> URL? in
+                    guard let url = try? store.mediaURL(id: id, path: path),
+                          FileManager.default.fileExists(atPath: url.path) else { return nil }
+                    return url
+                }
+                if let video {
+                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
                     generator.appliesPreferredTrackTransform = true
                     generator.maximumSize = CGSize(width: 480, height: 270)
                     if let image = try? generator.copyCGImage(at: .zero, actualTime: nil),
                        let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
-                        return (text, manifest.target.appName, data)
+                        return (text, nameLabel, video, data)
                     }
                 }
                 if let frame = manifest.keyframes.first?.file, let url = try? store.mediaURL(id: id, path: frame),
-                   let data = try? Data(contentsOf: url) { return (text, manifest.target.appName, data) }
-                return (text, manifest.target.appName, nil)
+                   let data = try? Data(contentsOf: url) { return (text, nameLabel, video, data) }
+                return (text, nameLabel, video, nil)
             }.value
             guard !Task.isCancelled else { return }
-            transcript = result.0; targetName = result.1; preview = result.2.flatMap(NSImage.init(data:))
+            transcript = result.0; appName = result.1; videoURL = result.2; preview = result.3.flatMap(NSImage.init(data:))
         }
     }
 }
