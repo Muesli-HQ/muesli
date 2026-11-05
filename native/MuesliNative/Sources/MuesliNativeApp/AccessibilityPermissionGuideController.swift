@@ -138,6 +138,7 @@ enum AccessibilityPermissionGuideRetryPolicy {
 enum PermissionDragGuidePermission: Equatable {
     case accessibility
     case inputMonitoring
+    case screenRecording
 
     init?(permissionName: String) {
         switch permissionName {
@@ -145,6 +146,8 @@ enum PermissionDragGuidePermission: Equatable {
             self = .accessibility
         case "Input Monitoring":
             self = .inputMonitoring
+        case "Screen Recording", "Screen & System Audio":
+            self = .screenRecording
         default:
             return nil
         }
@@ -156,7 +159,23 @@ enum PermissionDragGuidePermission: Equatable {
             AXIsProcessTrusted()
         case .inputMonitoring:
             CGPreflightListenEventAccess()
+        case .screenRecording:
+            CGPreflightScreenCaptureAccess()
         }
+    }
+
+    func instruction(direction: PermissionGuideDragDirection) -> String {
+        guard self == .screenRecording else { return direction.instruction }
+        return direction == .up
+            ? "Turn on the app above, or drag this row up if missing"
+            : "Turn on the app below, or drag this row down if missing"
+    }
+
+    func endsOnReturn(hasPresentedGuide: Bool, frontmostBundleID: String?, muesliBundleID: String?) -> Bool {
+        // Screen Capture can keep reporting the old grant until relaunch. Once
+        // the user returns, the shared restart notice owns recovery instead.
+        self == .screenRecording && hasPresentedGuide && muesliBundleID != nil
+            && frontmostBundleID == muesliBundleID
     }
 }
 
@@ -230,6 +249,7 @@ enum SystemSettingsWindowGeometry {
 
 @MainActor
 final class AccessibilityPermissionGuideController {
+    static let shared = AccessibilityPermissionGuideController()
     var onPresentationChanged: ((AccessibilityPermissionGuideOnboardingPresentation) -> Void)?
 
     private let appURL: URL
@@ -244,6 +264,7 @@ final class AccessibilityPermissionGuideController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
     private var requestedPermission: PermissionDragGuidePermission?
+    private var hasPresentedGuide = false
     private var onboardingPresentation: AccessibilityPermissionGuideOnboardingPresentation = .restoredAndActive
 
     init(
@@ -266,6 +287,8 @@ final class AccessibilityPermissionGuideController {
         // only an attempt; the TCC permission state is the sole completion signal.
         resetAttemptedDrop()
         requestedPermission = permission
+        model.permission = permission
+        hasPresentedGuide = false
         installObserversIfNeeded()
         startRefreshTimerIfNeeded()
         refreshPresentation()
@@ -273,6 +296,7 @@ final class AccessibilityPermissionGuideController {
 
     func dismiss() {
         requestedPermission = nil
+        hasPresentedGuide = false
         refreshTimer?.invalidate()
         refreshTimer = nil
         resetAttemptedDrop()
@@ -347,6 +371,14 @@ final class AccessibilityPermissionGuideController {
         }
 
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if requestedPermission.endsOnReturn(
+            hasPresentedGuide: hasPresentedGuide,
+            frontmostBundleID: frontmostBundleID,
+            muesliBundleID: Bundle.main.bundleIdentifier
+        ) {
+            dismiss()
+            return
+        }
         if AccessibilityPermissionGuideRetryPolicy.shouldRestoreDragSource(
             didAttemptDrop: model.didAttemptDrop,
             isGranted: isGranted,
@@ -378,6 +410,7 @@ final class AccessibilityPermissionGuideController {
         }
 
         ensurePanels()
+        hasPresentedGuide = true
         model.dragDirection = frames.dragDirection
         if model.didAttemptDrop {
             guidePanel?.setFrame(frames.postDropGuide, display: true)
@@ -535,6 +568,7 @@ enum SystemSettingsWindowLocator {
 
 @MainActor
 private final class AccessibilityPermissionGuideModel: ObservableObject {
+    @Published var permission: PermissionDragGuidePermission = .accessibility
     @Published var didAttemptDrop = false
     @Published var dragDirection: PermissionGuideDragDirection = .up
 }
@@ -573,7 +607,7 @@ private struct CompactAccessibilityPermissionGuideView: View {
                             .foregroundStyle(MuesliTheme.accent)
                             .offset(y: arrowOffset)
 
-                        Text(model.dragDirection.instruction)
+                        Text(model.permission.instruction(direction: model.dragDirection))
                             .font(MuesliTheme.font(size: 12, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.72))
                     }

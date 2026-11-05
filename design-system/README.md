@@ -77,6 +77,14 @@ Feature controls show the missing prerequisite beside Review access, including w
 a previously enabled feature loses permission. Guided setup retains a visible exit
 and a Manage permissions action; returning refreshes permission state.
 
+Accessibility, Input Monitoring and Screen Recording requests share the compact
+System Settings arrow and draggable app-row guide across onboarding, feature
+setup and General Permissions. Screen Recording first directs users to turn on
+the existing app row, with dragging as a fallback when it is missing. Microphone
+uses its native consent prompt rather than an unsupported drag instruction.
+The Screen Recording guide ends when the user returns to muesli, handing off to
+the shared restart notice even if the running process still reports old access.
+
 Requests for Accessibility, Input Monitoring and Screen Recording offer a single
 restart notice on returning from System Settings, with Restart muesli and Later.
 Do not infer a grant from the request: use conditional copy when macOS still

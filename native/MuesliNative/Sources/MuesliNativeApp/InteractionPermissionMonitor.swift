@@ -145,7 +145,20 @@ enum FeaturePermission: String, Equatable, Sendable {
 
     @MainActor private static var requested = Set<FeaturePermission>()
 
+    var guidePermission: PermissionDragGuidePermission? {
+        PermissionDragGuidePermission(permissionName: rawValue)
+    }
+
+    @MainActor private func beginGuide() {
+        if let guidePermission {
+            AccessibilityPermissionGuideController.shared.showWhenSystemSettingsIsAvailable(for: guidePermission)
+        } else {
+            AccessibilityPermissionGuideController.shared.dismiss()
+        }
+    }
+
     @MainActor func openSettings() {
+        beginGuide()
         if mayNeedRestart { PermissionRestartPresentation.allowTermination(from: NSApp.keyWindow) }
         PermissionRestartRecovery.shared.requested(self, wasGranted: isGranted)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacyPane)") {
@@ -154,6 +167,7 @@ enum FeaturePermission: String, Equatable, Sendable {
     }
 
     @MainActor func request() {
+        beginGuide()
         if mayNeedRestart { PermissionRestartPresentation.allowTermination(from: NSApp.keyWindow) }
         PermissionRestartRecovery.shared.requested(self, wasGranted: isGranted)
         switch self {

@@ -921,7 +921,10 @@ struct OnboardingView: View {
                     "Screen & System Audio",
                     "Capture meeting audio from other participants",
                     screenRecordingGranted,
-                    { CGRequestScreenCaptureAccess() }
+                    {
+                        self.controller.beginSystemPermissionGuide(for: .screenRecording)
+                        CGRequestScreenCaptureAccess()
+                    }
                 ))
             }
         }
