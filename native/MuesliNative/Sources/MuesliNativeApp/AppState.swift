@@ -366,6 +366,7 @@ final class AppState {
 
     var selectedTab: DashboardTab = .timeline
     var selectedVidshotID: String?
+    var vidshotDetailReturnsToTimeline = false
     var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline

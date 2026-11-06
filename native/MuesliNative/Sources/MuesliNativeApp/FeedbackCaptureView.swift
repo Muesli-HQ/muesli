@@ -44,6 +44,7 @@ struct FeedbackCaptureView: View {
     let controller: FeedbackCaptureController
     @State var selectedID: String?
     var onBack: (() -> Void)? = nil
+    var backLabel = "Vidshots"
     @State private var manifest: FeedbackCaptureManifest?
     @State private var player: AVPlayer?
     @State private var mode = "Screen"
@@ -68,8 +69,12 @@ struct FeedbackCaptureView: View {
                 if let selected {
                     if let onBack {
                         Button(action: onBack) {
-                            Label("Vidshots", systemImage: "chevron.left")
+                            Label(backLabel, systemImage: "chevron.left")
+                                .padding(.horizontal, 8)
+                                .frame(minHeight: 32)
+                                .contentShape(Rectangle())
                         }.buttonStyle(.plain)
+                            .accessibilityLabel("Back to \(backLabel)")
                     } else {
                         HStack(spacing: 8) {
                             VidshotIcon().frame(width: 16, height: 16).foregroundStyle(MuesliTheme.accentText)

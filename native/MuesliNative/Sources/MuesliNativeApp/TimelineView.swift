@@ -315,6 +315,7 @@ struct TimelineView: View {
             TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
                 revision: appState.timelineHistoryRevision, playingID: $playingVidshotID,
                 onSelect: {
+                    appState.vidshotDetailReturnsToTimeline = true
                     appState.selectedVidshotID = record.id
                     appState.selectedTab = .vidshots
                 },
@@ -347,7 +348,13 @@ struct VidshotsPage: View {
         let records = controller.feedbackCapture.records
         if let id = appState.selectedVidshotID {
             FeedbackCaptureView(controller: controller.feedbackCapture, selectedID: id,
-                onBack: { appState.selectedVidshotID = nil })
+                onBack: {
+                    appState.selectedVidshotID = nil
+                    if appState.vidshotDetailReturnsToTimeline {
+                        appState.vidshotDetailReturnsToTimeline = false
+                        controller.showTimelineHome()
+                    }
+                }, backLabel: appState.vidshotDetailReturnsToTimeline ? "Timeline" : "Vidshots")
                 .id(id)
         } else {
             ScrollView {
@@ -376,7 +383,10 @@ struct VidshotsPage: View {
                                 }
                                 TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
                                     revision: appState.timelineHistoryRevision, playingID: $playingID,
-                                    onSelect: { appState.selectedVidshotID = record.id },
+                                    onSelect: {
+                                        appState.vidshotDetailReturnsToTimeline = false
+                                        appState.selectedVidshotID = record.id
+                                    },
                                     onCopy: { await controller.feedbackCapture.copy(id: record.id) },
                                     onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
                             }
