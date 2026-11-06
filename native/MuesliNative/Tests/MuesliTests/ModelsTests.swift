@@ -3624,6 +3624,13 @@ struct HotkeyMonitorTests {
 @Suite("MeetingResummarizationPolicy")
 struct MeetingResummarizationPolicyTests {
 
+    @Test("title generation never replaces a pending rename")
+    func titleGenerationRespectsPendingRename() {
+        #expect(MeetingResummarizationPolicy.titleToPersist(original: "Meeting", generated: "  Planning  ", hasPendingRename: false) == "Planning")
+        #expect(MeetingResummarizationPolicy.titleToPersist(original: "Meeting", generated: "Planning", hasPendingRename: true) == "Meeting")
+        #expect(MeetingResummarizationPolicy.titleToPersist(original: "Meeting", generated: "  ", hasPendingRename: false) == "Meeting")
+    }
+
     @Test("only non-calendar placeholder titles are regenerated", arguments: [
         ("Meeting", Optional<String>.none, true),
         ("  ", nil, true),

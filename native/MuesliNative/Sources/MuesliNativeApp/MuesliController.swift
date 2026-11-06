@@ -186,6 +186,12 @@ enum MeetingResummarizationPolicy {
         return calendarEventID == nil && (trimmed.isEmpty || trimmed == "Meeting")
     }
 
+    static func titleToPersist(original: String, generated: String?, hasPendingRename: Bool) -> String {
+        guard !hasPendingRename, let generated = generated?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !generated.isEmpty else { return original }
+        return generated
+    }
+
     static func plan(for meeting: MeetingRecord) -> MeetingResummarizationPlan {
         let trimmed = meeting.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let promptTitle = trimmed.isEmpty ? "Meeting" : trimmed
@@ -6406,9 +6412,11 @@ public final class MuesliController: NSObject {
                 } else {
                     generatedTitle = nil
                 }
-                let candidateTitle = generatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let titleToSave = candidateTitle.flatMap { $0.isEmpty ? nil : $0 } ?? plan.persistedTitle
                 self.flushCachedMeetingTitle(id: meeting.id)
+                let titleToSave = MeetingResummarizationPolicy.titleToPersist(
+                    original: plan.persistedTitle, generated: generatedTitle,
+                    hasPendingRename: self.liveMeetingTitleCache[meeting.id] != nil
+                )
                 do {
                     try self.dictationStore.updateMeetingSummary(
                         id: meeting.id,
