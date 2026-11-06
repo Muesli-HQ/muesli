@@ -140,7 +140,12 @@ public enum FeedbackCaptureRenderer {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw ScreenVideoRecorder.error("Cannot read video thumbnails") }
         reader.add(output)
-        try cancellation.install { reader.cancelReading() }
+        // AVAssetReader may still be inside copyNextSampleBuffer when the media
+        // deadline expires. Cancelling it from the timer concurrently can tear
+        // down CoreMedia state underneath that read. The deadline retires the
+        // result immediately; this worker observes cancellation between reads
+        // and owns reader teardown after the in-flight native call returns.
+        try cancellation.check()
         guard reader.startReading() else { throw reader.error ?? ScreenVideoRecorder.error("Cannot start video reader") }
         defer { reader.cancelReading() }
         var thumbnails: [FeedbackCaptureContext.Thumbnail] = []

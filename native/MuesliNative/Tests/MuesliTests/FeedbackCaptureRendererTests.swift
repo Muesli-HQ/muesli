@@ -228,6 +228,32 @@ struct FeedbackCaptureRendererTests {
             store.release(id: m.id)
         }
     }
+    @Test func thumbnailCancellationRetiresDecoderSafely() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let m = try store.begin(target: feedbackTarget())
+            let url = try store.mediaURL(id: m.id, path: "recording.mp4")
+            try await makeVideo(url, frameCount: 48, fps: 12)
+
+            let alreadyCancelled = FeedbackCaptureDecodeCancellation()
+            alreadyCancelled.cancel()
+            do {
+                _ = try await FeedbackCaptureRenderer.thumbnails(url: url, videoOffsetMs: 0, cancellation: alreadyCancelled)
+                Issue.record("A cancelled thumbnail request returned frames")
+            } catch { #expect(error is CancellationError) }
+
+            for _ in 0..<10 {
+                let cancellation = FeedbackCaptureDecodeCancellation()
+                let task = Task.detached {
+                    try await FeedbackCaptureRenderer.thumbnails(url: url, videoOffsetMs: 0, cancellation: cancellation)
+                }
+                try await Task.sleep(for: .milliseconds(2))
+                cancellation.cancel()
+                do { _ = try await task.value }
+                catch { #expect(error is CancellationError) }
+            }
+            store.release(id: m.id)
+        }
+    }
     @Test func numberBandPreservesSourcePixelsAndContactSheetHasBoundedLongEdge() throws {
         let space = CGColorSpaceCreateDeviceRGB()
         let context = try #require(CGContext(data: nil, width: 320, height: 180, bitsPerComponent: 8, bytesPerRow: 0,
@@ -323,22 +349,31 @@ struct FeedbackCaptureRendererTests {
     @Test func mediaDeadlineCancelsNativeWorkAndDiscardsLateResult() async throws {
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         let returned = OSAllocatedUnfairLock(initialState: false)
+        let release = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
         let job = FeedbackCaptureMediaJob<Int>()
-        let start = ContinuousClock.now
         do {
             _ = try await job.run(timeout: .milliseconds(20), cancel: { cancelled.withLock { $0 = true } }) {
                 // Model a native operation that ignores Swift task cancellation.
                 await withCheckedContinuation { continuation in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.12) { continuation.resume() }
+                    release.withLock { $0 = continuation }
                 }
                 returned.withLock { $0 = true }
                 return 42
             }
             Issue.record("Expired decoding was accepted")
         } catch { #expect(error.localizedDescription.localizedCaseInsensitiveContains("timed out")) }
-        #expect(start.duration(to: .now) < .milliseconds(100))
         #expect(cancelled.withLock { $0 })
-        try await Task.sleep(for: .milliseconds(160))
+        #expect(!returned.withLock { $0 })
+        let deadline = ContinuousClock.now + .seconds(5)
+        while release.withLock({ $0 == nil }) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let continuation = release.withLock { value in let saved = value; value = nil; return saved }
+        #expect(continuation != nil)
+        continuation?.resume()
+        while !returned.withLock({ $0 }) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(returned.withLock { $0 })
     }
 }
