@@ -745,6 +745,7 @@
     <tr><td>Minimal idle</td><td>40pt-high window sized to the shortcut pill; only the visible grip/pill is interactive.</td></tr>
     <tr><td>Preparing</td><td>76×22pt, waiting bars, immediate transition.</td></tr>
     <tr><td>Recording</td><td>76×22pt normally. Cursor-insertion-stopped feedback widens to fit its title.</td></tr>
+    <tr><td>Dictating during a meeting</td><td>28pt-high, content-sized row: “Dictating”, a red meeting-recording dot (pause symbol when paused), live waveform and separate finish/cancel actions. Stopped live-insertion warnings take precedence. Notch keeps its waveform and two-wing layout.</td></tr>
     <tr><td>Transcribing</td><td>Measured title width and 32pt height; instruction transcript mode has separate sizing.</td></tr>
     <tr><td>Loading / notices</td><td>Message-dependent widths, 36pt high; use the dedicated loading/notice path.</td></tr>
     <tr><td>Surface</td><td>NSVisualEffectView hudWindow material, withinWindow blending, with a separate tint layer.</td></tr>
@@ -752,6 +753,14 @@
     <tr><td>Window alpha</td><td>Idle 0.90; hovered idle and active states 1.0.</td></tr>
     <tr><td>Border</td><td>White 22% idle, 14% hovered idle, 16% preparing/recording/transcribing.</td></tr>
   </table>
+  <div class="component-preview" style="display:flex;align-items:center;min-height:60px">
+    <div role="img" aria-label="Dictating while meeting recording, with waveform, finish and cancel controls" style="box-sizing:border-box;height:28px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:#252532;color:#fff;display:inline-flex;align-items:center;padding-left:8px">
+      <div style="font-size:10px;font-weight:600;white-space:nowrap">Dictating</div><div aria-hidden="true" style="width:20px;text-align:center;color:#ef4444;font-size:10px">●</div>
+      <div aria-hidden="true" style="width:27px;display:flex;align-items:center;justify-content:center;gap:3px;height:16px"><i style="width:3px;height:7px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:12px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:14px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:12px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:7px;background:#ddd;border-radius:2px"></i></div>
+      <div aria-hidden="true" style="width:28px;text-align:center;font-size:9px">■</div><div aria-hidden="true" style="width:28px;text-align:center;font-size:12px">×</div>
+    </div>
+  </div>
+  <p class="pattern-note">Illustrative overlap state; native controls provide the actual symbols, hit targets and adaptive presentation.</p>
   <h3>Standing waveform dynamics</h3>
   <table>
     <tr><th>Property</th><th>Source value</th></tr>

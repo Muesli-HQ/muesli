@@ -109,8 +109,8 @@ struct MeetingRecordingWriterTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.components(separatedBy: "retainedRecordingWriter?.appendMic(").count == 2)
         let funnel = try #require(source.range(of: "private func appendCleanedMicSamplesOnQueue"))
-        let append = try #require(source.range(of: "retainedRecordingWriter?.appendMic(cleanedInt16)"))
-        let recorder = try #require(source.range(of: "rawMicChunkRecorder?.append(cleanedInt16)"))
+        let append = try #require(source.range(of: "retainedRecordingWriter?.appendMic(samples)"))
+        let recorder = try #require(source.range(of: "rawMicChunkRecorder?.append(samples)"))
         #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
         for (start, finish) in [
             ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),

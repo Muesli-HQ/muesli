@@ -6,12 +6,312 @@ import MuesliCore
 
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
+    @Test("repeated meeting notices each retain their dismissal deadline")
+    @MainActor
+    func repeatedMeetingNotice() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        var dismissals: [DispatchWorkItem] = []
+        let indicator = FloatingIndicatorController(
+            configStore: ConfigStore(supportDirectory: directory),
+            scheduleMeetingFeedbackDismissal: { _, item in dismissals.append(item) }
+        )
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.presentsWindows = false
+        indicator.setMeetingRecording(true, config: AppConfig())
+        indicator.showWarning("Model preparation failed. Try again.")
+        indicator.showWarning("Model preparation failed. Try again.")
+        #expect(dismissals.count == 2)
+        guard dismissals.count == 2 else { return }
+        dismissals[0].perform()
+        #expect(indicator.meetingFeedbackMessage == "Model preparation failed. Try again.")
+        dismissals[1].perform()
+        #expect(indicator.meetingFeedbackMessage == nil)
+    }
+
     @MainActor
     private func makeNotch(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) -> NotchIndicatorController {
         NotchIndicatorController(resolveGeometry: { screen in
             NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
         }, pointerLocation: pointerLocation)
+    }
+
+    @Test("overlap state retains the surviving activity and routes Finish and Cancel to dictation")
+    @MainActor
+    func dictationOverlap() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory), notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        let config = AppConfig()
+        indicator.presentsWindows = false
+        var cancelled = 0, finished = 0, stoppedMeeting = 0
+        var meetingPauses = 0, meetingDiscards = 0
+        indicator.onCancelDictation = { cancelled += 1 }
+        indicator.onStopToggleDictation = { finished += 1 }
+        indicator.onStopMeeting = { stoppedMeeting += 1 }
+        indicator.onToggleMeetingPause = { meetingPauses += 1 }
+        indicator.onDiscardMeeting = { meetingDiscards += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Owned warmup")
+        #expect(indicator.meetingFeedbackMessage == "Owned warmup" && indicator.isShowingLoading)
+        #expect(indicator.overlapMeetingStatus == "Meeting recording")
+        indicator.cancelNotchActivity()
+        #expect(meetingDiscards == 1 && cancelled == 0)
+        indicator.hideLoading()
+        #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+        #expect(indicator.state == .recording && indicator.overlapMeetingStatus == nil)
+        indicator.toggleNotchMeetingPause()
+        indicator.stopNotchMeeting()
+        #expect(meetingPauses == 1 && stoppedMeeting == 1)
+        for ending in ["end", "hide", "pause", "resume", "dictation", "meeting", "notice"] {
+            indicator.setMeetingRecordingPaused(ending == "resume", config: config)
+            indicator.pointerInteractionBegan()
+            indicator.showLoading("First progress")
+            indicator.showLoading("Latest progress")
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading,
+                "Loading must remain deferred throughout a drag")
+            switch ending {
+            case "hide": indicator.hideLoading()
+            case "pause": indicator.setMeetingRecordingPaused(true, config: config)
+            case "resume": indicator.setMeetingRecordingPaused(false, config: config)
+            case "dictation":
+                indicator.setDictationState(.preparing, config: config)
+                indicator.setDictationState(.idle, config: config)
+            case "meeting":
+                indicator.setMeetingRecording(false, config: config)
+                indicator.setMeetingRecording(true, config: config)
+            case "notice": indicator.showWarning("Newer notice")
+            default: break
+            }
+            indicator.pointerInteractionEnded()
+            #expect(indicator.meetingFeedbackMessage == (ending == "end" ? "Latest progress" : (ending == "notice" ? "Newer notice" : nil)))
+            #expect(indicator.isShowingLoading == (ending == "end"))
+            indicator.hideLoading()
+        }
+        indicator.setMeetingRecordingPaused(false, config: config)
+        // No panel is created: exercise the production redraw decision with an
+        // existing floating panel as input, separately from loading ownership.
+        for loading in [false, true] {
+            for paused in [true, false] {
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+                if loading { indicator.showLoading("Preparing dictation") }
+                else { indicator.showWarning("Try dictation again") }
+                #expect(indicator.isShowingLoading == loading)
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: !paused, hasPanel: true, config: config))
+                #expect(indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config),
+                    "A pause transition must redraw retired feedback on an existing floating panel")
+                indicator.setMeetingRecordingPaused(paused, config: config)
+                #expect(indicator.meetingFeedbackMessage == nil)
+                #expect(!indicator.isShowingLoading, "Retired loading must not keep meeting hover controls disabled")
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+            }
+        }
+        for takeover in [false, true] {
+            indicator.showLoading("Preparing dictation")
+            #expect(indicator.meetingFeedbackMessage != nil && indicator.isShowingLoading)
+            if takeover { indicator.setDictationState(.preparing, config: config) }
+            else { indicator.setMeetingRecording(false, config: config) }
+            #expect(indicator.state == (takeover ? .preparing : .idle))
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+            indicator.setDictationState(.idle, config: config)
+            indicator.setMeetingRecording(true, config: config)
+        }
+        indicator.setMeetingRecording(false, config: config)
+        indicator.showLoading("Unrelated background loading")
+        indicator.setDictationState(.idle, config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.meetingFeedbackMessage == nil && indicator.isShowingLoading)
+        indicator.hideLoading()
+        indicator.setMeetingRecording(true, config: config)
+        for target: DictationState in [.idle, .recording] {
+            indicator.setDictationState(.preparing, config: config)
+            indicator.setPreparingWaveformWaiting(config: config)
+            #expect(indicator.recordingWaveformMode == .waiting)
+            indicator.setDictationState(.preparing, config: config)
+            #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
+            for state: DictationState in [.preparing, .recording, .transcribing] {
+                for paused in [false, true] {
+                    for reason: BufferedDictationInsertionStopReason? in [nil, .cursorOwnershipLost, .transcriptionFailed] {
+                        let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: reason)
+                        let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+                        #expect(size.height == 28)
+                        #expect(ceil(text.size().width) + 8 <= size.width - 116)
+                        let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+                        label.attributedText = text
+                        let status = NSRect(x: size.width - 107, y: (size.height - 14) / 2, width: 14, height: 14)
+                        #expect(label.frame.maxX <= status.minX, "Text must not overlap the meeting indicator")
+                        #expect(label.frame.minY >= 0 && label.frame.maxY <= size.height, "Text must fit within the pill")
+                        let bars = (0..<5).map { IndicatorWaveformDynamics.standingBarFrame(index: $0, amplitude: 1, bounds: CGRect(origin: .zero, size: size), overlapsMeeting: true) }
+                        #expect(bars.allSatisfy { $0.minX >= status.maxX && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
+                        if state == .recording && reason == nil {
+                            #expect(text.string.hasPrefix("Dictating"))
+                            #expect(size.width * size.height < 220 * 40, "The overlap pill should remain compact")
+                        }
+                    }
+                }
+            }
+            indicator.setDictationState(target, config: config)
+            #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+            indicator.setDictationState(.idle, config: config)
+        }
+        indicator.setMeetingRecordingPaused(true, config: config)
+        for state: DictationState in [.preparing, .recording, .transcribing] {
+            indicator.setDictationState(state, config: config)
+            #expect(indicator.overlapMeetingStatus == "Meeting paused")
+            notch.onCancel?()
+            if state == .recording { notch.onStopRecording?() }
+            indicator.stopNotchMeeting()
+        }
+        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 1)
+        indicator.setDictationState(.idle, config: config)
+        #expect(indicator.overlapMeetingStatus == nil)
+        indicator.stopNotchMeeting()
+        #expect(stoppedMeeting == 2)
+        indicator.setDictationState(.recording, config: config)
+        #expect(indicator.overlapMeetingStatus == "Meeting paused")
+        indicator.setRecordingWaveformWaiting(config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+        #expect(indicator.overlapMeetingStatus == nil)
+        let ordinary = CGRect(x: 0, y: 0, width: 76, height: 22)
+        #expect(indicator.standingWaveformFrame(index: 0, amplitude: 0, bounds: ordinary) ==
+            IndicatorWaveformDynamics.standingBarFrame(index: 0, amplitude: 0, bounds: ordinary))
+        indicator.cancelNotchActivity()
+        #expect(cancelled == 4)
+
+        var transcriptVisible = true, geometry = "expanded"
+        var effects: [String] = []
+        var compactWrites: [() -> Void] = [], completions: [() -> Void] = []
+        let applyGeometry: (Bool, @escaping () -> Void) -> Void = { animated, completion in
+            let compact = { geometry = "compact"; effects.append("compact") }
+            if animated { compactWrites.append(compact) } else { compact() }
+            effects.append("layout")
+            completions.append { effects.append("completion"); completion() }
+        }
+        let restore = { transcriptVisible = true; geometry = "expanded"; effects.append("restore") }
+        for _ in 0..<2 {
+            let restores = transcriptVisible
+            transcriptVisible = false // The renderer normalizes expanded content before compact layout.
+            effects.removeAll()
+            FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: restores, geometry: applyGeometry, restore: restore)
+            #expect(transcriptVisible && geometry == "expanded", "Each refresh must restore before returning")
+            #expect(effects == ["compact", "layout", "restore"])
+            #expect(compactWrites.isEmpty, "Restoring refreshes cannot leave a deferred compact frame")
+        }
+        transcriptVisible = false
+        geometry = "compact" // Collapse before ordinary animation completions are delivered.
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact", "A stale completion cannot reopen a collapsed transcript")
+        compactWrites.removeAll()
+        completions.removeAll()
+        effects.removeAll()
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry, restore: restore)
+        #expect(effects == ["layout"] && compactWrites.count == 1 && completions.count == 1)
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+    }
+
+    @Test("meeting status draws an unclipped recording dot")
+    @MainActor
+    func meetingStatusDotRendering() throws {
+        let view = MeetingOverlapStatusView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 14, pixelsHigh: 14,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        #expect((bitmap.colorAt(x: 4, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 9, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 0, y: 7)?.alphaComponent ?? 1) == 0)
+        #expect((bitmap.colorAt(x: 13, y: 7)?.alphaComponent ?? 1) == 0)
+    }
+
+    @Test("overlap text and recording dot render on the same center line")
+    @MainActor
+    func overlapTextAndDotAlignment() throws {
+        for state: DictationState in [.recording, .transcribing] {
+            let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: nil)
+            let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+            let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+            label.attributedText = text
+            let status = MeetingOverlapStatusView(frame: NSRect(x: size.width - 107, y: 7, width: 14, height: 14))
+            let scale: CGFloat = 2
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.cgContext.clear(CGRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
+            context.cgContext.scaleBy(x: scale, y: scale)
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: label.frame.minX, y: label.frame.minY)
+            label.draw(label.bounds)
+            context.cgContext.restoreGState()
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: status.frame.minX, y: status.frame.minY)
+            status.draw(status.bounds)
+            context.cgContext.restoreGState()
+            NSGraphicsContext.restoreGraphicsState()
+            var textRows: [Int] = [], dotRows: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y), color.alphaComponent > 0.5 else { continue }
+                    if CGFloat(x) / scale < label.frame.maxX { textRows.append(y) }
+                    if CGFloat(x) / scale >= status.frame.minX && CGFloat(x) / scale < status.frame.maxX { dotRows.append(y) }
+                }
+            }
+            let textMin = try #require(textRows.min()), textMax = try #require(textRows.max())
+            let dotMin = try #require(dotRows.min()), dotMax = try #require(dotRows.max())
+            #expect(abs(CGFloat(textMin + textMax - dotMin - dotMax) / 2) <= 2 * scale,
+                "Text and recording dot should share a visual center line")
+        }
+    }
+
+    @Test("overlap control symbols move closer without shrinking their targets")
+    @MainActor
+    func overlapControlSymbolOffsets() throws {
+        _ = NSApplication.shared
+        let cell = FloatingIndicatorButtonCell()
+        cell.image = try #require(NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil))
+        cell.imagePosition = .imageOnly
+        let bounds = NSRect(x: 0, y: 0, width: 28, height: 28)
+        let original = cell.imageRect(forBounds: bounds)
+        cell.imageHorizontalOffset = 3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX + 3)
+        cell.imageHorizontalOffset = -3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX - 3)
+
+        func renderedCenter(offset: CGFloat) throws -> CGFloat {
+            let button = NSButton(frame: bounds)
+            let renderedCell = FloatingIndicatorButtonCell()
+            renderedCell.imageHorizontalOffset = offset
+            button.cell = renderedCell
+            button.title = ""
+            button.imagePosition = .imageOnly
+            button.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+            button.isBordered = false
+            button.contentTintColor = .white
+            let bitmap = try #require(button.bitmapImageRepForCachingDisplay(in: bounds))
+            button.cacheDisplay(in: bounds, to: bitmap)
+            var columns: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 {
+                    columns.append(x)
+                }
+            }
+            let minimum = try #require(columns.min()), maximum = try #require(columns.max())
+            return CGFloat(minimum + maximum) / 2
+        }
+        let left = try renderedCenter(offset: -3)
+        let right = try renderedCenter(offset: 3)
+        #expect(right > left, "The rendered icon should move inside the unchanged button target")
     }
 
     @Test("Quill processing labels the assistant, not the foreground app")
@@ -197,7 +497,7 @@ struct NotchIndicatorTests {
         #expect(notch.isVisible)
         indicator.hideLoading(restoreIdlePresentation: false)
         #expect(!indicator.isShowingLoading)
-        indicator.showSuccess("Ready — start recording", preferNotch: true)
+        indicator.showSuccess("Ready to record", preferNotch: true)
         #expect(notch.status == .success)
         #expect(notch.isVisible)
         indicator.showWarning("Model preparation failed", preferNotch: true)

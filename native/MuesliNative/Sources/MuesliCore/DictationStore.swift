@@ -4151,13 +4151,14 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        replacingTitleIfUnchanged expectedTitle: String? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = CASE WHEN ? IS NULL OR title = ? THEN ? ELSE title END, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -4165,14 +4166,18 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (selectedTemplateID as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 4, (selectedTemplateName as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 5, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 6, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 8, id)
+        if let expectedTitle {
+            sqlite3_bind_text(statement, 1, (expectedTitle as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (expectedTitle as NSString).utf8String, -1, nil)
+        }
+        sqlite3_bind_text(statement, 3, (title as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 4, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 10, id)
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }

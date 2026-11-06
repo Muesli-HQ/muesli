@@ -2355,6 +2355,35 @@ struct DictationStoreTests {
         #expect(updated?.selectedTemplatePrompt == "## Yesterday")
     }
 
+    @Test("summary title replacement preserves a concurrent rename")
+    func summaryTitleReplacementPreservesConcurrentRename() throws {
+        let store = try makeStore()
+        let start = Date()
+        let id = try store.insertMeeting(
+            title: "Meeting", calendarEventID: nil, startTime: start,
+            endTime: start.addingTimeInterval(60), rawTranscript: "Transcript",
+            formattedNotes: "Old", micAudioPath: nil, systemAudioPath: nil
+        )
+        try store.updateMeetingTitle(id: id, title: "My title")
+        try store.updateMeetingSummary(
+            id: id, title: "Generated title", formattedNotes: "New",
+            selectedTemplateID: "auto", selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto, selectedTemplatePrompt: "",
+            replacingTitleIfUnchanged: "Meeting"
+        )
+        let updated = try store.meeting(id: id)
+        #expect(updated?.title == "My title")
+        #expect(updated?.formattedNotes == "New")
+        try store.updateMeetingTitle(id: id, title: "Meeting")
+        try store.updateMeetingSummary(
+            id: id, title: "Generated title", formattedNotes: "New",
+            selectedTemplateID: "auto", selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto, selectedTemplatePrompt: "",
+            replacingTitleIfUnchanged: "Meeting"
+        )
+        #expect(try store.meeting(id: id)?.title == "Generated title")
+    }
+
     @Test("update meeting transcript and summary replaces empty transcription")
     func updateMeetingTranscriptAndSummary() throws {
         let store = try makeStore()
