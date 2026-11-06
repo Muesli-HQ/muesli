@@ -111,7 +111,7 @@ struct MeetingMicrophoneDeliveryTests {
             await controller.testingWaitForModels()
             #expect(recorder.startCalls == 0)
             #expect(controller.testingIndicator.meetingFeedbackMessage == (activeMeeting && !ending.hasSuffix("-ready") ?
-                (ending == "ready" ? "Ready — start recording" : (ending == "optional-failure" ? "Dictation ready — cleanup unavailable" : "Model preparation failed. Try again.")) : nil))
+                (ending == "ready" ? "Ready to record" : (ending == "optional-failure" ? "Dictation ready. Cleanup unavailable." : "Model preparation failed. Try again.")) : nil))
             if activeMeeting {
                 let urls = await session.testingFinishCapture() // Flushes the final partial AEC frame.
                 for url in [urls.0, urls.1, urls.2, urls.3].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }

@@ -11995,10 +11995,10 @@ public final class MuesliController: NSObject {
             self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
             if cleanupPreparationFailed {
                 self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
-                self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4, preferNotch: forQuill)
+                self.indicator.showWarning("Dictation ready. Cleanup unavailable.", icon: "!", duration: 4, preferNotch: forQuill)
             } else {
                 self.statusBarController?.setStatus("Models ready")
-                self.indicator.showSuccess("Ready — start recording", duration: 3, preferNotch: forQuill)
+                self.indicator.showSuccess("Ready to record", duration: 3, preferNotch: forQuill)
             }
         }, failed: { [weak self] error in
             guard let self, ownsFeedback() else { return }

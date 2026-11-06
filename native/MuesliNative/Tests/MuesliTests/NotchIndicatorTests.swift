@@ -497,7 +497,7 @@ struct NotchIndicatorTests {
         #expect(notch.isVisible)
         indicator.hideLoading(restoreIdlePresentation: false)
         #expect(!indicator.isShowingLoading)
-        indicator.showSuccess("Ready — start recording", preferNotch: true)
+        indicator.showSuccess("Ready to record", preferNotch: true)
         #expect(notch.status == .success)
         #expect(notch.isVisible)
         indicator.showWarning("Model preparation failed", preferNotch: true)
