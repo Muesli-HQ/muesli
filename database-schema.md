@@ -637,14 +637,20 @@ tombstones, cache invalidation, and application-level invariants.
 ### Vidshot captures (local-only)
 
 `FeedbackCaptureStore.migrate(db:)` runs from `DictationStore.migrateIfNeeded()`.
-The idempotent migration creates `feedback_captures` and the
-`feedback_captures_time(created_at)` index. Its seven columns are:
+The idempotent migration creates `vidshots` and the
+`vidshots_time(created_at)` index. Its seven columns are:
 
 - `id TEXT PRIMARY KEY`, `created_at REAL` (Unix seconds), `duration_ms INTEGER`;
 - `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
 - `bundle_path TEXT`, relative to the support directory;
 - `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
 - `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
+
+For development builds that previously used `feedback_captures`, migration
+copies its rows into `vidshots` and removes the old table and index in one
+transaction. Conflicting IDs or invalid legacy data fail the migration without
+removing either table. New installations create only `vidshots`. Capture bundle
+paths are unchanged.
 
 Captures have no meeting/dictation foreign key and never enter CloudKit, global search,
 telemetry, or automatic exports. Media lives in mode-0700

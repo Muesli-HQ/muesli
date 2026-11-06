@@ -47,6 +47,75 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Vidshot storage")
 struct FeedbackCaptureStoreTests {
+    @Test("Legacy captures migrate to the Vidshots table without losing rows")
+    func legacyTableMigration() throws {
+        var db: OpaquePointer?
+        try #require(sqlite3_open(":memory:", &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try #require(sqlite3_exec(db, """
+            CREATE TABLE feedback_captures(id TEXT PRIMARY KEY, created_at REAL NOT NULL, duration_ms INTEGER NOT NULL, state TEXT NOT NULL, bundle_path TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE INDEX feedback_captures_time ON feedback_captures(created_at);
+            INSERT INTO feedback_captures VALUES('fc-1234-abcd', 1.25, 42, 'ready', 'feedback-captures/fc-1234-abcd.capture', 'Saved', '{}');
+            """, nil, nil, nil) == SQLITE_OK)
+        try FeedbackCaptureStore.migrate(db: db)
+        try FeedbackCaptureStore.migrate(db: db)
+        var stmt: OpaquePointer?
+        try #require(sqlite3_prepare_v2(db, "SELECT id,created_at,duration_ms,state,bundle_path,title,body FROM vidshots", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        try #require(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "fc-1234-abcd")
+        #expect(sqlite3_column_double(stmt, 1) == 1.25)
+        #expect(sqlite3_column_int(stmt, 2) == 42)
+        #expect(String(cString: sqlite3_column_text(stmt, 4)) == "feedback-captures/fc-1234-abcd.capture")
+        #expect(String(cString: sqlite3_column_text(stmt, 5)) == "Saved")
+        #expect(sqlite3_step(stmt) == SQLITE_DONE)
+        var schema: OpaquePointer?
+        try #require(sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE name IN ('feedback_captures','feedback_captures_time','vidshots_time')", -1, &schema, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(schema) }
+        try #require(sqlite3_step(schema) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(schema, 0)) == "vidshots_time")
+        #expect(sqlite3_step(schema) == SQLITE_DONE)
+    }
+
+    @Test("A partial legacy schema preserves rows from both tables")
+    func legacyTableMigrationMergesDisjointRows() throws {
+        var db: OpaquePointer?
+        try #require(sqlite3_open(":memory:", &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try FeedbackCaptureStore.migrate(db: db)
+        try #require(sqlite3_exec(db, """
+            CREATE TABLE feedback_captures(id TEXT PRIMARY KEY, created_at REAL NOT NULL, duration_ms INTEGER NOT NULL, state TEXT NOT NULL, bundle_path TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
+            INSERT INTO feedback_captures VALUES('fc-1234-abcd', 1, 1, 'ready', 'old', 'old', '{}');
+            INSERT INTO vidshots VALUES('fc-5678-abcd', 2, 2, 'ready', 'new', 'new', '{}');
+            """, nil, nil, nil) == SQLITE_OK)
+        try FeedbackCaptureStore.migrate(db: db)
+        var stmt: OpaquePointer?
+        try #require(sqlite3_prepare_v2(db, "SELECT count(*), sum(created_at) FROM vidshots", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        try #require(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 2)
+        #expect(sqlite3_column_double(stmt, 1) == 3)
+    }
+
+    @Test("Conflicting legacy rows roll back without deleting either table")
+    func legacyTableMigrationConflict() throws {
+        var db: OpaquePointer?
+        try #require(sqlite3_open(":memory:", &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try FeedbackCaptureStore.migrate(db: db)
+        try #require(sqlite3_exec(db, """
+            CREATE TABLE feedback_captures(id TEXT PRIMARY KEY, created_at REAL NOT NULL, duration_ms INTEGER NOT NULL, state TEXT NOT NULL, bundle_path TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
+            INSERT INTO feedback_captures VALUES('fc-1234-abcd', 1, 1, 'ready', 'old', 'old', '{}');
+            INSERT INTO vidshots VALUES('fc-1234-abcd', 2, 2, 'ready', 'new', 'new', '{}');
+            """, nil, nil, nil) == SQLITE_OK)
+        #expect(throws: (any Error).self) { try FeedbackCaptureStore.migrate(db: db) }
+        var stmt: OpaquePointer?
+        try #require(sqlite3_prepare_v2(db, "SELECT (SELECT title FROM feedback_captures), (SELECT title FROM vidshots)", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        try #require(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "old")
+        #expect(String(cString: sqlite3_column_text(stmt, 1)) == "new")
+    }
     @Test func timelineIncludesVidshotsInOrderAndSearchesTranscriptBeforePagination() throws {
         try withFeedbackStore { captures, _, root in
             let database = DictationStore(databaseURL: root.appendingPathComponent("muesli.db"))
@@ -160,7 +229,7 @@ struct FeedbackCaptureStoreTests {
             m.contactSheet = "contact-sheet.png"
             try store.save(m)
             var statement: OpaquePointer?
-            #expect(sqlite3_prepare_v2(db, "SELECT body FROM feedback_captures", -1, &statement, nil) == SQLITE_OK)
+            #expect(sqlite3_prepare_v2(db, "SELECT body FROM vidshots", -1, &statement, nil) == SQLITE_OK)
             defer { sqlite3_finalize(statement) }
             #expect(sqlite3_step(statement) == SQLITE_ROW)
             let data = Data(String(cString: sqlite3_column_text(statement, 0)).utf8)
@@ -340,7 +409,7 @@ struct FeedbackCaptureStoreTests {
             let future = try store.begin(target: feedbackTarget())
             let known = try store.begin(target: feedbackTarget())
             var statement: OpaquePointer?
-            try #require(sqlite3_prepare_v2(db, "UPDATE feedback_captures SET state='future_state' WHERE id=?", -1, &statement, nil) == SQLITE_OK)
+            try #require(sqlite3_prepare_v2(db, "UPDATE vidshots SET state='future_state' WHERE id=?", -1, &statement, nil) == SQLITE_OK)
             defer { sqlite3_finalize(statement); store.release(id: future.id); store.release(id: known.id) }
             sqlite3_bind_text(statement, 1, (future.id as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             try #require(sqlite3_step(statement) == SQLITE_DONE)
@@ -353,10 +422,14 @@ struct FeedbackCaptureStoreTests {
         try withFeedbackStore { store, db, root in
             var count: Int32 = 0
             var statement: OpaquePointer?
-            #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM pragma_table_info('feedback_captures')", -1, &statement, nil) == SQLITE_OK)
+            #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM pragma_table_info('vidshots')", -1, &statement, nil) == SQLITE_OK)
             if sqlite3_step(statement) == SQLITE_ROW { count = sqlite3_column_int(statement, 0) }
             sqlite3_finalize(statement)
             #expect(count == 7)
+            try #require(sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='feedback_captures'", -1, &statement, nil) == SQLITE_OK)
+            if sqlite3_step(statement) == SQLITE_ROW { count = sqlite3_column_int(statement, 0) }
+            sqlite3_finalize(statement)
+            #expect(count == 0)
             let m = try store.begin(target: feedbackTarget(), now: Date(timeIntervalSince1970: 1000))
             let folder = try store.bundleURL(id: m.id)
             #expect(m.id.hasPrefix("fc-1000000-"))
@@ -444,7 +517,7 @@ struct FeedbackCaptureStoreTests {
             #expect((try FileManager.default.attributesOfItem(atPath: lockURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
 
             var statement: OpaquePointer?
-            try #require(sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &statement, nil) == SQLITE_OK)
+            try #require(sqlite3_prepare_v2(db, "DELETE FROM vidshots WHERE id=?", -1, &statement, nil) == SQLITE_OK)
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_text(statement, 1, (manifest.id as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             try #require(sqlite3_step(statement) == SQLITE_DONE)
@@ -519,7 +592,7 @@ struct FeedbackCaptureStoreTests {
             var m = try store.begin(target: feedbackTarget())
             try WavWriter.writeWAV(samples: [Float](repeating: 0, count: 1600), to: store.mediaURL(id: m.id, path: "narration.wav"))
             m.audio = "narration.wav"; m.state = .ready
-            #expect(sqlite3_exec(db, "CREATE TRIGGER reject_feedback BEFORE INSERT ON feedback_captures BEGIN SELECT RAISE(ABORT,'fixture'); END", nil, nil, nil) == SQLITE_OK)
+            #expect(sqlite3_exec(db, "CREATE TRIGGER reject_feedback BEFORE INSERT ON vidshots BEGIN SELECT RAISE(ABORT,'fixture'); END", nil, nil, nil) == SQLITE_OK)
             #expect(throws: (any Error).self) { try store.publish(m) }
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: m.id, path: "unfinished.json").path))
             #expect(sqlite3_exec(db, "DROP TRIGGER reject_feedback", nil, nil, nil) == SQLITE_OK)

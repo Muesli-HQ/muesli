@@ -19,10 +19,37 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     }
     deinit { sqlite3_close(db) }
     static func migrate(db: OpaquePointer?) throws {
-        guard sqlite3_exec(db, """
-        CREATE TABLE IF NOT EXISTS feedback_captures(id TEXT PRIMARY KEY, created_at REAL NOT NULL, duration_ms INTEGER NOT NULL, state TEXT NOT NULL, bundle_path TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS feedback_captures_time ON feedback_captures(created_at);
-        """, nil, nil, nil) == SQLITE_OK else { throw NSError(domain: "FeedbackCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot migrate Vidshot captures"]) }
+        func execute(_ sql: String) throws {
+            guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                let detail = db.map { String(cString: sqlite3_errmsg($0)) } ?? "database unavailable"
+                throw NSError(domain: "FeedbackCapture", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Cannot migrate Vidshots: \(detail)"])
+            }
+        }
+        try execute("SAVEPOINT vidshot_schema_migration")
+        do {
+            try execute("CREATE TABLE IF NOT EXISTS vidshots(id TEXT PRIMARY KEY, created_at REAL NOT NULL, duration_ms INTEGER NOT NULL, state TEXT NOT NULL, bundle_path TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL)")
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='feedback_captures'", -1, &statement, nil) == SQLITE_OK else {
+                throw NSError(domain: "FeedbackCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot inspect Vidshot schema"])
+            }
+            let status = sqlite3_step(statement)
+            sqlite3_finalize(statement)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else {
+                throw NSError(domain: "FeedbackCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot inspect Vidshot schema"])
+            }
+            if status == SQLITE_ROW {
+                // Fail and roll back on conflicting IDs rather than discard either row.
+                try execute("INSERT INTO vidshots(id,created_at,duration_ms,state,bundle_path,title,body) SELECT id,created_at,duration_ms,state,bundle_path,title,body FROM feedback_captures")
+                try execute("DROP TABLE feedback_captures")
+            }
+            try execute("CREATE INDEX IF NOT EXISTS vidshots_time ON vidshots(created_at)")
+            try execute("RELEASE vidshot_schema_migration")
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK TO vidshot_schema_migration", nil, nil, nil)
+            _ = sqlite3_exec(db, "RELEASE vidshot_schema_migration", nil, nil, nil)
+            throw error
+        }
     }
     private func failure(_ text: String) -> NSError {
         NSError(domain: "FeedbackCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
@@ -60,7 +87,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     }
     private func captureRowExists(id: String) throws -> Bool {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT 1 FROM feedback_captures WHERE id=? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM vidshots WHERE id=? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
             throw failure("Prepare capture lookup")
         }
         defer { sqlite3_finalize(statement) }
@@ -121,7 +148,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         _ = try bundleURL(id: manifest.id)
         try validatePaths(manifest)
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO feedback_captures VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO vidshots VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
         defer { sqlite3_finalize(stmt) }
         var projection: [String: Any] = ["keyframeCount": manifest.keyframes.count, "targetApp": manifest.target.appName]
         projection["transcriptSource"] = manifest.transcript?.source
@@ -146,7 +173,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     public func list() throws -> [FeedbackCaptureRecord] {
         lock.lock(); defer { lock.unlock() }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT id,created_at,duration_ms,state,bundle_path,title FROM feedback_captures ORDER BY created_at DESC,id DESC", -1, &stmt, nil) == SQLITE_OK else { throw failure("List captures") }
+        guard sqlite3_prepare_v2(db, "SELECT id,created_at,duration_ms,state,bundle_path,title FROM vidshots ORDER BY created_at DESC,id DESC", -1, &stmt, nil) == SQLITE_OK else { throw failure("List captures") }
         defer { sqlite3_finalize(stmt) }
         var result: [FeedbackCaptureRecord] = []
         var status = sqlite3_step(stmt)
@@ -235,7 +262,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
             // Keep the row visible if filesystem removal fails.
             if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "DELETE FROM feedback_captures WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
+            guard sqlite3_prepare_v2(db, "DELETE FROM vidshots WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id, -1, transient)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }

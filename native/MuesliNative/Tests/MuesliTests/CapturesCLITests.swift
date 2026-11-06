@@ -10,6 +10,20 @@ private final class CapturesCLITestBundle: NSObject {}
 
 @Suite("Vidshot CLI", .serialized)
 struct CapturesCLITests {
+    @Test func legacyTableIsMigratedForCLIReads() throws {
+        try withFeedbackStore { store, db, root in
+            let capture = try store.begin(target: feedbackTarget())
+            store.release(id: capture.id)
+            try #require(sqlite3_exec(db, "ALTER TABLE vidshots RENAME TO feedback_captures", nil, nil, nil) == SQLITE_OK)
+            let reader = try CapturesReader(context: CLIContext(dbPath: nil, supportDir: root.path))
+            #expect(try reader.list(limit: 10).map(\.id) == [capture.id])
+            var statement: OpaquePointer?
+            try #require(sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='feedback_captures'", -1, &statement, nil) == SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            try #require(sqlite3_step(statement) == SQLITE_ROW)
+            #expect(sqlite3_column_int(statement, 0) == 0)
+        }
+    }
     @Test func lockedLegacyReadsRetainMigrationGuidance() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("scrawl-migration-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -21,7 +35,7 @@ struct CapturesCLITests {
         for canRead in [false, true] {
             if canRead {
                 // Synthetic legacy table only: the rest of the app schema still needs migration.
-                try #require(sqlite3_exec(db, "CREATE TABLE feedback_captures(id TEXT, created_at REAL, duration_ms INTEGER, state TEXT, bundle_path TEXT, title TEXT, body TEXT)", nil, nil, nil) == SQLITE_OK)
+                try #require(sqlite3_exec(db, "CREATE TABLE vidshots(id TEXT, created_at REAL, duration_ms INTEGER, state TEXT, bundle_path TEXT, title TEXT, body TEXT)", nil, nil, nil) == SQLITE_OK)
             }
             try #require(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
             do {

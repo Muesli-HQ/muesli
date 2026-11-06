@@ -1331,7 +1331,7 @@ public final class DictationStore {
             WHERE \(quillFilter.conditions.joined(separator: " AND "))
             UNION ALL
             SELECT 4, f.id, strftime('%Y-%m-%dT%H:%M:%fZ', f.created_at, 'unixepoch')
-            FROM feedback_captures f WHERE \(captureConditions.joined(separator: " AND "))
+            FROM vidshots f WHERE \(captureConditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline

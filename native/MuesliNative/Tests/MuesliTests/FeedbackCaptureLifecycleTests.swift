@@ -475,11 +475,11 @@ struct FeedbackCaptureLifecycleTests {
             var db: OpaquePointer?
             #expect(sqlite3_open(root.appendingPathComponent("muesli.db").path, &db) == SQLITE_OK)
             defer { sqlite3_close(db) }
-            #expect(sqlite3_exec(db, "CREATE TRIGGER reject_feedback BEFORE INSERT ON feedback_captures BEGIN SELECT RAISE(ABORT,'Synthetic publication failure'); END", nil, nil, nil) == SQLITE_OK)
+            #expect(sqlite3_exec(db, "CREATE TRIGGER reject_feedback BEFORE INSERT ON vidshots BEGIN SELECT RAISE(ABORT,'Synthetic publication failure'); END", nil, nil, nil) == SQLITE_OK)
             await controller.shutdown()
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: failedID, path: "unfinished.json").path))
             // Simulate a catalog publication with no row: the journal is authoritative.
-            #expect(sqlite3_exec(db, "DELETE FROM feedback_captures WHERE id='\(failedID)'", nil, nil, nil) == SQLITE_OK)
+            #expect(sqlite3_exec(db, "DELETE FROM vidshots WHERE id='\(failedID)'", nil, nil, nil) == SQLITE_OK)
             await controller.reload(requestedID: failedID)
             #expect(controller.records.first?.id == failedID)
             #expect(try store.get(id: failedID)?.id == failedID)

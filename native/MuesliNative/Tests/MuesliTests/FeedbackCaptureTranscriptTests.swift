@@ -368,7 +368,7 @@ struct FeedbackCaptureTranscriptTests {
             try store.publish(manifest)
             #expect(try store.get(id: manifest.id)?.title == "Open the menu")
             var statement: OpaquePointer?
-            #expect(sqlite3_prepare_v2(db, "SELECT body FROM feedback_captures", -1, &statement, nil) == SQLITE_OK)
+            #expect(sqlite3_prepare_v2(db, "SELECT body FROM vidshots", -1, &statement, nil) == SQLITE_OK)
             defer { sqlite3_finalize(statement) }
             #expect(sqlite3_step(statement) == SQLITE_ROW)
             let body = String(cString: sqlite3_column_text(statement, 0))
