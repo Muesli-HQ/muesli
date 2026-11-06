@@ -115,11 +115,11 @@ struct NotchIndicatorTests {
                         let size = FloatingIndicatorController.dictationOverlapSize(for: text)
                         #expect(size.height == 28)
                         #expect(ceil(text.size().width) + 8 <= size.width - 116)
-                        let label = NSTextField(labelWithString: "")
-                        FloatingIndicatorController.layoutDictationOverlapLabel(label, text: text, in: size)
+                        let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+                        label.attributedText = text
                         let status = NSRect(x: size.width - 107, y: (size.height - 14) / 2, width: 14, height: 14)
                         #expect(label.frame.maxX <= status.minX, "Text must not overlap the meeting indicator")
-                        #expect(abs(label.frame.midY - size.height / 2) <= 1.5, "Text must be vertically centered")
+                        #expect(label.frame.minY >= 0 && label.frame.maxY <= size.height, "Text must fit within the pill")
                         let bars = (0..<5).map { IndicatorWaveformDynamics.standingBarFrame(index: $0, amplitude: 1, bounds: CGRect(origin: .zero, size: size), overlapsMeeting: true) }
                         #expect(bars.allSatisfy { $0.minX >= status.maxX && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
                         if state == .recording && reason == nil {
@@ -208,6 +208,88 @@ struct NotchIndicatorTests {
         #expect((bitmap.colorAt(x: 9, y: 7)?.alphaComponent ?? 0) > 0.5)
         #expect((bitmap.colorAt(x: 0, y: 7)?.alphaComponent ?? 1) == 0)
         #expect((bitmap.colorAt(x: 13, y: 7)?.alphaComponent ?? 1) == 0)
+    }
+
+    @Test("overlap text and recording dot render on the same center line")
+    @MainActor
+    func overlapTextAndDotAlignment() throws {
+        for state: DictationState in [.recording, .transcribing] {
+            let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: nil)
+            let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+            let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+            label.attributedText = text
+            let status = MeetingOverlapStatusView(frame: NSRect(x: size.width - 107, y: 7, width: 14, height: 14))
+            let scale: CGFloat = 2
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.cgContext.clear(CGRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
+            context.cgContext.scaleBy(x: scale, y: scale)
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: label.frame.minX, y: label.frame.minY)
+            label.draw(label.bounds)
+            context.cgContext.restoreGState()
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: status.frame.minX, y: status.frame.minY)
+            status.draw(status.bounds)
+            context.cgContext.restoreGState()
+            NSGraphicsContext.restoreGraphicsState()
+            var textRows: [Int] = [], dotRows: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y), color.alphaComponent > 0.5 else { continue }
+                    if CGFloat(x) / scale < label.frame.maxX { textRows.append(y) }
+                    if CGFloat(x) / scale >= status.frame.minX && CGFloat(x) / scale < status.frame.maxX { dotRows.append(y) }
+                }
+            }
+            let textMin = try #require(textRows.min()), textMax = try #require(textRows.max())
+            let dotMin = try #require(dotRows.min()), dotMax = try #require(dotRows.max())
+            #expect(abs(CGFloat(textMin + textMax - dotMin - dotMax) / 2) <= 2 * scale,
+                "Text and recording dot should share a visual center line")
+        }
+    }
+
+    @Test("overlap control symbols move closer without shrinking their targets")
+    @MainActor
+    func overlapControlSymbolOffsets() throws {
+        _ = NSApplication.shared
+        let cell = FloatingIndicatorButtonCell()
+        cell.image = try #require(NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil))
+        cell.imagePosition = .imageOnly
+        let bounds = NSRect(x: 0, y: 0, width: 28, height: 28)
+        let original = cell.imageRect(forBounds: bounds)
+        cell.imageHorizontalOffset = 3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX + 3)
+        cell.imageHorizontalOffset = -3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX - 3)
+
+        func renderedCenter(offset: CGFloat) throws -> CGFloat {
+            let button = NSButton(frame: bounds)
+            let renderedCell = FloatingIndicatorButtonCell()
+            renderedCell.imageHorizontalOffset = offset
+            button.cell = renderedCell
+            button.title = ""
+            button.imagePosition = .imageOnly
+            button.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+            button.isBordered = false
+            button.contentTintColor = .white
+            let bitmap = try #require(button.bitmapImageRepForCachingDisplay(in: bounds))
+            button.cacheDisplay(in: bounds, to: bitmap)
+            var columns: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 {
+                    columns.append(x)
+                }
+            }
+            let minimum = try #require(columns.min()), maximum = try #require(columns.max())
+            return CGFloat(minimum + maximum) / 2
+        }
+        let left = try renderedCenter(offset: -3)
+        let right = try renderedCenter(offset: 3)
+        #expect(right > left, "The rendered icon should move inside the unchanged button target")
     }
 
     @Test("Quill processing labels the assistant, not the foreground app")

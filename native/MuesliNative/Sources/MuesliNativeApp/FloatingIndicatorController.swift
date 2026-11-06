@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import SwiftUI
 import QuartzCore
 import Foundation
@@ -32,6 +33,14 @@ private final class FloatingIndicatorButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+final class FloatingIndicatorButtonCell: NSButtonCell {
+    var imageHorizontalOffset: CGFloat = 0
+
+    override func imageRect(forBounds rect: NSRect) -> NSRect {
+        super.imageRect(forBounds: rect).offsetBy(dx: imageHorizontalOffset, dy: 0)
+    }
+}
+
 final class MeetingOverlapStatusView: NSView {
     var paused = false { didSet { needsDisplay = true } }
 
@@ -46,6 +55,22 @@ final class MeetingOverlapStatusView: NSView {
             NSColor.systemRed.setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.midX - 4, y: bounds.midY - 4, width: 8, height: 8)).fill()
         }
+    }
+}
+
+final class MeetingOverlapTitleView: NSView {
+    var attributedText = NSAttributedString() { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let context = NSGraphicsContext.current?.cgContext, attributedText.length > 0 else { return }
+        let line = CTLineCreateWithAttributedString(attributedText)
+        let glyphBounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+        context.saveGState()
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: max(0, -glyphBounds.minX), y: bounds.midY - glyphBounds.midY)
+        CTLineDraw(line, context)
+        context.restoreGState()
     }
 }
 
@@ -249,6 +274,7 @@ final class FloatingIndicatorController: NSObject {
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
     private var meetingOverlapStatusView: MeetingOverlapStatusView?
+    private var meetingOverlapTitleView: MeetingOverlapTitleView?
     private(set) var meetingFeedbackMessage: String?
     private(set) var activityRevision = 0
     var presentsWindows = true
@@ -1667,6 +1693,7 @@ final class FloatingIndicatorController: NSObject {
         iconLabel = nil
         textLabel = nil
         meetingOverlapStatusView = nil
+        meetingOverlapTitleView = nil
         glassView = nil
         tintLayer = nil
         micIconView = nil
@@ -1733,12 +1760,21 @@ final class FloatingIndicatorController: NSObject {
         func configure(_ existing: NSButton?, symbol: String, label: String,
                        x: CGFloat, action: Selector) -> NSButton {
             let button = existing ?? FloatingIndicatorButton(title: "", target: self, action: action)
+            if existing == nil {
+                button.cell = FloatingIndicatorButtonCell()
+                button.target = self
+                button.action = action
+                button.title = ""
+                button.imagePosition = .imageOnly
+            }
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold))
             button.isBordered = false
             button.contentTintColor = .white
             button.toolTip = label
             button.setAccessibilityLabel(label)
+            (button.cell as? FloatingIndicatorButtonCell)?.imageHorizontalOffset = hasDictationOverlap
+                ? (symbol == "stop.fill" ? 3 : -3) : 0
             button.frame = NSRect(x: x, y: 0, width: 22, height: size.height)
             button.isHidden = false
             if button.superview == nil { contentView.addSubview(button) }
@@ -1769,24 +1805,24 @@ final class FloatingIndicatorController: NSObject {
         NSSize(width: ceil(text.size().width) + 124, height: 28)
     }
 
-    static func layoutDictationOverlapLabel(_ label: NSTextField, text: NSAttributedString, in size: NSSize) {
-        label.attributedStringValue = text
-        let textHeight = min(size.height, ceil(label.intrinsicContentSize.height))
-        label.frame = NSRect(x: 8, y: floor((size.height - textHeight) / 2) + 1, width: size.width - 116, height: textHeight)
-    }
-
     private func layoutDictationOverlap(in size: NSSize) {
-        if !hasDictationOverlap { meetingOverlapStatusView?.isHidden = true }
+        if !hasDictationOverlap {
+            meetingOverlapStatusView?.isHidden = true
+            meetingOverlapTitleView?.isHidden = true
+        }
         guard let status = overlapMeetingStatus, let contentView, let textLabel, let detail = iconLabel else { return }
         if hasDictationOverlap {
             let text = Self.dictationOverlapText(state: state, insertionStopReason: insertionStopReason)
-            configureTextLabelForTranscript(false)
-            textLabel.alignment = .left
-            Self.layoutDictationOverlapLabel(textLabel, text: text, in: size)
-            textLabel.toolTip = cursorInsertionStopped ? insertionStoppedDetail : status
-            textLabel.setAccessibilityLabel(cursorInsertionStopped ? "\(insertionStoppedDetail) \(status)." : "\(text.string). \(status).")
-            textLabel.isHidden = false
-            textLabel.alphaValue = 1
+            textLabel.isHidden = true
+            let titleView = meetingOverlapTitleView ?? MeetingOverlapTitleView(frame: .zero)
+            if titleView.superview == nil { contentView.addSubview(titleView) }
+            meetingOverlapTitleView = titleView
+            titleView.attributedText = text
+            titleView.frame = NSRect(x: 8, y: 0, width: size.width - 116, height: size.height)
+            titleView.toolTip = cursorInsertionStopped ? insertionStoppedDetail : status
+            titleView.setAccessibilityElement(true)
+            titleView.setAccessibilityLabel(cursorInsertionStopped ? "\(insertionStoppedDetail) \(status)." : "\(text.string). \(status).")
+            titleView.isHidden = false
             detail.isHidden = true
             let statusView = meetingOverlapStatusView ?? MeetingOverlapStatusView(frame: .zero)
             if statusView.superview == nil { contentView.addSubview(statusView) }
