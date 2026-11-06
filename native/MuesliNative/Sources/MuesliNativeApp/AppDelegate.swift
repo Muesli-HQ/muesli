@@ -15,14 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installStandardEditMenu()
 
-        let runtimeTelemetry = TelemetryRuntimeConfiguration.current()
-        let telemetryConfig = TelemetryDeck.Config(appID: runtimeTelemetry.sdkAppID)
-        telemetryConfig.analyticsDisabled = !runtimeTelemetry.isEnabled
-        telemetryConfig.defaultParameters = { runtimeTelemetry.defaultParameters }
-        TelemetryDeck.initialize(config: telemetryConfig)
-        if runtimeTelemetry.isEnabled {
-            TelemetryDeck.signal("app.launched")
-        }
+        MuesliTelemetry.initialize()
         // Always drain a pending marker. TelemetryDeck's global privacy gate
         // suppresses the signal when analytics are disabled.
         DiarizerPreloadDiagnostics().reportInterruptedAttemptIfNeeded()
@@ -47,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if controller.appState.config.hasCompletedOnboarding,
+               let destination = PermissionRestartResumeStore.shared.consume(
+                   fallbackToPermissions: ProcessInfo.processInfo.arguments.contains(ApplicationRelaunch.permissionsArgument)
+               ) {
+                controller.restorePermissionRestartDestination(destination)
+            }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
@@ -83,8 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if terminationTask != nil {
             return .terminateLater
         }
-        if controller?.shouldTerminateApplication() == false {
-            return .terminateCancel
+        if let controller {
+            if controller.isRelaunchRequested {
+                guard controller.prepareRequestedRelaunch() else { return .terminateCancel }
+            } else if !controller.shouldTerminateApplication() {
+                return .terminateCancel
+            }
         }
         guard let controller else { return .terminateNow }
 

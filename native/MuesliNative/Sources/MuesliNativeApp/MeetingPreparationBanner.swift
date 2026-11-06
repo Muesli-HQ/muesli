@@ -27,8 +27,11 @@ struct MeetingPreparationBanner: View {
                 Label("Cancel", systemImage: "xmark.circle")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .help("Cancel meeting preparation")
         }
         .padding(MuesliTheme.spacing12)

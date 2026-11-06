@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import MuesliLLM
 
@@ -11,13 +12,13 @@ enum Qwen3PostProcessorLogging {
     }
 
     static var isPairLoggingEnabled: Bool {
-        guard isVerboseEnabled else { return false }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled else { return false }
         let raw = ProcessInfo.processInfo.environment[pairLogEnv]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return raw == "1" || raw == "true" || raw == "yes"
     }
 
     static func logVerbose(_ message: @autoclosure () -> String) {
-        guard isVerboseEnabled else { return }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
         fputs("[muesli-native] \(message())\n", stderr)
     }
 }
@@ -231,6 +232,25 @@ actor InferenceGate {
     private var isProcessing = false
     private var waiters: [Waiter] = []
 
+    /// Keep the permit until the caller's operation unwinds, including cancellation.
+    nonisolated func withReservation<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        onWait: (@Sendable () -> Void)? = nil,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await acquire(onWait: onWait)
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            try Task.checkCancellation()
+            await release()
+            return result
+        } catch {
+            await release()
+            throw error
+        }
+    }
+
     func acquire(onWait: (@Sendable () -> Void)? = nil) async throws {
         try Task.checkCancellation()
         if !isProcessing {
@@ -301,8 +321,13 @@ private actor Qwen3PostProcessorManager {
             if mlx == nil {
                 let start = Date()
                 let small = inputFormat == .muesliTrainedV12Qwen08
-                mlx = try await CleanupMLXEvaluation(directory: modelURL.deletingLastPathComponent(),
-                    descriptor: small ? .qwen08MLX : .qwenMLX, model: small ? .qwen08 : .qwen)
+                let directory = modelURL.deletingLastPathComponent()
+                // Validate against whichever build is installed; models update without an app release.
+                let slot = CleanupModelSlot.slot(id: small ? CleanupModelSlot.liteID : CleanupModelSlot.proQwenID)!
+                let release = CleanupModelInstallation.installedRelease(for: slot, in: directory) ?? slot.bundled
+                mlx = try await CleanupMLXEvaluation(directory: directory,
+                    descriptor: release.artifact, model: small ? .qwen08 : .qwen)
+                Qwen3PostProcessorLogging.logVerbose("cleanup release=\(release.repo)@\(release.revision) version=\(release.version)")
                 Qwen3PostProcessorLogging.logVerbose("cleanup runtime=mlx model=\(inputFormat) load_seconds=\(Date().timeIntervalSince(start))")
             }
         } else {
@@ -424,8 +449,10 @@ private actor Qwen3PostProcessorManager {
 
     private func loadBot() throws -> LLM {
         if let bot { return bot }
+        let lfmSlot = CleanupModelSlot.slot(id: CleanupModelSlot.proLFMID)!
         let descriptor: ManagedCleanupModel? = switch inputFormat {
-        case .muesliTrainedV12LFM: .lfm
+        case .muesliTrainedV12LFM: (CleanupModelInstallation.installedRelease(
+            for: lfmSlot, in: modelURL.deletingLastPathComponent()) ?? lfmSlot.bundled).artifact
         case .muesliTrainedV12Qwen: .qwen
         case .muesliTrainedV12Qwen08: .qwen08
         default: nil
@@ -477,6 +504,9 @@ actor Qwen3PostProcessor {
     private var activeConfiguration: Configuration
     private var managers: [Configuration: Qwen3PostProcessorManager] = [:]
     private var loadTasks: [Configuration: LoadTaskState] = [:]
+    /// Loads started before their model folder was replaced: waiters still get
+    /// the result, but it is not cached.
+    private var staleLoadIDs: Set<UUID> = []
 
     init(modelURL: URL, systemPrompt: String, inputFormat: PostProcessorOption.InputFormat) {
         // Local development env-var override takes precedence.
@@ -561,6 +591,32 @@ actor Qwen3PostProcessor {
         loadTasks.removeAll()
     }
 
+    /// Forgets engines for models inside `directory` after it was replaced, so the
+    /// next request loads the new build. Other models, and requests already waiting
+    /// on a load, are left alone.
+    func invalidateModels(in directory: URL) {
+        for configuration in managers.keys where Self.configuration(configuration, isInside: directory) {
+            managers[configuration] = nil
+        }
+        for (configuration, state) in loadTasks where Self.configuration(configuration, isInside: directory) {
+            staleLoadIDs.insert(state.id)
+            loadTasks[configuration] = nil
+        }
+    }
+
+    /// Waits for loads reading models inside `directory`, so an update does not
+    /// replace files while a load is still validating them.
+    func waitForLoads(in directory: URL) async {
+        let tasks = loadTasks.filter { Self.configuration($0.key, isInside: directory) }.map(\.value.task)
+        for task in tasks { _ = try? await task.value }
+    }
+
+    private static func configuration(_ configuration: Configuration, isInside directory: URL) -> Bool {
+        let root = directory.standardizedFileURL.path
+        let path = configuration.modelURL.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
+    }
+
     private func loadManager(for configuration: Configuration) async throws -> Qwen3PostProcessorManager {
         if let manager = managers[configuration] { return manager }
         if let loadTask = loadTasks[configuration] { return try await finishLoad(loadTask) }
@@ -592,6 +648,8 @@ actor Qwen3PostProcessor {
     private func finishLoad(_ state: LoadTaskState) async throws -> Qwen3PostProcessorManager {
         do {
             let loaded = try await state.task.value
+            // Serve the waiter, but never cache an engine for a replaced model folder.
+            if staleLoadIDs.contains(state.id) { return loaded }
             if let manager = managers[state.configuration] { return manager }
             if state.configuration != activeConfiguration {
                 if loadTasks[state.configuration]?.id == state.id {

@@ -234,16 +234,17 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
 
     private func scheduleCaptureProgressPollLocked() {
         captureProgressWorkItem?.cancel()
+        let recordingID = activeRecordingID
         let workItem = DispatchWorkItem { [weak self] in
-            self?.pollCaptureProgress()
+            self?.pollCaptureProgress(recordingID: recordingID)
         }
         captureProgressWorkItem = workItem
         callbackQueue.asyncAfter(deadline: .now() + Self.captureProgressInterval, execute: workItem)
     }
 
-    private func pollCaptureProgress() {
+    private func pollCaptureProgress(recordingID: UUID?) {
         lock.lock()
-        guard isRecording, !hasReceivedFirstAudioBuffer else {
+        guard activeRecordingID == recordingID, isRecording, !hasReceivedFirstAudioBuffer else {
             lock.unlock()
             return
         }
@@ -259,22 +260,24 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
             return
         }
         hasReceivedFirstAudioBuffer = true
+        let callback = onFirstCapturedAudioBuffer
         lock.unlock()
-        onFirstCapturedAudioBuffer?(Date())
+        callback?(Date())
     }
 
     private func scheduleMeterPollLocked() {
         meterWorkItem?.cancel()
+        let recordingID = activeRecordingID
         let workItem = DispatchWorkItem { [weak self] in
-            self?.pollMeter()
+            self?.pollMeter(recordingID: recordingID)
         }
         meterWorkItem = workItem
         callbackQueue.asyncAfter(deadline: .now() + Self.meterInterval, execute: workItem)
     }
 
-    private func pollMeter() {
+    private func pollMeter(recordingID: UUID?) {
         lock.lock()
-        guard isRecording, let recorder else {
+        guard activeRecordingID == recordingID, isRecording, let recorder else {
             lock.unlock()
             return
         }
@@ -285,31 +288,34 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
             hasDetectedSpeech = true
         }
         scheduleMeterPollLocked()
+        let callback = onFirstSpeechDetected
         lock.unlock()
 
         if shouldNotifySpeech {
-            onFirstSpeechDetected?(Date())
+            callback?(Date())
         }
     }
 
     private func scheduleNoAudioTimeoutLocked() {
         noAudioTimeoutWorkItem?.cancel()
+        let recordingID = activeRecordingID
         let workItem = DispatchWorkItem { [weak self] in
-            self?.notifyNoAudioTimeoutIfNeeded()
+            self?.notifyNoAudioTimeoutIfNeeded(recordingID: recordingID)
         }
         noAudioTimeoutWorkItem = workItem
         callbackQueue.asyncAfter(deadline: .now() + Self.noAudioTimeout, execute: workItem)
     }
 
-    private func notifyNoAudioTimeoutIfNeeded() {
+    private func notifyNoAudioTimeoutIfNeeded(recordingID: UUID?) {
         lock.lock()
-        guard isRecording, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
+        guard activeRecordingID == recordingID, isRecording, !hasDetectedSpeech, !hasReportedNoAudioTimeout else {
             lock.unlock()
             return
         }
         hasReportedNoAudioTimeout = true
+        let callback = onNoAudioTimeout
         lock.unlock()
-        onNoAudioTimeout?(Date())
+        callback?(Date())
     }
 
     private func cancelTimers() {
@@ -350,8 +356,9 @@ final class MicrophoneRecorder: NSObject, AVAudioRecorderDelegate, @unchecked Se
         let resolvedError = error ?? NSError(domain: "MicrophoneRecorder", code: 5, userInfo: [
             NSLocalizedDescriptionKey: "Microphone recording stopped unexpectedly",
         ])
+        let callback = onRecordingFailed
         lock.unlock()
-        onRecordingFailed?(resolvedError, activeRecordingID)
+        callback?(resolvedError, activeRecordingID)
     }
 }
 

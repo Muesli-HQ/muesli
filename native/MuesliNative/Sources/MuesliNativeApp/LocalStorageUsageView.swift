@@ -26,8 +26,10 @@ struct LocalStorageUsageView: View {
                 }
                 Spacer()
                 if isScanning { ProgressView().controlSize(.small) }
-                Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain).disabled(isScanning).help("Refresh storage usage")
+                Button { refreshID = UUID() } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 28, height: 28)
+                }
+                    .buttonStyle(.muesli(.quiet)).disabled(isScanning).help("Refresh storage usage")
                     .accessibilityLabel("Refresh storage usage")
             }
             if let usage {
@@ -51,6 +53,7 @@ struct LocalStorageUsageView: View {
                                         Text(title)
                                         Image(systemName: showModels ? "chevron.down" : "chevron.right").font(.caption2)
                                     }
+                                    .contentShape(Rectangle())
                                 }.buttonStyle(.plain)
                                 .accessibilityValue(showModels ? "Expanded" : "Collapsed")
                             } else { Text(title) }

@@ -18,6 +18,7 @@ Local-first macOS app for **dictation** and **meeting transcription** on Apple S
 - **Join & Transcribe:** Extract meeting URLs from calendar events (Zoom, Meet, Teams, Webex, Chime, FaceTime), split button with "Join & Transcribe" / "Join Only" / "Transcribe Only", platform icons in notifications
 - **Google Calendar integration:** Coming Up section, status bar, pre-meeting countdowns, event-driven notifications via `EKEventStoreChangedNotification`
 - **Meeting templates:** Built-in and custom templates for structured meeting notes
+- **Cleanup model updates:** Muesli cleanup models (Lite, Pro Qwen, Pro LFM) update without an app release via a signed catalog at `docs/models/cleanup-models.json`; users click Update on the model card. See `docs/cleanup-model-updates.md`
 
 ## Building
 

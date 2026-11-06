@@ -33,7 +33,17 @@ public final class DictationStore {
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let iso8601FormatterLock = NSLock()
 
+    private let wordObserverLock = NSLock()
+    private var wordObserver: (@Sendable (Int64, Int) -> Void)?
+    /// Local successful normal inserts only; never sync imports or recovery retries.
+    /// The observer must enqueue work without waiting for disk/network activity.
+    public var onLocalDictationWords: (@Sendable (Int64, Int) -> Void)? {
+        get { wordObserverLock.withLock { wordObserver } }
+        set { wordObserverLock.withLock { wordObserver = newValue } }
+    }
+
     private let databaseURL: URL
+    private let readOnly: Bool
     private static let dictationColumns = """
     d.id, d.timestamp, d.duration_seconds, d.raw_text, d.app_context, d.word_count, d.source,
     d.target_app_name, d.target_app_bundle_id,
@@ -45,10 +55,12 @@ public final class DictationStore {
 
     public init() {
         self.databaseURL = MuesliPaths.defaultDatabaseURL()
+        self.readOnly = false
     }
 
-    public init(databaseURL: URL) {
+    public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL
+        self.readOnly = readOnly
     }
 
     public var resolvedDatabaseURL: URL {
@@ -352,6 +364,7 @@ public final class DictationStore {
         try MeetingVideoStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
+        try migrateQuillHistory(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         try renameLegacyGranolaImportFolder(db: db)
@@ -456,6 +469,128 @@ public final class DictationStore {
         """, db: db)
     }
 
+    // MARK: - Quill conversations
+
+    // Quill history is local-only. Deleted session identities remain as tombstones
+    // so an in-flight preview or response cannot resurrect a deleted conversation.
+    private func migrateQuillHistory(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE TABLE IF NOT EXISTS quill_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL UNIQUE,
+            timestamp TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'quill',
+            deleted_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS quill_conversation_turns (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id TEXT NOT NULL UNIQUE,
+            conversation_id INTEGER NOT NULL REFERENCES quill_conversations(id) ON DELETE CASCADE,
+            body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quill_turns_conversation ON quill_conversation_turns(conversation_id, seq);
+        """, db: db)
+    }
+
+    public func appendQuillTurn(sessionID: UUID, turn: QuillHistoryTurn) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("INSERT OR IGNORE INTO quill_conversations(session_id, timestamp) VALUES (?, ?)", db: db, bind: {
+                self.bindCotypistText(sessionID.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(turn.timestamp, at: 2, statement: $0)
+            })
+            let body = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+            try withStatement("""
+            INSERT OR IGNORE INTO quill_conversation_turns(turn_id, conversation_id, body)
+            SELECT ?, id, ? FROM quill_conversations WHERE session_id = ? AND deleted_at IS NULL
+            """, db: db, bind: {
+                self.bindCotypistText(turn.id.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(body, at: 2, statement: $0)
+                self.bindCotypistText(sessionID.uuidString, at: 3, statement: $0)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func updateQuillQuestion(turnID: UUID, question: String) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var body: String?
+            try withStatement("""
+            SELECT t.body FROM quill_conversation_turns t JOIN quill_conversations c ON c.id = t.conversation_id
+            WHERE t.turn_id = ? AND c.deleted_at IS NULL
+            """, db: db, bind: { self.bindCotypistText(turnID.uuidString, at: 1, statement: $0) }, row: {
+                body = String(cString: sqlite3_column_text($0, 0))
+            })
+            if let body {
+                var turn = try JSONDecoder().decode(QuillHistoryTurn.self, from: Data(body.utf8))
+                turn.question = question
+                let updated = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+                try withStatement("UPDATE quill_conversation_turns SET body = ? WHERE turn_id = ?", db: db, bind: {
+                    self.bindCotypistText(updated, at: 1, statement: $0)
+                    self.bindCotypistText(turnID.uuidString, at: 2, statement: $0)
+                })
+            }
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func deleteQuillConversation(id: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("UPDATE quill_conversations SET deleted_at = ? WHERE id = ?", db: db, bind: {
+                sqlite3_bind_double($0, 1, Date().timeIntervalSince1970)
+                sqlite3_bind_int64($0, 2, id)
+            })
+            try withStatement("DELETE FROM quill_conversation_turns WHERE conversation_id = ?", db: db, bind: {
+                sqlite3_bind_int64($0, 1, id)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func quillConversation(id: Int64) throws -> QuillConversationRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try quillConversation(id: id, db: db)
+    }
+
+    private func quillConversation(id: Int64, db: OpaquePointer?, previewOnly: Bool = false) throws -> QuillConversationRecord? {
+        var identity: (UUID, String)?
+        try withStatement("SELECT session_id, timestamp FROM quill_conversations WHERE id = ? AND deleted_at IS NULL", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: {
+                if let uuid = UUID(uuidString: String(cString: sqlite3_column_text($0, 0))) {
+                    identity = (uuid, String(cString: sqlite3_column_text($0, 1)))
+                }
+            })
+        guard let identity else { return nil }
+        var turnCount = 0
+        try withStatement("SELECT COUNT(*) FROM quill_conversation_turns WHERE conversation_id = ?", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { turnCount = Int(sqlite3_column_int64($0, 0)) })
+        // Decode only two bounded bodies during the shared synchronous Timeline refresh.
+        // Full conversation materialization happens off the UI actor on expansion.
+        let endpointFilter = previewOnly ? " AND (seq = (SELECT MIN(seq) FROM quill_conversation_turns WHERE conversation_id = ?1) OR seq = (SELECT MAX(seq) FROM quill_conversation_turns WHERE conversation_id = ?1))" : ""
+        var bodies: [String] = []
+        try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ?1\(endpointFilter) ORDER BY seq", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { bodies.append(String(cString: sqlite3_column_text($0, 0))) })
+        let turns = bodies.compactMap { try? JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
+        // Damaged endpoints must not hide potentially readable middle turns.
+        guard !turns.isEmpty || (previewOnly && turnCount > 2) else { return nil }
+        return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns, turnCount: turnCount)
+    }
+
     // MARK: - Cotypist
 
     /// Cotypist typeahead history, local only (see database-schema.md). `cotypist_suggestions` has
@@ -536,6 +671,9 @@ public final class DictationStore {
     /// a suggestion that wasn't taken only counts toward an open session. Returns the session id.
     @discardableResult
     public func recordCotypistSuggestion(_ event: CotypistSuggestionEvent) throws -> Int64? {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
@@ -725,8 +863,12 @@ public final class DictationStore {
         bodhanMeasurement: BodhanWBCSMeasurement? = nil,
         transcriptionModel: DictationModelIdentity? = nil
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        var savedWords = 0
         let id = try insertDictation(
             text: text,
             durationSeconds: durationSeconds,
@@ -737,7 +879,8 @@ public final class DictationStore {
             startedAt: startedAt,
             endedAt: endedAt,
             transcriptionModel: transcriptionModel,
-            db: db
+            db: db,
+            countedWords: { savedWords = $0 }
         )
         if let bodhanMeasurement {
             do {
@@ -748,7 +891,74 @@ public final class DictationStore {
                 fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
             }
         }
+        if source == "dictation" { onLocalDictationWords?(id, savedWords) }
         return id
+    }
+
+    /// Recovery-only persistence: commit the history row and its local retry key
+    /// together. A retry after archive cleanup fails returns the saved text,
+    /// including after relaunch, instead of inserting another history row.
+    public func insertRecoveredDictation(
+        recoveryID: UUID,
+        text: String,
+        durationSeconds: Double,
+        startedAt: Date,
+        endedAt: Date,
+        transcriptionModel: DictationModelIdentity? = nil
+    ) throws -> String {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        // Lazy creation keeps normal dictation persistence/migrations unchanged.
+        try exec("""
+        CREATE TABLE IF NOT EXISTS dictation_recovery_history (
+            recovery_id TEXT PRIMARY KEY,
+            dictation_id INTEGER NOT NULL UNIQUE REFERENCES dictations(id) ON DELETE CASCADE
+        )
+        """, db: db)
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var existing: OpaquePointer?
+            let lookup = """
+            SELECT d.raw_text FROM dictation_recovery_history r
+            JOIN dictations d ON d.id = r.dictation_id
+            WHERE r.recovery_id = ? AND d.deleted_at IS NULL
+            """
+            guard sqlite3_prepare_v2(db, lookup, -1, &existing, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(existing) }
+            sqlite3_bind_text(existing, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            let status = sqlite3_step(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+            if status == SQLITE_ROW {
+                let savedText = stringColumn(existing, index: 0)
+                if !savedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try exec("COMMIT", db: db)
+                    return savedText
+                }
+            }
+            let id = try insertDictation(text: text, durationSeconds: durationSeconds,
+                source: "dictation", targetAppName: nil, targetAppBundleID: nil,
+                startedAt: startedAt, endedAt: endedAt,
+                transcriptionModel: transcriptionModel, db: db)
+            var link: OpaquePointer?
+            guard sqlite3_prepare_v2(db,
+                """
+                INSERT INTO dictation_recovery_history (recovery_id, dictation_id) VALUES (?, ?)
+                ON CONFLICT(recovery_id) DO UPDATE SET dictation_id = excluded.dictation_id
+                """,
+                -1, &link, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(link) }
+            sqlite3_bind_text(link, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(link, 2, id)
+            guard sqlite3_step(link) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+            return text
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
     }
 
     private func insertBodhanWBCSMeasurement(
@@ -772,7 +982,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 3)
         }
         sqlite3_bind_int64(statement, 4, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     @discardableResult
@@ -791,6 +1001,9 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db)
@@ -854,7 +1067,8 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date,
         transcriptionModel: DictationModelIdentity? = nil,
-        db: OpaquePointer?
+        db: OpaquePointer?,
+        countedWords: (Int) -> Void = { _ in }
     ) throws -> Int64 {
 
         let sql = """
@@ -877,7 +1091,8 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 2, durationSeconds)
         sqlite3_bind_text(statement, 3, (text as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (appContext as NSString).utf8String, -1, nil)
-        sqlite3_bind_int(statement, 5, Int32(Self.countWords(in: statisticsText ?? text)))
+        let words = Self.countWords(in: statisticsText ?? text)
+        sqlite3_bind_int(statement, 5, Int32(words))
         sqlite3_bind_text(statement, 6, (source as NSString).utf8String, -1, nil)
         bindOptionalText(targetAppName, at: 7, statement: statement)
         bindOptionalText(targetAppBundleID, at: 8, statement: statement)
@@ -890,9 +1105,10 @@ public final class DictationStore {
         bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
         bindOptionalText(transcriptionModel?.endpoint, at: 15, statement: statement)
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        countedWords(words)
         return sqlite3_last_insert_rowid(db)
     }
 
@@ -1042,9 +1258,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeDictationRecord(statement)
     }
 
@@ -1054,7 +1270,9 @@ public final class DictationStore {
         fromDate: String? = nil,
         toDate: String? = nil,
         origin: RecordOriginFilter = .all,
-        targetApplication: DictationTargetApplication? = nil
+        targetApplication: DictationTargetApplication? = nil,
+        searchText: String = "",
+        activity: String = "All activity"
     ) throws -> [TimelineEntry] {
         guard limit > 0 else { return [] }
         let db = try openDatabase()
@@ -1086,6 +1304,9 @@ public final class DictationStore {
             origin: origin,
             targetApplication: targetApplication
         )
+        var quillFilter = historyFilterConditions(alias: "q", dateColumn: "timestamp",
+            fromDate: fromDate, toDate: toDate, origin: origin)
+        if targetApplication != nil { quillFilter.conditions.append("0 = 1") }
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -1099,11 +1320,13 @@ public final class DictationStore {
             SELECT 2, c.id, c.timestamp
             FROM cotypist_sessions c
             WHERE \(cotypistFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 3, q.id, q.timestamp FROM quill_conversations q
+            WHERE \(quillFilter.conditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
         ORDER BY julianday(sort_time) DESC, sort_time DESC, kind ASC, record_id DESC
-        LIMIT ? OFFSET ?
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1111,28 +1334,42 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
-        sqlite3_bind_int(statement, Int32(boundValues.count + 1), Int32(limit))
-        sqlite3_bind_int(statement, Int32(boundValues.count + 2), Int32(max(0, offset)))
-
-        var keys: [(kind: Int32, id: Int64)] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            keys.append((sqlite3_column_int(statement, 0), sqlite3_column_int64(statement, 1)))
-        }
-
+        // Pagination counts readable entries, not SQL keys that may be omitted.
         var entries: [TimelineEntry] = []
-        entries.reserveCapacity(keys.count)
-        for key in keys {
-            if key.kind == 0, let record = try dictation(id: key.id, db: db) {
-                entries.append(.dictation(record))
-            } else if key.kind == 1, let record = try meeting(id: key.id, db: db) {
-                entries.append(.meeting(record))
-            } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
-                entries.append(.cotypist(record))
+        var remainingOffset = max(0, offset)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        while sqlite3_step(statement) == SQLITE_ROW {
+            try Task.checkCancellation()
+            let kind = sqlite3_column_int(statement, 0)
+            let id = sqlite3_column_int64(statement, 1)
+            let labels = ["Dictations", "Meetings", "Cotypist", "Quill"]
+            guard activity == "All activity" || (kind >= 0 && Int(kind) < labels.count && labels[Int(kind)] == activity) else { continue }
+            let entry: TimelineEntry?
+            switch kind {
+            case 0: entry = try dictation(id: id, db: db).map(TimelineEntry.dictation)
+            case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
+            case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
+            case 3: entry = try quillConversation(id: id, db: db, previewOnly: query.isEmpty).map(TimelineEntry.quill)
+            default: entry = nil
             }
+            guard let entry else { continue }
+            if !query.isEmpty {
+                let text: String
+                switch entry {
+                case .meeting(let record): text = [record.title, record.rawTranscript, record.formattedNotes, record.manualNotes].joined(separator: "\n")
+                case .dictation(let record): text = record.rawText
+                case .quill(let record): text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
+                case .cotypist(let record): text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
+                }
+                guard text.localizedCaseInsensitiveContains(query) else { continue }
+            }
+            if remainingOffset > 0 { remainingOffset -= 1; continue }
+            entries.append(entry)
+            if entries.count == limit { break }
         }
         return entries
     }
@@ -1346,9 +1583,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeMeetingRecord(statement)
     }
 
@@ -1578,7 +1815,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 24)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -1842,7 +2079,7 @@ public final class DictationStore {
             bindOptionalText(participant.emailAddress, at: 4, statement: statement)
             sqlite3_bind_int64(statement, 5, meetingID)
             sqlite3_bind_text(statement, 6, (source.rawValue as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -1923,7 +2160,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -1944,7 +2181,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -2008,7 +2245,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 17)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -2250,6 +2487,26 @@ public final class DictationStore {
         else { return nil }
         let runs = optionalDataColumn(statement, index: 1).flatMap { try? JSONDecoder().decode([Int].self, from: $0) }
         return BodhanWBCSMeasurement(languageSamples: samples, runLengths: runs)
+    }
+
+    /// One consistent snapshot; no transcript or record identifiers leave this API's caller.
+    /// Synced rows without local-only model provenance are ambiguous and excluded.
+    public func localDictationWordBaseline() throws -> (lastID: Int64, words: Int) {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var lastID: Int64 = 0
+        var words = 0
+        try withStatement("""
+        SELECT COALESCE(MAX(id), 0), COALESCE(SUM(CASE
+          WHEN source = 'dictation' AND deleted_at IS NULL
+            AND (cloud_record_name IS NULL OR transcription_backend IS NOT NULL)
+          THEN MAX(word_count, 0) ELSE 0 END), 0)
+        FROM dictations
+        """, db: db, row: {
+            lastID = sqlite3_column_int64($0, 0)
+            words = Int(sqlite3_column_int64($0, 1))
+        })
+        return (lastID, words)
     }
 
     public func dictationStats(
@@ -2499,7 +2756,7 @@ public final class DictationStore {
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_text(statement, 1, (signature as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
@@ -2676,7 +2933,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode(pairs)
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 10, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Records the source revision even when it contributes no analytics. This keeps
@@ -2698,7 +2955,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode([])
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 5, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func removeCachedInsightsRecord(kind: String, id: Int64, db: OpaquePointer?) throws {
@@ -2730,7 +2987,7 @@ public final class DictationStore {
         guard sqlite3_prepare_v2(db, "DELETE FROM insights_record_cache WHERE kind = ? AND record_id = ?", -1, &delete, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(delete) }
         sqlite3_bind_text(delete, 1, (kind as NSString).utf8String, -1, nil); sqlite3_bind_int64(delete, 2, id)
-        guard sqlite3_step(delete) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(delete) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsDaily(day: String, dictationWords: Int, dictationSessions: Int, meetingWords: Int, meetings: Int, duration: Double, db: OpaquePointer?) throws {
@@ -2744,7 +3001,7 @@ public final class DictationStore {
         var s: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
         sqlite3_bind_text(s, 1, (day as NSString).utf8String, -1, nil); sqlite3_bind_int64(s, 2, Int64(dictationWords))
         sqlite3_bind_int(s, 3, Int32(dictationSessions)); sqlite3_bind_int64(s, 4, Int64(meetingWords)); sqlite3_bind_int(s, 5, Int32(meetings)); sqlite3_bind_double(s, 6, duration)
-        guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsToken(day: String, pair: InsightsContributionCodec.Pair, meeting: Bool, multiplier: Int, db: OpaquePointer?) throws {
@@ -2757,13 +3014,13 @@ public final class DictationStore {
             var index: Int32 = 1
             if sql.contains("daily_tokens") { sqlite3_bind_text(s, index, (day as NSString).utf8String, -1, nil); index += 1 }
             sqlite3_bind_int64(s, index, pair.tokenID); sqlite3_bind_int(s, index + 1, Int32(dictation)); sqlite3_bind_int(s, index + 2, Int32(meetingCount))
-            guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
     private func internInsightsToken(_ token: String, db: OpaquePointer?) throws -> Int64 {
         var insert: OpaquePointer?; guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO insights_tokens(token) VALUES(?)", -1, &insert, nil) == SQLITE_OK else { throw lastError(db) }
-        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
+        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
         var select: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT id FROM insights_tokens WHERE token=?", -1, &select, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(select) }
         sqlite3_bind_text(select, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(select) == SQLITE_ROW else { throw lastError(db) }
         return sqlite3_column_int64(select, 0)
@@ -2942,7 +3199,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, now)
         sqlite3_bind_double(statement, 2, now)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -2987,7 +3244,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 1, now)
             sqlite3_bind_double(statement, 2, now)
             sqlite3_bind_int64(statement, 3, id)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
             guard sqlite3_changes(db) > 0 else {
@@ -3042,7 +3299,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (message as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -3054,6 +3311,9 @@ public final class DictationStore {
         finalMessage: String,
         events: [ComputerUseTraceEvent]
     ) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try insertComputerUseTrace(
@@ -3107,7 +3367,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (finalStatus as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, (finalMessage as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (traceJSON as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3157,7 +3417,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3174,7 +3434,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3194,7 +3454,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 2, Int32(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3291,7 +3551,7 @@ public final class DictationStore {
                 sqlite3_bind_double(statement, 4, entry.startSeconds)
                 sqlite3_bind_double(statement, 5, entry.endSeconds)
                 sqlite3_bind_text(statement, 6, (entry.text as NSString).utf8String, -1, nil)
-                guard sqlite3_step(statement) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -3351,7 +3611,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 6, Int32(wordCount))
         sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3381,7 +3641,7 @@ public final class DictationStore {
         sqlite3_bind_int64(statement, 2, Int64(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3425,7 +3685,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(statement, 3, id)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3490,7 +3750,7 @@ public final class DictationStore {
         bindOptionalText(visualContext, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 19, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3645,7 +3905,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 4, snapshot.durationSeconds)
         sqlite3_bind_text(statement, 5, (snapshot.startTime as NSString).utf8String, -1, nil)
         bindOptionalText(snapshot.endTime, at: 6, statement: statement)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3770,7 +4030,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 7, Int32(wordCount))
         sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 9, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3817,7 +4077,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3830,7 +4090,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3843,7 +4103,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3856,7 +4116,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3868,13 +4128,14 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        replacingTitleIfUnchanged expectedTitle: String? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = CASE WHEN ? IS NULL OR title = ? THEN ? ELSE title END, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -3882,15 +4143,19 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (selectedTemplateID as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 4, (selectedTemplateName as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 5, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 6, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        if let expectedTitle {
+            sqlite3_bind_text(statement, 1, (expectedTitle as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (expectedTitle as NSString).utf8String, -1, nil)
+        }
+        sqlite3_bind_text(statement, 3, (title as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 4, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 10, id)
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3928,7 +4193,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 10, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3948,7 +4213,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3964,7 +4229,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         bindOptionalText(path, at: 1, statement: statement)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3985,7 +4250,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 2)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -4002,7 +4267,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4074,7 +4339,7 @@ public final class DictationStore {
                     sqlite3_bind_null(reparentStmt, 1)
                 }
                 sqlite3_bind_int64(reparentStmt, 2, childID)
-                guard sqlite3_step(reparentStmt) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(reparentStmt) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -4086,7 +4351,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s1) }
             sqlite3_bind_int64(s1, 1, id)
-            guard sqlite3_step(s1) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s1) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4096,7 +4361,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s2) }
             sqlite3_bind_int64(s2, 1, id)
-            guard sqlite3_step(s2) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s2) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4130,7 +4395,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4155,7 +4420,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4333,7 +4598,7 @@ public final class DictationStore {
             sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(data.count), transient)
         }
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     public func clearCloudSyncStateData(forKey key: String) throws {
@@ -4346,7 +4611,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Promotes a legacy environment namespace only when its hashed account owner
@@ -4398,7 +4663,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(Data(expectedScope.utf8), at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4411,7 +4676,7 @@ public final class DictationStore {
             }
             sqlite3_bind_text(deleteStatement, 1, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4510,7 +4775,7 @@ public final class DictationStore {
             sqlite3_bind_text(deleteStatement, 1, (stateKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 3, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4524,7 +4789,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(expectedData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4597,7 +4862,7 @@ public final class DictationStore {
                     nil
                 )
             }
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4680,7 +4945,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (key as NSString).utf8String, -1, nil)
             bindOptionalBlob(scopeData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else { throw lastError(db) }
             try exec("COMMIT", db: db)
             return true
         } catch {
@@ -5002,7 +5267,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 3, syncedAt.timeIntervalSince1970)
         sqlite3_bind_text(statement, 4, (recordName as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 5, recordUpdatedAt.timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5033,7 +5298,7 @@ public final class DictationStore {
         bindOptionalText(changeTag, at: 1, statement: statement)
         bindOptionalBlob(systemFields, at: 2, statement: statement)
         sqlite3_bind_text(statement, 3, (recordName as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Drops obsolete CKRecord versions after this same account's zone was recreated.
@@ -5145,7 +5410,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 2, predecessorID)
         sqlite3_bind_int64(statement, 3, predecessorID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5188,7 +5453,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, cutoff)
         sqlite3_bind_double(statement, 3, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5210,7 +5475,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -5257,7 +5522,7 @@ public final class DictationStore {
             sqlite3_bind_text(update, 1, (recordName as NSString).utf8String, -1, nil)
             sqlite3_bind_double(update, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(update, 3, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5292,7 +5557,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(fillRecordName) }
         sqlite3_bind_double(fillRecordName, 1, now)
-        guard sqlite3_step(fillRecordName) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillRecordName) == SQLITE_DONE else {
             throw lastError(db)
         }
 
@@ -5331,7 +5596,7 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(fillLocalID) }
-        guard sqlite3_step(fillLocalID) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillLocalID) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5498,7 +5763,7 @@ public final class DictationStore {
             defer { sqlite3_finalize(update) }
             sqlite3_bind_text(update, 1, (source as NSString).utf8String, -1, nil)
             sqlite3_bind_int64(update, 2, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5561,7 +5826,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 12, statement: statement)
         sqlite3_bind_double(statement, 13, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5635,7 +5900,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5761,29 +6026,47 @@ public final class DictationStore {
     }
 
     private func openDatabase() throws -> OpaquePointer? {
-        try FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
         var db: OpaquePointer?
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            throw lastError(db)
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let error = lastError(db)
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_busy_timeout(db, 5_000) != SQLITE_OK {
-            throw lastError(db)
+        do {
+            guard sqlite3_busy_timeout(db, 5_000) == SQLITE_OK else { throw lastError(db) }
+            if !readOnly {
+                guard sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+            }
+            return db
+        } catch {
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        return db
     }
 
     private func exec(_ sql: String, db: OpaquePointer?) throws {
-        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
+        // Match sqlite3_exec's multi-statement behavior, but give each source
+        // statement the same narrowly scoped FTS recovery as bound writes.
+        try sql.withCString { start in
+            var cursor = start
+            while cursor.pointee != 0 {
+                var statement: OpaquePointer?
+                var tail: UnsafePointer<CChar>?
+                guard sqlite3_prepare_v2(db, cursor, -1, &statement, &tail) == SQLITE_OK else { throw lastError(db) }
+                defer { sqlite3_finalize(statement) }
+                if let statement {
+                    var status = try GlobalSearchIndex.stepSourceWrite(statement)
+                    while status == SQLITE_ROW { status = try GlobalSearchIndex.stepSourceWrite(statement) }
+                    guard status == SQLITE_DONE else { throw lastError(db) }
+                }
+                guard let tail, tail > cursor else { break }
+                cursor = tail
+            }
         }
     }
 
@@ -6001,7 +6284,7 @@ public final class DictationStore {
                     sqlite3_bind_int(update, 1, Int32(Self.countWords(in: instruction)))
                     sqlite3_bind_double(update, 2, migrationTime)
                     sqlite3_bind_int64(update, 3, dictationID)
-                    guard sqlite3_step(update) == SQLITE_DONE else { throw lastError(db) }
+                    guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else { throw lastError(db) }
                 }
 
                 let markSQL = """
@@ -6020,7 +6303,7 @@ public final class DictationStore {
                     -1,
                     nil
                 )
-                guard sqlite3_step(mark) == SQLITE_DONE else { throw lastError(db) }
+                guard try GlobalSearchIndex.stepSourceWrite(mark) == SQLITE_DONE else { throw lastError(db) }
             }
             try exec("COMMIT", db: db)
         } catch {
@@ -6194,7 +6477,7 @@ extension DictationStore {
             let create = try prepare("INSERT INTO meeting_folders (name, parent_id) VALUES (?, NULL)")
             defer { sqlite3_finalize(create) }
             text("Granola", 1, create)
-            guard sqlite3_step(create) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(create) == SQLITE_DONE else { throw lastError(db) }
             let id = sqlite3_last_insert_rowid(db)
             destinationFolderID = id
             return id
@@ -6230,13 +6513,13 @@ extension DictationStore {
             sqlite3_bind_int64(insert, 7, try importFolder())
             sqlite3_bind_double(insert, 8, Date().timeIntervalSince1970)
             text(record.syncIdentity, 9, insert)
-            guard sqlite3_step(insert) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { throw lastError(db) }
             let meetingID = sqlite3_last_insert_rowid(db)
             sqlite3_reset(provenance); sqlite3_clear_bindings(provenance)
             sqlite3_bind_int64(provenance, 1, meetingID)
             text(record.id, 2, provenance); text(record.workspace, 3, provenance); text(record.ownerEmail, 4, provenance)
             sqlite3_bind_double(provenance, 5, Date().timeIntervalSince1970)
-            guard sqlite3_step(provenance) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(provenance) == SQLITE_DONE else { throw lastError(db) }
             imported += 1
         }
         // Finalize the existence cursor before committing when the last record was a duplicate.

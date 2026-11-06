@@ -7,6 +7,8 @@ struct OnboardingView: View {
     let controller: MuesliController
     let appState: AppState
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var analytics: AnalyticsAttempt?
     @State private var currentStep: Int
     @State private var userName: String
     @State private var selectedUseCase: OnboardingUseCase
@@ -32,6 +34,7 @@ struct OnboardingView: View {
     @State private var inputMonitoringGranted = false
     @State private var screenRecordingGranted = false
     @State private var systemAudioGranted = false
+    @State private var systemAudioPermission = SystemAudioPermissionCheck()
     @State private var permissionPollTimer: Timer?
     @State private var grantingPermissionName: String?
     @State private var nativePermissionPromptName: String?
@@ -208,20 +211,9 @@ struct OnboardingView: View {
 
                 HStack(spacing: MuesliTheme.spacing12) {
                     if canGoBack {
-                        Button("Back") {
+                        skipButton("Back") {
                             goToPreviousStep()
                         }
-                        .buttonStyle(.plain)
-                        .font(MuesliTheme.body())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .background(MuesliTheme.surfacePrimary)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                        )
                     }
 
                     primaryButton
@@ -233,9 +225,24 @@ struct OnboardingView: View {
         .background(MuesliTheme.backgroundBase)
         .preferredColorScheme(.dark)
         .onAppear {
+            if analytics == nil { analytics = AnalyticsAttempt(.onboarding) }
             saveProgress(atStep: currentStep)
         }
-        .onChange(of: currentStep) { _, step in
+        .onDisappear { analytics?.finish(controller.appState.config.hasCompletedOnboarding ? .success : .cancelled); analytics = nil }
+        .onChange(of: currentStep) { previous, step in
+            if step > previous {
+                let stage: AnalyticsValue
+                switch OnboardingFlow.Step(rawValue: previous) {
+                case .welcome: stage = .welcome
+                case .model: stage = .models
+                case .permissions, .calendarAccess: stage = .permission
+                case .hotkey: stage = .setup
+                case .dictationTest: stage = .capture
+                case .meetingSummary: stage = .generation
+                case nil: stage = .unknown
+                }
+                ProductAnalytics.event(.onboarding, .step_finished, outcome: .success, fields: [.stage: stage])
+            }
             saveProgress(atStep: step)
         }
         .onChange(of: userName) { _, _ in
@@ -292,8 +299,11 @@ struct OnboardingView: View {
                 goToNextStep()
             }
         case 3:
-            onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
-                advancePastPermissions()
+            HStack(spacing: MuesliTheme.spacing12) {
+                skipButton("Set up later") { finishOnboarding(withKey: false) }
+                onboardingButton(currentStepIndex == orderedSteps.count - 1 ? "Finish" : "Continue", enabled: requiredPermissionsGranted) {
+                    advancePastPermissions()
+                }
             }
         case 4:
             if dictationTestResult != nil {
@@ -348,14 +358,14 @@ struct OnboardingView: View {
 
     private func goToNextStep() {
         guard currentStepIndex < orderedSteps.count - 1 else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
+        MuesliMotion.perform(.easeInOut(duration: 0.2)) {
             currentStep = orderedSteps[currentStepIndex + 1]
         }
     }
 
     private func goToPreviousStep() {
         guard currentStepIndex > 0 else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
+        MuesliMotion.perform(.easeInOut(duration: 0.2)) {
             currentStep = orderedSteps[currentStepIndex - 1]
         }
     }
@@ -365,30 +375,24 @@ struct OnboardingView: View {
         Button(action: action) {
             Text(title)
                 .font(MuesliTheme.font(size: 14, weight: .medium))
-                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing20)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(enabled ? MuesliTheme.accent : MuesliTheme.accent.opacity(0.4))
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.primary))
         .disabled(!enabled)
     }
 
+    /// Back, Skip and Not now: neutral actions with their chrome inside the label.
     @ViewBuilder
     private func skipButton(_ title: String = "Skip", action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(MuesliTheme.body())
-            .foregroundStyle(MuesliTheme.textSecondary)
-            .padding(.horizontal, MuesliTheme.spacing16)
-            .padding(.vertical, MuesliTheme.spacing8)
-            .background(MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
+        Button(action: action) {
+            Text(title)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, MuesliTheme.spacing16)
+                .padding(.vertical, MuesliTheme.spacing8)
+        }
+        .buttonStyle(.muesli(.secondary))
     }
 
     private var shouldShowModelDownloadIndicator: Bool {
@@ -460,7 +464,7 @@ struct OnboardingView: View {
         .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 6)
         .frame(width: 260, alignment: .leading)
         .transition(.opacity.combined(with: .move(edge: .top)))
-        .animation(.easeInOut(duration: 0.2), value: shouldShowModelDownloadIndicator)
+        .animation(MuesliMotion.animation(.easeInOut(duration: 0.2), reduceMotion: reduceMotion), value: shouldShowModelDownloadIndicator)
     }
 
     private var modelDownloadIndicatorTitle: String {
@@ -692,7 +696,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
                 Text(subtitle)
                     .font(MuesliTheme.font(size: 10))
-                    .foregroundStyle(selected ? MuesliTheme.onAccent.opacity(0.8) : MuesliTheme.textTertiary)
+                    .foregroundStyle(selected ? MuesliTheme.onAccent : MuesliTheme.textTertiary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -715,7 +719,8 @@ struct OnboardingView: View {
             }
         }
         .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.18), value: selected)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .animation(MuesliMotion.animation(.easeInOut(duration: 0.18), reduceMotion: reduceMotion), value: selected)
     }
 
     // MARK: - Step 2: Model Selection
@@ -739,7 +744,7 @@ struct OnboardingView: View {
                     modelCard(option: BackendOption.onboardingDefault)
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        MuesliMotion.perform(.easeInOut(duration: 0.2)) {
                             showMoreModels.toggle()
                         }
                     } label: {
@@ -750,8 +755,11 @@ struct OnboardingView: View {
                                 .font(.system(size: 9, weight: .semibold))
                         }
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 28)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .padding(.top, MuesliTheme.spacing4)
 
                     if showMoreModels {
@@ -865,6 +873,7 @@ struct OnboardingView: View {
         .buttonStyle(.plain)
         .disabled(incompatibilityReason != nil)
         .help(incompatibilityReason ?? option.label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Step 3: Permissions (sequential, one at a time)
@@ -904,19 +913,7 @@ struct OnboardingView: View {
                     "System Audio",
                     "Capture meeting audio from other participants",
                     systemAudioGranted,
-                    {
-                        Task {
-                            let granted = await CoreAudioSystemRecorder.requestSystemAudioAccess()
-                            await MainActor.run {
-                                self.systemAudioGranted = granted
-                                if granted {
-                                    self.notePermissionGranted("System Audio")
-                                } else {
-                                    self.saveProgress(atStep: self.currentStep)
-                                }
-                            }
-                        }
-                    }
+                    { refreshSystemAudioPermission(request: true) }
                 ))
             } else {
                 steps.append((
@@ -924,7 +921,10 @@ struct OnboardingView: View {
                     "Screen & System Audio",
                     "Capture meeting audio from other participants",
                     screenRecordingGranted,
-                    { CGRequestScreenCaptureAccess() }
+                    {
+                        self.controller.beginSystemPermissionGuide(for: .screenRecording)
+                        CGRequestScreenCaptureAccess()
+                    }
                 ))
             }
         }
@@ -995,7 +995,9 @@ struct OnboardingView: View {
                         Text(permissionButtonTitle(for: step.name, isConfirmingGrant: isConfirmingGrant))
                             .font(MuesliTheme.font(size: 14, weight: .semibold))
                     }
-                    .foregroundStyle(MuesliTheme.onAccent)
+                    // The disabled "Granted" confirmation keeps its success fill, so this
+                    // button retains its own chrome rather than the shared disabled style.
+                    .foregroundStyle(isConfirmingGrant ? MuesliTheme.onSuccess : MuesliTheme.onAccent)
                     .padding(.horizontal, MuesliTheme.spacing24)
                     .padding(.vertical, MuesliTheme.spacing12)
                     .background(isConfirmingGrant ? MuesliTheme.success : MuesliTheme.accent)
@@ -1003,7 +1005,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isConfirmingGrant || isWaitingForNativePermissionPrompt(step.name))
-                .animation(.easeInOut(duration: 0.2), value: isConfirmingGrant)
+                .animation(MuesliMotion.animation(.easeInOut(duration: 0.2), reduceMotion: reduceMotion), value: isConfirmingGrant)
 
                 // Progress dots
                 HStack(spacing: 6) {
@@ -1018,6 +1020,17 @@ struct OnboardingView: View {
                     }
                 }
 
+                if step.name == "System Audio" {
+                    Button(!systemAudioPermission.isChecking ? "Check again" : "Checking…") {
+                        refreshSystemAudioPermission(request: true)
+                    }
+                    .disabled(systemAudioPermission.isChecking)
+                }
+                Text("You can set up permissions later in Settings. Features that need access stay unavailable until you allow them.")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+
                 if isWaitingForNativePermissionPrompt(step.name) {
                     Text("Respond to the macOS permission prompt")
                         .font(MuesliTheme.font(size: 11))
@@ -1028,7 +1041,7 @@ struct OnboardingView: View {
                     } label: {
                         Text("Not seeing a prompt? Open System Settings")
                             .font(MuesliTheme.font(size: 11))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .foregroundStyle(MuesliTheme.accentText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -1056,6 +1069,8 @@ struct OnboardingView: View {
                                 .foregroundStyle(MuesliTheme.textTertiary)
                         }
                         .foregroundStyle(MuesliTheme.textSecondary)
+                        // Covers the gap between the lines and the shorter title's margins.
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 2)
@@ -1078,7 +1093,12 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             startPermissionPolling()
+            refreshSystemAudioPermission()
             schedulePermissionAdvanceIfReady()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissions()
+            refreshSystemAudioPermission()
         }
         .onChange(of: requiredPermissionsGranted) { _, granted in
             if granted {
@@ -1090,6 +1110,7 @@ struct OnboardingView: View {
         .onDisappear {
             cancelScheduledPermissionAdvance()
             stopPermissionPolling()
+            systemAudioPermission.cancel()
             controller.dismissSystemPermissionGuide()
         }
     }
@@ -1179,25 +1200,23 @@ struct OnboardingView: View {
                     .foregroundStyle(MuesliTheme.success)
                     .transition(.scale.combined(with: .opacity))
             } else {
-                Button("Grant") {
-                    action()
+                Button(action: action) {
+                    Text("Grant")
+                        .font(MuesliTheme.font(size: 12, weight: .medium))
+                        .padding(.horizontal, MuesliTheme.spacing12)
+                        .padding(.vertical, 4)
                 }
-                .buttonStyle(.plain)
-                .font(MuesliTheme.font(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, 4)
-                .background(MuesliTheme.accentSubtle)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .buttonStyle(.muesli(.tinted))
             }
         }
         .padding(.horizontal, MuesliTheme.spacing16)
         .padding(.vertical, MuesliTheme.spacing12)
-        .animation(.easeInOut(duration: 0.25), value: granted)
+        .animation(MuesliMotion.animation(.easeInOut(duration: 0.25), reduceMotion: reduceMotion), value: granted)
     }
 
     private var requiredPermissionsGranted: Bool {
-        OnboardingPermissionGate.hasRequiredPermissions(
+        guard !systemAudioPermission.isChecking else { return false }
+        return OnboardingPermissionGate.hasRequiredPermissions(
             OnboardingPermissionSnapshot(
                 microphone: micGranted,
                 accessibility: accessibilityGranted,
@@ -1300,6 +1319,17 @@ struct OnboardingView: View {
         selectionBeforeEverything = state.selectionBeforeEverything
     }
 
+    private func refreshSystemAudioPermission(request: Bool = false) {
+        guard currentStep == Self.permissionsStep, selectedUseCase.includesMeetings,
+              appState.config.useCoreAudioTap else { return }
+        systemAudioPermission.check(request: request) { granted in
+            guard currentStep == Self.permissionsStep, !hasFinishedOnboarding else { return }
+            systemAudioGranted = granted
+            if granted, grantingPermissionName == "System Audio" { notePermissionGranted("System Audio") }
+            else { saveProgress(atStep: currentStep) }
+        }
+    }
+
     private func refreshPermissions() {
         micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         accessibilityGranted = AXIsProcessTrusted()
@@ -1343,7 +1373,7 @@ struct OnboardingView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(850))
             if recentlyGrantedPermissionName == permissionName {
-                withAnimation(.easeInOut(duration: 0.2)) {
+                MuesliMotion.perform(.easeInOut(duration: 0.2)) {
                     recentlyGrantedPermissionName = nil
                 }
             }
@@ -1368,8 +1398,11 @@ struct OnboardingView: View {
     }
 
     private func saveProgressAndRestart() {
-        saveProgress(atStep: Self.dictationTestStep)
-        controller.relaunchApp()
+        controller.confirmPermissionRestart(onboarding: true, beforeRestart: {
+            saveProgress(atStep: Self.dictationTestStep)
+        }, onLater: {
+            hasCompletedPermissionsStep = false
+        })
     }
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {
@@ -1450,17 +1483,16 @@ struct OnboardingView: View {
                 } label: {
                     Text(isRecordingHotkey ? "Press a modifier key..." : "Change Shortcut")
                         .font(MuesliTheme.body())
-                        .foregroundStyle(isRecordingHotkey ? MuesliTheme.accent : MuesliTheme.textPrimary)
+                        .padding(.horizontal, MuesliTheme.spacing16)
+                        .padding(.vertical, MuesliTheme.spacing8)
+                        .overlay {
+                            if isRecordingHotkey {
+                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                                    .strokeBorder(MuesliTheme.accent.opacity(0.3), lineWidth: 1)
+                            }
+                        }
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, MuesliTheme.spacing16)
-                .padding(.vertical, MuesliTheme.spacing8)
-                .background(isRecordingHotkey ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(isRecordingHotkey ? MuesliTheme.accent.opacity(0.3) : MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
+                .buttonStyle(.muesli(isRecordingHotkey ? .tinted : .secondary, bordered: !isRecordingHotkey))
             }
 
             Text("Supported: Left Cmd, Right Cmd, Fn, Ctrl, Option, Shift")
@@ -1512,7 +1544,7 @@ struct OnboardingView: View {
                 if isSelectedModelReadyForDictationTest {
                     Text("Try saying: \"testing this one out\"")
                         .font(MuesliTheme.font(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                         .padding(.top, 2)
                 }
             }
@@ -1561,7 +1593,7 @@ struct OnboardingView: View {
                         }
                         .buttonStyle(.plain)
                         .font(MuesliTheme.font(size: 12, weight: .medium))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                     }
                 }
             } else {
@@ -1725,11 +1757,11 @@ struct OnboardingView: View {
                 if appState.isChatGPTAuthenticated || chatGPTSignInDone {
                     HStack(spacing: 6) {
                         OpenAILogoShape()
-                            .fill(MuesliTheme.onAccent)
+                            .fill(MuesliTheme.onSuccess)
                             .frame(width: 14, height: 14)
                         Text("Signed in with ChatGPT")
                             .font(MuesliTheme.font(size: 13, weight: .medium))
-                            .foregroundStyle(MuesliTheme.onAccent)
+                            .foregroundStyle(MuesliTheme.onSuccess)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
@@ -1743,6 +1775,9 @@ struct OnboardingView: View {
                             .font(MuesliTheme.font(size: 12))
                             .foregroundStyle(MuesliTheme.textSecondary)
                     }
+                    // Matches the sign-in button's padding so the step does not jump.
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 } else {
                     Button {
                         isSigningInChatGPT = true
@@ -1756,23 +1791,20 @@ struct OnboardingView: View {
                     } label: {
                         HStack(spacing: 6) {
                             OpenAILogoShape()
-                                .fill(MuesliTheme.onAccent)
+                                .fill(.foreground)
                                 .frame(width: 14, height: 14)
                             Text("Sign in with ChatGPT")
                                 .font(MuesliTheme.font(size: 13, weight: .medium))
-                                .foregroundStyle(MuesliTheme.onAccent)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(MuesliTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.primary))
 
                     if let chatGPTSignInError {
                         Text(chatGPTSignInError)
                             .font(MuesliTheme.font(size: 11))
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MuesliTheme.destructiveText)
                             .lineLimit(2)
                     }
                 }
@@ -1865,7 +1897,7 @@ struct OnboardingView: View {
                         Text("OpenRouter connected")
                             .font(MuesliTheme.font(size: 13, weight: .medium))
                     }
-                    .foregroundStyle(MuesliTheme.onAccent)
+                    .foregroundStyle(MuesliTheme.onSuccess)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
                     .background(MuesliTheme.success)
@@ -1878,6 +1910,8 @@ struct OnboardingView: View {
                             .font(MuesliTheme.font(size: 12))
                             .foregroundStyle(MuesliTheme.textSecondary)
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 } else {
                     Button {
                         isSigningInOpenRouter = true
@@ -1897,13 +1931,10 @@ struct OnboardingView: View {
                             Text("Connect OpenRouter")
                                 .font(MuesliTheme.font(size: 13, weight: .medium))
                         }
-                        .foregroundStyle(MuesliTheme.onAccent)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(MuesliTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.primary))
 
                     Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
                         isEnteringOpenRouterAPIKey.toggle()
@@ -1925,7 +1956,7 @@ struct OnboardingView: View {
                     if let openRouterSignInError {
                         Text(openRouterSignInError)
                             .font(MuesliTheme.font(size: 11))
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MuesliTheme.destructiveText)
                             .lineLimit(2)
                     }
                 }
@@ -2369,7 +2400,7 @@ struct OnboardingView: View {
         modelReadyIndicatorTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(6))
             guard modelReadyIndicatorBackend == backend else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
+            MuesliMotion.perform(.easeInOut(duration: 0.2)) {
                 modelReadyIndicatorBackend = nil
             }
             modelReadyIndicatorTask = nil
@@ -2471,6 +2502,7 @@ private struct ModelDownloadProgressShape: Shape {
 }
 
 private struct IndeterminatePreparationBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isAnimating = false
 
     var body: some View {
@@ -2483,16 +2515,27 @@ private struct IndeterminatePreparationBar: View {
                 Capsule()
                     .fill(MuesliTheme.surfaceBorder)
 
+                // Under Reduce Motion the segment rests in the middle of the track.
                 Capsule()
                     .fill(MuesliTheme.textSecondary.opacity(0.9))
                     .frame(width: segmentWidth)
-                    .offset(x: isAnimating ? travel : 0)
+                    .offset(x: reduceMotion ? travel / 2 : (isAnimating ? travel : 0))
             }
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) {
-                isAnimating = true
-            }
+        .onAppear(perform: startIfAllowed)
+        .onChange(of: reduceMotion) { _, _ in startIfAllowed() }
+    }
+
+    private func startIfAllowed() {
+        if reduceMotion {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { isAnimating = false }
+            return
+        }
+        guard !isAnimating else { return }
+        withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) {
+            isAnimating = true
         }
     }
 }
@@ -2512,7 +2555,7 @@ private struct RotatingPreparationHint: View {
             .transition(.opacity)
             .onReceive(timer) { _ in
                 guard messages.count > 1 else { return }
-                withAnimation(.easeInOut(duration: 0.2)) {
+                MuesliMotion.perform(.easeInOut(duration: 0.2)) {
                     index = (index + 1) % messages.count
                 }
             }

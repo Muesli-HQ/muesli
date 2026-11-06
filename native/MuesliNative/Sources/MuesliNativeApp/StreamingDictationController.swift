@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import CoreAudio
 import os
@@ -63,7 +64,6 @@ final class StreamingDictationController {
     private var streamStateTask: Task<Void, Never>?
     private let chunkSamples: Int  // 35840 for Nemotron 3.5's 2240ms tier
     private let stopStreamStateTimeout: TimeInterval
-    private let stopDrainTimeout: TimeInterval
 
     init(
         transcriber: NemotronStreamingTranscribing,
@@ -73,21 +73,14 @@ final class StreamingDictationController {
             fallback: StreamingMicRecorder(directoryName: "muesli-native-dictation-streaming")
         ),
         stopStreamStateTimeout: TimeInterval = 1.0,
-        stopDrainTimeout: TimeInterval? = nil,
         chunkSamples: Int = 8960
     ) {
         precondition(chunkSamples > 0, "StreamingDictationController chunkSamples must be positive")
         self.transcriber = transcriber
         self.recorder = recorder
         self.stopStreamStateTimeout = stopStreamStateTimeout
-        self.stopDrainTimeout = stopDrainTimeout ?? Self.defaultStopDrainTimeout(chunkSamples: chunkSamples)
         self.chunkSamples = chunkSamples
         recorder.preferredInputDeviceID = preferredInputDeviceID
-    }
-
-    private static func defaultStopDrainTimeout(chunkSamples: Int) -> TimeInterval {
-        let chunkDuration = Double(chunkSamples) / 16_000.0
-        return max(1.0, chunkDuration + 0.25)
     }
 
     /// Pre-warm the ANE so first real chunk is fast. Call this early (e.g., on backend select).
@@ -100,7 +93,7 @@ final class StreamingDictationController {
                 _ = try? await transcriber.transcribeChunk(samples: silence, state: &state)
                 fputs("[streaming-dictation] warmup done\n", stderr)
             } catch {
-                fputs("[streaming-dictation] warmup failed: \(error)\n", stderr)
+                fputs("[streaming-dictation] warmup failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
@@ -142,7 +135,7 @@ final class StreamingDictationController {
             try recorder.start()
             fputs("[streaming-dictation] mic started\n", stderr)
         } catch {
-            fputs("[streaming-dictation] mic start failed: \(error)\n", stderr)
+            fputs("[streaming-dictation] mic start failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             resetActiveSession(cancelRecorder: true, sessionID: sessionID)
             return false
         }
@@ -160,7 +153,7 @@ final class StreamingDictationController {
                 startDrainIfNeeded(sessionID: sessionID)
             } catch {
                 guard let self, self.isCurrentSession(sessionID) else { return }
-                fputs("[streaming-dictation] failed to create stream state: \(error)\n", stderr)
+                fputs("[streaming-dictation] failed to create stream state: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 self.failActiveSession(sessionID: sessionID, error: error)
             }
         }
@@ -257,7 +250,7 @@ final class StreamingDictationController {
                 return
             }
             self.startDrainIfNeeded(sessionID: sessionID)
-            await self.waitForDrain(sessionID: sessionID, timeout: self.stopDrainTimeout)
+            await self.waitForDrain(sessionID: sessionID)
             let transcript = self.finishStoppedSession(sessionID: sessionID)
             self.completeStop(sessionID: sessionID, with: transcript)
         }
@@ -406,16 +399,14 @@ final class StreamingDictationController {
         }
     }
 
-    private func waitForDrain(sessionID: UUID, timeout: TimeInterval) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            guard isCurrentSession(sessionID) else { return }
-            let queueIsEmpty = queueLock.withLock { chunkQueue.isEmpty }
+    private func waitForDrain(sessionID: UUID) async {
+        while isCurrentSession(sessionID) {
             let currentlyDraining = drainLock.withLock { isDraining }
-            if queueIsEmpty && !currentlyDraining { return }
+            // A failed prediction clears stream state before its drain unwinds.
+            // Its queued tail cannot run, but must not keep Finish pending forever.
+            if !currentlyDraining && (!hasStreamState() || queueLock.withLock { chunkQueue.isEmpty }) { return }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        fputs("[streaming-dictation] stop drain timed out\n", stderr)
     }
 
     private func waitForStreamStateInitialization(
@@ -462,7 +453,7 @@ final class StreamingDictationController {
             streamState = nil
             return fullTranscript
         }
-        fputs("[streaming-dictation] stopped, transcript (\(transcript.count) chars): \(transcript.prefix(100))...\n", stderr)
+        fputs("[streaming-dictation] stopped, transcript (\(transcript.count) chars)\n", stderr)
         return transcript
     }
 
@@ -505,7 +496,7 @@ final class StreamingDictationController {
                     return fullTranscript
                 }
                 if !newText.isEmpty {
-                    fputs("[streaming-dictation] chunk → \"\(newText)\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
+                    fputs("[streaming-dictation] chunk → \"\(newText.count) characters\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
                     if let transcript {
                         onPartialText?(transcript)
                     }
@@ -513,7 +504,7 @@ final class StreamingDictationController {
                     fputs("[streaming-dictation] chunk → (silence) (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
                 }
             } catch {
-                fputs("[streaming-dictation] chunk error: \(error)\n", stderr)
+                fputs("[streaming-dictation] chunk error: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 guard isCurrentSession(sessionID) else { return .finished }
                 streamLock.withLock {
                     streamState = nil

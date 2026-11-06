@@ -60,7 +60,7 @@ private struct ICloudLinkedDeviceRow: View {
         HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: device.systemImage)
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .frame(width: 30, height: 30)
                 .background(MuesliTheme.accentSubtle)
                 .clipShape(Circle())
@@ -110,7 +110,7 @@ struct SettingsView: View {
         var message: String {
             switch self {
             case .dictations:
-                return "This will permanently remove all saved dictations. This cannot be undone."
+                return "This will permanently remove all saved dictations and failed dictation recordings. This cannot be undone."
             case .meetings:
                 return "This will permanently remove all saved meetings, notes, transcripts, and retained audio recordings. This cannot be undone."
             }
@@ -153,9 +153,9 @@ struct SettingsView: View {
     @State private var isShowingDictionaryAccessibilityPrompt = false
     @State private var isPreviewingClip = false
     @State private var selectedPane: SettingsPane
-    @State private var downloadedBackendOptions: [BackendOption] = []
-    @State private var downloadedPostProcOptions: [PostProcessorOption] = []
-    @State private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] = []
+    private var downloadedBackendOptions: [BackendOption] { BackendOption.compatibleOptions().filter { appState.settingsModelAvailability.contains($0) } }
+    private var downloadedPostProcOptions: [PostProcessorOption] { PostProcessorOption.all.filter { appState.settingsModelAvailability.postProcessorIDs.contains($0.id) } }
+    private var downloadedMeetingLiveCaptionBackends: [MeetingLiveCaptionBackend] { MeetingLiveCaptionBackend.allCases.filter { appState.settingsModelAvailability.liveCaptionIDs.contains($0.rawValue) } }
     @State private var audioInputDevices: [AudioInputDeviceInfo] = []
     @State private var audioInputDeviceRefreshTask: Task<Void, Never>?
     @State private var permissionMonitoringClientID = UUID()
@@ -282,10 +282,8 @@ struct SettingsView: View {
     }
 
     private var quilLocalModels: [OnDeviceCleanupModel] {
-        var models = downloadedPostProcOptions
-            .filter(\.supportsQuil)
-            .map(OnDeviceCleanupModel.gguf)
-        for model in Gemma4LiteRTModel.generalPurpose where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+        var models: [OnDeviceCleanupModel] = []
+        for model in Gemma4LiteRTModel.generalPurpose where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
             models.append(.gemma4(model))
         }
         return models
@@ -311,7 +309,7 @@ struct SettingsView: View {
             .filter { $0.isCompatible(with: appState.selectedBackend) }
             .map(OnDeviceCleanupModel.gguf)
         if TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend) {
-            for model in Gemma4LiteRTModel.allCases where Gemma4LiteRTModelStore.isAvailableLocally(model: model) {
+            for model in Gemma4LiteRTModel.allCases where appState.settingsModelAvailability.gemmaIDs.contains(model.rawValue) {
                 models.append(.gemma4(model))
             }
         }
@@ -341,7 +339,7 @@ struct SettingsView: View {
     }
 
     private var gemmaCleanupIsUnavailable: Bool {
-        Gemma4LiteRTModel.allCases.contains { Gemma4LiteRTModelStore.isAvailableLocally(model: $0) }
+        !appState.settingsModelAvailability.gemmaIDs.isEmpty
             && !TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: appState.selectedBackend)
     }
 
@@ -400,14 +398,22 @@ struct SettingsView: View {
         return options
     }
 
+    @State private var presentationCatalog = SettingsPresentationCatalog()
+
     private var activeFeatureTourTarget: FeatureTourTarget? {
         appState.activeFeatureTourTarget
     }
 
     var body: some View {
-        // Build once for this surface; Observation refreshes dynamic choices.
-        let _ = appState.config
-        return settingsContent.environment(\.muesliSettingDefinitions, controller.settingsDefinitions())
+        // Geometry, hover and permission updates reuse the same catalog.
+        settingsContent.environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
+            .safeAreaInset(edge: .top) {
+                if let issue = appState.credentialStorageError {
+                    Text(issue).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.warningText)
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MuesliTheme.backgroundRaised)
+                }
+            }
     }
 
     private var settingsContent: some View {
@@ -438,7 +444,7 @@ struct SettingsView: View {
             }
             .background(MuesliTheme.backgroundBase)
             .onAppear {
-                refreshDownloadedModelOptions()
+                refreshDownloadedModelOptions(force: true)
                 refreshAudioInputDevices()
                 startPermissionMonitoring()
                 if appState.selectedMeetingSummaryBackend == .openRouter {
@@ -448,7 +454,6 @@ struct SettingsView: View {
                    controller.hostedDictationModelVisibility.shows(.openRouter) {
                     loadOpenRouterTranscriptionModelsIfNeeded()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
             .onDisappear {
                 SoundController.stopMaraudersMapClip()
@@ -458,9 +463,10 @@ struct SettingsView: View {
                 stopPermissionMonitoring()
             }
             .onChange(of: appState.selectedTab) { _, tab in
+                if tab != .settings { appState.requestsPermissionsSettings = false }
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
-                    refreshDownloadedModelOptions()
+                    refreshDownloadedModelOptions(force: true)
                     refreshAudioInputDevices()
                     refreshPermissionStatuses(for: .settingsSelected)
                 }
@@ -469,15 +475,35 @@ struct SettingsView: View {
                 selectedPane = pane
             }
             .onChange(of: selectedPane) { _, pane in
+                if pane != .general { appState.requestsPermissionsSettings = false }
                 appState.selectedSettingsPane = pane
                 calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
-                scrollToFeatureTourTarget(activeFeatureTourTarget, using: scrollProxy)
             }
-            .onChange(of: activeFeatureTourTarget) { _, target in
-                scrollToFeatureTourTarget(target, using: scrollProxy)
+            .task(id: appState.requestsPermissionsSettings && selectedPane == .general && appState.selectedTab == .settings) {
+                guard appState.requestsPermissionsSettings, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                await Task.yield()
+                guard !Task.isCancelled, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { scrollProxy.scrollTo("settings.permissions", anchor: .top) }
+                appState.requestsPermissionsSettings = false
+            }
+            .task(id: SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)) {
+                let request = SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)
+                // Give the destination pane one layout pass. Cancellation prevents an old
+                // step from scrolling a newer pane after rapid Next/Back navigation.
+                await Task.yield()
+                guard !Task.isCancelled, let target = request.scrollTarget else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    scrollProxy.scrollTo(target.rawValue, anchor: .center)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 guard appState.selectedTab == .settings else { return }
@@ -570,7 +596,6 @@ struct SettingsView: View {
             .onChange(of: syncQRCodePresentationPhase) { _, phase in
                 guard phase == .dismiss else { return }
                 isShowingIPhoneBridgeQRCode = false
-                TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_settings"])
             }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
@@ -583,38 +608,13 @@ struct SettingsView: View {
 
     }
 
-    private func scrollToFeatureTourTarget(_ target: FeatureTourTarget?, using proxy: ScrollViewProxy) {
-        guard let target,
-              target == .liveCaptionsSetting
-                || target == .cloudCleanupSetting
-                || target == .dictationProviderSetting
-                || target == .recordingIndicatorStyle
-                || target == .meetingSummaryProvider
-                || target == .quillSettings else { return }
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                proxy.scrollTo(target.rawValue, anchor: .center)
-            }
-        }
-    }
-
     private func updateSettingsControlStacking(contentWidth: CGFloat) {
         let stacks = contentWidth < SettingsLayout.stackedContentWidth
         if stacksSettingsControls != stacks { stacksSettingsControls = stacks }
     }
 
-    private func refreshDownloadedModelOptions() {
-        controller.refreshMeetingTranscriptionSelectionForAvailability()
-        // Only write changed values. Unconditional writes from onAppear re-render Settings
-        // and can feed a SwiftUI update loop (#632).
-        let backends = BackendOption.downloaded
-        if downloadedBackendOptions != backends { downloadedBackendOptions = backends }
-        let postProcessors = PostProcessorOption.downloaded
-        if downloadedPostProcOptions != postProcessors { downloadedPostProcOptions = postProcessors }
-        let liveCaptionBackends = MeetingLiveCaptionBackend.allCases.filter(\.isDownloaded)
-        if downloadedMeetingLiveCaptionBackends != liveCaptionBackends {
-            downloadedMeetingLiveCaptionBackends = liveCaptionBackends
-        }
+    private func refreshDownloadedModelOptions(force: Bool = false) {
+        controller.refreshSettingsModelAvailability(force: force)
     }
 
     private func refreshAudioInputDevices() {
@@ -862,7 +862,6 @@ struct SettingsView: View {
     private func showSyncSetupQRCode(source: String) {
         isShowingIPhoneBridgeQRCode = true
         controller.beginIPhoneBridgeDeviceDiscovery()
-        TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": source])
     }
 
     private var syncFlowAction: ICloudSyncFlowAction {
@@ -992,10 +991,13 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow(
                     "Watch text appear during hands-free mode",
-                    description: "Preview as you speak; apply enabled cleanup when you stop."
+                    description: "Preview as you speak; apply enabled cleanup when you stop.",
+                    newFeature: .liveDictation
                 ) {
                     settingsControl("buffered_live_dictation")
                 }
+                .id(FeatureTourTarget.liveDictation.rawValue)
+                .featureTourTarget(.liveDictation)
             }
             if displayedDictationBackend?.backend == BackendOption.cohereTranscribe.backend {
                 Divider().background(MuesliTheme.surfaceBorder)
@@ -1038,6 +1040,7 @@ struct SettingsView: View {
             PastableSecureField(
                 text: appState.config.openAIAPIKey,
                 placeholder: "sk-...",
+                commitsOnEndEditing: true,
                 onChange: { val in
                     openAITestState = .idle
                     controller.setOpenAIDictationAPIKey(val)
@@ -1112,7 +1115,7 @@ struct SettingsView: View {
                     .frame(width: 6, height: 6)
                 Text("Connected")
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
                 compactActionButton("Test again") {
                     testOpenAIConnection()
                 }
@@ -1123,7 +1126,7 @@ struct SettingsView: View {
                 Spacer()
                 Text("Failed")
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.recording)
+                    .foregroundStyle(MuesliTheme.destructiveText)
                 compactActionButton("Retry") {
                     testOpenAIConnection()
                 }
@@ -1332,6 +1335,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.openAIAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1341,6 +1345,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { value in controller.updateConfig { $0.anthropicAPIKey = value } }
                 ).frame(height: 22)
             }
@@ -1446,6 +1451,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.openAIAPIKey,
                     placeholder: "sk-...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1468,6 +1474,7 @@ struct SettingsView: View {
                 PastableSecureField(
                     text: appState.config.anthropicAPIKey,
                     placeholder: "sk-ant-api...",
+                    commitsOnEndEditing: true,
                     onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                 )
                 .frame(height: 22)
@@ -1607,7 +1614,7 @@ struct SettingsView: View {
                     settingsControl("summary_source")
                         .id(FeatureTourTarget.meetingSummaryProvider.rawValue)
                         .featureTourTarget(.meetingSummaryProvider)
-                    if ClaudeCodeSummarizer.executableURL(configuredPath: appState.config.claudeCodeExecutablePath) == nil,
+                    if !appState.settingsModelAvailability.claudeCodeAvailable,
                        appState.selectedMeetingSummaryBackend != .claudeCode {
                         Button("Locate existing Claude Code…") { pickExistingClaudeCodeExecutable() }
                             .font(MuesliTheme.caption())
@@ -1644,6 +1651,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.openAIAPIKey,
                         placeholder: "sk-...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1667,6 +1675,7 @@ struct SettingsView: View {
                     PastableSecureField(
                         text: appState.config.anthropicAPIKey,
                         placeholder: "sk-ant-api...",
+                        commitsOnEndEditing: true,
                         onChange: { val in controller.updateConfig { $0.anthropicAPIKey = val } }
                     )
                     .frame(height: 22)
@@ -1692,6 +1701,10 @@ struct SettingsView: View {
                     .frame(height: 22)
                 }
                 keyStatusRow(key: MeetingSummaryClient.resolvedAnthropicAPIKey(config: appState.config))
+            } else if appState.selectedMeetingSummaryBackend == .gemmaMLX {
+                settingsRow("Model", description: "Runs entirely on this Mac. Uses downloaded Gemma 4 models and supports meeting and document text.", controlWidth: meetingControlWidth) {
+                    settingsControl("summary_gemma_model")
+                }
             } else if appState.selectedMeetingSummaryBackend == .claudeCode {
                 settingsRow("Account", description: "Uses the Claude Code sign-in on this Mac.", controlWidth: meetingControlWidth) {
                     claudeCodeAccountControl()
@@ -1823,6 +1836,7 @@ struct SettingsView: View {
                 placeholder: appState.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue
                     ? "Required for Anthropic API"
                     : "Optional for local servers",
+                commitsOnEndEditing: true,
                 onChange: { val in controller.updateConfig { $0.customLLMAPIKey = val } }
             )
             .frame(height: 22)
@@ -1873,7 +1887,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MuesliTheme.textSecondary)
                                 .frame(width: 20, height: 22)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.muesli(.quiet))
                         .help("Remove header")
                     }
                 }
@@ -1949,9 +1963,11 @@ struct SettingsView: View {
 
             dictationCleanupSettingsSection
 
-            settingsSection("App Formatting") {
+            settingsSection("App Formatting", newFeature: .appFormatting) {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
+            .id(FeatureTourTarget.appFormatting.rawValue)
+            .featureTourTarget(.appFormatting)
 
             settingsSection("Advanced") {
                 settingsRow(
@@ -1981,7 +1997,7 @@ struct SettingsView: View {
     /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
     /// selects it, or opens Keyboard settings with a guide until the user has added it.
     private var cotypistSettingsSection: some View {
-        settingsSection("Cotypist") {
+        settingsSection("Cotypist", newFeature: .cotypist) {
             settingsCompactRow("Typeahead suggestions", description: cotypistStatus) {
                 settingsControl("cotypist_enabled")
             }
@@ -2001,6 +2017,8 @@ struct SettingsView: View {
                 cotypistOptions
             }
         }
+        .id(FeatureTourTarget.cotypistSettings.rawValue)
+        .featureTourTarget(.cotypistSettings)
     }
 
     /// Shown only while Cotypist is on: off, none of them do anything.
@@ -2317,9 +2335,10 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
             quilSettingsSection
-            if CotypistSetup.isAvailable {
+            if appState.settingsModelAvailability.cotypistAvailable {
                 cotypistSettingsSection
             }
         }
@@ -2348,14 +2367,14 @@ struct SettingsView: View {
                     "Planner model",
                     description: isLocalPlanner
                         ? "Planning runs on this Mac. No ChatGPT sign-in is needed."
-                        : (ComputerUseLocalPlanner.models.contains(where: \.available)
+                        : (!appState.settingsModelAvailability.localPlannerIDs.isEmpty
                             ? nil
                             : "Download Gemma in Models to enable the On-device backend."),
                     controlWidth: meetingControlWidth
                 ) {
                     MuesliSettingControl(controller: controller, id: "cua_model",
                         allowedChoiceIDs: isLocalPlanner
-                            ? Set(ComputerUseLocalPlanner.models.filter(\.available).map(\.id))
+                            ? appState.settingsModelAvailability.localPlannerIDs
                             : Set(SummaryModelPreset.computerUsePlannerModels.map(\.id)))
                 }
                 if !isLocalPlanner, !ReasoningEffortPolicy.selectableEfforts(for: plannerModel).isEmpty {
@@ -2646,16 +2665,11 @@ struct SettingsView: View {
                     }
                     Divider().background(MuesliTheme.surfaceBorder)
                     settingsRow("") {
-                        Button {
+                        MuesliTextButton("Mischief Managed") {
                             SoundController.stopMaraudersMapClip()
                             isPreviewingClip = false
                             controller.resetMaraudersMap()
-                        } label: {
-                            Text("Mischief Managed")
-                                .font(MuesliTheme.caption())
-                                .foregroundColor(MuesliTheme.textSecondary)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -2666,14 +2680,17 @@ struct SettingsView: View {
         HStack(spacing: 6) {
             ForEach(MuesliSettings.accentPresets, id: \.hex) { preset in
                 let isSelected = appState.config.recordingColorHex.lowercased() == preset.hex
+                // Swatches preview the saved accent as switches show it, in every theme
+                // (Ultra Dark primary actions stay white); the mark contrasts with that fill.
+                let palette = MuesliAccentPalette.palette(forHex: preset.hex)
                 Button {
                     controller.setSettingFromUI("accent_color", value: preset.hex)
                 } label: {
                     Circle()
-                        .fill(preset.hex == "1e1e2e" ? MuesliTheme.defaultAccent : Color(hex: preset.hex))
+                        .fill(palette.fill)
                         .frame(width: 22, height: 22)
                         .overlay(
-                            Circle().strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
+                            Circle().strokeBorder(palette.onFill.opacity(isSelected ? 0.9 : 0), lineWidth: 2)
                         )
                         .overlay(
                             Circle().strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
@@ -2682,7 +2699,7 @@ struct SettingsView: View {
                             if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(palette.onFill)
                             }
                         }
                 }
@@ -2714,19 +2731,20 @@ struct SettingsView: View {
                                     .font(.system(size: 12))
                             }
                         }
-                        .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                        .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                         .frame(width: 26, height: 26)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
-                        )
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(Color.white.opacity(isSelected ? 0.3 : 0.08), lineWidth: 1)
+                                .strokeBorder(
+                                    isSelected ? MuesliTheme.accentText.opacity(0.6) : MuesliTheme.surfaceBorder,
+                                    lineWidth: 1
+                                )
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(isSelected ? .tinted : .quiet, shape: .rounded(5)))
                     .help(option.label)
+                    .accessibilityLabel(option.label)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
         }
@@ -2737,7 +2755,7 @@ struct SettingsView: View {
             switch claudeCodeAuthStatus {
             case .signedIn:
                 Label("Connected to Claude Code", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
             case .unavailable:
                 Label("Claude Code unavailable", systemImage: "exclamationmark.circle")
                     .foregroundStyle(MuesliTheme.textSecondary)
@@ -2751,9 +2769,7 @@ struct SettingsView: View {
                 } else {
                     ClaudeCodeSignInButton(compact: true) { beginClaudeCodeSignIn() }
                 }
-                Button("Check again") { Task { await refreshClaudeCodeAuthStatus() } }
-                    .font(MuesliTheme.caption())
-                    .buttonStyle(.plain)
+                MuesliTextButton("Check again", color: MuesliTheme.textPrimary) { Task { await refreshClaudeCodeAuthStatus() } }
             case nil:
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -2813,12 +2829,10 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Label("Signed in", systemImage: "checkmark.circle.fill")
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
                 Spacer(minLength: 8)
-                Button("Sign Out") { controller.signOutChatGPT() }
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .buttonStyle(.plain)
+                MuesliTextButton("Sign Out") { controller.signOutChatGPT() }
+                    .padding(.trailing, -6)
                     .help("Sign out of ChatGPT")
             }
             .frame(minHeight: 28)
@@ -2830,6 +2844,9 @@ struct SettingsView: View {
                     .font(MuesliTheme.captionMedium())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
+            // Occupies the sign-in button's frame so the row does not jump.
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Button {
@@ -2843,20 +2860,17 @@ struct SettingsView: View {
                 } label: {
                     HStack(spacing: 5) {
                         OpenAILogoShape()
-                            .fill(MuesliTheme.onAccent)
+                            .fill(.foreground)
                             .frame(width: 10, height: 10)
                         Text("Sign in with ChatGPT")
                             .font(MuesliTheme.captionMedium())
-                            .foregroundStyle(MuesliTheme.onAccent)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 10)
                     .frame(height: 26)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.primary))
 
                 if let chatGPTSignInError {
                     SettingsNote(chatGPTSignInError, tone: .error)
@@ -2878,23 +2892,16 @@ struct SettingsView: View {
                         systemImage: "checkmark.circle.fill"
                     )
                     .font(MuesliTheme.captionMedium())
-                    .foregroundStyle(MuesliTheme.success)
+                    .foregroundStyle(MuesliTheme.successText)
                     .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: MuesliTheme.spacing8)
-                    Button("Manage key") { controller.manageOpenRouterKey() }
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .buttonStyle(.plain)
-                        .fixedSize()
+                    MuesliTextButton("Manage key") { controller.manageOpenRouterKey() }
                         .help("Manage this key at OpenRouter")
                     if appState.hasStoredOpenRouterCredential {
-                        Button(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect") {
+                        MuesliTextButton(appState.isOpenRouterEnvironmentManaged ? "Forget local" : "Disconnect") {
                             openRouterSignInError = controller.signOutOpenRouter()
                         }
-                        .font(MuesliTheme.caption())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-                        .buttonStyle(.plain)
-                        .fixedSize()
+                        .padding(.trailing, -6)
                         .help("Remove muesli's local copy of this OpenRouter key")
                     } else {
                         Text("Managed externally")
@@ -2917,6 +2924,8 @@ struct SettingsView: View {
                     .font(MuesliTheme.captionMedium())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
         } else {
             VStack(alignment: .leading, spacing: 5) {
                 Button {
@@ -2936,19 +2945,15 @@ struct SettingsView: View {
                     HStack(spacing: 5) {
                         Image(systemName: "network")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(MuesliTheme.onAccent)
                         Text("Connect OpenRouter")
                             .font(MuesliTheme.captionMedium())
-                            .foregroundStyle(MuesliTheme.onAccent)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 10)
                     .frame(height: 26)
-                    .background(MuesliTheme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.primary))
 
                 Button(isEnteringOpenRouterAPIKey ? "Cancel manual key" : "Enter API key manually") {
                     isEnteringOpenRouterAPIKey.toggle()
@@ -3013,10 +3018,11 @@ struct SettingsView: View {
                 Image(systemName: isPreviewingClip ? "stop.fill" : "play.fill")
                     .font(.system(size: 11))
                     .foregroundColor(MuesliTheme.textSecondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
             }
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
+            .buttonStyle(.muesli(.quiet))
+            .help(isPreviewingClip ? "Stop preview" : "Preview sound")
+            .accessibilityLabel(isPreviewingClip ? "Stop preview" : "Preview sound")
         }
     }
 
@@ -3147,35 +3153,28 @@ struct SettingsView: View {
             permissionStatusRow(
                 "Microphone",
                 granted: micGranted,
-                action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
+                action: FeaturePermission.microphone.request,
                 pane: "Privacy_Microphone"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Accessibility",
                 granted: accessibilityGranted,
-                action: {
-                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    AXIsProcessTrustedWithOptions(opts)
-                },
+                action: FeaturePermission.accessibility.request,
                 pane: "Privacy_Accessibility"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Input Monitoring",
                 granted: inputMonitoringGranted,
-                action: {
-                    if !CGRequestListenEventAccess() {
-                        openPrivacyPane("Privacy_ListenEvent")
-                    }
-                },
+                action: FeaturePermission.inputMonitoring.request,
                 pane: "Privacy_ListenEvent"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Screen Recording",
                 granted: screenRecordingGranted,
-                action: { CGRequestScreenCaptureAccess() },
+                action: FeaturePermission.screenRecording.request,
                 pane: "Privacy_ScreenCapture"
             )
             if appState.config.useCoreAudioTap {
@@ -3208,7 +3207,14 @@ struct SettingsView: View {
                 SettingsNote(errorMessage, tone: .error)
                     .padding(.bottom, MuesliTheme.spacing4)
             }
+            Divider().background(MuesliTheme.surfaceBorder)
+            SettingsRow(label: "", description: "Already enabled access in System Settings? Restart muesli to apply permission changes.") {
+                compactActionButton("Restart muesli…") {
+                    controller.confirmPermissionRestart()
+                }
+            }
         }
+        .id("settings.permissions")
     }
 
     @ViewBuilder
@@ -3250,7 +3256,7 @@ struct SettingsView: View {
         if granted {
             Label("Granted", systemImage: "checkmark.circle.fill")
                 .font(MuesliTheme.captionMedium())
-                .foregroundStyle(MuesliTheme.success)
+                .foregroundStyle(MuesliTheme.successText)
         } else {
             accentActionButton(isBusy ? "Checking…" : actionTitle, action: action)
                 .disabled(isBusy)
@@ -3272,17 +3278,18 @@ struct SettingsView: View {
                     .lineLimit(1)
             }
             .font(MuesliTheme.captionMedium())
-            .foregroundStyle(MuesliTheme.accent)
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(MuesliTheme.accentSubtle)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.tinted))
     }
 
     private func openPrivacyPane(_ pane: String) {
+        if let permission = [FeaturePermission.accessibility, .inputMonitoring, .screenRecording]
+            .first(where: { $0.privacyPane == pane }) {
+            permission.openSettings()
+            return
+        }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
         }
@@ -3322,7 +3329,7 @@ struct SettingsView: View {
             settingsControl("ocr_context")
         } else {
             accentActionButton("Grant") {
-                _ = CGRequestScreenCaptureAccess()
+                FeaturePermission.screenRecording.request()
                 refreshPermissionStatuses(for: .permissionRequested)
             }
         }
@@ -3400,10 +3407,11 @@ struct SettingsView: View {
     private func settingsSection(
         _ title: String,
         icon: NSImage? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder content: () -> some View
     ) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            SettingsSectionHeading(title: title, icon: icon)
+            SettingsSectionHeading(title: title, icon: icon, newFeature: newFeature)
 
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -3432,9 +3440,10 @@ struct SettingsView: View {
     private func settingsCompactRow(
         _ label: String,
         description: String? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder control: () -> some View
     ) -> some View {
-        SettingsRow(label: label, description: description, controlWidth: nil, control: control)
+        SettingsRow(label: label, description: description, controlWidth: nil, newFeature: newFeature, control: control)
     }
 
     /// Optional setup reference, kept out of the way but available without hovering.
@@ -3474,17 +3483,10 @@ struct SettingsView: View {
                     .lineLimit(1)
             }
             .font(MuesliTheme.font(size: 12, weight: .medium))
-            .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructive : .secondary))
     }
 
     private var mutedMeetingDetectionAppsControl: some View {
@@ -3518,7 +3520,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: isMuted ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isMuted ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(isMuted ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .frame(width: 16)
                 Image(systemName: app.icon)
                     .font(.system(size: 11, weight: .medium))
@@ -3532,14 +3534,15 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(isMuted ? MuesliTheme.accentSubtle : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isMuted ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
+            .overlay {
+                if isMuted {
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.accent.opacity(0.35), lineWidth: 1)
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isMuted ? .tinted : .secondary, bordered: !isMuted))
+        .accessibilityAddTraits(isMuted ? .isSelected : [])
     }
 
     private func updateMutedMeetingDetectionApp(_ bundleID: String, isMuted: Bool) {
@@ -3676,7 +3679,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: item.isEnabled ? "checkmark.square.fill" : "square")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(item.isEnabled ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(item.isEnabled ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .frame(width: 16)
                 Circle()
                     .fill(item.colorHex.map { Color(hex: $0) } ?? MuesliTheme.textTertiary)
@@ -3958,7 +3961,7 @@ struct SettingsView: View {
                 if case .failed(let message) = appState.openRouterSummaryCatalogState {
                     Text(message)
                         .font(MuesliTheme.captionMedium())
-                        .foregroundStyle(MuesliTheme.recording)
+                        .foregroundStyle(MuesliTheme.destructiveText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Button(appState.openRouterSummaryCatalogState == .idle ? "Load" : "Retry") {
@@ -4006,7 +4009,7 @@ struct SettingsView: View {
                 .frame(width: 6, height: 6)
             Text(key.isEmpty ? "No API key configured" : "Key configured")
                 .font(MuesliTheme.captionMedium())
-                .foregroundStyle(key.isEmpty ? MuesliTheme.textSecondary : MuesliTheme.success)
+                .foregroundStyle(key.isEmpty ? MuesliTheme.textSecondary : MuesliTheme.successText)
         }
         .frame(minHeight: 20)
     }
@@ -4029,21 +4032,11 @@ struct SettingsView: View {
                 }
             }
                 .font(MuesliTheme.font(size: 13, weight: .medium))
-                .foregroundStyle(isDestructive ? MuesliTheme.recording : MuesliTheme.textPrimary)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, MuesliTheme.spacing16)
                 .padding(.vertical, MuesliTheme.spacing8)
-                .background(isDestructive ? Color.clear : MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(
-                            MuesliTheme.surfaceBorder,
-                            lineWidth: 1
-                        )
-                )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isDestructive ? .destructive : .secondary))
     }
 
 }
@@ -4163,6 +4156,7 @@ struct FixedWidthPopUp: NSViewRepresentable {
 struct PastableSecureField: NSViewRepresentable {
     let text: String
     let placeholder: String
+    var commitsOnEndEditing = false
     let onChange: (String) -> Void
 
     func makeNSView(context: Context) -> EditableNSSecureTextField {
@@ -4178,26 +4172,18 @@ struct PastableSecureField: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: EditableNSSecureTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
+        context.coordinator.onChange = onChange
+        context.coordinator.synchronize(nsView, text: text)
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onChange: onChange)
+    func makeCoordinator() -> PastableTextField.Coordinator {
+        PastableTextField.Coordinator(text: text, commitsOnEndEditing: commitsOnEndEditing, showsFullValueOnHover: false,
+                                     onBeginEditing: nil, onChange: onChange)
     }
 
-    class Coordinator: NSObject, NSTextFieldDelegate {
-        let onChange: (String) -> Void
-
-        init(onChange: @escaping (String) -> Void) {
-            self.onChange = onChange
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            onChange(field.stringValue)
-        }
+    static func dismantleNSView(_ nsView: EditableNSSecureTextField, coordinator: PastableTextField.Coordinator) {
+        coordinator.finishEditing(nsView, deferCommit: true)
+        nsView.delegate = nil
     }
 }
 

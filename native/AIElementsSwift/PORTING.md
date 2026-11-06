@@ -8,7 +8,7 @@ This is an initial SwiftUI adaptation, not full behavioral or API parity.
 | Upstream area | SwiftUI implementation | Remaining work |
 | --- | --- | --- |
 | Message | AIMessage: role-aware layout | Reusable action bar and branching; AIResponse now handles native Markdown |
-| Prompt input | AIPromptInput: header/editor/footer surface | Bundled editor, submission state machine, uploads and drag/drop |
+| Prompt input | AIPromptInput: header/editor/footer surface, compact density preserving editor identity | Bundled editor, submission state machine, uploads and drag/drop |
 | Attachments | AIAttachment: removable document/context chip | Image/audio/video previews, grid and list variants, metadata |
 | Sources / inline citations | AISourcePassage + AIDisclosure | Citation parsing, inline badges/popovers and grouped source container |
 | Tool / task activity | AIActivityRow + AIDisclosure | AITool now provides stateful input/output/error cards; typed rich results remain |
@@ -62,3 +62,9 @@ Shimmer respects Reduce Motion and does not convey fabricated progress.
 metadata, tables and headings. The default remains the system font for standalone
 clients. Code blocks, verbatim tool payloads and source-number gutters retain
 monospaced fonts. Font loading and licensing stay in the host app.
+
+The prompt input accepts a host-provided `focus` color (defaulting to the accent) and draws a non-hit-testing 2pt focused border. This keeps focus readable independently of action fill colors.
+
+Attachment chips accept a host-selected Lucide icon (file text by default, image for photos). File picking, original-file bookmarks, provider preparation and persistence remain host-owned. Chips render names and removal controls without decoding image previews.
+
+`AIAttachmentPreview` supplies a vertical thumbnail/name/detail card with optional removal. The host provides bounded transient images; the component performs no loading, caching, original-file access or provider work. Sent message content is grouped vertically by the host to keep attachment cards above question text.

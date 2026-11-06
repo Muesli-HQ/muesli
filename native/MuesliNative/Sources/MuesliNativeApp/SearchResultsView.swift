@@ -43,9 +43,10 @@ struct SearchResultsView: View {
             } label: {
                 Text("Clear")
                     .font(MuesliTheme.callout())
-                    .foregroundStyle(MuesliTheme.accent)
+                    .foregroundStyle(MuesliTheme.accentText)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Clear search")
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
@@ -55,7 +56,7 @@ struct SearchResultsView: View {
     private func tabButton(_ tab: SearchTab, count: Int) -> some View {
         let isSelected = selectedTab == tab
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { selectedTab = tab }
+            MuesliMotion.perform { selectedTab = tab }
         } label: {
             HStack(spacing: 6) {
                 Text(tab.rawValue)
@@ -63,7 +64,7 @@ struct SearchResultsView: View {
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textTertiary)
                 Text("\(count)")
                     .font(MuesliTheme.font(size: 11, weight: .medium))
-                    .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
+                    .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(isSelected ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
@@ -73,8 +74,11 @@ struct SearchResultsView: View {
             .padding(.vertical, 8)
             .background(isSelected ? MuesliTheme.backgroundHover : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            // An unselected tab has a clear fill, which would leave its padding unclickable.
+            .contentShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Tab Content
@@ -183,14 +187,15 @@ private struct SearchDictationRow: View {
                 )
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 2) {
                 if record.computerUseTrace != nil, let onCopyTrace {
                     Button(action: onCopyTrace) {
                         Image(systemName: "list.bullet.clipboard")
                             .font(.system(size: 12))
                             .foregroundStyle(MuesliTheme.textTertiary)
+                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .help("Copy CUA trace")
                 }
 
@@ -198,14 +203,16 @@ private struct SearchDictationRow: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 12))
                         .foregroundStyle(MuesliTheme.textTertiary)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
             }
             .opacity(isHovered ? 1 : 0)
         }
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
         .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
         }
@@ -252,6 +259,7 @@ private struct SearchMeetingRow: View {
         .padding(.horizontal, MuesliTheme.spacing20)
         .padding(.vertical, MuesliTheme.spacing12)
         .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
         }
@@ -317,6 +325,6 @@ private func snippetText(from text: String, highlighting query: String) -> Text 
     let after = String(snippet[localRange.upperBound..<snippet.endIndex])
 
     return Text(prefix + before).foregroundStyle(MuesliTheme.textSecondary)
-        + Text(match).bold().foregroundStyle(MuesliTheme.accent)
+        + Text(match).bold().foregroundStyle(MuesliTheme.accentText)
         + Text(after + suffix).foregroundStyle(MuesliTheme.textSecondary)
 }

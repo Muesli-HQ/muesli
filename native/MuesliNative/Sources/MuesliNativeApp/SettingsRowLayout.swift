@@ -28,6 +28,7 @@ extension EnvironmentValues {
 struct SettingsSectionHeading: View {
     let title: String
     var icon: NSImage? = nil
+    var newFeature: NewFeature? = nil
 
     var body: some View {
         HStack(spacing: 5) {
@@ -41,6 +42,7 @@ struct SettingsSectionHeading: View {
             Text(title)
                 .font(MuesliTheme.sectionHeading())
                 .textCase(.uppercase)
+            if let newFeature { NewFeatureBadge(feature: newFeature) }
         }
         .foregroundStyle(MuesliTheme.textSecondary)
         .padding(.leading, 2)
@@ -75,8 +77,8 @@ struct SettingsNote: View {
     private var color: Color {
         switch tone {
         case .helper: MuesliTheme.textSecondary
-        case .warning: MuesliTheme.transcribing
-        case .error: MuesliTheme.recording
+        case .warning: MuesliTheme.warningText
+        case .error: MuesliTheme.destructiveText
         }
     }
 }
@@ -88,6 +90,7 @@ struct SettingsRow<Control: View>: View {
     let label: String
     var description: String? = nil
     var controlWidth: CGFloat? = SettingsLayout.controlWidth
+    var newFeature: NewFeature? = nil
     @ViewBuilder let control: Control
 
     @Environment(\.settingsStacksControls) private var stacksControls
@@ -116,11 +119,14 @@ struct SettingsRow<Control: View>: View {
     private var labelColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !label.isEmpty {
-                Text(label)
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(minHeight: SettingsLayout.firstLineHeight, alignment: .leading)
+                HStack(spacing: 5) {
+                    Text(label)
+                        .font(MuesliTheme.body())
+                        .foregroundStyle(MuesliTheme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let newFeature { NewFeatureBadge(feature: newFeature) }
+                }
+                .frame(minHeight: SettingsLayout.firstLineHeight, alignment: .leading)
             }
             if let description, !description.isEmpty {
                 SettingsNote(description)

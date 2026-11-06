@@ -288,7 +288,7 @@ struct MeetingsView: View {
                         if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
                         else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
                     },
-                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
+                    backLabel: appState.meetingChatDocumentTarget != nil ? (appState.meetingSourceReturnsToTimeTurner ? "Back to Time Turner" : "Back to Chat") : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {
@@ -482,10 +482,10 @@ struct MeetingsView: View {
                     VStack(alignment: .center, spacing: 2) {
                         Text(group.dayNumber)
                             .font(MuesliTheme.font(size: 24))
-                            .foregroundStyle(group.isToday ? MuesliTheme.accent : MuesliTheme.textPrimary)
+                            .foregroundStyle(group.isToday ? MuesliTheme.accentText : MuesliTheme.textPrimary)
                         Text(group.dayLabel)
                             .font(MuesliTheme.font(size: 11, weight: .medium))
-                            .foregroundStyle(group.isToday ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                            .foregroundStyle(group.isToday ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                         Text(group.dayOfWeek)
                             .font(MuesliTheme.font(size: 10))
                             .foregroundStyle(MuesliTheme.textSecondary)
@@ -575,9 +575,6 @@ struct MeetingsView: View {
         return "\(f.string(from: event.startDate)) – \(f.string(from: event.endDate))"
     }
 
-    private static let joinActionGreen = Color(nsColor: NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0))
-    private static let joinActionGreenDarker = Color(nsColor: NSColor(red: 0.15, green: 0.58, blue: 0.42, alpha: 1.0))
-
     /// Split control mirroring the meeting notification panel: the primary segment runs
     /// the default action from Settings, the chevron offers the other two.
     /// (Not `Menu(primaryAction:)` — with a plain custom label on macOS the chevron
@@ -598,10 +595,10 @@ struct MeetingsView: View {
                     Text(armed.buttonLabel)
                         .font(MuesliTheme.font(size: 10, weight: .medium))
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(MuesliTheme.onJoinAction)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Self.joinActionGreen)
+                .background(MuesliTheme.joinAction)
             }
             .buttonStyle(.plain)
 
@@ -616,15 +613,16 @@ struct MeetingsView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(MuesliTheme.onJoinAction)
                     .padding(.horizontal, 5)
                     .frame(maxHeight: .infinity)
-                    .background(Self.joinActionGreenDarker)
+                    .background(MuesliTheme.joinActionSecondary)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
             .help(alternatives.map(\.buttonLabel).joined(separator: " · "))
+            .accessibilityLabel("More join options")
         }
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -661,17 +659,18 @@ struct MeetingsView: View {
 
     private func hideEventButton(_ event: UnifiedCalendarEvent) -> some View {
         Button {
-            withAnimation(.easeOut(duration: 0.2)) {
+            MuesliMotion.perform(.easeOut(duration: 0.2)) {
                 controller.hideCalendarEvent(event)
             }
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(MuesliTheme.textSecondary.opacity(0.6))
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 20, height: 20)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet, shape: .circle))
         .help("Hide from Coming Up")
+        .accessibilityLabel("Hide \(event.title) from Coming Up")
     }
 
     @ViewBuilder
@@ -743,20 +742,20 @@ struct MeetingsView: View {
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
-                .foregroundStyle(MuesliTheme.backgroundBase)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(appState.isMeetingRecording || appState.isMeetingStarting ? MuesliTheme.surfacePrimary : MuesliTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.primary))
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Start a quick meeting note")
             .fixedSize()
 
             Menu {
                 Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
-                Button("Granola…") { isGranolaImportPresented = true }
+                Button("Granola…") {
+                    NewFeatureDiscovery.shared.markUsed(.granolaImport)
+                    isGranolaImportPresented = true
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
@@ -764,6 +763,7 @@ struct MeetingsView: View {
                     Text("Import")
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
+                    NewFeatureBadge(feature: .granolaImport)
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
@@ -779,6 +779,7 @@ struct MeetingsView: View {
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Import audio or meeting notes from Granola")
             .fixedSize()
+            .featureTourTarget(.granolaImport)
 
             sortButton
             dateFilterButton
@@ -793,17 +794,10 @@ struct MeetingsView: View {
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
-                .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.secondary))
             .fixedSize()
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -838,13 +832,10 @@ struct MeetingsView: View {
                     Text("Open Notes")
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.secondary, bordered: false))
 
             if meeting.status == .recording {
                 Button {
@@ -856,17 +847,10 @@ struct MeetingsView: View {
                         Text(appState.isMeetingRecordingPaused ? "Resume" : "Pause")
                             .font(MuesliTheme.font(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(appState.isMeetingRecordingPaused ? MuesliTheme.backgroundBase : MuesliTheme.textPrimary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 8)
-                    .background(appState.isMeetingRecordingPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(appState.isMeetingRecordingPaused ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(appState.isMeetingRecordingPaused ? .primary : .secondary))
                 .disabled(!appState.isMeetingRecording)
 
                 Button {
@@ -878,13 +862,10 @@ struct MeetingsView: View {
                         Text("Stop")
                             .font(MuesliTheme.font(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(.white)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 8)
-                    .background(MuesliTheme.recording)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.recording))
                 .disabled(!appState.isMeetingRecording)
             }
         }
@@ -932,7 +913,7 @@ struct MeetingsView: View {
                 Text(selectedSort.label)
                     .font(MuesliTheme.font(size: 11))
             }
-            .foregroundStyle(selectedSort != .newestFirst ? MuesliTheme.accent : MuesliTheme.textSecondary)
+            .foregroundStyle(selectedSort != .newestFirst ? MuesliTheme.accentText : MuesliTheme.textSecondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(selectedSort != .newestFirst ? MuesliTheme.accent.opacity(0.12) : MuesliTheme.surfacePrimary.opacity(0.5))
@@ -966,12 +947,15 @@ struct MeetingsView: View {
                         .font(MuesliTheme.font(size: 11))
                 }
             }
-            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accent : MuesliTheme.textTertiary)
-            .padding(.horizontal, selectedFilter != .all ? 8 : 0)
-            .padding(.vertical, 3)
-            .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear)
-            .clipShape(Capsule())
+            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accentText : MuesliTheme.textTertiary)
+            // Same target in both states: the "All" icon is no longer the only clickable area.
+            .padding(.horizontal, 8)
+            .frame(minWidth: 28, minHeight: 28)
+            .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear, in: Capsule())
+            .contentShape(Capsule())
         }
+        .help("Filter meetings by date")
+        .accessibilityLabel("Filter meetings by date")
         .menuStyle(.borderlessButton)
         .fixedSize()
     }

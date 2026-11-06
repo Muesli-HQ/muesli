@@ -21,8 +21,17 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CredentialMigrationTests
+      TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
+      TimeTurnerRecapSourceTests
+      MuesliHistorySkillTests
+      VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
+      GlobalSearchTests
+      GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
       GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -45,6 +54,7 @@ case "${shard}" in
       OpenRouterAuthTests
       SettingsPermissionRefreshReasonTests
       InteractionPermissionMonitorTests
+      PermissionRestartRecoveryTests
       AccessibilityPermissionGuideTests
       DictationTestLifecycleTests
       OnboardingFlowTests
@@ -55,17 +65,24 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
-      VisualMemoryStoreTests
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
+      RecordingUXTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictationWordAnalyticsTests
+      ContentPrivacyTests
+      TelemetryPrivacyTests
+      ProductAnalyticsTests
+      ProductAnalyticsModelTests
+      DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
@@ -85,6 +102,14 @@ case "${shard}" in
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests
+      AppScopedDictationRecorderTests
+      DictationDevFaultTests
+      DictationCaptureHealthTests
+      DictationStartupWatchdogTests
+      DictationAudioSessionManagerTests
+      RouteAwareDictationRecorderTests
+      DictationStreamingRecoveryIntegrationTests
+      DictationRecoveryTests
       FluidAudioTranscriberTests
       BufferedTranscriptionSessionTests
       BufferedTranscriptionContinuityTests
@@ -109,6 +134,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      CleanupModelUpdateTests
       QwenMLXDownloadTests
       GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
@@ -140,6 +166,7 @@ case "${shard}" in
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
       DictationAppFormattingTests
+      QuillAssistantTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests
@@ -156,6 +183,7 @@ case "${shard}" in
       HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
+      DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
     )
     ;;
@@ -205,14 +233,20 @@ case "${shard}" in
       MeetingSummaryClientTests
       MeetingPipelineStatusTests
       MeetingChatStoreTests
+      GemmaMeetingChatTests
+      LocalChatToolTests
+      ChatPDFProcessingTests
+      ChatAttachmentTests
       MeetingChatRetrievalTests
       MeetingChatClientTests
       MeetingChatContextBudgetTests
       MeetingChatNativeBudgetTests
+      MuesliTaskRunnerTests
       MeetingChatNavigationTests
       MeetingChatExporterTests
       MeetingChatNotesActionTests
       MeetingChatReviewTests
+      MeetingChatHistoryLoadingTests
       MeetingChatPresentationTests
       MuesliTypographyTests
       MeetingChatSourceGroupingTests

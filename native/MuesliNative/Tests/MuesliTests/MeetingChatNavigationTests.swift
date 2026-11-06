@@ -6,6 +6,116 @@ import Testing
 @MainActor
 @Suite("Meeting chat navigation")
 struct MeetingChatNavigationTests {
+    @Test func restartProtectionIncludesHiddenDraftsButNotPersistedAttachments() async throws {
+        let (controller, _, _) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
+        await chat.createChat(scope: MeetingChatScopePolicy.empty)
+        let session = try #require(chat.selectedSessionID)
+        chat.composerDraft = "Keep this unsent question"
+        chat.showIndex()
+        #expect(chat.composerDraft.isEmpty)
+        #expect(chat.hasUnsentComposerContent)
+        #expect(controller.permissionRestartActivity.unsentChat)
+        chat.selectChat(id: session)
+        chat.composerDraft = ""
+        #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("restart-draft-\(UUID()).md")
+        try "Synthetic restart fixture".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        await chat.attachFiles([file])
+        #expect(chat.composerFiles.count == 1)
+        #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
+        chat.startDraft()
+        await chat.attachFiles([file])
+        #expect(chat.hasUnsentComposerContent)
+        #expect(controller.permissionRestartActivity.unsentChat)
+        chat.startDraft()
+        #expect(controller.storedMeetingChatCoordinator === chat)
+        #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
+    }
+
+    @Test func newDraftsStartEmptyAndOnlyUnusedDraftsFollowMeetingOrFolderContext() async throws {
+        let (controller, _, citation) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        #expect(chat.scope == MeetingChatScopePolicy.empty)
+        chat.prepareContextualDraft(scope: .init(selection: .meetings([citation.meetingID])))
+        #expect(chat.scope.selection == .meetings([citation.meetingID]))
+        chat.prepareContextualDraft(scope: .init(selection: .folder(12)))
+        #expect(chat.scope.selection == .folder(12))
+        chat.composerDraft = "Keep this folder question"
+        let undo = chat.composerUndoIdentity
+        chat.prepareContextualDraft(scope: MeetingChatScopePolicy.empty)
+        #expect(chat.scope.selection == .folder(12))
+        #expect(chat.composerDraft == "Keep this folder question" && chat.composerUndoIdentity == undo)
+        chat.composerDraft = ""
+        chat.prepareContextualDraft(scope: MeetingChatScopePolicy.empty)
+        #expect(chat.scope.selection == .folder(12))
+        chat.startDraft()
+        #expect(chat.scope == MeetingChatScopePolicy.empty)
+        chat.prepareContextualDraft(scope: .init(selection: .meetings([citation.meetingID])))
+        await chat.setScope(MeetingChatScopePolicy.empty)
+        chat.prepareContextualDraft(scope: .init(selection: .folder(12)))
+        #expect(chat.scope == MeetingChatScopePolicy.empty)
+        chat.startDraft(scope: .init(selection: .all))
+        chat.prepareContextualDraft(scope: .init(selection: .folder(12)))
+        #expect(chat.scope.selection == .all)
+    }
+
+    @Test func suggestedContextUsesOnlyTheVisibleMeetingOrFolder() {
+        func scope(_ tab: DashboardTab, _ navigation: MeetingsNavigationState = .browser,
+                   destination: MeetingDetailReturnDestination = .meetings, search: Bool = false, folder: Int64? = 5) -> MeetingChatScope {
+            MeetingChatScopePolicy.suggestedScope(tab: tab, navigation: navigation, returnDestination: destination, searchActive: search, folderID: folder)
+        }
+        #expect(scope(.meetingChat, .document(3)) == MeetingChatScopePolicy.empty)
+        #expect(scope(.dictations, .document(3)) == MeetingChatScopePolicy.empty)
+        #expect(scope(.timeline, .document(3)) == MeetingChatScopePolicy.empty)
+        #expect(scope(.timeline, .document(3), destination: .timeline).selection == .meetings([3]))
+        #expect(scope(.meetings, .document(3)).selection == .meetings([3]))
+        #expect(scope(.meetings).selection == .folder(5))
+        #expect(scope(.meetings, folder: nil) == MeetingChatScopePolicy.empty)
+        #expect(scope(.meetings, search: true) == MeetingChatScopePolicy.empty)
+        #expect(scope(.timeline, .document(3), search: true).selection == .meetings([3]))
+    }
+
+    @Test func futureScopeChangesAreRefusedWithoutLosingDraftOrCreatingATurn() async throws {
+        let (controller, _, _) = try controllerFixture()
+        let chat = controller.meetingChatCoordinator
+        chat.composerDraft = "Keep this question"
+        let undo = chat.composerUndoIdentity
+        let future = MeetingChatScope(selection: .all, startDate: Date().addingTimeInterval(7 * 86_400))
+        #expect(await chat.setScope(future) == nil)
+        #expect(chat.selectedSessionID == nil && chat.scope == MeetingChatScopePolicy.empty)
+        #expect(chat.composerDraft == "Keep this question" && chat.composerUndoIdentity == undo)
+        // A legacy persisted range remains readable, but cannot reach a provider.
+        await chat.createChat(scope: future)
+        await chat.send(question: "Read meetings", config: AppConfig())
+        #expect(!chat.isBusy && chat.turns.isEmpty)
+        #expect(chat.errorMessage == MeetingChatScopePolicy.invalidDatesMessage)
+    }
+
+    @Test func dateBoundsAndValidationRespectTodayAndCalendarDayBoundaries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let now = try #require(calendar.date(from: .init(year: 2026, month: 11, day: 1, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = try #require(calendar.date(byAdding: .day, value: 1, to: today))
+        #expect(tomorrow.timeIntervalSince(today) == 90_000)
+        #expect(MeetingChatScopePolicy.validDates(.init(startDate: today, endDateExclusive: tomorrow), now: now, calendar: calendar))
+        #expect(!MeetingChatScopePolicy.validDates(.init(startDate: tomorrow), now: now, calendar: calendar))
+        #expect(!MeetingChatScopePolicy.validDates(.init(endDateExclusive: tomorrow.addingTimeInterval(1)), now: now, calendar: calendar))
+        #expect(!MeetingChatScopePolicy.validDates(.init(startDate: today, endDateExclusive: today), now: now, calendar: calendar))
+        let earlier = try #require(calendar.date(byAdding: .day, value: -10, to: today))
+        let choices = [MeetingChatSourceChoice(id: 1, title: "Past", startDate: earlier, folderID: nil),
+                       MeetingChatSourceChoice(id: 2, title: "Future", startDate: tomorrow, folderID: nil)]
+        #expect(MeetingChatScopePolicy.dateBounds(meetings: choices, now: now, calendar: calendar) == earlier...today)
+        #expect(MeetingChatScopePolicy.dateBounds(meetings: [], now: now, calendar: calendar) == today...today)
+    }
     @Test func repeatedMeetingEntryPreservesUntitledDraft() async throws {
         let (controller, _, citation) = try controllerFixture()
         controller.showMeetingChat(meetingID: citation.meetingID)
@@ -32,7 +142,7 @@ struct MeetingChatNavigationTests {
         let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db")); try store.migrateIfNeeded()
         let id = try store.insertMeeting(title: "Launch", calendarEventID: nil, startTime: Date(), endTime: Date(),
             rawTranscript: "[00:00:01] You: Launch Friday.", formattedNotes: "## Decision\nLaunch Friday.", micAudioPath: nil, systemAudioPath: nil)
-        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+        let controller = MuesliController(runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil), dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         let evidence = try MeetingChatRetrieval(databaseURL: store.resolvedDatabaseURL).retrieve(question: "Friday", scope: .init())
         return (controller, store, try #require(evidence.passages.first { $0.kind == .transcript }?.citation))
     }
@@ -288,7 +398,7 @@ struct MeetingChatNavigationTests {
         try store.deleteMeeting(id: citation.meetingID)
         #expect(await chat.addMeetingToScope(id: citation.meetingID) == false)
         #expect(chat.selectedSessionID == nil)
-        #expect(chat.scope.selection == .all)
+        #expect(chat.scope.selection == .meetings([]))
         #expect(chat.composerDraft == "Ask @Launch")
         #expect(chat.errorMessage != nil)
     }

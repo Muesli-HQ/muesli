@@ -1199,27 +1199,29 @@ struct SummaryModelPreset {
     let id: String
     let label: String
     var contextWindowTokens: Int? = nil
+    var maximumInputTokens: Int? = nil
 
+    // Verified model metadata; see docs/meeting-chat-architecture.md.
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
-        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
-        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 500_000),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
         SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
         SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let anthropicModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
-        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
-        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
-        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindowTokens: 200000),
     ]
 
     static let claudeCodeModels: [SummaryModelPreset] = [
@@ -1411,6 +1413,7 @@ extension MeetingSummaryBackendOption {
         case .openRouter: return \.openRouterModel
         case .ollama: return \.ollamaModel
         case .lmStudio: return \.lmStudioModel
+        case .gemmaMLX: return \.gemmaChatModel
         case .claudeCode: return \.claudeCodeModel
         default: return \.customLLMModel
         }
@@ -1430,6 +1433,7 @@ extension MeetingSummaryBackendOption {
         case .chatGPT: presets = SummaryModelPreset.chatGPTModels
         case .openAI: presets = SummaryModelPreset.openAIModels
         case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .gemmaMLX: presets = Gemma4LiteRTModel.generalPurpose.map { SummaryModelPreset(id: $0.nativeChatModelID, label: $0.label, contextWindowTokens: 131_072) }
         case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
         case .openRouter:
             presets = [SummaryModelPreset.openRouterModels[0]]
@@ -1485,10 +1489,12 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let gemmaMLX = MeetingSummaryBackendOption(backend: "gemma_mlx", label: "Gemma 4 (on-device)")
 
-    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
-        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+    static let all: [MeetingSummaryBackendOption] = [.gemmaMLX, .chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
+        guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
               selected != .claudeCode else { return all }
         return all.filter { $0 != .claudeCode }
     }
@@ -1567,16 +1573,15 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     var isDownloaded: Bool {
-        managedModel?.isPresent(at: cacheDirectory) ?? FileManager.default.fileExists(atPath: modelURL.path)
+        cleanupSlot == nil ? FileManager.default.fileExists(atPath: modelURL.path) : installedRelease != nil
     }
 
-    var managedModel: ManagedCleanupModel? {
-        switch inputFormat {
-        case .muesliTrainedV12LFM: .lfm
-        case .muesliTrainedV12Qwen: .qwenMLX
-        case .muesliTrainedV12Qwen08: .qwen08MLX
-        default: nil
-        }
+    /// Muesli-published models update independently of the app; see `CleanupModelCatalog`.
+    var cleanupSlot: CleanupModelSlot? { CleanupModelSlot.slot(id: id) }
+
+    /// The complete, identified build in `cacheDirectory`. Reads a small marker file.
+    var installedRelease: CleanupModelRelease? {
+        cleanupSlot.flatMap { CleanupModelInstallation.installedRelease(for: $0, in: cacheDirectory) }
     }
 
     var logoResourceName: String {
@@ -1636,10 +1641,10 @@ struct PostProcessorOption: Identifiable, Equatable {
     static let finetunedV4 = PostProcessorOption(
         id: "qwen35-postproc-v4",
         label: "muesli Cleanup Lite",
-        sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
+        sizeLabel: CleanupModelRelease.qwen08V14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
-        downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwen08MLX.modelFilename,
+        downloadURL: CleanupModelRelease.qwen08V14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen08V14.artifact.modelFilename,
         inputFormat: .muesliTrainedV12Qwen08
     )
 
@@ -1659,10 +1664,10 @@ struct PostProcessorOption: Identifiable, Equatable {
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
         filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
+        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: CleanupModelRelease.qwen2BV14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
-        downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+        downloadURL: CleanupModelRelease.qwen2BV14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen2BV14.artifact.modelFilename, inputFormat: .muesliTrainedV12Qwen)
     static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
     static let defaultOption: PostProcessorOption = .finetunedV4
@@ -2239,7 +2244,7 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
-struct AppConfig: Codable {
+struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
@@ -2336,6 +2341,7 @@ struct AppConfig: Codable {
     var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var gemmaChatModel: String = Gemma4LiteRTModel.e2b.nativeChatModelID
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
@@ -2381,8 +2387,8 @@ struct AppConfig: Codable {
     var disabledCalendarIDs: [String] = []
     var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
-    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
-    var quilModel: String = PostProcessorOption.defaultQuilOption.id
+    var quilBackend: String = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+    var quilModel: String = Gemma4LiteRTModel.e2b.repoID
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
     var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
@@ -2400,6 +2406,22 @@ struct AppConfig: Codable {
     var dictationFormattingTemplates: [DictationFormattingTemplate] = []
     var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    var timeTurnerEnabled: Bool = false
+    var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerInterval: String = "10"
+    var timeTurnerBudget: String = "10"
+    var timeTurnerScreenshotRetention: String = "7"
+    var timeTurnerHistoryRetention: String = "30"
+    var recapModelSelection: FeatureTextModelSelection? = nil
+    var recapSchedule: String = "off"
+    var recapScheduleHour: String = "8"
+    var recapIncludeMeetings: Bool = true
+    var recapIncludeDictations: Bool = false
+    var recapIncludeCommands: Bool = false
+    var recapIncludeQuill: Bool = false
+    var recapIncludeCotypist: Bool = false
+    var recapIncludeChat: Bool = false
+    var timeTurnerExcludedApps: String = ""
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
     var cotypistSuggestionLength: CotypistSuggestionLength = .sentence
@@ -2510,6 +2532,7 @@ struct AppConfig: Codable {
         case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case gemmaChatModel = "gemma_chat_model"
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
@@ -2572,6 +2595,22 @@ struct AppConfig: Codable {
         case dictationFormattingTemplates = "dictation_formatting_templates"
         case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
+        case timeTurnerEnabled = "time_turner_enabled"
+        case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerInterval = "time_turner_interval"
+        case timeTurnerBudget = "time_turner_budget"
+        case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
+        case timeTurnerHistoryRetention = "time_turner_history_retention"
+        case recapModelSelection = "recap_model_selection"
+        case recapSchedule = "recap_schedule"
+        case recapScheduleHour = "recap_schedule_hour"
+        case recapIncludeMeetings = "recap_include_meetings"
+        case recapIncludeDictations = "recap_include_dictations"
+        case recapIncludeCommands = "recap_include_commands"
+        case recapIncludeQuill = "recap_include_quill"
+        case recapIncludeCotypist = "recap_include_cotypist"
+        case recapIncludeChat = "recap_include_chat"
+        case timeTurnerExcludedApps = "time_turner_excluded_apps"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
         case cotypistSuggestionLength = "cotypist_suggestion_length"
@@ -2746,6 +2785,7 @@ struct AppConfig: Codable {
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
         )
+        gemmaChatModel = (try? c.decode(String.self, forKey: .gemmaChatModel)) ?? defaults.gemmaChatModel
         claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
         claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
         meetingSummaryReasoningEffort = try? c.decode(
@@ -2815,7 +2855,7 @@ struct AppConfig: Codable {
         calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         quilBackend = TranscriptCleanupBackendOption
-            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .resolved((try? c.decode(String.self, forKey: .quilBackend)) ?? defaults.quilBackend)
             .backend
         let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
         quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend
@@ -2859,6 +2899,22 @@ struct AppConfig: Codable {
             activeTranscriptCleanupPromptId = defaults.activeTranscriptCleanupPromptId
             postProcessorSystemPrompt = defaults.postProcessorSystemPrompt
         }
+        timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
+        timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
+        timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
+        timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
+        timeTurnerHistoryRetention = (try? c.decode(String.self, forKey: .timeTurnerHistoryRetention)) ?? "30"
+        recapModelSelection = try? c.decode(FeatureTextModelSelection.self, forKey: .recapModelSelection)
+        recapSchedule = (try? c.decode(String.self, forKey: .recapSchedule)) ?? "off"
+        recapScheduleHour = (try? c.decode(String.self, forKey: .recapScheduleHour)) ?? "8"
+        recapIncludeMeetings = (try? c.decode(Bool.self, forKey: .recapIncludeMeetings)) ?? true
+        recapIncludeDictations = (try? c.decode(Bool.self, forKey: .recapIncludeDictations)) ?? false
+        recapIncludeCommands = (try? c.decode(Bool.self, forKey: .recapIncludeCommands)) ?? false
+        recapIncludeQuill = (try? c.decode(Bool.self, forKey: .recapIncludeQuill)) ?? false
+        recapIncludeCotypist = (try? c.decode(Bool.self, forKey: .recapIncludeCotypist)) ?? false
+        recapIncludeChat = (try? c.decode(Bool.self, forKey: .recapIncludeChat)) ?? false
+        timeTurnerExcludedApps = (try? c.decode(String.self, forKey: .timeTurnerExcludedApps)) ?? ""
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
         cotypistSuggestionLength = (try? c.decode(CotypistSuggestionLength.self, forKey: .cotypistSuggestionLength)) ?? defaults.cotypistSuggestionLength
@@ -2946,14 +3002,14 @@ struct AppConfig: Codable {
     }
 }
 
-struct WindowFrame: Codable {
+struct WindowFrame: Codable, Equatable {
     let x: Double
     let y: Double
     let width: Double
     let height: Double
 }
 
-struct CGPointCodable: Codable {
+struct CGPointCodable: Codable, Equatable {
     let x: Double
     let y: Double
 
@@ -2992,4 +3048,12 @@ enum DictationState: String {
     case preparing
     case recording
     case transcribing
+}
+
+extension AppConfig {
+    var timeTurnerRetentionPolicy: VisualMemoryRetentionPolicy {
+        VisualMemoryRetentionPolicy(screenshotDays: timeTurnerScreenshotRetention == "forever" ? nil : (Int(timeTurnerScreenshotRetention) ?? 7),
+            historyDays: timeTurnerHistoryRetention == "forever" ? nil : (Int(timeTurnerHistoryRetention) ?? 30),
+            mediaBudgetBytes: min(max(Int64(timeTurnerBudget) ?? 10, 0), Int64.max / 1_000_000_000) * 1_000_000_000)
+    }
 }

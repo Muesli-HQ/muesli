@@ -6,6 +6,100 @@
         <language>en</language>
         <!-- Items are added by scripts/release-preprod.sh -->
         <item>
+            <title>0.8.6-preprod.2</title>
+            <pubDate>Thu, 05 Nov 2026 19:34:09 +0530</pubDate>
+            <description><![CDATA[
+<h2>muesli 0.8.6 preproduction 2</h2>
+<p>This second preview includes the latest 0.8.6 interface and permission-recovery improvements for upgrade and everyday-use testing before the stable release.</p>
+<h3>New in this preview</h3>
+<ul>
+<li>Defer permission setup and continue to Timeline. Features explain missing access and take you to Settings → General → Permissions when needed. Voice Notes onboarding can test recording without granting text-pasting access.</li>
+<li>System Audio permission checks support retry and preserve a Grant click made while a background check is running.</li>
+<li>Discover major additions through small New badges that disappear after interaction.</li>
+<li>Read clearer accent-colored actions, open Insights from the Timeline or Dictations statistics tiles, and use the simpler Timeline filter.</li>
+<li>Dismiss individual App Formatting suggestions. Time Turner settings stay compact until capture is enabled.</li>
+</ul>
+<h3>Bring your conversations and documents</h3>
+<ul>
+<li>Import meeting notes, summaries and transcripts from a Granola ZIP or CSV export. Preview the meetings before importing from Meetings → Import → Granola…</li>
+<li>Chat with saved meetings, follow citations to their source, and attach PDFs, images, Markdown or plain-text documents. Documents stay in their original location; muesli does not keep managed copies. The model can search and read documents as needed.</li>
+<li>New general chats start with no meetings selected. Choose individual meetings or a folder; opening chat within a meeting supplies that meeting's context.</li>
+<li>Use on-device Gemma 4 or your preferred AI provider. Supported local endpoints can use native tool calling with capability detection.</li>
+</ul>
+<h3>More ways to write</h3>
+<ul>
+<li>Cotypist is now included in preprod and production packages. It stays off until enabled in Settings → Experimental. Complete its input-source setup for on-device suggestions, then press Tab to accept a suggestion or Option + Right Arrow to accept one word. Accepted suggestions appear in your local Timeline with the preceding text and app name.</li>
+<li>With a supported local model, enable “Watch text appear during hands-free mode” in Settings → Dictations. Enabled cleanup runs when you stop.</li>
+<li>Ask Quill a question, follow up, or request an edit to selected text. Configure it in Settings → Experimental.</li>
+<li>Set writing styles, capitalization and final-period preferences per app in Settings → Dictations → App Formatting.</li>
+</ul>
+<h3>Find and revisit your work</h3>
+<ul>
+<li>Search saved dictations, meetings, chats, writing history and Time Turner screen text from the sidebar or with Command + F.</li>
+<li>Time Turner lets you browse captured screen text and screenshots. Capture is off by default and screen history stays on this Mac. Generating a recap sends sampled text to your selected Meetings provider.</li>
+<li>Record a window or display alongside meeting audio when you choose Record Screen… in the meeting controls. Video stays local and requires Screen Recording permission.</li>
+</ul>
+<h3>Models and refinements</h3>
+<ul>
+<li>Try Parakeet Redux, Phonon-2.5 and MedASR from Models → Dictation. MedASR requires acceptance of Google's model terms.</li>
+<li>Updated muesli Cleanup Lite and Pro Cleanup — Qwen 3.5 models have an Update action when newer model files are available.</li>
+<li>Saved API keys and supported account credentials migrate to macOS Keychain, with verification before legacy credentials are removed.</li>
+<li>Includes recording-indicator dragging, live-caption, meeting-control and reminder fixes, plus an updated guided What's New tour.</li>
+</ul>
+<p>Hosted features send the input and context needed for the request to the selected provider. File references require the originals to remain available.</p>
+<h3>Test the update</h3>
+<p>Keep the older MuesliPreprod installed and choose Check for Updates after the preproduction feed is live. Check installation, relaunch, saved data and credentials, and the What's New tour. MuesliPreprod uses separate local app data; the stable release remains 0.8.5.</p>
+]]></description>
+            <sparkle:version>8006002</sparkle:version>
+            <sparkle:shortVersionString>0.8.6-preprod.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6-preprod.2/MuesliPreprod-0.8.6-preprod.2.dmg" length="142727046" type="application/octet-stream" sparkle:edSignature="K2Lnvwpe2awYaXlHUaHz9jFVAHuOIk1KZGwf4llLMmjSYQiQ0jcwB5dmLVCn0t3wPCq9LiG/GOE8dyk8lh2nDQ=="/>
+        </item>
+        <item>
+            <title>0.8.6-preprod.1</title>
+            <pubDate>Tue, 03 Nov 2026 21:49:35 +0530</pubDate>
+            <description><![CDATA[
+<h2>muesli 0.8.6 preproduction 1</h2>
+<p>This preview brings the 0.8.6 features to MuesliPreprod for upgrade and everyday-use testing before the stable release.</p>
+<h3>Bring your conversations and documents</h3>
+<ul>
+<li>Import meeting notes, summaries and transcripts from a Granola ZIP or CSV export. Preview the meetings before importing from Meetings → Import → Granola…</li>
+<li>Chat with saved meetings, follow citations to their source, and attach PDFs, images, Markdown or plain-text documents. Documents stay in their original location; muesli does not keep managed copies. The model can search and read documents as needed.</li>
+<li>New general chats start with no meetings selected. Choose individual meetings or a folder; opening chat within a meeting supplies that meeting's context.</li>
+<li>Use on-device Gemma 4 or your preferred AI provider. Supported local endpoints can use native tool calling with capability detection.</li>
+</ul>
+<h3>More ways to write</h3>
+<ul>
+<li>Cotypist is now included in preprod and production packages. It stays off until enabled in Settings → Experimental. Complete its input-source setup for on-device suggestions, then press Tab to accept a suggestion or Option + Right Arrow to accept one word.</li>
+<li>With a supported local model, enable “Watch text appear during hands-free mode” in Settings → Dictations. Enabled cleanup runs when you stop.</li>
+<li>Ask Quill a question, follow up, or request an edit to selected text. Configure it in Settings → Experimental.</li>
+<li>Set writing styles, capitalization and final-period preferences per app in Settings → Dictations → App Formatting.</li>
+</ul>
+<h3>Find and revisit your work</h3>
+<ul>
+<li>Search saved dictations, meetings, chats, writing history and Time Turner screen text from the sidebar or with Command + F.</li>
+<li>Time Turner lets you browse captured screen text and screenshots. Capture is off by default and screen history stays on this Mac. Generating a recap sends sampled text to your selected Meetings provider.</li>
+<li>Record a window or display alongside meeting audio when you choose Record Screen… in the meeting controls. Video stays local and requires Screen Recording permission.</li>
+</ul>
+<h3>Models and refinements</h3>
+<ul>
+<li>Try Parakeet Redux, Phonon-2.5 and MedASR from Models → Dictation. MedASR requires acceptance of Google's model terms.</li>
+<li>Updated muesli Cleanup Lite and Pro Cleanup — Qwen 3.5 models have an Update action when newer model files are available.</li>
+<li>Saved API keys and supported account credentials migrate to macOS Keychain, with verification before legacy credentials are removed.</li>
+<li>Includes recording-indicator dragging, live-caption, meeting-control and reminder fixes, plus an updated guided What's New tour.</li>
+</ul>
+<p>Hosted features send the input and context needed for the request to the selected provider. File references require the originals to remain available.</p>
+<h3>Test the update</h3>
+<p>Keep the older MuesliPreprod installed and choose Check for Updates after the preproduction feed is live. Check installation, relaunch, saved data and credentials, and the What's New tour. MuesliPreprod uses separate local app data; the stable release remains 0.8.5.</p>
+]]></description>
+            <sparkle:version>8006001</sparkle:version>
+            <sparkle:shortVersionString>0.8.6-preprod.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6-preprod.1/MuesliPreprod-0.8.6-preprod.1.dmg" length="140850502" type="application/octet-stream" sparkle:edSignature="8mdg/Hu0IwKLAsInbjvSyBnNUc0aErsPgGpsXa631z4urUsxWmdWWm90ArN2wmlKJ4U9TXdDgCCu3kXSCRQRCA=="/>
+        </item>
+        <item>
             <title>0.8.5-preprod.2</title>
             <pubDate>Fri, 09 Oct 2026 02:24:53 +0530</pubDate>
             <description><![CDATA[

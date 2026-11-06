@@ -16,7 +16,7 @@ struct MeetingChatNativeBudgetTests {
     @Test @MainActor func multipleLargePagesFinalizeFromDeliveredEvidence() async throws {
         let probe = NativeBudgetProbe(mode: .pages)
         var config = AppConfig(); config.meetingSummaryBackend = "chatgpt"
-        let policy = MeetingChatContextBudget(config: config)
+        let policy = MeetingChatContextBudget(config: config, contextWindowTokens: 65_536)
         var executed = 0
         let (answer, evidence) = try await MeetingChatNativeHarness.run(question: "Read all pages", evidence: initialEvidence(),
             history: [], config: config, sessionID: UUID(), generator: probe, execute: { _, current in
@@ -29,7 +29,7 @@ struct MeetingChatNativeBudgetTests {
                 next.passages.append(passage)
                 next.dependencies.append(.init(meetingID: Int64(100 + executed), revision: "r1"))
                 return .init(evidence: next, matchedPassageCount: 1, nextPage: executed)
-            }, activity: { _, _ in }, progress: { _ in }, reasoningSummary: { _, _ in })
+            }, activity: { _, _ in }, progress: { _ in }, reasoningSummary: { _, _ in }, budget: policy)
         #expect(executed >= 2)
         #expect(answer.coverage.isPartialRecap)
         #expect(answer.citations.map(\.sourceKey) == ["S2"])
@@ -47,10 +47,11 @@ struct MeetingChatNativeBudgetTests {
     @Test @MainActor func oversizedReplayFallsBackWithoutExecutingOrDanglingCalls() async throws {
         let probe = NativeBudgetProbe(mode: .oversizedReplay)
         var config = AppConfig(); config.meetingSummaryBackend = "chatgpt"
+        let policy = MeetingChatContextBudget(config: config, contextWindowTokens: 65_536)
         let (answer, _) = try await MeetingChatNativeHarness.run(question: "Read all pages", evidence: initialEvidence(),
             history: [], config: config, sessionID: UUID(), generator: probe,
             execute: { _, current in Issue.record("Oversized replay must not execute tools"); return .init(evidence: current) },
-            activity: { _, _ in }, progress: { _ in }, reasoningSummary: { _, _ in })
+            activity: { _, _ in }, progress: { _ in }, reasoningSummary: { _, _ in }, budget: policy)
         #expect(answer.citations.map(\.sourceKey) == ["S1"])
         #expect(answer.coverage.isPartialRecap)
         let requests = await probe.requests
@@ -58,6 +59,21 @@ struct MeetingChatNativeBudgetTests {
         #expect(!requests[1].allowTools)
         let replay = try #require(JSONSerialization.jsonObject(with: requests[1].inputItems) as? [[String: Any]])
         #expect(!replay.contains { $0["type"] as? String == "function_call" })
+    }
+
+    @Test func largeNativeInputUsesRequestLimitRatherThanResponseLimit() throws {
+        var config = AppConfig(); config.meetingSummaryBackend = "openai"; config.openAIModel = "gpt-6.1-sol"
+        let text = String(repeating: "detail ", count: 320_000)
+        let data = try JSONSerialization.data(withJSONObject: [["role": "user", "content": text]])
+        let budget = MeetingChatContextBudget(config: config)
+        #expect(data.count > MeetingNativeToolTransport.maximumResponseBytes)
+        #expect(MeetingChatContextBudget.estimateTokens(text) < budget.maximumInputTokens)
+        let request = MeetingNativeToolRequest(base: .init(system: "Synthetic", user: "", config: config),
+            inputItems: data, tools: Data("[]".utf8), allowTools: false)
+        let wire = try ChatFileReader.requestData(MeetingNativeToolTransport.requestBody(request, stream: false))
+        #expect(wire.count > MeetingNativeToolTransport.maximumResponseBytes)
+        #expect(wire.count <= ChatFileReader.maximumRequestBytes)
+        #expect(throws: MeetingNativeToolTransportError.self) { try MeetingNativeToolTransport.parseResponse(wire) }
     }
 
     @Test @MainActor func repairProgressSurvivesNextInference() async throws {
@@ -91,10 +107,10 @@ private actor NativeBudgetProbe: MeetingTextGenerating {
             return .init(outputItems: Data("[]".utf8), calls: [], text: text)
         }
         let id = "call-\(requests.count)"
-        let arguments = "{\"meeting_id\":1,\"page\":\(requests.count - 1)}"
-        var output: [[String: Any]] = [["type": "function_call", "name": "read_full_meeting", "call_id": id, "arguments": arguments]]
+        let arguments = "{\"handle\":\"meeting:1\",\"offset\":\(requests.count - 1)}"
+        var output: [[String: Any]] = [["type": "function_call", "name": "read_history", "call_id": id, "arguments": arguments]]
         if mode == .oversizedReplay { output.insert(["type": "reasoning", "encrypted_content": String(repeating: "x", count: 400_000)], at: 0) }
         return .init(outputItems: try JSONSerialization.data(withJSONObject: output),
-            calls: [.init(id: id, name: "read_full_meeting", arguments: arguments)], text: "")
+            calls: [.init(id: id, name: "read_history", arguments: arguments)], text: "")
     }
 }

@@ -1,3 +1,4 @@
+import MuesliCore
 import AppKit
 import CryptoKit
 import Foundation
@@ -37,46 +38,73 @@ final class ChatGPTAuthManager {
     private static let scopes = "openid profile email offline_access"
     private static let callbackTimeoutSeconds: TimeInterval = 300 // 5 minutes
 
-    private var tokenFileURL: URL {
-        AppIdentity.supportDirectoryURL.appendingPathComponent("chatgpt-auth.json")
+    private let supportDirectory: URL
+    private let tokenStorage: CredentialFileMigration
+    private let load: (URLRequest) async throws -> (Data, URLResponse)
+    private var hasStoredTokens = false
+    private var pendingTokens: (generation: Int, tokens: TokenResponse)?
+    // The controller and request client can own separate managers for one lane.
+    // A successful sign-out/sign-in must invalidate both managers' pending work.
+    private static var credentialGenerations: [String: Int] = [:]
+    private var credentialGeneration: Int { Self.credentialGenerations[supportDirectory.standardizedFileURL.path, default: 0] }
+    private func advanceCredentialGeneration() {
+        Self.credentialGenerations[supportDirectory.standardizedFileURL.path] = credentialGeneration + 1
     }
+    private var ownsLegacyKeychain: Bool { supportDirectory.standardizedFileURL == AppIdentity.supportDirectoryURL.standardizedFileURL && AppIdentity.supportDirectoryName == "Muesli" }
 
-    private init() {
-        // Migrate from legacy keychain storage to file
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil,
+         load: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
+        self.supportDirectory = supportDirectory
+        self.load = load
+        self.tokenStorage = .init(legacyURL: supportDirectory.appendingPathComponent("chatgpt-auth.json"),
+                                  account: "chatgpt-auth", vault: vault ?? KeychainCredentialVault(supportDirectory: supportDirectory))
         migrateFromKeychain()
+        hasStoredTokens = readTokens() != nil
     }
 
     // MARK: - Public API
 
     var isAuthenticated: Bool {
-        tokenRead(key: "access_token") != nil
+        hasStoredTokens
+    }
+
+    /// Explicit lifecycle/user-action refresh; display-state getters do no I/O.
+    func refreshCredentialStatus() {
+        hasStoredTokens = readTokens() != nil
     }
 
     func signIn() async throws {
         let (verifier, challenge) = generatePKCE()
         let code = try await startCallbackServerAndOpenBrowser(codeChallenge: challenge)
         let tokens = try await exchangeCodeForTokens(code: code, codeVerifier: verifier)
-        saveTokens(tokens)
+        try saveTokens(tokens)
+        advanceCredentialGeneration()
         fputs("[chatgpt-auth] signed in successfully\n", stderr)
     }
 
-    func signOut() {
-        deleteTokens()
-        // Also clean up legacy keychain entries
-        for account in ["access_token", "refresh_token", "expires_at", "account_id"] {
-            keychainDeleteLegacy(account: account)
+    func signOut() throws {
+        // Clear legacy credentials first so they cannot resurrect a signed-out session.
+        if ownsLegacyKeychain {
+            for account in ["access_token", "refresh_token", "expires_at", "account_id"] {
+                try keychainDeleteLegacy(account: account)
+            }
         }
+        try tokenStorage.delete()
+        advanceCredentialGeneration()
+        pendingTokens = nil
+        hasStoredTokens = false
         fputs("[chatgpt-auth] signed out\n", stderr)
     }
 
     func validAccessToken() async throws -> (token: String, accountId: String) {
-        guard let accessToken = tokenRead(key: "access_token") else {
+        guard let stored = readTokens(), let accessToken = stored["access_token"] else {
             throw ChatGPTAuthError.notAuthenticated
         }
-        let accountId = tokenRead(key: "account_id") ?? ""
+        hasStoredTokens = true
+        let accountId = stored["account_id"] ?? ""
 
         // Check expiry with 30-second margin
-        if let expiresStr = tokenRead(key: "expires_at"),
+        if let expiresStr = stored["expires_at"],
            let expiresMs = Double(expiresStr) {
             let expiresAt = Date(timeIntervalSince1970: expiresMs / 1000.0)
             if expiresAt > Date().addingTimeInterval(30) {
@@ -84,11 +112,18 @@ final class ChatGPTAuthManager {
             }
             // Token expired or about to expire — refresh
             fputs("[chatgpt-auth] token expired, refreshing...\n", stderr)
-            guard let refreshToken = tokenRead(key: "refresh_token") else {
+            guard let refreshToken = stored["refresh_token"] else {
                 throw ChatGPTAuthError.notAuthenticated
             }
+            let generation = credentialGeneration
             let tokens = try await refreshAccessToken(refreshToken: refreshToken)
-            saveTokens(tokens)
+            guard generation == credentialGeneration else { throw ChatGPTAuthError.notAuthenticated }
+            do { try saveTokens(tokens) } catch {
+                // Rotation can invalidate the old refresh token. Keep the new
+                // session in memory and retry Keychain persistence on next use.
+                pendingTokens = (generation, tokens)
+                fputs("[chatgpt-auth] refreshed session retained in memory; Keychain save will retry\n", stderr)
+            }
             return (tokens.accessToken, tokens.accountId)
         }
 
@@ -265,6 +300,11 @@ final class ChatGPTAuthManager {
         let refreshToken: String
         let expiresAtMs: Double
         let accountId: String
+
+        var storedValues: [String: String] {
+            ["access_token": accessToken, "refresh_token": refreshToken,
+             "expires_at": String(format: "%.0f", expiresAtMs), "account_id": accountId]
+        }
     }
 
     private func exchangeCodeForTokens(code: String, codeVerifier: String) async throws -> TokenResponse {
@@ -283,7 +323,7 @@ final class ChatGPTAuthManager {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await load(request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown error"
             throw ChatGPTAuthError.tokenExchangeFailed(errorBody)
@@ -321,7 +361,7 @@ final class ChatGPTAuthManager {
             .joined(separator: "&")
             .data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await load(request)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown error"
             throw ChatGPTAuthError.refreshFailed(errorBody)
@@ -377,40 +417,29 @@ final class ChatGPTAuthManager {
         return ""
     }
 
-    // MARK: - File-based Token Storage
+    // MARK: - Keychain token storage with verified legacy-file migration
 
-    private func saveTokens(_ tokens: TokenResponse) {
-        let dict: [String: String] = [
-            "access_token": tokens.accessToken,
-            "refresh_token": tokens.refreshToken,
-            "expires_at": String(format: "%.0f", tokens.expiresAtMs),
-            "account_id": tokens.accountId,
-        ]
+    private func saveTokens(_ tokens: TokenResponse) throws {
+        try tokenStorage.save(JSONSerialization.data(withJSONObject: tokens.storedValues))
+        pendingTokens = nil
+        hasStoredTokens = true
+    }
+
+    private func readTokens() -> [String: String]? {
+        if let pendingTokens, pendingTokens.generation == credentialGeneration {
+            try? saveTokens(pendingTokens.tokens)
+            return pendingTokens.tokens.storedValues
+        }
+        pendingTokens = nil
+        var tokens: [String: String]?
         do {
-            let dir = tokenFileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted)
-            try data.write(to: tokenFileURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFileURL.path)
-            var resourceValues = URLResourceValues()
-            resourceValues.isExcludedFromBackup = true
-            var fileURL = tokenFileURL
-            try fileURL.setResourceValues(resourceValues)
-        } catch {
-            fputs("[chatgpt-auth] failed to save tokens: \(error)\n", stderr)
-        }
-    }
-
-    private func tokenRead(key: String) -> String? {
-        guard let data = try? Data(contentsOf: tokenFileURL),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return nil
-        }
-        return dict[key]
-    }
-
-    private func deleteTokens() {
-        try? FileManager.default.removeItem(at: tokenFileURL)
+            _ = try tokenStorage.load(validating: { data in
+                guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                      dict["access_token"]?.isEmpty == false else { throw CredentialVaultError.verificationFailed }
+                tokens = dict
+            })
+            return tokens
+        } catch { return nil }
     }
 
     // MARK: - Keychain Migration
@@ -418,8 +447,12 @@ final class ChatGPTAuthManager {
     private static let keychainService = "com.muesli.app.chatgpt-auth"
 
     private func migrateFromKeychain() {
-        // If file already exists, no migration needed
-        guard !FileManager.default.fileExists(atPath: tokenFileURL.path) else { return }
+        // Old builds shared one legacy service. Only production may claim it.
+        guard ownsLegacyKeychain,
+              (try? tokenStorage.load(validating: { data in
+            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                  dict["access_token"]?.isEmpty == false else { throw CredentialVaultError.verificationFailed }
+        })) == nil else { return }
 
         // Try reading from legacy keychain
         guard let accessToken = keychainReadLegacy(account: "access_token") else { return }
@@ -433,19 +466,20 @@ final class ChatGPTAuthManager {
             expiresAtMs: Double(expiresAt) ?? 0,
             accountId: accountId
         )
-        saveTokens(tokens)
+        do { try saveTokens(tokens) } catch { return }
 
         // Clean up keychain entries
         for account in ["access_token", "refresh_token", "expires_at", "account_id"] {
-            keychainDeleteLegacy(account: account)
+            try? keychainDeleteLegacy(account: account)
         }
-        fputs("[chatgpt-auth] migrated tokens from keychain to file\n", stderr)
+        fputs("[chatgpt-auth] migrated tokens to scoped Keychain storage\n", stderr)
     }
 
     private func keychainReadLegacy(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
             kSecReturnData as String: true,
@@ -457,14 +491,16 @@ final class ChatGPTAuthManager {
         return String(data: data, encoding: .utf8)
     }
 
-    private func keychainDeleteLegacy(account: String) {
+    private func keychainDeleteLegacy(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialVaultError.unavailable }
     }
 }
 

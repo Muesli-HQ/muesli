@@ -92,7 +92,18 @@ struct DashboardRootView: View {
                 sidebarView
                 .frame(width: sidebarPresentation.isCollapsed ? 68 : 240)
             } detail: {
-                detailContent
+                VStack(spacing: 0) {
+                    detailContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        // One structural location across all three destinations preserves the
+                        // native editor, selection and undo stack while browsing.
+                        if showsPersistentChat {
+                            MeetingChatView(appState: appState, controller: controller,
+                                            coordinator: controller.meetingChatCoordinator, docked: true)
+                                .id(appState.privateMode)
+                        }
+                    }
             }
         }
         .tint(MuesliTheme.accent)
@@ -142,6 +153,21 @@ struct DashboardRootView: View {
                     )
                     .zIndex(100)
                 }
+            }
+        }
+        .sheet(isPresented: Binding(get: { appState.globalSearchPresented },
+                                    set: { appState.globalSearchPresented = $0 })) {
+            GlobalSearchPanel(controller: controller, appState: appState)
+        }
+        .onChange(of: appState.selectedTab) { _, tab in
+            if appState.activeFeatureTour == nil, let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
+        }
+        .onChange(of: appState.focusSearchField) { _, focus in
+            if focus {
+                appState.focusSearchField = false
+                appState.globalSearchPresented = true
             }
         }
         .alert(
@@ -198,6 +224,10 @@ struct DashboardRootView: View {
         .font(MuesliTheme.body())
     }
 
+    private var showsPersistentChat: Bool {
+        [.timeline, .dictations, .meetings].contains(appState.selectedTab)
+    }
+
     private var hasOpenMeeting: Bool {
         if case .document = appState.meetingsNavigationState {
             return true
@@ -238,6 +268,8 @@ struct DashboardRootView: View {
             switch appState.selectedTab {
             case .timeline:
                 TimelineView(appState: appState, controller: controller)
+            case .timeTurner:
+                TimeTurnerPage(appState: appState, controller: controller)
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
             case .insights:
@@ -254,6 +286,7 @@ struct DashboardRootView: View {
                 MeetingsView(appState: appState, controller: controller)
             case .meetingChat:
                 MeetingChatView(appState: appState, controller: controller, coordinator: controller.meetingChatCoordinator)
+                    .id(appState.privateMode)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:
@@ -265,6 +298,8 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
+                    analyticsControl: MuesliSettingControl(controller: controller, id: "disable_anonymous_analytics")
+                        .environment(\.muesliSettingDefinitions, [controller.anonymousAnalyticsDefinition()]),
                     onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }
