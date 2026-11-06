@@ -3552,6 +3552,16 @@ struct HotkeyMonitorTests {
 @Suite("MeetingResummarizationPolicy")
 struct MeetingResummarizationPolicyTests {
 
+    @Test("only non-calendar placeholder titles are regenerated", arguments: [
+        ("Meeting", Optional<String>.none, true),
+        ("  ", nil, true),
+        ("Planning", nil, false),
+        ("Meeting", "calendar-event", false)
+    ])
+    func titleGenerationEligibility(title: String, calendarID: String?, expected: Bool) {
+        #expect(MeetingResummarizationPolicy.shouldGenerateTitle(title: title, calendarEventID: calendarID) == expected)
+    }
+
     @Test("resummarize preserves the existing meeting title")
     func preservesExistingMeetingTitle() {
         let meeting = MeetingRecord(

@@ -162,6 +162,15 @@ struct MeetingResummarizationPlan: Equatable {
 }
 
 enum MeetingResummarizationPolicy {
+    static func shouldGenerateTitle(for meeting: MeetingRecord) -> Bool {
+        shouldGenerateTitle(title: meeting.title, calendarEventID: meeting.calendarEventID)
+    }
+
+    static func shouldGenerateTitle(title: String, calendarEventID: String?) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return calendarEventID == nil && (trimmed.isEmpty || trimmed == "Meeting")
+    }
+
     static func plan(for meeting: MeetingRecord) -> MeetingResummarizationPlan {
         let trimmed = meeting.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let promptTitle = trimmed.isEmpty ? "Meeting" : trimmed
@@ -6086,15 +6095,30 @@ public final class MuesliController: NSObject {
                     participantNames: participantNames,
                     openRouterAPIKeyOverride: openRouterKey
                 )
+                let generatedTitle: String?
+                if MeetingResummarizationPolicy.shouldGenerateTitle(for: meeting) {
+                    generatedTitle = await MeetingSummaryClient.generateTitle(
+                        transcript: meeting.rawTranscript,
+                        manualNotes: meeting.manualNotes,
+                        config: summaryConfig,
+                        openRouterAPIKeyOverride: openRouterKey
+                    )
+                } else {
+                    generatedTitle = nil
+                }
+                let candidateTitle = generatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let titleToSave = candidateTitle.flatMap { $0.isEmpty ? nil : $0 } ?? plan.persistedTitle
+                self.flushCachedMeetingTitle(id: meeting.id)
                 do {
                     try self.dictationStore.updateMeetingSummary(
                         id: meeting.id,
-                        title: plan.persistedTitle,
+                        title: titleToSave,
                         formattedNotes: notes,
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        replacingTitleIfUnchanged: meeting.title
                     )
                 } catch {
                     throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
