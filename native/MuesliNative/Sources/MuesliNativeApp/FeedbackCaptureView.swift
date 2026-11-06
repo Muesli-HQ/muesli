@@ -86,7 +86,7 @@ struct FeedbackCaptureView: View {
                         }
                     }
                     HStack {
-                        Text(selected.title).font(.headline)
+                        Text(selected.title).font(MuesliTheme.font(size: 15, weight: .semibold))
                         Text(Date(timeIntervalSince1970: selected.createdAt).formatted()).foregroundStyle(.secondary)
                         Spacer()
                         Text(String(format: "%d:%02d", selected.durationMs / 60_000, (selected.durationMs / 1000) % 60)).monospacedDigit()
@@ -96,7 +96,7 @@ struct FeedbackCaptureView: View {
                         VStack(alignment: .leading, spacing: 8) { copyButtons(selected) }
                     }
                     .foregroundStyle(MuesliTheme.accentText)
-                    if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
+                    if let copyMessage { Text(copyMessage).font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary) }
                     Text("Paste support varies by destination app.")
                         .font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary)
                     if videoURL != nil && audioURL != nil {
@@ -152,7 +152,7 @@ struct FeedbackCaptureView: View {
                                                     .accessibilityLabel("Frame \(frame.index)")
                                             } else { Label("Frame unavailable", systemImage: "photo").frame(width: 220) }
                                             VStack(alignment: .leading, spacing: 6) {
-                                                Text(String(format: "#%d · %d:%02d", frame.index, frame.t / 60_000, (frame.t / 1000) % 60)).font(.headline)
+                                                Text(String(format: "#%d · %d:%02d", frame.index, frame.t / 60_000, (frame.t / 1000) % 60)).font(MuesliTheme.font(size: 15, weight: .semibold))
                                                 Text(frame.said.isEmpty ? "No narration for this frame" : frame.said)
                                             }.frame(maxWidth: .infinity, alignment: .leading)
                                         }
@@ -169,7 +169,7 @@ struct FeedbackCaptureView: View {
                         }.textSelection(.enabled)
                     }
                     if (manifest?.state ?? selected.state) != .ready {
-                        Text((manifest?.state ?? selected.state).rawValue.capitalized).font(.headline)
+                        Text((manifest?.state ?? selected.state).rawValue.capitalized).font(MuesliTheme.font(size: 15, weight: .semibold))
                     }
                     HStack {
                         Button("Show in Finder") {
@@ -181,7 +181,7 @@ struct FeedbackCaptureView: View {
                     if manifest?.audio == nil, manifest?.video != nil, manifest?.transcript?.missing != nil { Text("Narration unavailable").foregroundStyle(.secondary) }
                     if manifest?.video == nil, manifest?.audio != nil { Text("Audio only · video unavailable").foregroundStyle(.secondary) }
                     ForEach(Array((manifest?.failures ?? []).enumerated()), id: \.offset) { _, failure in
-                        Text("\(failure.stage): \(failure.message)").font(.caption).foregroundStyle(.orange)
+                        Text("\(failure.stage): \(failure.message)").font(MuesliTheme.font(size: 12)).foregroundStyle(.orange)
                     }
 
                 } else if !loading {
@@ -193,10 +193,11 @@ struct FeedbackCaptureView: View {
                 }
                 if let state = controller.state, controller.hasAttempt { Text(state.title).foregroundStyle(.secondary) }
                 if let message { Text(message).foregroundStyle(.orange) }
-                if let error = controller.errorMessage { Text(error).font(.caption).foregroundStyle(.orange) }
+                if let error = controller.errorMessage { Text(error).font(MuesliTheme.font(size: 12)).foregroundStyle(.orange) }
             }
             .padding(24)
         }
+        .font(MuesliTheme.font(size: 14))
         .task(id: "\(selected?.id ?? "none")-\(selected?.state.rawValue ?? "none")-\(controller.hasAttempt)-\(controller.recoveryRevision)") {
             loading = true; player?.pause(); player = nil; manifest = nil; message = nil; bundleURL = nil
             videoURL = nil; audioURL = nil; mode = "Screen"

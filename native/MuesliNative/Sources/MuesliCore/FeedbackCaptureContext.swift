@@ -7,6 +7,8 @@ public struct FeedbackCaptureWordRange: Codable, Equatable, Sendable {
 public struct FeedbackCaptureKeyframe: Codable, Equatable, Sendable {
     public var index: Int
     public var t: Int64
+    /// Capture-clock action time used to assign narration; nil in older manifests.
+    public var narrationAnchor: Int64?
     public var reason: String
     public var file: String
     public var eventIndex: Int?
@@ -15,8 +17,8 @@ public struct FeedbackCaptureKeyframe: Codable, Equatable, Sendable {
     /// Consecutive half-open indexes into transcript.words, independent of decoded frame time.
     public var saidRange: FeedbackCaptureWordRange
     public init(index: Int, t: Int64, reason: String, file: String, eventIndex: Int? = nil, markId: String? = nil,
-                said: String, saidRange: FeedbackCaptureWordRange) {
-        self.index = index; self.t = t; self.reason = reason; self.file = file
+                said: String, saidRange: FeedbackCaptureWordRange, narrationAnchor: Int64? = nil) {
+        self.index = index; self.t = t; self.narrationAnchor = narrationAnchor; self.reason = reason; self.file = file
         self.markId = markId; self.eventIndex = eventIndex; self.said = said; self.saidRange = saidRange
     }
 }
@@ -315,7 +317,27 @@ public enum FeedbackCaptureContext {
             let range = rangesByDisplayOrder[index]
             return .init(index: index + 1, t: candidate.time, reason: candidate.reason,
                 file: String(format: "frames/frame-%02d.png", index + 1), eventIndex: candidate.eventIndex, markId: candidate.markIds.first,
-                said: transcript.words[range.from..<range.to].map(\.text).joined(separator: " "), saidRange: range)
+                said: transcript.words[range.from..<range.to].map(\.text).joined(separator: " "), saidRange: range,
+                narrationAnchor: candidate.anchor)
+        }
+    }
+    /// Reassign narration in action order while keeping frames in display order.
+    /// Older captures did not persist anchors; recover event and mark starts where
+    /// available, falling back to the displayed frame time for other candidates.
+    public static func reassignNarration(_ manifest: inout FeedbackCaptureManifest, transcript: FeedbackCaptureTranscript) {
+        let anchors = manifest.keyframes.map { frame -> Int64 in
+            if let anchor = frame.narrationAnchor { return anchor }
+            if let index = frame.eventIndex, manifest.events.indices.contains(index) { return manifest.events[index].t }
+            if let id = frame.markId, let mark = manifest.marks.first(where: { $0.id == id }) { return mark.t0 }
+            return frame.t
+        }
+        let order = anchors.indices.sorted { anchors[$0] == anchors[$1] ? $0 < $1 : anchors[$0] < anchors[$1] }
+        let ranges = partition(transcript: transcript, anchors: order.map { anchors[$0] })
+        for (position, index) in order.enumerated() {
+            let range = ranges[position]
+            manifest.keyframes[index].narrationAnchor = anchors[index]
+            manifest.keyframes[index].saidRange = range
+            manifest.keyframes[index].said = transcript.words[range.from..<range.to].map(\.text).joined(separator: " ")
         }
     }
     private static func stamp(_ t: Int64) -> String {

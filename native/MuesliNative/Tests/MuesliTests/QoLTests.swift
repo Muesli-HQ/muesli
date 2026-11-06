@@ -884,7 +884,11 @@ struct FloatingIndicatorPointerInteractionTests {
         config.indicatorAnchor = .topTrailing
         store.save(config)
         indicator.ensureVisible(config: config)
-        try await Task.sleep(for: .milliseconds(650))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline,
+              indicator.currentFrame?.size != compact.size || indicator.currentFrame?.contains(pointer) != false {
+            try await Task.sleep(for: .milliseconds(25))
+        }
         #expect(indicator.currentFrame?.size == compact.size)
         #expect(indicator.currentFrame?.contains(pointer) == false)
     }

@@ -90,6 +90,48 @@ struct FeedbackCaptureFinalizerTests {
         }
     }
 
+    @Test func retryKeepsNarrationInActionOrderAcrossFrameOrder() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var capture = try store.begin(target: feedbackTarget())
+            capture.audio = "narration.wav"
+            capture.transcript = .unavailable("model unavailable")
+            capture.state = .ready
+            capture.events = [.drag(t: 1000, t1: 5000, x0: 0.1, y0: 0.1, x1: 0.8, y1: 0.8)]
+            let words: [FeedbackCaptureTranscript.Span] = [
+                .init(t0: 0, t1: 100, text: "Before."), .init(t0: 500, t1: 600, text: "Start."),
+                .init(t0: 1200, t1: 1300, text: "Moving."), .init(t0: 2200, t1: 2300, text: "Settled."),
+                .init(t0: 5000, t1: 5100, text: "Done.")
+            ]
+            let transcript = FeedbackCaptureTranscript(source: "fixture", text: words.map(\.text).joined(separator: " "),
+                words: words, segments: [], estimated: false)
+            let candidates = [
+                FeedbackCaptureContext.Candidate(anchor: 0, time: 0, reason: "initial", eventIndex: nil, score: 1),
+                FeedbackCaptureContext.Candidate(anchor: 2000, time: 2300, reason: "scene_change", eventIndex: nil, score: 1),
+                FeedbackCaptureContext.Candidate(anchor: 1000, time: 5250, reason: "drag", eventIndex: 0, score: 1)
+            ]
+            capture.keyframes = FeedbackCaptureContext.keyframes(candidates, transcript: nil)
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: store.mediaURL(id: capture.id, path: "narration.wav"))
+            try store.publish(capture); store.release(id: capture.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root, observeSystem: false)
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in transcript }]
+            try await controller.retryTranscription(id: capture.id)
+            let frames = try store.manifest(id: capture.id).keyframes
+            #expect(frames.map(\.said) == ["Before. Start.", "Settled. Done.", "Moving."])
+            #expect(frames.map(\.narrationAnchor) == [0, 2000, 1000])
+
+            // A pre-anchor manifest can recover an event's start from eventIndex.
+            var legacyJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(capture)) as? [String: Any])
+            var legacyFrames = try #require(legacyJSON["keyframes"] as? [[String: Any]])
+            for index in legacyFrames.indices { legacyFrames[index].removeValue(forKey: "narrationAnchor") }
+            legacyJSON["keyframes"] = legacyFrames
+            var legacy = try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONSerialization.data(withJSONObject: legacyJSON))
+            #expect(legacy.keyframes.allSatisfy { $0.narrationAnchor == nil })
+            FeedbackCaptureContext.reassignNarration(&legacy, transcript: transcript)
+            #expect(legacy.keyframes.map(\.narrationAnchor) == [0, 2300, 1000])
+            #expect(legacy.keyframes[2].said.contains("Moving."))
+        }
+    }
+
     @Test func clipboardCanCarryVideoAndContextAsTwoFiles() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -197,7 +239,9 @@ struct FeedbackCaptureContextFinalizerTests {
             let pasteboard = NSPasteboard.withUniqueName(); defer { pasteboard.releaseGlobally() }
             let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: pasteboard.changeCount)
             var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
-            finalizer.prepareThumbnails = FeedbackCaptureFinalizer.prepareContextThumbnails
+            finalizer.prepareThumbnails = { manifest, context in
+                try await FeedbackCaptureFinalizer.prepareContextThumbnails(manifest, context: context, timeout: .seconds(30))
+            }
             let captureID = m.id
             finalizer.stages.append(FeedbackCaptureFinalizer.copyStage(pasteboard: pasteboard, load: { url in
                 // Copy must observe the durable ready manifest, after publication removed the journal.

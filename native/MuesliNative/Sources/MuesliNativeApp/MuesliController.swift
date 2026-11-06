@@ -611,7 +611,9 @@ public final class MuesliController: NSObject {
             }
             try await stage.run(&manifest, context)
         })
-        capture.finalizer.prepareThumbnails = FeedbackCaptureFinalizer.prepareContextThumbnails
+        capture.finalizer.prepareThumbnails = { manifest, context in
+            try await FeedbackCaptureFinalizer.prepareContextThumbnails(manifest, context: context)
+        }
         capture.finalizer.stages += FeedbackCaptureFinalizer.contextStages()
         capture.finalizer.stages.append(FeedbackCaptureFinalizer.copyStage())
         capture.onAdmissionReset = { [weak self] in self?.feedbackCaptureHotkeyMonitor.cancelToggleMode() }

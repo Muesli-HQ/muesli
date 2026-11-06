@@ -302,11 +302,11 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
     }
 }
 extension FeedbackCaptureFinalizer {
-    static func prepareContextThumbnails(_ manifest: FeedbackCaptureManifest, context: Context) async throws -> [FeedbackCaptureContext.Thumbnail] {
+    static func prepareContextThumbnails(_ manifest: FeedbackCaptureManifest, context: Context, timeout: Duration = .seconds(5)) async throws -> [FeedbackCaptureContext.Thumbnail] {
         guard let video = manifest.video else { return [] }
         let url = try context.store.mediaURL(id: manifest.id, path: video)
         let cancellation = FeedbackCaptureDecodeCancellation()
-        return try await FeedbackCaptureMediaJob<[FeedbackCaptureContext.Thumbnail]>().run(timeout: .seconds(5), cancel: cancellation.cancel) {
+        return try await FeedbackCaptureMediaJob<[FeedbackCaptureContext.Thumbnail]>().run(timeout: timeout, cancel: cancellation.cancel) {
             try await FeedbackCaptureMediaLimiter.thumbnails.perform {
                 try await FeedbackCaptureRenderer.thumbnails(url: url, videoOffsetMs: manifest.videoOffsetMs ?? 0, cancellation: cancellation)
             }

@@ -685,7 +685,7 @@ coordinates track its current bounds. Legacy display captures use the display.
 Events are tagged
 `click`, `drag`, or `scroll`, with capture-relative millisecond times. Keyframes
 store `index`, decoded capture time `t`, `reason`, relative `file`, optional
-`eventIndex`, `said`, and a half-open `saidRange {from,to}` into transcript words.
+`eventIndex`, optional `narrationAnchor`, `said`, and a half-open `saidRange {from,to}` into transcript words. `narrationAnchor` preserves the action time independently of the decoded frame time. Retry of older manifests reconstructs event/mark anchors where possible and otherwise uses the saved frame time.
 Malformed optional sidecars are tolerated independently: rebuildable `events`,
 `keyframes`, and `contactSheet` fall back to empty or nil, while malformed
 `inputGaps` entries are skipped individually.

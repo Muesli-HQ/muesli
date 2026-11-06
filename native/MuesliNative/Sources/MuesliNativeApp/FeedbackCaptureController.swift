@@ -648,12 +648,7 @@ final class FeedbackCaptureController {
               !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ScreenVideoRecorder.error(updated.transcript?.missing?.reason ?? "No text was recognized. The narration is still available.")
         }
-        let ranges = FeedbackCaptureContext.partition(transcript: transcript, anchors: updated.keyframes.map(\.t))
-        for index in updated.keyframes.indices where ranges.indices.contains(index) {
-            let range = ranges[index]
-            updated.keyframes[index].saidRange = range
-            updated.keyframes[index].said = transcript.words[range.from..<range.to].map(\.text).joined(separator: " ")
-        }
+        FeedbackCaptureContext.reassignNarration(&updated, transcript: transcript)
         let final = updated
         let worker = Task.detached(priority: .utility) {
             try Task.checkCancellation()

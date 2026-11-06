@@ -304,7 +304,7 @@ public enum FeedbackCaptureRenderer {
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.addPath(CGPath(roundedRect: chip, cornerWidth: 7, cornerHeight: 7, transform: nil)); context.fillPath()
         let text = NSAttributedString(string: "\(index)", attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 22, nil),
+            NSAttributedString.Key(kCTFontAttributeName as String): AppFonts.bold(22),
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1)
         ])
         let line = CTLineCreateWithAttributedString(text)
@@ -333,7 +333,7 @@ public enum FeedbackCaptureRenderer {
             context.strokeEllipse(in: CGRect(x: p.x - 15, y: p.y - 15, width: 30, height: 30))
             context.fillEllipse(in: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20))
             let text = NSAttributedString(string: "\(pin)", attributes: [
-                NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica-Bold" as CFString, 12, nil),
+                NSAttributedString.Key(kCTFontAttributeName as String): AppFonts.bold(12),
                 NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
             ])
             let line = CTLineCreateWithAttributedString(text)
