@@ -189,6 +189,7 @@ final class NotchIndicatorController {
     private(set) var cursorInsertionStopped = false
     private var paused = false
     private var meeting = false
+    private(set) var meetingStatus: String?
     private var handsFree = false
     private var activationID = 0
     private var completionID = 0
@@ -280,11 +281,16 @@ final class NotchIndicatorController {
     private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
 
     private let pointerLocation: () -> NSPoint
+    private let scheduleOutcomeDismissal: (TimeInterval, DispatchWorkItem) -> Void
 
     init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
-         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) {
+         pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
+         scheduleOutcomeDismissal: @escaping (TimeInterval, DispatchWorkItem) -> Void = { duration, work in
+             DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+         }) {
         self.pointerLocation = pointerLocation
         self.resolveGeometry = resolveGeometry
+        self.scheduleOutcomeDismissal = scheduleOutcomeDismissal
     }
     var onReview: (() -> Void)?
     var onOpenHome: (() -> Void)?
@@ -309,7 +315,7 @@ final class NotchIndicatorController {
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
               toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
-              cursorInsertionStopped: Bool = false, renderImmediately: Bool = true) -> Bool {
+              meetingStatus: String? = nil, cursorInsertionStopped: Bool = false, renderImmediately: Bool = true) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         let continuesStatus = status != nil && self.status == status && isVisible
         quillAnswer = nil
@@ -349,6 +355,7 @@ final class NotchIndicatorController {
         self.geometry = geometry
         self.title = title
         self.detail = detail
+        self.meetingStatus = meetingStatus
         self.recording = recording
         self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
         self.paused = paused
@@ -491,7 +498,7 @@ final class NotchIndicatorController {
         if let duration = outcome.duration {
             let work = DispatchWorkItem { [weak self] in self?.hide() }
             dismissActivity = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+            scheduleOutcomeDismissal(duration, work)
         }
         return true
     }
@@ -536,7 +543,8 @@ final class NotchIndicatorController {
         panel.setFrame(frame, display: true)
         let view = NotchIndicatorView(geometry: geometry, active: visibility.active, activationID: activationID,
             completionID: completionID, handsFree: handsFree, accent: accent,
-            title: title, detail: detail, recording: recording, paused: paused, meeting: meeting, icon: icon,
+            title: title, detail: detail, recording: recording, paused: paused, meeting: meeting,
+            meetingStatus: meetingStatus, icon: icon,
             onCancel: { [weak self] in self?.cancelOrDismiss() },
             onToggleMeetingPause: { [weak self] in self?.onToggleMeetingPause?() },
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
@@ -761,6 +769,7 @@ private struct NotchIndicatorView: View {
     let recording: Bool
     let paused: Bool
     let meeting: Bool
+    let meetingStatus: String?
     let icon: NSImage
     let onCancel: () -> Void
     let onToggleMeetingPause: () -> Void
@@ -812,13 +821,16 @@ private struct NotchIndicatorView: View {
                                 .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
                             if cursorInsertionStopped {
                                 Text("Still recording").font(MuesliTheme.font(size: 9))
+                            } else if let meetingStatus {
+                                Text(meetingStatus == "Meeting recording" ? "Meeting on" : meetingStatus)
+                                    .font(MuesliTheme.font(size: 9)).foregroundStyle(.secondary)
                             }
                         }.lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). Open muesli home")
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). \(meetingStatus.map { $0 + ". " } ?? "")Open muesli home")
                 .help(cursorInsertionStopped ? detail : "Open muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {
@@ -876,7 +888,7 @@ private struct NotchIndicatorView: View {
                         Button(action: onStopRecording) {
                             Image(systemName: "stop.fill").font(.system(size: 10))
                                 .frame(width: 20, height: 22)
-                        }.accessibilityLabel("Finish instruction recording")
+                        }.accessibilityLabel(meetingStatus == nil ? "Finish instruction recording" : "Finish dictation")
                     }
                     Button(action: onCancel) {
                         Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
@@ -888,8 +900,8 @@ private struct NotchIndicatorView: View {
                             .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5) }
                             .contentShape(Circle())
                     }
-                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : "Cancel activity"))
-                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
+                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : (meetingStatus == nil ? "Cancel activity" : "Cancel dictation")))
+                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : (meetingStatus == nil ? "Cancel · Esc" : "Cancel dictation")))
                 }
             }
             .padding(.horizontal, 6)

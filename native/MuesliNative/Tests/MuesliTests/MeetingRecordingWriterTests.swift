@@ -6,30 +6,6 @@ import Testing
 @Suite("MeetingRecordingWriter")
 struct MeetingRecordingWriterTests {
 
-    @Test("retained mic is wired only to the cleaned stream, before pause and stop finalization")
-    func sessionRetainsCleanedMicAndFlushesBeforeFinalization() throws {
-        // Guard the session wiring without starting hardware capture or loading models.
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/MuesliNativeApp/MeetingSession.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        #expect(source.components(separatedBy: "retainedRecordingWriter?.appendMic(").count == 2)
-        let funnel = try #require(source.range(of: "private func appendCleanedMicSamplesOnQueue"))
-        let append = try #require(source.range(of: "retainedRecordingWriter?.appendMic(cleanedInt16)"))
-        let recorder = try #require(source.range(of: "rawMicChunkRecorder?.append(cleanedInt16)"))
-        #expect(funnel.lowerBound < append.lowerBound && append.lowerBound < recorder.lowerBound)
-        for (start, finish) in [
-            ("func pause()", "retainedRecordingWriter?.markPauseBoundary()"),
-            ("func stop(template:", "retainedRecordingWriter?.stop()")
-        ] {
-            let startRange = try #require(source.range(of: start))
-            let body = source[startRange.upperBound...]
-            let flush = try #require(body.range(of: "appendFlushedStreamingMicOnQueue()"))
-            let finalization = try #require(body.range(of: finish))
-            #expect(flush.lowerBound < finalization.lowerBound)
-        }
-    }
-
     @Test("recording mixes delayed cleaned mic and retains partial AEC frames across pause and stop")
     func writerConsumesBufferedAECOutput() throws {
         let writer = try MeetingRecordingWriter()

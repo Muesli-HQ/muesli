@@ -177,6 +177,21 @@ struct MeetingResummarizationPlan: Equatable {
 }
 
 enum MeetingResummarizationPolicy {
+    static func shouldGenerateTitle(for meeting: MeetingRecord) -> Bool {
+        shouldGenerateTitle(title: meeting.title, calendarEventID: meeting.calendarEventID)
+    }
+
+    static func shouldGenerateTitle(title: String, calendarEventID: String?) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return calendarEventID == nil && (trimmed.isEmpty || trimmed == "Meeting")
+    }
+
+    static func titleToPersist(original: String, generated: String?, hasPendingRename: Bool) -> String {
+        guard !hasPendingRename, let generated = generated?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !generated.isEmpty else { return original }
+        return generated
+    }
+
     static func plan(for meeting: MeetingRecord) -> MeetingResummarizationPlan {
         let trimmed = meeting.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let promptTitle = trimmed.isEmpty ? "Meeting" : trimmed
@@ -438,7 +453,7 @@ public final class MuesliController: NSObject {
             self?.indicator.hideLoading()
         }
     )
-    private let hotkeyMonitor = HotkeyMonitor()
+    private var hotkeyMonitor = HotkeyMonitor()
     private let computerUseHotkeyMonitor = HotkeyMonitor()
     private let quilHotkeyMonitor = HotkeyMonitor()
     private let meetingRecordingHotkeyMonitor = HotkeyMonitor()
@@ -644,6 +659,8 @@ public final class MuesliController: NSObject {
     }
     var dictationBackendReadiness: DictationBackendReadiness { dictationBackendPreparation.readiness }
     private var dictationStartedAt: Date?
+    private var dictationCaptureSessionID: UUID?
+    private var meetingDictationExclusions: [UUID: (session: MeetingSession, token: UUID)] = [:]
     private var hostedDictationSession: (any HostedDictationSession)?
     private var finalizingHostedDictationSession: (
         id: UUID,
@@ -3596,7 +3613,7 @@ public final class MuesliController: NSObject {
         guard dictationBackendPreparation.owns(preparation),
               !selectedDictationProvider.isHosted else { return false }
         if BodhanModel(rawValue: backend.model) != nil || backend.backend == "whisper" || (backend.backend == "gemma4-litert" && GemmaNativeAudioPolicy.isEnabled(for: .e2b)) {
-            indicator.showLoading("Preparing \(backend.label)… Mic off")
+            indicator.showLoading("Preparing \(backend.label)… Dictation mic off")
         }
         do {
             try await transcriptionCoordinator.preloadRequired(
@@ -5992,7 +6009,10 @@ public final class MuesliController: NSObject {
     }
 
     private func currentOnboardingPermissionSnapshot() -> OnboardingPermissionSnapshot {
-        OnboardingPermissionSnapshot(
+        #if DEBUG
+        if let testingPermissionSnapshot { return testingPermissionSnapshot }
+        #endif
+        return OnboardingPermissionSnapshot(
             microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(),
@@ -6498,15 +6518,33 @@ public final class MuesliController: NSObject {
                 participantNames: participantNames,
                 openRouterAPIKeyOverride: openRouterKey
             )
+            let generatedTitle: String?
+            if MeetingResummarizationPolicy.shouldGenerateTitle(for: meeting) {
+                generatedTitle = await MeetingSummaryClient.generateTitle(
+                    transcript: meeting.rawTranscript,
+                    manualNotes: meeting.manualNotes,
+                    config: summaryConfig,
+                    openRouterAPIKeyOverride: openRouterKey
+                )
+            } else {
+                generatedTitle = nil
+            }
+            try Task.checkCancellation()
+            flushCachedMeetingTitle(id: meeting.id)
+            let titleToSave = MeetingResummarizationPolicy.titleToPersist(
+                original: plan.persistedTitle, generated: generatedTitle,
+                hasPendingRename: liveMeetingTitleCache[meeting.id] != nil
+            )
             do {
                 try dictationStore.updateMeetingSummary(
                     id: meeting.id,
-                    title: plan.persistedTitle,
+                    title: titleToSave,
                     formattedNotes: notes,
                     selectedTemplateID: templateSnapshot.id,
                     selectedTemplateName: templateSnapshot.name,
                     selectedTemplateKind: templateSnapshot.kind,
-                    selectedTemplatePrompt: templateSnapshot.prompt
+                    selectedTemplatePrompt: templateSnapshot.prompt,
+                    replacingTitleIfUnchanged: meeting.title
                 )
             } catch {
                 throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
@@ -8738,7 +8776,7 @@ public final class MuesliController: NSObject {
         endMeetingActivity()
         meetingMonitor.resumeAfterCooldown()
         meetingMonitor.refreshState()
-        setState(.idle)
+        if !isInteractiveAudioActivityInProgress { setState(.idle) }
         statusBarController?.refresh()
         syncAppState()
         updateMeetingNotificationVisibility()
@@ -9879,6 +9917,7 @@ public final class MuesliController: NSObject {
         }
         statusBarController?.setStatus(status)
         if state == .preparing {
+            if isMeetingRecording() { indicator.setDictationState(state, config: config) }
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self, self.dictationState == .preparing else { return }
                 self.indicator.setPreparingWaveformWaiting(config: self.config)
@@ -9886,7 +9925,7 @@ public final class MuesliController: NSObject {
             pendingPreparingIndicatorWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
         } else {
-            indicator.setState(state, config: config)
+            indicator.setDictationState(state, config: config)
         }
     }
 
@@ -9903,7 +9942,11 @@ public final class MuesliController: NSObject {
     }
 
     private var canBeginDictationInteraction: Bool {
-        !isClearingDictationHistory && DictationStartAdmissionPolicy.allowsStart(
+        guard pendingDictationStopSessionID == nil else {
+            hotkeyMonitor.cancelCurrentSession()
+            return false
+        }
+        return !isClearingDictationHistory && DictationStartAdmissionPolicy.allowsStart(
             dictationState: dictationState,
             isMeetingAudioProcessing: isMeetingAudioProcessing
         )
@@ -9911,7 +9954,7 @@ public final class MuesliController: NSObject {
 
     private var shouldIgnoreCleanupAfterBlockedDictationStart: Bool {
         DictationStartAdmissionPolicy.shouldIgnoreCleanupAfterBlockedStart(
-            hasStartedRecording: dictationStartedAt != nil,
+            hasStartedRecording: dictationStartedAt != nil || dictationAudioSessionManager.hasActiveSession,
             isStreaming: isNemotron35Streaming,
             dictationState: dictationState,
             isMeetingAudioProcessing: isMeetingAudioProcessing
@@ -11856,6 +11899,9 @@ public final class MuesliController: NSObject {
     }
 
     private func nativePreparationPlan(forQuill: Bool = false) -> GemmaPreparationPlan {
+        #if DEBUG
+        if let testingPreparationPlan { return testingPreparationPlan }
+        #endif
         guard GemmaNativeAudioPolicy.isEnabled(for: .e2b) else {
             return GemmaPreparationPlan(dictation: nil, cleanup: nil, quill: nil)
         }
@@ -11890,9 +11936,16 @@ public final class MuesliController: NSObject {
         let appleSpeechLanguage = config.resolvedAppleSpeechLanguage
         let cleanupOption = cachedCleanupOption()
         let cleanupConfig = config
+        let activity = indicator.activityRevision
+        func ownsFeedback() -> Bool {
+            nativePreparationPlan(forQuill: forQuill).key == plan.key && dictationState == .idle && indicator.activityRevision == activity
+        }
         var cleanupPreparationFailed = false
         let allowed = nativeRecordingGate.request(plan, prepare: { [weak self] in
             guard let self else { throw CancellationError() }
+            #if DEBUG
+            if let testingPrepareModels { cleanupPreparationFailed = try await !testingPrepareModels(); return }
+            #endif
             if plan.additionalPreparationKey != nil {
                 try await self.transcriptionCoordinator.preloadRequired(
                     backend: localBackend, enablePostProcessor: false, includeMeetingHelpers: false,
@@ -11901,8 +11954,8 @@ public final class MuesliController: NSObject {
             }
             if plan.localCleanupKey != nil, let cleanupOption {
                 guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else { throw CancellationError() }
-                let message = "Preparing \(cleanupOption.label)… Mic off"
-                if self.dictationState == .idle && !self.isMeetingRecording() {
+                let message = "Preparing \(cleanupOption.label)… Dictation mic off"
+                if ownsFeedback() {
                     self.indicator.showLoading(message, preferNotch: forQuill)
                     self.statusBarController?.setStatus(message)
                 }
@@ -11918,8 +11971,7 @@ public final class MuesliController: NSObject {
             try await self.transcriptionCoordinator.prepareNativeGemmaModels(plan) { [weak self] message in
                 Task { @MainActor in
                     guard let self, self.nativeRecordingGate.pendingKey == plan.key,
-                          self.nativePreparationPlan(forQuill: forQuill).key == plan.key,
-                          self.dictationState == .idle, !self.isMeetingRecording() else { return }
+                          ownsFeedback() else { return }
                     self.indicator.showLoading(message, preferNotch: forQuill)
                     self.statusBarController?.setStatus(message)
                 }
@@ -11928,9 +11980,10 @@ public final class MuesliController: NSObject {
             guard let self else { return }
             guard self.nativePreparationPlan(forQuill: forQuill).key == plan.key else {
                 self.nativeRecordingGate.invalidate()
-                self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
+                if self.indicator.activityRevision == activity { self.indicator.hideLoading(restoreIdlePresentation: !forQuill) }
                 return
             }
+            guard ownsFeedback() else { return }
             guard (forQuill && self.quillUsesDirectAudio) || self.dictationBackendReadiness.allowsDictation else {
                 if let message = self.dictationBackendReadiness.blockingMessage(backendLabel: self.selectedBackend.label) {
                     self.statusBarController?.setStatus(message)
@@ -11943,22 +11996,18 @@ public final class MuesliController: NSObject {
                 return
             }
             self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
-            if self.dictationState == .idle && !self.isMeetingRecording() {
-                if cleanupPreparationFailed {
-                    self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
-                    self.indicator.showWarning("Dictation ready — cleanup unavailable", icon: "!", duration: 4, preferNotch: forQuill)
-                } else {
-                    self.statusBarController?.setStatus("Models ready")
-                    self.indicator.showSuccess("Ready — start recording", duration: 3, preferNotch: forQuill)
-                }
+            if cleanupPreparationFailed {
+                self.statusBarController?.setStatus("Dictation ready; cleanup unavailable")
+                self.indicator.showWarning("Dictation ready. Cleanup unavailable.", icon: "!", duration: 4, preferNotch: forQuill)
+            } else {
+                self.statusBarController?.setStatus("Models ready")
+                self.indicator.showSuccess("Ready to record", duration: 3, preferNotch: forQuill)
             }
         }, failed: { [weak self] error in
-            guard let self else { return }
+            guard let self, ownsFeedback() else { return }
             self.indicator.hideLoading(restoreIdlePresentation: !forQuill)
-            if self.dictationState == .idle && !self.isMeetingRecording() {
-                self.statusBarController?.setStatus("Model preparation failed")
-                self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4, preferNotch: forQuill)
-            }
+            self.statusBarController?.setStatus("Model preparation failed")
+            self.indicator.showWarning("Model preparation failed. Try again.", icon: "!", duration: 4, preferNotch: forQuill)
             fputs("[gemma-preparation] failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         })
         if !allowed, !isInteractiveAudioActivityInProgress,
@@ -11966,8 +12015,8 @@ public final class MuesliController: NSObject {
             indicator.isToggleDictation = false
             quilHotkeyMonitor.cancelToggleMode()
             hotkeyMonitor.cancelToggleMode()
-            if dictationState == .idle && !isMeetingRecording() {
-                indicator.showLoading("Preparing models… Mic off", preferNotch: forQuill)
+            if ownsFeedback() {
+                indicator.showLoading("Preparing models… Dictation mic off", preferNotch: forQuill)
             }
         }
         return allowed
@@ -12027,6 +12076,24 @@ public final class MuesliController: NSObject {
         return false
     }
 
+    private func beginMeetingDictationExclusion() -> (session: MeetingSession, token: UUID)? {
+        guard let session = activeMeetingSession else { return nil }
+        return (session, session.beginMicrophoneExclusion())
+    }
+
+    private func endMeetingDictationExclusion(sessionID: UUID?) {
+        guard let sessionID else { return }
+        if let exclusion = meetingDictationExclusions.removeValue(forKey: sessionID) {
+            exclusion.session.endMicrophoneExclusion(exclusion.token)
+        }
+        if dictationCaptureSessionID == sessionID { dictationCaptureSessionID = nil }
+    }
+
+    private func resumeMeetingDetectionAfterDictation() {
+        if meetingCapture != nil { meetingMonitor.suppressWhileActive() }
+        else { meetingMonitor.resumeAfterCooldown() }
+    }
+
     private func handlePrepare() {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction,
@@ -12034,7 +12101,6 @@ public final class MuesliController: NSObject {
                   pastesText: defaultDictationOutputMode == .paste,
                   isDictationTest: isDictationTestMode) == nil else { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         fputs("[muesli-native] prepare\n", stderr)
         if dictationLatencyTraceID == nil {
@@ -12048,7 +12114,9 @@ public final class MuesliController: NSObject {
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
             setState(.preparing)
-            activeDictationAudioSessionID = dictationAudioSessionManager.arm(source: "hotkey_prepare")
+            let sessionID = dictationAudioSessionManager.arm(source: "hotkey_prepare")
+            dictationCaptureSessionID = sessionID
+            activeDictationAudioSessionID = sessionID
         }
     }
 
@@ -12056,7 +12124,6 @@ public final class MuesliController: NSObject {
         if shouldRejectDictationForComputerUseActivity() { return }
         guard canBeginDictationInteraction else { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "hotkey")
@@ -12066,7 +12133,9 @@ public final class MuesliController: NSObject {
             meetingMonitor.suppressWhileActive()
             meetingMonitor.refreshState()
             if !dictationAudioSessionManager.hasActiveSession {
-                activeDictationAudioSessionID = dictationAudioSessionManager.arm(source: "hotkey_arm")
+                let sessionID = dictationAudioSessionManager.arm(source: "hotkey_arm")
+                dictationCaptureSessionID = sessionID
+                activeDictationAudioSessionID = sessionID
             }
         }
     }
@@ -12204,7 +12273,8 @@ public final class MuesliController: NSObject {
     }
 
     private var shouldPlayDictationLifecycleSounds: Bool {
-        shouldPlayLifecycleSounds(enabled: config.soundEnabled)
+        !isMeetingRecording() && meetingDictationExclusions.isEmpty
+            && shouldPlayLifecycleSounds(enabled: config.soundEnabled)
     }
 
     private var shouldPlayQuilLifecycleSounds: Bool {
@@ -12342,20 +12412,29 @@ public final class MuesliController: NSObject {
             presentMicrophoneStartupWarning(id, owner: .dictation, manager: dictationAudioSessionManager)
         case .armed:
             break
-        case .acquiringAudio(let id):
-            guard dictationAudioSessionManager.currentSessionID == id,
+        case .acquiringAudio(let sessionID):
+            guard dictationCaptureSessionID == sessionID,
+                  dictationAudioSessionManager.currentSessionID == sessionID,
                   !dictationAudioSessionManager.isRetiringStartup else { break }
             markDictationLatency("acquiring_audio")
             activateDictationPreparingIndicator()
-        case .streamActive(let id, let capturedAt):
-            guard dictationAudioSessionManager.currentSessionID == id,
+        case .streamActive(let sessionID, let capturedAt):
+            guard dictationCaptureSessionID == sessionID,
+                  dictationAudioSessionManager.currentSessionID == sessionID,
                   !dictationAudioSessionManager.isRetiringStartup else { break }
             handleDictationStreamActive(capturedAt: capturedAt)
-        case .speechDetected(_, let capturedAt):
+        case .speechDetected(let sessionID, let capturedAt):
+            guard dictationCaptureSessionID == sessionID,
+                  dictationAudioSessionManager.currentSessionID == sessionID,
+                  !dictationAudioSessionManager.isRetiringStartup else { break }
             handleDictationSpeechDetected(capturedAt: capturedAt)
-        case .noAudioTimeout:
+        case .noAudioTimeout(let sessionID, _):
+            guard dictationCaptureSessionID == sessionID,
+                  dictationAudioSessionManager.currentSessionID == sessionID,
+                  !dictationAudioSessionManager.isRetiringStartup else { break }
             statusBarController?.setStatus("Mic waiting for speech")
         case .stopped(let eventSessionID, let wavURL):
+            endMeetingDictationExclusion(sessionID: eventSessionID)
             guard pendingDictationStopSessionID == eventSessionID else {
                 fputs("[muesli-native] ignoring stale stopped event\n", stderr)
                 if let wavURL {
@@ -12382,11 +12461,11 @@ public final class MuesliController: NSObject {
             // Reuse the insert cue as the hotkey-release cue once ducked audio has
             // been restored; waiting for transcription would make release feedback lag.
             SoundController.playDictationInsert(enabled: shouldPlayDictationLifecycleSounds)
-        case .cancelled:
-            break
+        case .cancelled(let sessionID, _):
+            endMeetingDictationExclusion(sessionID: sessionID)
         case .failed(let eventSessionID, let error):
-            // Session ownership outlives capture: a later take may already be
-            // transcribing with no active manager hint when this event arrives.
+            endMeetingDictationExclusion(sessionID: eventSessionID)
+            // A later take may already be transcribing when this event arrives.
             guard let eventSessionID, activeDictationAudioSessionID == eventSessionID,
                   computerUseCommandStartedAt == nil, quilStartedAt == nil,
                   !isNemotron35Streaming else { break }
@@ -12412,7 +12491,7 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.cancelToggleMode()
             indicator.setToggleDictation(false, config: config)
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
+            resumeMeetingDetectionAfterDictation()
             meetingMonitor.refreshState()
             finishDictationLatencyTrace("audio_session_failed")
             if let startupError = error as? DictationMicrophoneStartupError {
@@ -12813,6 +12892,50 @@ public final class MuesliController: NSObject {
     }
 
     #if DEBUG
+    var testingPermissionSnapshot: OnboardingPermissionSnapshot?
+    var testingPreparationPlan: GemmaPreparationPlan?
+    var testingPrepareModels: (() async throws -> Bool)?
+    var testingIndicator: FloatingIndicatorController { indicator }
+    var testingMeetingExclusionCount: Int { meetingDictationExclusions.count }
+    func testingWaitForModels() async { await nativeRecordingGate.waitForPreparation() }
+    var testingBeforeNemotronStart: (() async throws -> Void)?
+    func testingInstallDictationCapture(_ manager: DictationAudioSessionManager, meeting: MeetingSession?,
+                                        hotkey: HotkeyMonitor) {
+        hotkeyMonitor = hotkey
+        hotkey.onArm = { [weak self] in self?.handleArm() }
+        hotkey.onPrepare = { [weak self] in self?.handlePrepare() }
+        hotkey.onStart = { [weak self] in self?.handleStart() }
+        hotkey.onStop = { [weak self] in self?.handleStop() }
+        hotkey.onCancel = { [weak self] in self?.handleCancel() }
+        dictationAudioSessionManager = manager
+        meetingCapture = meeting.map { (1, $0) }
+        if let meeting {
+            let owner = ObjectIdentifier(meeting)
+            meeting.onCaptureQuiesced = { [weak self] in
+                Task { @MainActor in self?.completeMeetingCaptureShutdown(owner: owner) }
+            }
+        }
+        manager.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handleDictationAudioSessionEvent(event) }
+        }
+    }
+
+    func testingDictationAction(_ action: String) {
+        switch action {
+        case "models-ready":
+            _ = dictationBackendPreparation.begin(isHosted: true)
+            _ = ensureNativeModelsReady()
+        case "meeting-restart": cancelDictationAudioSessionForMeetingRecordingIfNeeded()
+        case "prepare": handlePrepare()
+        case "arm": handleArm()
+        case "start": handleStart()
+        case "toggle": _ = handleToggleStart()
+        case "stop": handleStop()
+        case "discard-meeting": discardMeetingRecording()
+        default: handleCancel()
+        }
+    }
+
     func setDictationAudioSessionForTesting(_ id: UUID?) {
         activeDictationAudioSessionID = id
     }
@@ -12906,9 +13029,9 @@ public final class MuesliController: NSObject {
         guard canBeginDictationInteraction else { return }
         guard ensureRecordingAccess(pastesText: defaultDictationOutputMode == .paste) else { return }
         guard ensureDictationBackendReady() else { return }
-        if isMeetingRecording() { return }
         if blockDictationForMeetingActivityIfNeeded() { return }
         guard beginHostedDictationIfNeeded() else { return }
+        let exclusion = beginMeetingDictationExclusion()
 
         // Nemotron backends support hold-to-talk (record → transcribe on release) in
         // addition to double-tap handsfree streaming. The hold path uses the normal
@@ -12923,20 +13046,27 @@ public final class MuesliController: NSObject {
         clearCapturedDictationSessionContext()
         captureDictationCorrectionTargetApp()
         setState(.preparing)
-        activeDictationAudioSessionID = dictationAudioSessionManager.beginRecording(
+        let sessionID = dictationAudioSessionManager.beginRecording(
             mode: "hold-start",
-            duckingEnabled: config.muteSystemAudioDuringDictation,
-            mediaPauseEnabled: config.pauseMediaDuringDictation
+            duckingEnabled: config.muteSystemAudioDuringDictation && !isMeetingRecording(),
+            mediaPauseEnabled: config.pauseMediaDuringDictation && !isMeetingRecording(),
+            captureInterval: exclusion.map { exclusion in { exclusion.session.endMicrophoneExclusion(exclusion.token) } }
         )
+        dictationCaptureSessionID = sessionID
+        activeDictationAudioSessionID = sessionID
     }
 
     @available(macOS 15, *)
     private func startNemotronStreamingAsync(
         sessionID: UUID
     ) {
+        let exclusion = meetingDictationExclusions[sessionID]
         Task {
             let transcriber: Nemotron35StreamingTranscriber
             do {
+                #if DEBUG
+                if let testingBeforeNemotronStart { try await testingBeforeNemotronStart() }
+                #endif
                 await transcriptionCoordinator.setNemotron35PromptId(config.resolvedNemotron35Language.promptId)
                 transcriber = try await transcriptionCoordinator.getLoadedNemotron35Transcriber()
             } catch {
@@ -12970,6 +13100,8 @@ public final class MuesliController: NSObject {
                     }
                 }
                 controller.onFailure = { [weak self] error in
+                    // The recorder has cancelled capture before invoking this callback.
+                    if let exclusion { exclusion.session.endMicrophoneExclusion(exclusion.token) }
                     DispatchQueue.main.async {
                         self?.handleNemotronStreamingRuntimeFailure(error: error, sessionID: sessionID)
                     }
@@ -12990,6 +13122,7 @@ public final class MuesliController: NSObject {
 
     @MainActor
     private func handleNemotronStreamingStartFailure() {
+        endMeetingDictationExclusion(sessionID: nemotron35StreamingSessionID)
         fputs("[muesli-native] Nemotron streaming controller failed to start\n", stderr)
         if !isDictationTestMode {
             recordDiagnosticIncident(
@@ -13009,7 +13142,7 @@ public final class MuesliController: NSObject {
         indicator.setToggleDictation(false, config: config)
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingDetectionAfterDictation()
         meetingMonitor.refreshState()
         finishDictationLatencyTrace("nemotron_start_failed")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
@@ -13018,6 +13151,7 @@ public final class MuesliController: NSObject {
     @MainActor
     private func handleNemotronStreamingRuntimeFailure(error: Error, sessionID: UUID) {
         guard isNemotron35Streaming, nemotron35StreamingSessionID == sessionID else { return }
+        endMeetingDictationExclusion(sessionID: sessionID)
         fputs("[muesli-native] Nemotron streaming failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         let hasBufferedPartial = buffersStreamingDictation
             && !previousStreamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -13053,7 +13187,7 @@ public final class MuesliController: NSObject {
         indicator.setToggleDictation(false, config: config)
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingDetectionAfterDictation()
         meetingMonitor.refreshState()
         finishDictationLatencyTrace("nemotron_runtime_failed")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
@@ -13066,7 +13200,6 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.cancelToggleMode()
             return
         }
-        if isMeetingRecording() { return }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         let isCancellingTranscription = dictationState == .transcribing
             && dictationTranscriptionTask != nil
@@ -13084,11 +13217,13 @@ public final class MuesliController: NSObject {
             if #available(macOS 15, *), let sdc = _streamingDictationController as? StreamingDictationController {
                 sdc.cancel()
             }
+            endMeetingDictationExclusion(sessionID: nemotron35StreamingSessionID)
             _streamingDictationController = nil
             nemotron35StreamingSessionID = nil
             previousStreamText = ""
         }
 
+        dictationCaptureSessionID = nil
         activeDictationAudioSessionID = nil
         dictationAudioSessionManager.cancel(reason: "user-cancel")
         clearCapturedDictationSessionContext()
@@ -13097,7 +13232,7 @@ public final class MuesliController: NSObject {
         pendingDictationStopStartedAt = nil
         pendingReleaseSoundSessionID = nil
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingDetectionAfterDictation()
         meetingMonitor.refreshState()
         finishDictationLatencyTrace("cancelled")
         syncDictationRecorderWarmup(intent: .postDictation(.cancel))
@@ -13109,9 +13244,9 @@ public final class MuesliController: NSObject {
         guard canBeginDictationInteraction else { return false }
         guard ensureRecordingAccess(pastesText: (outputMode ?? defaultDictationOutputMode) == .paste) else { return false }
         guard ensureDictationBackendReady() else { return false }
-        if isMeetingRecording() { return false }
         if blockDictationForMeetingActivityIfNeeded() { return false }
         guard beginHostedDictationIfNeeded() else { return false }
+        let exclusion = beginMeetingDictationExclusion()
         fputs("[muesli-native] toggle dictation start\n", stderr)
         if dictationLatencyTraceID == nil {
             beginDictationLatencyTrace(reason: "toggle")
@@ -13132,13 +13267,15 @@ public final class MuesliController: NSObject {
                 nemotron35StreamingSessionID = sessionID
                 previousStreamText = ""
                 dictationStartedAt = Date()
+                dictationCaptureSessionID = sessionID
+                if let exclusion { meetingDictationExclusions[sessionID] = exclusion }
                 markDictationLatency("sound_start_requested:nemotron-toggle")
                 SoundController.playDictationStart(enabled: shouldPlayDictationLifecycleSounds && !isDictationTestMode)
                 activeDictationAudioSessionID = nil
                 dictationAudioSessionManager.beginExternalSession(
                     source: "nemotron-toggle",
-                    duckingEnabled: config.muteSystemAudioDuringDictation,
-                    mediaPauseEnabled: config.pauseMediaDuringDictation
+                    duckingEnabled: config.muteSystemAudioDuringDictation && !isMeetingRecording(),
+                    mediaPauseEnabled: config.pauseMediaDuringDictation && !isMeetingRecording()
                 )
                 meetingMonitor.refreshState()
                 fputs("[muesli-native] Nemotron streaming toggle mode active\n", stderr)
@@ -13150,11 +13287,14 @@ public final class MuesliController: NSObject {
         }
 
         beginBufferedDictationIfNeeded()
-        activeDictationAudioSessionID = dictationAudioSessionManager.beginRecording(
+        let sessionID = dictationAudioSessionManager.beginRecording(
             mode: "toggle",
-            duckingEnabled: config.muteSystemAudioDuringDictation,
-            mediaPauseEnabled: config.pauseMediaDuringDictation
+            duckingEnabled: config.muteSystemAudioDuringDictation && !isMeetingRecording(),
+            mediaPauseEnabled: config.pauseMediaDuringDictation && !isMeetingRecording(),
+            captureInterval: exclusion.map { exclusion in { exclusion.session.endMicrophoneExclusion(exclusion.token) } }
         )
+        dictationCaptureSessionID = sessionID
+        activeDictationAudioSessionID = sessionID
         return true
     }
 
@@ -13173,8 +13313,8 @@ public final class MuesliController: NSObject {
     }
 
     /// Hands-free dictation start for Shortcuts/App Intents. No-op (returns
-    /// false) if dictation is already active or a meeting is recording or
-    /// still starting, mirroring the admission guards the hotkey path uses.
+    /// false) if dictation is already active or meeting capture is transitioning,
+    /// mirroring the admission guards the hotkey path uses.
     @discardableResult
     public func startDictationForShortcuts() -> Bool {
         guard config.hasCompletedOnboarding,
@@ -13182,7 +13322,6 @@ public final class MuesliController: NSObject {
               !isInteractiveAudioActivityInProgress,
               !dictationAudioSessionManager.hasActiveSession,
               canBeginDictationInteraction,
-              !isMeetingRecording(),
               !isStartingMeetingRecording else { return false }
         return handleToggleStart()
     }
@@ -13236,15 +13375,15 @@ public final class MuesliController: NSObject {
             hotkeyMonitor.cancelToggleMode()
             return
         }
-        if isMeetingRecording() {
-            cancelDictationAudioSessionForMeetingRecordingIfNeeded()
-            return
-        }
         if shouldIgnoreDictationCleanupForComputerUseActivity() { return }
         if shouldIgnoreCleanupAfterBlockedDictationStart {
             fputs("[muesli-native] ignoring dictation stop because start was blocked\n", stderr)
             return
         }
+        // Finish owns the held gesture as well as the pending WAV. A later
+        // key release or repeated Finish must not detach that pending stop.
+        hotkeyMonitor.cancelCurrentSession()
+        guard pendingDictationStopSessionID == nil else { return }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
@@ -13254,6 +13393,7 @@ public final class MuesliController: NSObject {
         if isNemotron35Streaming {
             let sessionID = nemotron35StreamingSessionID
             if #available(macOS 15, *), let controller = _streamingDictationController as? StreamingDictationController {
+                setState(.transcribing)
                 controller.stop { [weak self] finalText in
                     DispatchQueue.main.async {
                         self?.finishNemotronStreamingStop(
@@ -13271,8 +13411,8 @@ public final class MuesliController: NSObject {
                     sessionID: sessionID
                 )
             }
+            endMeetingDictationExclusion(sessionID: sessionID)
             dictationAudioSessionManager.endExternalSession(reason: "nemotron-stop")
-            setState(.transcribing)
             return
         }
 
@@ -13307,6 +13447,7 @@ public final class MuesliController: NSObject {
             if #available(macOS 15, *), let controller = _streamingDictationController as? StreamingDictationController {
                 controller.cancel()
             }
+            endMeetingDictationExclusion(sessionID: nemotron35StreamingSessionID)
             _streamingDictationController = nil
             nemotron35StreamingSessionID = nil
             previousStreamText = ""
@@ -13332,7 +13473,6 @@ public final class MuesliController: NSObject {
         finishDictationLatencyTrace("meeting_active_cancel")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
     }
-
     private func finishNemotronStreamingStop(
         finalText: String,
         startedAt: Date,
@@ -13398,7 +13538,7 @@ public final class MuesliController: NSObject {
         clearCapturedDictationSessionContext()
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingDetectionAfterDictation()
         fputs("[muesli-native] Nemotron streaming done (\(String(format: "%.1f", duration))s)\n", stderr)
         if hadStreamingInsertion { indicator.showDictationCompletion() }
         finishDictationLatencyTrace("nemotron_stop")
@@ -13520,7 +13660,7 @@ public final class MuesliController: NSObject {
         clearCapturedDictationSessionContext()
         resetDictationOutputMode()
         setState(.idle)
-        meetingMonitor.resumeAfterCooldown()
+        resumeMeetingDetectionAfterDictation()
         syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
     }
 
@@ -13605,7 +13745,7 @@ public final class MuesliController: NSObject {
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
+            resumeMeetingDetectionAfterDictation()
             finishDictationLatencyTrace("stop_without_wav")
             syncDictationRecorderWarmup(intent: .postDictation(.stopWithoutWav))
             return
@@ -13623,7 +13763,7 @@ public final class MuesliController: NSObject {
             clearCapturedDictationSessionContext()
             resetDictationOutputMode()
             setState(.idle)
-            meetingMonitor.resumeAfterCooldown()
+            resumeMeetingDetectionAfterDictation()
             finishDictationLatencyTrace("short_recording")
             syncDictationRecorderWarmup(intent: .postDictation(.shortRecording))
             return
@@ -13797,7 +13937,7 @@ public final class MuesliController: NSObject {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
-                        self.meetingMonitor.resumeAfterCooldown()
+                        self.resumeMeetingDetectionAfterDictation()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                         self.finishDictationLatencyTrace("test_completed", trace: completionLatencyTrace)
                     }
@@ -13815,7 +13955,7 @@ public final class MuesliController: NSObject {
                         self.clearCapturedDictationSessionContext()
                         self.resetDictationOutputMode()
                         self.setState(.idle)
-                        self.meetingMonitor.resumeAfterCooldown()
+                        self.resumeMeetingDetectionAfterDictation()
                         self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionComplete))
                         self.finishDictationLatencyTrace("empty_transcription", trace: completionLatencyTrace)
                         if liveContext?.target.hasAttemptedWrite == true {
@@ -13915,7 +14055,7 @@ public final class MuesliController: NSObject {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
+                    self.resumeMeetingDetectionAfterDictation()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionCancelled))
                     self.finishDictationLatencyTrace("transcription_cancelled", trace: completionLatencyTrace)
                 }
@@ -14007,7 +14147,7 @@ public final class MuesliController: NSObject {
                     self.clearCapturedDictationSessionContext()
                     self.resetDictationOutputMode()
                     self.setState(.idle)
-                    self.meetingMonitor.resumeAfterCooldown()
+                    self.resumeMeetingDetectionAfterDictation()
                     self.syncDictationRecorderWarmup(intent: .postDictation(.transcriptionFailed))
                     self.finishDictationLatencyTrace("transcription_failed", trace: completionLatencyTrace)
                     if liveContext?.target.hasAttemptedWrite == true {

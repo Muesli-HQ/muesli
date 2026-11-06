@@ -951,9 +951,9 @@ struct FloatingIndicatorPointerInteractionTests {
         indicator.onStopMeeting = { stopCount += 1 }
         indicator.onToggleMeetingPause = { pauseCount += 1 }
         indicator.onDiscardMeeting = { discardCount += 1 }
+        indicator.powerProvider = { -24 }
         indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(paused, config: config)
-        indicator.powerProvider = { -24 }
         // Wait for the real idle-to-recording AppKit transition before hover.
         try await Task.sleep(for: .milliseconds(350))
         indicator.setHovered(true)
@@ -1034,8 +1034,10 @@ struct FloatingIndicatorPointerInteractionTests {
             paused.toggle()
             indicator.setMeetingRecordingPaused(paused, config: config)
         }
-        indicator.setMeetingRecording(true, config: config)
         indicator.powerProvider = { -24 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Warming up dictation")
+        indicator.hideLoading()
         try await Task.sleep(for: .milliseconds(350))
         let originalFrame = try #require(indicator.currentFrame)
         for _ in 0..<6 {
@@ -1055,7 +1057,6 @@ struct FloatingIndicatorPointerInteractionTests {
             // Dictation cleanup and warmup share this presentation controller.
             indicator.setState(.idle, config: config)
             indicator.setState(.transcribing, config: config)
-            indicator.showLoading("Warming up dictation")
             indicator.closeIfIdle()
             #expect(transcript.superview === root)
             #expect(!transcript.isHidden)
@@ -1090,9 +1091,9 @@ struct FloatingIndicatorPointerInteractionTests {
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var pauseCount = 0
         indicator.onToggleMeetingPause = { pauseCount += 1 }
+        indicator.powerProvider = { -24 }
         indicator.setMeetingRecording(true, config: config)
         indicator.setMeetingRecordingPaused(paused, config: config)
-        indicator.powerProvider = { -24 }
         try await Task.sleep(for: .milliseconds(350))
         indicator.setHovered(true)
         let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
