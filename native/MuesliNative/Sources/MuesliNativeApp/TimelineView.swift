@@ -314,7 +314,10 @@ struct TimelineView: View {
         case .vidshot(let record):
             TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
                 revision: appState.timelineHistoryRevision, playingID: $playingVidshotID,
-                onSelect: { controller.feedbackCapture.open(id: record.id) },
+                onSelect: {
+                    appState.selectedVidshotID = record.id
+                    appState.selectedTab = .vidshots
+                },
                 onCopy: { await controller.feedbackCapture.copy(id: record.id) },
                 onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
         }
@@ -335,7 +338,59 @@ struct TimelineView: View {
     }
 }
 
-private struct TimelineVidshotRow: View {
+struct VidshotsPage: View {
+    let appState: AppState
+    let controller: MuesliController
+    @State private var playingID: String?
+
+    var body: some View {
+        let records = controller.feedbackCapture.records
+        if let id = appState.selectedVidshotID {
+            FeedbackCaptureView(controller: controller.feedbackCapture, selectedID: id,
+                onBack: { appState.selectedVidshotID = nil })
+                .id(id)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                    Text("Vidshots").font(MuesliTheme.font(size: 26, weight: .bold))
+                        .padding(.horizontal, MuesliTheme.pageInset)
+                    if records.isEmpty {
+                        ContentUnavailableView {
+                            Label { Text("No Vidshots yet") } icon: { VidshotIcon().frame(width: 36, height: 36) }
+                        } description: {
+                            Text("Record a window or screen region to create a Vidshot.")
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 250)
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                                if index == 0 || !Calendar.current.isDate(
+                                    Date(timeIntervalSince1970: record.createdAt),
+                                    inSameDayAs: Date(timeIntervalSince1970: records[index - 1].createdAt)) {
+                                    Text(Date(timeIntervalSince1970: record.createdAt).formatted(date: .abbreviated, time: .omitted))
+                                        .font(MuesliTheme.font(size: 12, weight: .semibold))
+                                        .foregroundStyle(MuesliTheme.textSecondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, MuesliTheme.pageInset)
+                                        .padding(.top, MuesliTheme.spacing16)
+                                }
+                                TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
+                                    revision: appState.timelineHistoryRevision, playingID: $playingID,
+                                    onSelect: { appState.selectedVidshotID = record.id },
+                                    onCopy: { await controller.feedbackCapture.copy(id: record.id) },
+                                    onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
+                            }
+                        }
+                    }
+                }
+                .padding(.top, MuesliTheme.spacing20)
+            }
+            .task { await controller.feedbackCapture.reload() }
+        }
+    }
+}
+
+struct TimelineVidshotRow: View {
     let record: FeedbackCaptureRecord
     let store: FeedbackCaptureStore?
     let revision: UInt64
@@ -360,21 +415,27 @@ private struct TimelineVidshotRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
-            Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .frame(width: 80, alignment: .leading).padding(.top, 2)
+            Button(action: onSelect) {
+                Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 80, alignment: .leading).padding(.top, 2)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("Open Vidshot recorded \(Date(timeIntervalSince1970: record.createdAt).formatted())")
             VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                 HStack(spacing: MuesliTheme.spacing8) {
-                    VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
-                    Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
-                    if !appName.isEmpty {
-                        Text(appName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
-                    }
-                    Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
-                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                    Button(action: onSelect) {
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
+                            Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
+                            if !appName.isEmpty {
+                                Text(appName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
+                            }
+                            Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
+                                .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                    }.buttonStyle(.plain).accessibilityHint("Open Vidshot")
                     Spacer(minLength: 0)
-                    Button("Open", action: onSelect)
                     HStack(spacing: 2) {
                         if copyConfirmation != nil {
                             Text("Copied").font(MuesliTheme.captionMedium())
@@ -433,9 +494,12 @@ private struct TimelineVidshotRow: View {
                             }
                         }.buttonStyle(.plain).disabled(videoURL == nil).accessibilityLabel("Play Vidshot")
                     }
-                    Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
-                        .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
-                        .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                    Button(action: onSelect) {
+                        Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
+                            .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
+                            .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityHint("Open Vidshot")
                 }
             }
         }
@@ -446,7 +510,13 @@ private struct TimelineVidshotRow: View {
             Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
                 .padding(.horizontal, MuesliTheme.spacing20)
         }
-        .contentShape(Rectangle())
+        .background {
+            Button(action: onSelect) {
+                Rectangle().fill(Color.black.opacity(0.001)).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+        }
         .onHover { hovering in
             withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { isHovered = hovering }
         }

@@ -6,6 +6,7 @@ enum DashboardTab: String, CaseIterable {
     case timeline
     case timeTurner
     case dictations
+    case vidshots
     case insights
     case meetings
     case meetingChat
@@ -364,6 +365,7 @@ final class AppState {
     }
 
     var selectedTab: DashboardTab = .timeline
+    var selectedVidshotID: String?
     var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline

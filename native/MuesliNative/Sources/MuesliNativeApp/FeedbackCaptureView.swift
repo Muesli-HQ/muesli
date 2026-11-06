@@ -43,6 +43,7 @@ struct FeedbackCaptureView: View {
     }
     let controller: FeedbackCaptureController
     @State var selectedID: String?
+    var onBack: (() -> Void)? = nil
     @State private var manifest: FeedbackCaptureManifest?
     @State private var player: AVPlayer?
     @State private var mode = "Screen"
@@ -65,11 +66,17 @@ struct FeedbackCaptureView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if loading { ProgressView("Loading captures…") }
                 if let selected {
-                    HStack(spacing: 8) {
-                        VidshotIcon().frame(width: 16, height: 16).foregroundStyle(MuesliTheme.accentText)
-                        Picker("Capture", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
-                            ForEach(controller.records) { record in
-                                Text("\(record.title) · \(Date(timeIntervalSince1970: record.createdAt).formatted())").tag(record.id)
+                    if let onBack {
+                        Button(action: onBack) {
+                            Label("Vidshots", systemImage: "chevron.left")
+                        }.buttonStyle(.plain)
+                    } else {
+                        HStack(spacing: 8) {
+                            VidshotIcon().frame(width: 16, height: 16).foregroundStyle(MuesliTheme.accentText)
+                            Picker("Capture", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
+                                ForEach(controller.records) { record in
+                                    Text("\(record.title) · \(Date(timeIntervalSince1970: record.createdAt).formatted())").tag(record.id)
+                                }
                             }
                         }
                     }
@@ -83,8 +90,9 @@ struct FeedbackCaptureView: View {
                         HStack { copyButtons(selected) }
                         VStack(alignment: .leading, spacing: 8) { copyButtons(selected) }
                     }
+                    .foregroundStyle(MuesliTheme.accentText)
                     if let copyMessage { Text(copyMessage).font(.caption).foregroundStyle(.secondary) }
-                    Text("To paste an attachment, use Copy video or Copy image. Paste behavior depends on the destination app.")
+                    Text("Paste support varies by destination app.")
                         .font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary)
                     if videoURL != nil && audioURL != nil {
                         Picker("Media", selection: $mode) {
@@ -155,7 +163,9 @@ struct FeedbackCaptureView: View {
                             }
                         }.textSelection(.enabled)
                     }
-                    Text(manifest?.state.rawValue.capitalized ?? selected.state.rawValue.capitalized).font(.headline)
+                    if (manifest?.state ?? selected.state) != .ready {
+                        Text((manifest?.state ?? selected.state).rawValue.capitalized).font(.headline)
+                    }
                     HStack {
                         Button("Show in Finder") {
                             if let url = bundleURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
@@ -217,7 +227,7 @@ struct FeedbackCaptureView: View {
                 Task {
                     do {
                         try await controller.delete(id: id)
-                        if selectedID == id { selectedID = nil }
+                        if selectedID == id { selectedID = nil; onBack?() }
                     }
                     catch { message = error.localizedDescription }
                 }
@@ -226,13 +236,17 @@ struct FeedbackCaptureView: View {
         }
     }
     @ViewBuilder private func copyButtons(_ selected: FeedbackCaptureRecord) -> some View {
-        Button("Copy context") { copy(selected.id) }
+        Button { copy(selected.id) } label: { Label("Context", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy context")
             .disabled(loading || activeWriter || !summaryAvailable)
-        Button("Copy image") { copy(selected.id, imageOnly: true) }
+        Button { copy(selected.id, imageOnly: true) } label: { Label("Image", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy image")
             .disabled(loading || activeWriter || contactSheet == nil)
-        Button("Copy video") { copy(selected.id, video: true) }
+        Button { copy(selected.id, video: true) } label: { Label("Video", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy video")
             .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
-        Button("Copy video + context files") { copy(selected.id, videoAndContextFiles: true) }
+        Button { copy(selected.id, videoAndContextFiles: true) } label: { Label("Video + context files", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy video and context files")
             .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
     }
     private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false, videoAndContextFiles: Bool = false) {
