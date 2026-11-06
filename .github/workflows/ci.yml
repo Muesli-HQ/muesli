@@ -395,6 +395,30 @@ jobs:
       - name: Run test shard
         run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
 
+      - name: Collect core test crash reports
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          destination="${RUNNER_TEMP}/core-test-crashes"
+          mkdir -p "$destination"
+          for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [[ -d "$directory" ]]; then
+              find "$directory" -maxdepth 1 -type f -mmin -30 \
+                \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
+                   -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
+                -exec cp {} "$destination/" \;
+            fi
+          done
+
+      - name: Upload core test crash reports
+        if: failure() && matrix.shard == 'core'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-crashes
+          path: ${{ runner.temp }}/core-test-crashes/
+          if-no-files-found: ignore
+          retention-days: 3
+
   m5-tests:
     name: m5-macos ${{ github.sha }}
     needs: changes
