@@ -359,8 +359,18 @@ struct VidshotsPage: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
-                    Text("Vidshots").font(MuesliTheme.font(size: 26, weight: .bold))
-                        .padding(.horizontal, MuesliTheme.pageInset)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: MuesliTheme.spacing16) {
+                            vidshotsTitle
+                            Spacer(minLength: MuesliTheme.spacing16)
+                            recordingButton
+                        }
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                            vidshotsTitle
+                            recordingButton
+                        }
+                    }
+                    .padding(.horizontal, MuesliTheme.pageInset)
                     if records.isEmpty {
                         ContentUnavailableView {
                             Label { Text("No Vidshots yet") } icon: { VidshotIcon().frame(width: 36, height: 36) }
@@ -397,6 +407,36 @@ struct VidshotsPage: View {
             }
             .task { await controller.feedbackCapture.reload() }
         }
+    }
+
+    private var vidshotsTitle: some View {
+        Text("Vidshots")
+            .font(MuesliTheme.font(size: 26, weight: .bold))
+            .foregroundStyle(MuesliTheme.textPrimary)
+    }
+
+    private var recordingButton: some View {
+        let isRecording = controller.feedbackCapture.ownsMicrophone
+        return Button {
+            controller.toggleFeedbackCapture()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isRecording ? "stop.fill" : "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(isRecording ? "Finish Vidshot" : "Start Vidshot")
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.muesli(.primary))
+        .disabled(!controller.config.enableFeedbackCapture && !isRecording)
+        .help(!controller.config.enableFeedbackCapture && !isRecording
+            ? "Enable Vidshot in Settings to start recording"
+            : (isRecording ? "Finish recording" : "Start a Vidshot"))
+        .accessibilityIdentifier("vidshots.record")
+        .fixedSize()
     }
 }
 
