@@ -76,6 +76,12 @@ and a Manage permissions action; returning refreshes permission state.
 
 ### Recording interactions
 
+While dictating during a meeting, the floating indicator contracts to 190×36pt:
+“Dictating” sits above “Meeting recording” or “Meeting paused”, followed by the
+waveform and distinct Finish dictation and Cancel dictation controls. Preparing
+and transcribing use the same meeting-status line. A stopped live-insertion
+warning takes precedence over the dictation label. The notch uses the same copy.
+
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
 meeting headers move the status above the controls rather than compressing them.
 

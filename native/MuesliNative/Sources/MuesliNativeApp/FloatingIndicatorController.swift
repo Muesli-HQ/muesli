@@ -936,7 +936,7 @@ final class FloatingIndicatorController: NSObject {
             switch state {
             case .idle: title = "muesli"
             case .preparing: title = microphoneStartupPending ? "Connecting" : (hasDictationOverlap ? "Preparing dictation" : "Preparing")
-            case .recording: title = insertionStopReason?.compactTitle ?? (hasDictationOverlap ? "Listening" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")))
+            case .recording: title = insertionStopReason?.compactTitle ?? (hasDictationOverlap ? "Dictating" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")))
             case .transcribing: title = instructionMode == .quill ? "Quill" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
@@ -1732,30 +1732,40 @@ final class FloatingIndicatorController: NSObject {
             label: hasDictationOverlap ? "Finish dictation" : "Stop meeting recording",
             x: hasDictationOverlap ? size.width - 54 : size.width - 23, action: #selector(stopMeetingFromPill))
         if overlapMeetingStatus != nil {
-            meetingDiscardButton?.frame = NSRect(x: size.width - 30, y: 9, width: 22, height: 22)
-            meetingStopButton?.frame = NSRect(x: size.width - 54, y: 9, width: 20, height: 22)
+            meetingDiscardButton?.frame = NSRect(x: size.width - 30, y: 0, width: 28, height: size.height)
+            meetingStopButton?.frame = NSRect(x: size.width - 56, y: 0, width: 26, height: size.height)
             meetingStopButton?.isHidden = state != .recording
         }
     }
 
+    static let dictationOverlapSize = NSSize(width: 190, height: 36)
+
+    static func dictationOverlapLabelFrame(in size: NSSize, secondary: Bool) -> NSRect {
+        NSRect(x: 8, y: secondary ? 6 : size.height - 16, width: size.width - 98, height: secondary ? 12 : 14)
+    }
+
     private func layoutDictationOverlap(in size: NSSize) {
         guard let status = overlapMeetingStatus, let contentView, let textLabel, let detail = iconLabel else { return }
-        textLabel.stringValue = meetingFeedbackMessage ?? (state == .preparing ? "Preparing dictation" : (state == .recording ? "Listening" : "Transcribing"))
-        textLabel.font = .systemFont(ofSize: 10, weight: .semibold)
-        textLabel.textColor = .white
-        textLabel.frame = NSRect(x: 8, y: 22, width: 123, height: 12)
+        textLabel.stringValue = meetingFeedbackMessage ?? (state == .preparing ? "Preparing" : (state == .recording ? (insertionStopReason?.compactTitle ?? "Dictating") : "Transcribing"))
+        configureTextLabelForTranscript(false)
+        textLabel.alignment = .left
+        textLabel.font = AppFonts.font(size: 11, weight: .semibold)
+        textLabel.textColor = cursorInsertionStopped ? .systemYellow : .white
+        textLabel.toolTip = cursorInsertionStopped ? insertionStoppedDetail : nil
+        textLabel.setAccessibilityLabel(cursorInsertionStopped ? insertionStoppedDetail : textLabel.stringValue)
+        textLabel.frame = Self.dictationOverlapLabelFrame(in: size, secondary: false)
         textLabel.isHidden = false
         textLabel.alphaValue = 1
         detail.alignment = .left
         detail.stringValue = status
-        detail.font = .systemFont(ofSize: 8)
+        detail.font = AppFonts.font(size: 9, weight: .medium)
         detail.textColor = .white.withAlphaComponent(0.7)
-        detail.frame = NSRect(x: 8, y: 10, width: 123, height: 10)
+        detail.frame = Self.dictationOverlapLabelFrame(in: size, secondary: true)
         detail.isHidden = false
         wandIconView?.isHidden = true
         if state == .transcribing {
             ensureLoadingSpinner(in: contentView)
-            loadingSpinner?.frame = NSRect(x: 140, y: 12, width: 16, height: 16)
+            loadingSpinner?.frame = NSRect(x: size.width - 79, y: (size.height - 16) / 2, width: 16, height: 16)
             loadingSpinner?.isHidden = false
             loadingSpinner?.startAnimation(nil)
         }
@@ -2617,7 +2627,7 @@ final class FloatingIndicatorController: NSObject {
         }
         let size: NSSize
         if overlapMeetingStatus != nil {
-            size = NSSize(width: 220, height: 40)
+            size = hasDictationOverlap ? Self.dictationOverlapSize : NSSize(width: 220, height: 40)
         } else { switch state {
         case .idle:
             if config.indicatorHoverStyle == .shortcutPill {

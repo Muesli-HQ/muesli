@@ -108,7 +108,19 @@ struct NotchIndicatorTests {
             #expect(indicator.recordingWaveformMode == .waiting)
             indicator.setDictationState(.preparing, config: config)
             #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
-            let bounds = CGRect(x: 0, y: 0, width: 220, height: 40)
+            let size = FloatingIndicatorController.dictationOverlapSize
+            let bounds = CGRect(origin: .zero, size: size)
+            let primary = FloatingIndicatorController.dictationOverlapLabelFrame(in: size, secondary: false)
+            let secondary = FloatingIndicatorController.dictationOverlapLabelFrame(in: size, secondary: true)
+            #expect(!primary.intersects(secondary))
+            for title in ["Preparing", "Dictating", "Transcribing", "Cursor stopped", "Live text stopped"] {
+                let width = (title as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .semibold)]).width
+                #expect(width <= primary.width, "Overlap title must fit: \(title)")
+            }
+            for title in ["Meeting recording", "Meeting paused"] {
+                let width = (title as NSString).size(withAttributes: [.font: AppFonts.font(size: 9, weight: .medium)]).width
+                #expect(width <= secondary.width, "Meeting status must fit: \(title)")
+            }
             let initial = (0..<5).map { indicator.standingWaveformFrame(index: $0, amplitude: 1 / 11, bounds: bounds) }
             for waiting in [false, true] {
                 for value: CGFloat in [0, 0.5, 1] {
@@ -117,7 +129,7 @@ struct NotchIndicatorTests {
                         let amplitude = waiting ? 0.28 + (sin(value * 5.8 + CGFloat(index) * 0.72) + 1) * 0.22 * weight : value * weight
                         return indicator.standingWaveformFrame(index: index, amplitude: amplitude, bounds: bounds)
                     }
-                    #expect(frames.allSatisfy { $0.minX >= 135 && $0.maxX <= 166 }, "Bars must stay between the labels and controls")
+                    #expect(frames.allSatisfy { $0.minX >= primary.maxX && $0.maxX <= size.width - 56 }, "Bars must stay between the labels and controls")
                     #expect(frames.map(\.minX) == initial.map(\.minX))
                 }
             }
