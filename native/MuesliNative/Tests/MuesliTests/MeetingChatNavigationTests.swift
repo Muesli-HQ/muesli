@@ -10,15 +10,18 @@ struct MeetingChatNavigationTests {
         let (controller, _, _) = try controllerFixture()
         let chat = controller.meetingChatCoordinator
         #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
         await chat.createChat(scope: MeetingChatScopePolicy.empty)
         let session = try #require(chat.selectedSessionID)
         chat.composerDraft = "Keep this unsent question"
         chat.showIndex()
         #expect(chat.composerDraft.isEmpty)
         #expect(chat.hasUnsentComposerContent)
+        #expect(controller.permissionRestartActivity.unsentChat)
         chat.selectChat(id: session)
         chat.composerDraft = ""
         #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
 
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("restart-draft-\(UUID()).md")
         try "Synthetic restart fixture".write(to: file, atomically: true, encoding: .utf8)
@@ -26,11 +29,15 @@ struct MeetingChatNavigationTests {
         await chat.attachFiles([file])
         #expect(chat.composerFiles.count == 1)
         #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
         chat.startDraft()
         await chat.attachFiles([file])
         #expect(chat.hasUnsentComposerContent)
+        #expect(controller.permissionRestartActivity.unsentChat)
         chat.startDraft()
+        #expect(controller.storedMeetingChatCoordinator === chat)
         #expect(!chat.hasUnsentComposerContent)
+        #expect(!controller.permissionRestartActivity.unsentChat)
     }
 
     @Test func newDraftsStartEmptyAndOnlyUnusedDraftsFollowMeetingOrFolderContext() async throws {

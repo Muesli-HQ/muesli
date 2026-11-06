@@ -165,6 +165,27 @@ struct PermissionRestartRecoveryTests {
         #expect(PermissionRestartActivity().blockingMessage == nil)
     }
 
+    @Test("restart checks never initialize chat, including after a privacy reset", arguments: [false, true])
+    @MainActor
+    func restartCheckDoesNotInitializeChat(afterPrivacyReset: Bool) throws {
+        let directory = summaryTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try summaryController(directory: directory)
+        if afterPrivacyReset {
+            _ = controller.meetingChatCoordinator
+            #expect(controller.storedMeetingChatCoordinator != nil)
+            controller.resetChatForPrivacyTransition()
+        }
+        #expect(controller.storedMeetingChatCoordinator == nil)
+        // Both the initial restart request and termination admission recheck activity.
+        for _ in 0..<2 {
+            let activity = controller.permissionRestartActivity
+            #expect(!activity.assistant && !activity.unsentChat)
+            #expect(activity.blockingMessage == nil)
+            #expect(controller.storedMeetingChatCoordinator == nil)
+        }
+    }
+
     @Test("re-summary blocks restart before task startup and through saving")
     @MainActor
     func protectsSummaryGenerationAndSave() async throws {

@@ -418,7 +418,7 @@ public final class MuesliController: NSObject {
     private var quillPrivacy = ContentPrivacy.shared.capture()
     private var computerUsePrivacy = ContentPrivacy.shared.capture()
 
-    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    private(set) var storedMeetingChatCoordinator: MeetingChatCoordinator?
     private var cotypistTimelineRefresh: Task<Void, Never>?
     var meetingChatCoordinator: MeetingChatCoordinator {
         get {
@@ -5408,7 +5408,9 @@ public final class MuesliController: NSObject {
     }
 
     var permissionRestartActivity: PermissionRestartActivity {
-        PermissionRestartActivity(
+        // Checking restart safety must not initialize chat or read its database.
+        let chat = storedMeetingChatCoordinator
+        return PermissionRestartActivity(
             recording: isInteractiveAudioActivityInProgress || meetingTerminationState != .none
                 || isStartingMeetingRecording || isCapturingShortcut,
             processing: isMeetingAudioProcessing || !meetingRetranscriptionTasks.isEmpty
@@ -5416,9 +5418,9 @@ public final class MuesliController: NSObject {
                 || appState.activeAudioImportCount > 0 || appState.modelFileMutationCount > 0
                 || dictationRecoveryTask != nil,
             assistant: activeMeetingResummaryCount > 0 || computerUseCommandTask != nil || quilTask != nil
-                || meetingChatCoordinator.isBusy || meetingChatCoordinator.isUpdatingChat
-                || meetingChatCoordinator.isPreparingFiles,
-            unsentChat: meetingChatCoordinator.hasUnsentComposerContent
+                || chat?.isBusy == true || chat?.isUpdatingChat == true
+                || chat?.isPreparingFiles == true,
+            unsentChat: chat?.hasUnsentComposerContent == true
         )
     }
 
