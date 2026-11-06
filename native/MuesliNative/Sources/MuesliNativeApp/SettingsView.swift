@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import AVFoundation
 import SwiftUI
 import MuesliCore
@@ -2347,6 +2348,10 @@ struct SettingsView: View {
     private var computerUseSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
             settingsSection("Computer Use") {
+                settingsCompactRow("Background execution (experimental)") {
+                    settingsControl("cua_background")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow("Enable planner") {
                     settingsControl("cua_planner")
                 }
@@ -3203,6 +3208,10 @@ struct SettingsView: View {
                 isBusy: calendarPermission.requesting,
                 actionTitle: calendarPermission.canRequest ? "Grant" : "Open Settings"
             )
+            if ComputerUseReferenceDriver.selectedExecutable != nil {
+                Divider().background(MuesliTheme.surfaceBorder)
+                ChromeBrowserAccessRow()
+            }
             if let errorMessage = calendarPermission.errorMessage {
                 SettingsNote(errorMessage, tone: .error)
                     .padding(.bottom, MuesliTheme.spacing4)
@@ -4370,5 +4379,87 @@ private extension NSColor {
         let g = Int((rgb.greenComponent * 255).rounded())
         let b = Int((rgb.blueComponent  * 255).rounded())
         return String(format: "%02x%02x%02x", r, g, b)
+    }
+}
+
+/// Connection consent is a manual affordance, not a voice-writable setting.
+private struct ChromeBrowserAccessRow: View {
+    @ObservedObject private var driver = ComputerUseReferenceDriver.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PermissionStatusRow(
+                name: "Chrome browser access",
+                granted: driver.chromeAccess == .connected,
+                action: { Task { await driver.connectChromeFromSettings() } },
+                isBusy: driver.chromeAccess == .connecting,
+                actionTitle: driver.chromeAccess == .notConnected ? "Connect Chrome" : "Reconnect",
+                statusTitle: "Connected",
+                busyTitle: "Waiting…",
+                actionDisabled: driver.commandActive,
+                openSettings: {
+                    guard let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome"),
+                          let url = URL(string: "chrome://inspect/#remote-debugging") else { return }
+                    Task {
+                        _ = try? await NSWorkspace.shared.open([url], withApplicationAt: chrome,
+                                                               configuration: NSWorkspace.OpenConfiguration())
+                    }
+                },
+                settingsHelp: "Open Chrome browser access settings"
+            )
+            if let message = driver.chromeAccessMessage {
+                Text(message).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            } else if driver.chromeAccess == .notConnected {
+                Text("Connect opens Chrome for approval. Background commands reuse the connection.")
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            }
+        }
+        .onAppear { driver.refreshChromeAccess() }
+    }
+}
+
+/// Browser consent follows the compact layout used by upstream system permissions.
+private struct PermissionStatusRow: View {
+    let name: String
+    let granted: Bool
+    let action: () -> Void
+    var isBusy = false
+    var actionTitle = "Grant"
+    var statusTitle = "Granted"
+    var busyTitle = "Checking…"
+    var actionDisabled = false
+    let openSettings: () -> Void
+    let settingsHelp: String
+
+    var body: some View {
+        SettingsRow(label: name, controlWidth: nil) {
+            HStack(spacing: MuesliTheme.spacing8) {
+                if granted {
+                    Label(statusTitle, systemImage: "checkmark.circle.fill")
+                        .font(MuesliTheme.captionMedium())
+                        .foregroundStyle(MuesliTheme.successText)
+                } else {
+                    Button(action: action) {
+                        Text(isBusy ? busyTitle : actionTitle)
+                            .lineLimit(1)
+                            .font(MuesliTheme.captionMedium())
+                            .padding(.horizontal, 10)
+                            .frame(height: 26)
+                    }
+                    .buttonStyle(.muesli(.tinted))
+                    .disabled(isBusy || actionDisabled)
+                }
+                Button(action: openSettings) {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(settingsHelp)
+                .accessibilityLabel(settingsHelp)
+            }
+        }
     }
 }
