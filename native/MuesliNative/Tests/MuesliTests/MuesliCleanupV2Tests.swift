@@ -57,9 +57,10 @@ struct MuesliCleanupV2Tests {
     @Test func qwenLiteV4Contract() {
         let option = PostProcessorOption.finetunedV4
         #expect(PostProcessorOption.defaultOption == .finetunedV4)
-        #expect(option.managedModel?.modelByteCount == 799_973_748)
-        #expect(option.managedModel?.revision == "edd597f9cfd41c0422565758eae6aff3afa2b9d2")
-        #expect(option.managedModel?.files.first?.sha256 == "9bb3f251da42cd5806f25bda751e232e204ef2104d9fc590a28b051de7fe2602")
+        let bundled = option.cleanupSlot?.bundled.artifact
+        #expect(bundled?.modelByteCount == 799_973_748)
+        #expect(bundled?.revision == "11ad4d97beedb3b25cbbcc357185b7cc07945376")
+        #expect(bundled?.files.first?.sha256 == "1ee6bf6cd9bfe657c339bd49fa882309cd89e44ba9f5789a2b5aed8959b808c4")
         #expect(!option.supportsQuil)
         #expect(option.effectiveSystemPrompt(configuredSystemPrompt: "custom") == PostProcessorOption.defaultSystemPrompt)
         let expected = "<|im_start|>user\n" + PostProcessorOption.defaultSystemPrompt + "\n\n<APP-CONTEXT>\nApp: Mail\n</APP-CONTEXT>\n\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"

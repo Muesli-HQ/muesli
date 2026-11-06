@@ -142,7 +142,9 @@ def report():
                  "existing_exact_key": os.environ.get("CACHE_EXISTING_KEY", ""),
                  "cache_disabled": os.environ.get("CACHE_DISABLED") == "true",
                  "save_outcome": os.environ.get("CACHE_SAVE_OUTCOME", "skipped")})
-    if (data["event"] == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
+    cache_writer = (data["event"] == "push" or
+                    (data["event"] == "workflow_dispatch" and os.environ.get("CACHE_WARM_BLACKSMITH") == "true"))
+    if (cache_writer and os.environ.get("GITHUB_REF") == "refs/heads/main"
             and not data["cache_disabled"] and data["exit_code"] == 0
             and data["lookup_outcome"] != "success"):
         print("::warning::Release cache lookup did not succeed; no fresh snapshot was saved.")

@@ -1326,6 +1326,9 @@ private final class ContractQueueDriver {
     var queuedBufferCount: Int { bufferLock.withLock { queued.count } }
     var operations: AudioQueueInputRecorder.NativeOperations {
         var result = AudioQueueInputRecorder.NativeOperations()
+        result.addRunningListener = { _, _, _ in noErr }
+        result.removeRunningListener = { _, _, _ in }
+        result.runningState = { _ in nil }
         result.create = { [self] _, callback, context, out in self.callback = callback; self.context = context; out.pointee = queue; return noErr }
         result.allocate = { [self] _, size, out in
             let data = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 4)

@@ -3,11 +3,119 @@ import Foundation
 import MuesliCore
 import SwiftUI
 import Testing
+import TelemetryDeck
 @testable import MuesliNativeApp
 
 @MainActor
 @Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
+
+    @Test("Sidebar order restores defaults, removes unknown/duplicate IDs and appends new tabs")
+    func sidebarOrderRecovery() {
+        #expect(SidebarOrder.tabs(from: "") == SidebarOrder.defaults)
+        let restored = SidebarOrder.tabs(from: "settings,retired,meetingChat,meetingChat")
+        #expect(Array(restored.prefix(2)) == [.meetingChat, .timeline])
+        #expect(restored.count == SidebarOrder.defaults.count)
+        #expect(Set(restored.map(\.rawValue)).count == restored.count)
+        #expect(SidebarOrder.tabs(from: SidebarOrder.encode(restored)) == restored)
+    }
+
+    @Test("Time Turner joins saved sidebar orders without losing existing positions")
+    func timeTurnerSidebarRestoration() {
+        let legacy = "meetingChat,timeline,dictations,meetings,insights,dictionary"
+        let restored = SidebarOrder.tabs(from: legacy)
+        #expect(restored.last == .timeTurner)
+        #expect(SidebarOrder.encode(Array(restored.dropLast())) == "meetingChat,timeline,dictations,meetings,dictionary")
+        #expect(!restored.contains(.insights))
+        let moved = SidebarOrder.inserting(.timeTurner, relativeTo: .timeline, after: true, in: legacy)
+        #expect(Array(SidebarOrder.tabs(from: moved).prefix(3)) == [.meetingChat, .timeline, .timeTurner])
+        #expect(DashboardTab.timeTurner.sidebarLabel == "Time Turner")
+    }
+
+    @Test("Sidebar moves work in both directions while excluding fixed utility tabs")
+    func sidebarOrderMoves() {
+        let first = SidebarOrder.moving(.dictionary, to: .timeline, in: "")
+        #expect(SidebarOrder.tabs(from: first).first == .dictionary)
+        let last = SidebarOrder.moving(.dictionary, to: .meetingChat, in: first)
+        #expect(SidebarOrder.tabs(from: last).last == .dictionary)
+        #expect(SidebarOrder.tabs(from: last) == SidebarOrder.defaults)
+        #expect(SidebarOrder.moving(.meetings, to: .meetings, in: last) == last)
+    }
+
+    @Test("Sidebar insertion matches the displayed before or after boundary")
+    func sidebarInsertionBoundaries() {
+        let before = SidebarOrder.inserting(.dictionary, relativeTo: .dictations, after: false, in: "")
+        #expect(Array(SidebarOrder.tabs(from: before).prefix(4)) == [.timeline, .timeTurner, .dictionary, .dictations])
+        let after = SidebarOrder.inserting(.timeline, relativeTo: .dictations, after: true, in: "")
+        #expect(Array(SidebarOrder.tabs(from: after).prefix(3)) == [.timeTurner, .dictations, .timeline])
+        #expect(SidebarOrder.inserting(.settings, relativeTo: .timeline, after: false, in: "") == "")
+        #expect(SidebarOrder.inserting(.timeline, relativeTo: .about, after: true, in: "") == "")
+    }
+
+    @Test("Sidebar ordering persists in an isolated local preference domain")
+    func sidebarOrderPersistence() throws {
+        let suite = "muesli.sidebar.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let saved = SidebarOrder.moving(.meetingChat, to: .timeline, in: "")
+        defaults.set(saved, forKey: SidebarOrder.preferenceKey)
+        let reopened = try #require(UserDefaults(suiteName: suite))
+        #expect(SidebarOrder.tabs(from: reopened.string(forKey: SidebarOrder.preferenceKey) ?? "").first == .meetingChat)
+        defaults.removeObject(forKey: SidebarOrder.preferenceKey)
+        #expect(SidebarOrder.tabs(from: defaults.string(forKey: SidebarOrder.preferenceKey) ?? "") == SidebarOrder.defaults)
+    }
+
+    @Test("Ultra Dark resolves black backgrounds and white accents")
+    func ultraDarkPalette() throws {
+        let original = MuesliTheme.appearance.ultraDark
+        MuesliTheme.appearance.ultraDark = true
+        defer { MuesliTheme.appearance.ultraDark = original }
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            let background = MuesliTheme.backgroundDeepNSColor.usingColorSpace(.deviceRGB)!
+            let accent = NSColor(MuesliTheme.defaultAccent).usingColorSpace(.deviceRGB)!
+            let foreground = NSColor(MuesliTheme.onAccent).usingColorSpace(.deviceRGB)!
+            #expect(background.redComponent == 0 && background.greenComponent == 0 && background.blueComponent == 0)
+            #expect(accent.redComponent == 1 && accent.greenComponent == 1 && accent.blueComponent == 1)
+            #expect(foreground.redComponent == 0)
+        }
+    }
+
+    @Test("Ultra Dark switches retain the saved accent while primary actions stay white")
+    func ultraDarkToggleAccent() throws {
+        let originalMode = MuesliTheme.appearance.ultraDark
+        let originalAccent = MuesliTheme.accentOverrideHex
+        defer {
+            MuesliTheme.appearance.ultraDark = originalMode
+            MuesliTheme.accentOverrideHex = originalAccent
+        }
+        MuesliTheme.appearance.ultraDark = true
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            MuesliTheme.accentOverrideHex = nil
+            let defaultToggle = NSColor(MuesliTheme.toggleAccent).usingColorSpace(.deviceRGB)!
+            #expect(defaultToggle.blueComponent > defaultToggle.redComponent)
+            MuesliTheme.accentOverrideHex = "FF0000"
+            let customToggle = NSColor(MuesliTheme.toggleAccent).usingColorSpace(.deviceRGB)!
+            #expect(customToggle.redComponent == 1 && customToggle.greenComponent == 0)
+            let action = NSColor(MuesliTheme.accent).usingColorSpace(.deviceRGB)!
+            #expect(action.redComponent == 1 && action.greenComponent == 1 && action.blueComponent == 1)
+        }
+    }
+
+    @Test("ordinary Dark keeps its colored accent and layered background")
+    func ordinaryDarkPalette() throws {
+        let original = MuesliTheme.appearance.ultraDark
+        MuesliTheme.appearance.ultraDark = false
+        defer { MuesliTheme.appearance.ultraDark = original }
+        let appearance = try #require(NSAppearance(named: .darkAqua))
+        appearance.performAsCurrentDrawingAppearance {
+            let background = MuesliTheme.backgroundDeepNSColor.usingColorSpace(.deviceRGB)!
+            let accent = NSColor(MuesliTheme.defaultAccent).usingColorSpace(.deviceRGB)!
+            #expect(background.redComponent > 0)
+            #expect(accent.blueComponent > accent.redComponent)
+        }
+    }
 
     @Test("dark mode maps to the dark AppKit appearance")
     func darkModeMapsToDarkAqua() {
@@ -34,34 +142,40 @@ struct WindowAppearanceTests {
     @Test("system choice persists and explicit themes clear it")
     func appearanceRoundTrip() throws {
         var config = AppConfig()
-        for mode in [AppAppearanceMode.system, .light, .system, .dark] {
+        for mode in [AppAppearanceMode.system, .ultraDark, .light, .ultraDark, .system, .dark] {
             config.appearanceMode = mode
             let saved = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
             #expect(saved.appearanceMode == mode)
             #expect(saved.followSystemAppearance == (mode == .system))
+            #expect(saved.ultraDarkAppearance == (mode == .ultraDark))
         }
     }
 
     @Test("appearance uses the shared settings executor and persists each choice")
     func appearanceSetting() async throws {
+        // Create AppKit before applying a setting, including when this suite runs alone.
+        _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store, configStore: configStore)
         let setting = try #require(controller.settingsDefinitions().first { $0.id == "appearance" })
-        #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark"])
+        #expect(setting.snapshot(config: controller.config).choices.map(\.id) == ["light", "system", "dark", "ultra_dark"])
         let sidebarSetting = controller.appearanceDefinition()
         #expect(sidebarSetting.id == setting.id)
         #expect(sidebarSetting.snapshot(config: controller.config).choices.map(\.id)
             == setting.snapshot(config: controller.config).choices.map(\.id))
+        #expect(setting.snapshot(config: controller.config, source: .voice).unavailable["ultra_dark"] != nil)
+        #expect(setting.snapshot(config: controller.config, source: .manualUI).unavailable["ultra_dark"] == nil)
+        #expect(!AppAppearanceMode.quickChoices.contains(.ultraDark))
         let originalAppearance = NSApp?.appearance
         defer { NSApp?.appearance = originalAppearance }
-        for mode in [AppAppearanceMode.light, .dark, .system] {
+        for mode in [AppAppearanceMode.light, .ultraDark, .dark, .system] {
             try await controller.applySetting("appearance", value: mode.rawValue)
             #expect(controller.appState.config.appearanceMode == mode)
             #expect(configStore.load().appearanceMode == mode)
@@ -82,23 +196,60 @@ struct WindowAppearanceTests {
         try store.migrateIfNeeded()
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         // Avoid the Timeline's first-run bridge onboarding and its telemetry in this UI fixture.
         controller.appState.selectedTab = .shortcuts
         let dashboard = RecentHistoryWindowController(store: store, controller: controller)
         dashboard.show()
         defer { dashboard.close() }
         let window = try #require(dashboard.presentationWindow)
-        for mode in [AppAppearanceMode.light, .system, .dark, .system] {
+        for mode in [AppAppearanceMode.light, .ultraDark, .system, .dark, .system] {
             try await controller.applySetting("appearance", value: mode.rawValue)
             dashboard.applyThemeAppearance()
             // Let SwiftUI commit its appearance preferences to the actual hosting window.
             try await Task.sleep(for: .milliseconds(200))
             window.contentView?.layoutSubtreeIfNeeded()
             #expect(window.appearance?.name == mode.appearanceName)
-            let expected = mode.appearanceName ?? app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            let expected = mode == .ultraDark ? NSAppearance.Name.darkAqua : (mode.appearanceName ?? app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]))
             #expect(window.contentView?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == expected)
         }
+    }
+
+    @Test("settings breakpoint preserves native editor focus selection and undo")
+    func settingsBreakpointPreservesEditor() async throws {
+        _ = NSApplication.shared
+        let state = SettingsEditorLayoutState()
+        let host = NSHostingView(rootView: SettingsEditorLayoutHarness(state: state))
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 200)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let editor = try #require(state.editor)
+        editor.allowsUndo = true
+        editor.undoManager?.groupsByEvent = false
+        editor.undoManager?.beginUndoGrouping()
+        editor.insertText("Endpoint draft", replacementRange: NSRange(location: 0, length: 0))
+        editor.undoManager?.endUndoGrouping()
+        let selection = NSRange(location: 2, length: 5)
+        editor.setSelectedRange(selection)
+        #expect(window.makeFirstResponder(editor))
+        #expect(editor.undoManager?.canUndo == true)
+        for stacked in [true, false, true] {
+            state.stacked = stacked
+            host.frame.size.width = stacked ? 420 : 700
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(state.creationCount == 1)
+            #expect(state.editor === editor)
+            #expect(window.firstResponder === editor)
+            #expect(editor.selectedRange() == selection)
+            #expect(editor.string == "Endpoint draft")
+            #expect(editor.undoManager?.canUndo == true)
+        }
+        editor.undoManager?.undo()
+        #expect(editor.string.isEmpty)
     }
 
     @Test("dashboard can shrink beside a call window")
@@ -140,6 +291,91 @@ struct WindowAppearanceTests {
         #expect(DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: true))
         #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 600, hasOpenMeeting: true))
         #expect(!DashboardWindowLayout.usesCompactQuickNotes(width: 520, hasOpenMeeting: false))
+    }
+
+    @Test("persistent chat keeps its native editor and draft across browsing destinations")
+    func persistentChatPreservesEditorAcrossTabs() async throws {
+        let telemetry = TelemetryDeck.Config(appID: "00000000-0000-0000-0000-000000000000")
+        telemetry.analyticsDisabled = true
+        TelemetryDeck.initialize(config: telemetry)
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = DictationStore(databaseURL: support.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: .temporaryDirectory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support)
+        )
+        let coordinator = controller.meetingChatCoordinator
+        let undoIdentity = coordinator.composerUndoIdentity
+        let scope = coordinator.scope
+        let host = NSHostingView(rootView: DashboardRootView(appState: controller.appState, controller: controller))
+        host.frame = NSRect(x: 0, y: 0, width: 1100, height: 790)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+
+        func editors(in view: NSView) -> [NSTextView] {
+            let own = (view as? NSTextView).map { $0.identifier?.rawValue == "meeting-chat-editor" ? [$0] : [] } ?? []
+            return own + view.subviews.flatMap { editors(in: $0) }
+        }
+        for _ in 0..<50 {
+            host.layoutSubtreeIfNeeded()
+            if !editors(in: host).isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let original = try #require(editors(in: host).first)
+        #expect(original.string.isEmpty)
+        window.makeFirstResponder(original)
+        original.insertText("A draft that follows navigation", replacementRange: NSRange(location: 0, length: 0))
+        original.breakUndoCoalescing()
+        original.insertText("!", replacementRange: NSRange(location: original.string.utf16.count, length: 0))
+        original.breakUndoCoalescing()
+        original.setSelectedRange(NSRange(location: 5, length: 3))
+        for tab in [DashboardTab.dictations, .meetings, .timeline] {
+            controller.appState.selectedTab = tab
+            for _ in 0..<5 {
+                await Task.yield()
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let current = editors(in: host)
+            #expect(current.count == 1)
+            #expect(current.first === original)
+            #expect(original.string == "A draft that follows navigation!")
+            #expect(original.selectedRange() == NSRange(location: 5, length: 3))
+            #expect(coordinator.composerUndoIdentity == undoIdentity)
+            #expect(coordinator.scope == scope)
+        }
+        let undo = try #require(original.undoManager)
+        #expect(undo.canUndo)
+        undo.undo()
+        // Undo completion must update both native text and the sendable draft.
+        for _ in 0..<10 {
+            if coordinator.composerDraft.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(original.string.isEmpty)
+        #expect(coordinator.composerDraft.isEmpty)
+        undo.redo()
+        #expect(original.string == "A draft that follows navigation!")
+        #expect(coordinator.composerDraft == "A draft that follows navigation!")
+        coordinator.composerDraft = ""
+        window.makeFirstResponder(nil)
+        for _ in 0..<5 {
+            await Task.yield()
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(editors(in: host).first === original)
+        #expect(original.string.isEmpty)
+        controller.appState.selectedTab = .meetingChat
+        for _ in 0..<5 {
+            await Task.yield()
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(editors(in: host).count == 1)
+        #expect(editors(in: host).first?.string == "")
     }
 
     @Test("dashboard renders one working custom sidebar toggle")
@@ -268,7 +504,7 @@ struct WindowAppearanceTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         // 40 visible folder rows are far taller than the minimum window.
         controller.appState.folders = (1...40).map { index in
@@ -301,7 +537,7 @@ struct WindowAppearanceTests {
                 bundlePath: nil
             ),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         let meeting = MeetingRecord(
             id: 42,
@@ -405,4 +641,40 @@ private struct DashboardDetailIdentityProbe: View {
             .onAppear { lifecycle.appearanceCount += 1 }
             .onDisappear { lifecycle.disappearanceCount += 1 }
     }
+}
+
+
+@MainActor
+@Observable
+private final class SettingsEditorLayoutState {
+    var stacked = false
+    @ObservationIgnored var editor: SettingsIdentityTextView?
+    @ObservationIgnored var creationCount = 0
+}
+
+private struct SettingsEditorLayoutHarness: View {
+    let state: SettingsEditorLayoutState
+    var body: some View {
+        SettingsRow(label: "Endpoint", description: "Provider URL") {
+            SettingsIdentityEditor(state: state).frame(height: 28)
+        }
+        .environment(\.settingsStacksControls, state.stacked)
+    }
+}
+
+private struct SettingsIdentityEditor: NSViewRepresentable {
+    let state: SettingsEditorLayoutState
+    func makeNSView(context: Context) -> SettingsIdentityTextView {
+        let editor = SettingsIdentityTextView()
+        state.editor = editor
+        state.creationCount += 1
+        return editor
+    }
+    func updateNSView(_ nsView: SettingsIdentityTextView, context: Context) {}
+}
+
+@MainActor
+private final class SettingsIdentityTextView: NSTextView {
+    private let testUndo = UndoManager()
+    override var undoManager: UndoManager? { testUndo }
 }

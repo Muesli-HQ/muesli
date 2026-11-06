@@ -23,8 +23,28 @@ struct ComputerUseExecutorTests {
         )
         #expect(attempted)
         #expect(result.status == .failed)
-        #expect(result.message.contains("could not be dispatched"))
+        #expect(result.message == "Paste shortcut could not be dispatched. Check the keyboard layout or configured paste shortcut.")
         #expect(pasteboard.string(forType: .string) == "original")
+    }
+
+    @Test("clipboard ownership loss is reported separately from shortcut failure", arguments: [true, false])
+    @MainActor
+    func pasteLosesClipboardOwnership(hasAttribution: Bool) async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.setString("original", forType: .string)
+        let result = await ComputerUseToolExecutor.pasteText(
+            "dictated", shortcut: .automatic, pasteboard: pasteboard,
+            targetApplicationProvider: {
+                pasteboard.clearContents()
+                pasteboard.setString("new user copy", forType: .string)
+                return hasAttribution ? NSRunningApplication.current : nil
+            },
+            simulatePasteAction: { _ in Issue.record("Must not dispatch another owner's content"); return true }
+        )
+        #expect(result.status == .failed)
+        #expect(result.message == "Paste was skipped because the clipboard changed. Your current clipboard contents were preserved. Try again.")
+        #expect(pasteboard.string(forType: .string) == "new user copy")
     }
 
     @Test("successful custom paste remains executed with or without app attribution", arguments: [true, false])

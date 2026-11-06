@@ -472,13 +472,36 @@ final class MeetingSession {
             fputs("[meeting-partials] \(backend.label) not downloaded; using committed live captions only\n", stderr)
             return
         }
+        let selectedBackend = currentBackend()
+        if backend == .selectedModelBuffered,
+           (!selectedBackend.supportsBufferedLiveTranscription || !selectedBackend.isDownloaded) {
+            fputs("[meeting-partials] Selected meeting model unavailable for buffered captions; using committed live captions only\n", stderr)
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let engines = try await MeetingLiveCaptionModelStore.makeEngines(
                     backend: backend,
                     nemotronPromptId: self.config.resolvedNemotron35Language.promptId,
-                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage
+                    appleSpeechLanguage: self.config.resolvedAppleSpeechLanguage,
+                    bufferedSessionFactory: { [transcriptionCoordinator = self.transcriptionCoordinator,
+                        whisperLanguage = self.config.resolvedWhisperLanguage,
+                        parakeetLanguage = self.config.resolvedParakeetLanguage,
+                        bodhanLanguage = self.config.resolvedBodhanLanguage,
+                        bodhanOutputMode = self.config.resolvedBodhanOutputMode] onUpdate, onFailure in
+                        try transcriptionCoordinator.makeBufferedTranscriptionSession(
+                            backend: selectedBackend,
+                            whisperLanguage: whisperLanguage,
+                            parakeetLanguage: parakeetLanguage,
+                            bodhanLanguage: bodhanLanguage, bodhanOutputMode: bodhanOutputMode,
+                            onUpdate: onUpdate,
+                            onFailure: onFailure,
+                            onDiagnostic: { event in
+                                fputs("[meeting-partials] buffered_\(event)\n", stderr)
+                            }
+                        )
+                    }
                 )
                 guard self.chunkRotationQueue.sync(execute: { self.isRecording }),
                       self.partialSessionsStorage.withLock({ !$0.isShutDown }) else {
@@ -513,7 +536,7 @@ final class MeetingSession {
                 }
                 fputs("[meeting-partials] \(backend.label) active for mic and system audio\n", stderr)
             } catch {
-                fputs("[meeting-partials] \(backend.label) setup failed: \(error)\n", stderr)
+                fputs("[meeting-partials] \(backend.label) setup failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
@@ -550,7 +573,8 @@ final class MeetingSession {
         end: TimeInterval
     ) async -> [SpeechSegment] {
         // Apple chunks already chose their authoritative result before any batch work.
-        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech else { return segments }
+        guard config.resolvedMeetingLiveCaptionBackend != .appleSpeech,
+              config.resolvedMeetingLiveCaptionBackend != .selectedModelBuffered else { return segments }
         let prefersStreamingTranscript = config.enableLiveStreamingPartials
             && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
         guard (segments.isEmpty || prefersStreamingTranscript),
@@ -753,6 +777,12 @@ final class MeetingSession {
     }
 
     func stop(template: MeetingTemplateSnapshot? = nil, onRecordingReady: ((URL?, Error?) async -> Void)? = nil) async throws -> MeetingSessionResult {
+        let selected = currentBackend()
+        let finalBackend: BackendOption = config.enableLiveStreamingPartials && config.resolvedMeetingLiveCaptionBackend.producesFinalTranscript
+            ? (config.resolvedMeetingLiveCaptionBackend == .appleSpeech ? .appleSpeechAnalyzer : .nemotron35Multilingual) : selected
+        let analytics = AnalyticsAttempt(.meeting_transcription, fields: [.source: .live],
+            model: .catalog(provider: finalBackend.backend, model: finalBackend.model))
+        defer { analytics.finish(Task.isCancelled ? .cancelled : .failed) }
         let templateSnapshot = template ?? self.templateSnapshot
         onProgress?(.stoppingCapture)
         let shutdown = captureLifecycle.requestStop()
@@ -888,7 +918,7 @@ final class MeetingSession {
                     systemSegments.append(contentsOf: normalizedSegments)
                 } catch {
                     systemChunkHealthTracker.noteFailedChunk()
-                    fputs("[meeting] final system chunk transcription failed: \(error)\n", stderr)
+                    fputs("[meeting] final system chunk transcription failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 }
             }
             try? FileManager.default.removeItem(at: lastSystemChunkURL)
@@ -915,7 +945,7 @@ final class MeetingSession {
                 micDiarizationSegments = segments
             } catch {
                 micDiarizationError = error
-                fputs("[meeting] mic diarization failed, keeping single mic speaker: \(error)\n", stderr)
+                fputs("[meeting] mic diarization failed, keeping single mic speaker: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
 
@@ -980,6 +1010,11 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
+        let mixedModels = usesStreamingFinalTranscript && (!micTailFinalized || (lastSystemChunkURL != nil && !systemTailFinalized))
+        let analyticsModel = mixedModels ? AnalyticsModel.catalog(provider: "mixed", model: "mixed")
+            : .catalog(provider: finalBackend.backend, model: finalBackend.model)
+        let transcriptHadFailures = micChunkHealthTracker.snapshot().failedChunkCount > 0
+            || systemChunkHealthTracker.snapshot().failedChunkCount > 0
         let rawTranscript = TranscriptFormatter.merge(
             micSegments: protectedTranscriptInputs.micSegments,
             systemSegments: protectedTranscriptInputs.systemSegments,
@@ -1005,7 +1040,6 @@ final class MeetingSession {
         ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
-            fputs("[meeting] auto-generated title: \(generatedTitle)\n", stderr)
         } else {
             generatedTitle = title
         }
@@ -1020,6 +1054,7 @@ final class MeetingSession {
         let manualNotes = await manualNotesProvider?()
         let formattedNotes: String
         do {
+            analytics.finish(transcriptHadFailures ? .partial : .success, model: analyticsModel)
             formattedNotes = try await MeetingSummaryClient.summarize(
                 transcript: rawTranscript,
                 meetingTitle: generatedTitle,
@@ -1064,6 +1099,7 @@ final class MeetingSession {
             protectedSystemSegmentCount: protectedTranscriptInputs.systemSegments.count
         )
 
+        analytics.finish(transcriptHadFailures ? .partial : .success, model: analyticsModel)
         return MeetingSessionResult(
             title: generatedTitle,
             originalTitle: title,
@@ -1229,7 +1265,7 @@ final class MeetingSession {
                         appleSpeechLanguage: config.resolvedAppleSpeechLanguage
                     )
                     if !result.text.isEmpty {
-                        fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                        fputs("[meeting] system chunk transcribed: \"\(result.text.count) characters...\"\n", stderr)
                         let normalizedSegments = self.normalizeSystemTranscription(
                             result: result,
                             startTime: chunkOffset,
@@ -1245,7 +1281,7 @@ final class MeetingSession {
                     self.systemChunkHealthTracker.noteEmptyChunk()
                 } catch {
                     self.systemChunkHealthTracker.noteFailedChunk()
-                    fputs("[meeting] system chunk transcription failed: \(error)\n", stderr)
+                    fputs("[meeting] system chunk transcription failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 }
                 return []
             })
@@ -1282,7 +1318,7 @@ final class MeetingSession {
             retainedRecordingWriter = try MeetingRecordingWriter()
         } catch {
             retainedRecordingWriterError = error
-            fputs("[meeting] failed to prepare retained recording writer: \(error)\n", stderr)
+            fputs("[meeting] failed to prepare retained recording writer: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         }
     }
 
@@ -1295,7 +1331,7 @@ final class MeetingSession {
             micDiarizationRecorder = try PCMChunkRecorder(directoryName: Self.micDiarizationDirectoryName)
         } catch {
             micDiarizationSetupError = error
-            fputs("[meeting] failed to prepare mic diarization recorder: \(error)\n", stderr)
+            fputs("[meeting] failed to prepare mic diarization recorder: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
         }
     }
 
@@ -1462,7 +1498,7 @@ final class MeetingSession {
                 appleSpeechLanguage: config.resolvedAppleSpeechLanguage
             )
             if !result.text.isEmpty {
-                fputs("[meeting] mic chunk transcribed (raw): \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                fputs("[meeting] mic chunk transcribed (raw): \"\(result.text.count) characters...\"\n", stderr)
                 let normalizedSegments = MicTurnNormalizer.normalize(
                     result: result,
                     startTime: chunkOffset,
@@ -1479,7 +1515,7 @@ final class MeetingSession {
             return []
         } catch {
             micChunkHealthTracker.noteFailedChunk()
-            fputs("[meeting] mic chunk transcription failed (raw): \(error)\n", stderr)
+            fputs("[meeting] mic chunk transcription failed (raw): \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             return nil
         }
     }
@@ -1582,7 +1618,7 @@ final class MeetingSession {
                 return repairedSegments.isEmpty ? .none : .append(repairedSegments)
             }
         } catch {
-            fputs("[meeting] system repair pass failed: \(error)\n", stderr)
+            fputs("[meeting] system repair pass failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             if existingSystemSegments.isEmpty {
                 return .replace(await fallbackToFullSessionSystemTranscription(
                     systemAudioURL: systemAudioURL,
@@ -1615,7 +1651,7 @@ final class MeetingSession {
                 endTime: meetingDuration
             )
         } catch {
-            fputs("[meeting] full-session system fallback transcription failed: \(error)\n", stderr)
+            fputs("[meeting] full-session system fallback transcription failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             return []
         }
     }

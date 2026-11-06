@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import CoreAudio
 import os
@@ -92,7 +93,7 @@ final class StreamingDictationController {
                 _ = try? await transcriber.transcribeChunk(samples: silence, state: &state)
                 fputs("[streaming-dictation] warmup done\n", stderr)
             } catch {
-                fputs("[streaming-dictation] warmup failed: \(error)\n", stderr)
+                fputs("[streaming-dictation] warmup failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
@@ -134,7 +135,7 @@ final class StreamingDictationController {
             try recorder.start()
             fputs("[streaming-dictation] mic started\n", stderr)
         } catch {
-            fputs("[streaming-dictation] mic start failed: \(error)\n", stderr)
+            fputs("[streaming-dictation] mic start failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             resetActiveSession(cancelRecorder: true, sessionID: sessionID)
             return false
         }
@@ -152,7 +153,7 @@ final class StreamingDictationController {
                 startDrainIfNeeded(sessionID: sessionID)
             } catch {
                 guard let self, self.isCurrentSession(sessionID) else { return }
-                fputs("[streaming-dictation] failed to create stream state: \(error)\n", stderr)
+                fputs("[streaming-dictation] failed to create stream state: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 self.failActiveSession(sessionID: sessionID, error: error)
             }
         }
@@ -452,7 +453,7 @@ final class StreamingDictationController {
             streamState = nil
             return fullTranscript
         }
-        fputs("[streaming-dictation] stopped, transcript (\(transcript.count) chars): \(transcript.prefix(100))...\n", stderr)
+        fputs("[streaming-dictation] stopped, transcript (\(transcript.count) chars)\n", stderr)
         return transcript
     }
 
@@ -495,7 +496,7 @@ final class StreamingDictationController {
                     return fullTranscript
                 }
                 if !newText.isEmpty {
-                    fputs("[streaming-dictation] chunk → \"\(newText)\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
+                    fputs("[streaming-dictation] chunk → \"\(newText.count) characters\" (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
                     if let transcript {
                         onPartialText?(transcript)
                     }
@@ -503,7 +504,7 @@ final class StreamingDictationController {
                     fputs("[streaming-dictation] chunk → (silence) (\(String(format: "%.0f", elapsed * 1000))ms)\n", stderr)
                 }
             } catch {
-                fputs("[streaming-dictation] chunk error: \(error)\n", stderr)
+                fputs("[streaming-dictation] chunk error: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
                 guard isCurrentSession(sessionID) else { return .finished }
                 streamLock.withLock {
                     streamState = nil

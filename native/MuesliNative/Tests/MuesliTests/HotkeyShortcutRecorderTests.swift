@@ -10,7 +10,7 @@ struct HotkeyShortcutRecorderTests {
         var handler: ((NSEvent) -> NSEvent?)?
         var saved: [HotkeyConfig] = []
         var releases = 0
-        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in }, keyWindow: { nil })
         _ = recorder.start(.dictation, requiresCombination: true, acquire: { true },
             release: { releases += 1 }, commit: { saved.append($0) })
         _ = handler?(try event(.flagsChanged, key: 59, flags: .control))
@@ -35,7 +35,7 @@ struct HotkeyShortcutRecorderTests {
     @Test("cancelling toggle setup clears its intent without saving")
     func cancelToggleSetup() throws {
         var handler: ((NSEvent) -> NSEvent?)?
-        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in }, keyWindow: { nil })
         for escape in [false, true] {
             _ = recorder.start(.dictation, requiresCombination: true, acquire: { true }, release: {},
                 commit: { _ in Issue.record("Cancelled toggle setup saved a shortcut") })
@@ -156,7 +156,8 @@ struct HotkeyShortcutRecorderTests {
         var saved: HotkeyConfig?
         let recorder = HotkeyShortcutRecorder(
             addMonitor: { handler = $0; return NSObject() },
-            removeMonitor: { _ in events.append("removed") }
+            removeMonitor: { _ in events.append("removed") },
+            keyWindow: { nil }
         )
         let failure = recorder.start(
             .dictation,
@@ -181,7 +182,7 @@ struct HotkeyShortcutRecorderTests {
         var handler: ((NSEvent) -> NSEvent?)?
         var removed = 0
         var released = 0
-        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in removed += 1 })
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in removed += 1 }, keyWindow: { nil })
         _ = recorder.start(.quil, acquire: { true }, release: { released += 1 }, commit: { _ in Issue.record("unexpected save") })
         #expect(handler?(try event(.keyDown, key: 12, flags: .control)) == nil)
         #expect(handler?(try event(.keyDown, key: 53, flags: .control)) == nil)
@@ -196,13 +197,13 @@ struct HotkeyShortcutRecorderTests {
         #expect(released == 2)
 
         var installed = false
-        let busy = HotkeyShortcutRecorder(addMonitor: { _ in installed = true; return NSObject() })
+        let busy = HotkeyShortcutRecorder(addMonitor: { _ in installed = true; return NSObject() }, keyWindow: { nil })
         let busyMessage = busy.start(.dictation, acquire: { false }, release: { released += 1 }, commit: { _ in })
         #expect(busyMessage == HotkeyShortcutRecorder.busyMessage)
         #expect(!installed)
         #expect(released == 2)
 
-        let broken = HotkeyShortcutRecorder(addMonitor: { _ in nil })
+        let broken = HotkeyShortcutRecorder(addMonitor: { _ in nil }, keyWindow: { nil })
         let brokenMessage = broken.start(.dictation, acquire: { true }, release: { released += 1 }, commit: { _ in })
         #expect(brokenMessage == HotkeyShortcutRecorder.installFailedMessage)
         #expect(broken.target == nil)
@@ -215,6 +216,7 @@ struct HotkeyShortcutRecorderTests {
         let recorder = HotkeyShortcutRecorder(
             addMonitor: { _ in NSObject() },
             removeMonitor: { _ in },
+            keyWindow: { nil },
             timeout: .milliseconds(20)
         )
         _ = recorder.start(.dictation, acquire: { true }, release: { released += 1 }, commit: { _ in })
@@ -229,6 +231,9 @@ struct HotkeyShortcutRecorderTests {
 
     @Test("only the capturing window resigning key ends capture")
     func windowResignation() {
+        // This is the only fixture that needs AppKit windows; it must also work
+        // when run alone, before another suite initializes the application.
+        _ = NSApplication.shared
         let captureWindow = NSWindow()
         let otherWindow = NSWindow()
         var released = 0
@@ -251,7 +256,7 @@ struct HotkeyShortcutRecorderTests {
     @Test("rejected dictation chords keep recording and surface guidance")
     func rejectedChordKeepsRecording() throws {
         var handler: ((NSEvent) -> NSEvent?)?
-        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in }, keyWindow: { nil })
         _ = recorder.start(.dictation, acquire: { true }, release: {}, commit: { _ in Issue.record("unexpected save") })
         #expect(handler?(try event(.keyDown, key: 0, flags: .shift)) == nil)
         #expect(recorder.rejectedChord)

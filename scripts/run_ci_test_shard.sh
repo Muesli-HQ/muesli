@@ -21,8 +21,17 @@ case "${shard}" in
   core)
     filters=(
       ConfigStoreTests
+      CredentialMigrationTests
+      TimeTurnerPauseStateTests
+      TimeTurnerRecapTests
+      TimeTurnerRecapSourceTests
+      MuesliHistorySkillTests
+      VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
+      GlobalSearchTests
+      GlobalSearchWorkerTests
+      GlobalSearchPresentationTests
       GranolaImportTests
       ComputerUseSettingsTests
       ComputerUseLocalPlannerTests
@@ -55,29 +64,64 @@ case "${shard}" in
       NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
-      VisualMemoryStoreTests
       MeetingVideoAudioTests
       MeetingChunkCollectorTests
       AppConfigTests
+      RecordingUXTests
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictationWordAnalyticsTests
+      ContentPrivacyTests
+      TelemetryPrivacyTests
+      ProductAnalyticsTests
+      ProductAnalyticsModelTests
+      DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
       BodhanBackendTests
       BodhanArtifactValidationTests
       BodhanLifecycleTests
       DictationBackendPreparationTests
+      BufferedTranscriptionBackendIntegrationTests
       ContributionMilestoneTests
+      CotypistShaperTests
+      CotypistHistoryTests
+      CotypistSetupGuideLayoutTests
+      CotypistModelComparisonTests
     )
     ;;
   dictation-transcription)
     filters=(
+      MedASRTests
+      MedASRPreparationTests
+      MedASRIntegrationTests
+      AppScopedDictationRecorderTests
+      DictationDevFaultTests
+      DictationCaptureHealthTests
+      DictationStartupWatchdogTests
+      DictationAudioSessionManagerTests
+      RouteAwareDictationRecorderTests
+      DictationStreamingRecoveryIntegrationTests
+      DictationRecoveryTests
       FluidAudioTranscriberTests
+      BufferedTranscriptionSessionTests
+      BufferedTranscriptionContinuityTests
+      BufferedAdapterConfidenceTests
+      BufferedDictationFinalizerTests
+      BufferedDictationRecoveryTests
+      BufferedDictationPreviewDeliveryTests
+      LiveDictationTextTargetTests
+      LiveDictationKeyboardInputTests
+      LiveDictationFinalPasteTests
+      WhisperPreviewSegmentSeekerTests
+      WhisperPreviewPresentationTests
+      BufferedLiveTranscriptionPolicyTests
       FluidAudioModelLoadTests
       ModelLibraryPreparationTests
       ParakeetModelPreparationTests
@@ -89,6 +133,7 @@ case "${shard}" in
       MuesliCleanupV2Tests
       ManagedCleanupV12Tests
       CleanupMLXEvaluationTests
+      CleanupModelUpdateTests
       QwenMLXDownloadTests
       GemmaAudioEvaluationTests
       GemmaAudioEndToEndTests
@@ -119,6 +164,8 @@ case "${shard}" in
       PasteShortcutTests
       DictationPasteSpacingPolicyTests
       DictationPasteSpacingTests
+      DictationAppFormattingTests
+      QuillAssistantTests
       QuilTransformationTests
       QuilAvailabilityGateTests
       QuilDirectAudioTests
@@ -135,11 +182,13 @@ case "${shard}" in
       HotkeyShortcutRecorderTests
       DictationStateIdleTests
       DictationCorrectionMonitorTests
+      DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
     )
     ;;
   meetings)
     filters=(
+      BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
@@ -182,15 +231,22 @@ case "${shard}" in
       SettingsModelFieldTests
       MeetingSummaryClientTests
       MeetingChatStoreTests
+      GemmaMeetingChatTests
+      LocalChatToolTests
+      ChatPDFProcessingTests
+      ChatAttachmentTests
       MeetingChatRetrievalTests
       MeetingChatClientTests
       MeetingChatContextBudgetTests
       MeetingChatNativeBudgetTests
+      MuesliTaskRunnerTests
       MeetingChatNavigationTests
       MeetingChatExporterTests
       MeetingChatNotesActionTests
       MeetingChatReviewTests
+      MeetingChatHistoryLoadingTests
       MeetingChatPresentationTests
+      MuesliTypographyTests
       MeetingChatSourceGroupingTests
       ClaudeCodeSummarizerTests
       MeetingsNavigationTests
@@ -229,10 +285,11 @@ if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
   build_args+=(--scratch-path "${MUESLI_SWIFTPM_SCRATCH_PATH}")
 fi
 args=("${build_args[@]}")
-if [[ "${shard}" == meetings ]]; then
-  # Concurrent suites can starve the utility-priority caption tasks on small
-  # runners. Serialize test cases, preserving concurrency exercised inside each
-  # test, rather than weakening their deadlines or changing production QoS.
+if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
+  # Hundreds of concurrent cases can starve caption tasks and diarizer preload
+  # coordination, including their setup handshakes, on small runners. Serialize
+  # cases while preserving concurrency exercised inside each test, rather than
+  # weakening their deadlines or changing production QoS.
   args+=(--no-parallel)
 fi
 for filter in "${filters[@]}"; do

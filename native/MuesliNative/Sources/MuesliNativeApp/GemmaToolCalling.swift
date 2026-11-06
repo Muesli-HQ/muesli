@@ -92,6 +92,10 @@ struct GemmaToolGrammar {
     }
     private mutating func schema(_ value: [String: Any], depth: Int = 0) throws -> String {
         guard depth < 20 else { throw GemmaToolCalling.invalid() }
+        if value["nullable"] as? Bool == true {
+            var nonnull = value; nonnull.removeValue(forKey: "nullable")
+            return rule(try schema(nonnull, depth: depth + 1) + " | " + Self.literal("null"))
+        }
         if let options = value["anyOf"] as? [[String: Any]] {
             let branches = try options.map { option -> String in
                 var merged = value

@@ -9,7 +9,7 @@ enum MeetingExportBranding {
     static let logoData: Data = {
         guard let url = Bundle.module.url(forResource: "muesli-export-logo", withExtension: "png"),
               let data = try? Data(contentsOf: url) else {
-            preconditionFailure("Missing bundled official Muesli export logo")
+            preconditionFailure("Missing bundled official muesli export logo")
         }
         return data
     }()
@@ -20,15 +20,19 @@ enum MeetingExportBranding {
         "\n\n" + """
         ---
 
-        <img src="data:image/png;base64,\(logoData.base64EncodedString())" alt="Muesli logo" width="24" height="24" />
+        <img src="data:image/png;base64,\(logoData.base64EncodedString())" alt="muesli logo" width="24" height="24" />
 
-        [Exported with Muesli](\(websiteURL.absoluteString))
+        [Exported with muesli](\(websiteURL.absoluteString))
         """
     }
 
     static func removingFooter(from markdown: String) -> String {
-        guard markdown.hasSuffix(markdownFooter) else { return markdown }
-        return String(markdown.dropLast(markdownFooter.count))
+        let footer = markdownFooter
+        // Recognize exports created before the lowercase branding update too.
+        let legacyFooter = footer.replacingOccurrences(of: "alt=\"muesli logo\"", with: "alt=\"Muesli logo\"")
+            .replacingOccurrences(of: "Exported with muesli", with: "Exported with Muesli")
+        guard let suffix = [footer, legacyFooter].first(where: { markdown.hasSuffix($0) }) else { return markdown }
+        return String(markdown.dropLast(suffix.count))
     }
 
     /// Replays the printed PDF pages and adds branding inside the bottom margin,
@@ -41,7 +45,7 @@ enum MeetingExportBranding {
               let context = CGContext(consumer: consumer, mediaBox: nil, nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        let label = NSAttributedString(string: "Exported with Muesli", attributes: [
+        let label = NSAttributedString(string: "Exported with muesli", attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName("Helvetica" as CFString, 9, nil),
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.45, alpha: 1)
         ])

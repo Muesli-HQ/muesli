@@ -89,7 +89,7 @@ final class DiagnosticIncidentReporter {
 
     private static func sendTelemetry(_ incident: DiagnosticIncident) {
         let category: ErrorCategory = incident.telemetryCategory == .appState ? .appState : .thrownException
-        TelemetryDeck.errorOccurred(
+        MuesliTelemetry.errorOccurred(
             id: incident.telemetryErrorID,
             category: category,
             message: nil,

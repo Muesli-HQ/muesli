@@ -42,7 +42,6 @@ struct DictationPasteSpacingTests {
                 text: text,
                 appendDictationSentenceSpace: dictation,
                 pasteboard: pasteboard,
-                requireStagedClipboardOwnership: true,
                 targetApplicationProvider: { nil },
                 simulatePasteAction: { _ in
                     delivered = pasteboard.string(forType: .string) ?? ""

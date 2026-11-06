@@ -48,10 +48,16 @@ def cleanup_plan(entries, replacement_key):
 
 
 def trusted_context(env):
-    if (env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_EVENT_NAME") != "push"
-            or env.get("GITHUB_REF") != MAIN_REF or env.get("CACHE_SAVE_OUTCOME") != "success"
+    manual_warm = (env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                   and env.get("CACHE_WARM_BLACKSMITH") == "true"
+                   and env.get("GITHUB_ACTOR") == "pHequals7"
+                   and env.get("GITHUB_REPOSITORY") == "Muesli-HQ/muesli"
+                   and env.get("CACHE_BACKEND") == "blacksmith")
+    if (env.get("GITHUB_ACTIONS") != "true"
+            or not (env.get("GITHUB_EVENT_NAME") == "push" or manual_warm)
+            or env.get("GITHUB_REF") != MAIN_REF
             or env.get("CACHE_DISABLED") == "true"):
-        raise ValueError("Cleanup requires an enabled successful main-push cache save")
+        raise ValueError("Cleanup requires an enabled main cache from a push or authorized warm-up")
     repo = env.get("GITHUB_REPOSITORY", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("Invalid repository")
@@ -60,6 +66,12 @@ def trusted_context(env):
     if (not re.fullmatch(r"[0-9a-f]{40}", sha) or not KEY_PATTERN.fullmatch(key)
             or not key.endswith("-" + sha)):
         raise ValueError("Replacement must belong to this main commit")
+    saved = env.get("CACHE_SAVE_OUTCOME") == "success"
+    existing = (env.get("CACHE_LOOKUP_OUTCOME") == "success"
+                and env.get("CACHE_LOOKUP_HIT") == "true"
+                and env.get("CACHE_EXISTING_KEY") == key)
+    if not saved and not existing:
+        raise ValueError("Cleanup requires a saved or verified existing replacement")
     return repo, key
 
 
@@ -100,8 +112,13 @@ def cleanup(env, delete=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--delete", action="store_true", help="Apply deletions; otherwise only print the plan")
+    parser.add_argument("--backend", choices=("github", "blacksmith"), default="github")
     args = parser.parse_args()
-    cleanup(os.environ, delete=args.delete)
+    if args.backend == "blacksmith":
+        from ci_blacksmith_cache import cleanup as blacksmith_cleanup
+        blacksmith_cleanup(os.environ, delete=args.delete)
+    else:
+        cleanup(os.environ, delete=args.delete)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ VERSION=$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/
 APP_NAME=$(defaults read "$APP_PATH/Contents/Info" CFBundleDisplayName 2>/dev/null || echo "Muesli")
 export MUESLI_DMG_APP_NAME="$APP_NAME"
 APP_BUNDLE_NAME="$(basename "$APP_PATH")"
-DMG_NAME="${APP_NAME}-${VERSION}.dmg"
+# Keep release asset names stable when user-facing branding changes.
+DMG_NAME="${APP_BUNDLE_NAME%.app}-${VERSION}.dmg"
 APPLESCRIPT_APP_NAME=$(APPLESCRIPT_VALUE="$APP_NAME" python3 - <<'PY'
 import os
 

@@ -68,6 +68,7 @@ struct MeetingExporter {
                 if formatPicker.selectedFormat == .pdf {
                     do {
                         try writePDF(attributed: buildAttributedString(from: markdown), to: url)
+                        ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                         NSWorkspace.shared.open(url)
                     } catch {
                         showError("Export Failed", error.localizedDescription)
@@ -152,6 +153,7 @@ struct MeetingExporter {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try text.write(to: url, atomically: true, encoding: .utf8)
+                ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                 DispatchQueue.main.async { NSWorkspace.shared.open(url) }
             } catch {
                 DispatchQueue.main.async { showError("Export Failed", error.localizedDescription) }
@@ -357,7 +359,7 @@ struct MeetingExporter {
         }
 
         if hasBranding {
-            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"Muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with Muesli</a></p>")
+            htmlLines.append("<hr><p><img src=\"data:image/png;base64,\(MeetingExportBranding.logoData.base64EncodedString())\" alt=\"muesli logo\" width=\"24\" height=\"24\"> <a href=\"\(MeetingExportBranding.websiteURL.absoluteString)\">Exported with muesli</a></p>")
         }
 
         return """
@@ -476,7 +478,7 @@ class ExportFormatAccessory: NSObject {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 32))
 
         let label = NSTextField(labelWithString: "Format:")
-        label.font = .systemFont(ofSize: 13)
+        label.font = AppFonts.font(size: 13)
         label.frame = NSRect(x: 0, y: 6, width: 55, height: 20)
 
         let button = NSPopUpButton(frame: NSRect(x: 60, y: 2, width: 190, height: 28), pullsDown: false)

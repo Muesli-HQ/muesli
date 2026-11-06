@@ -92,7 +92,7 @@ struct PasteShortcutTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableComputerUseHotkey = false
         initial.enableQuilMode = false
@@ -134,7 +134,7 @@ struct PasteShortcutTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.pasteShortcut = .custom(try #require(PasteKeyChord(keyCode: 9, modifiers: .maskControl)))
         configStore.save(initial)
@@ -266,7 +266,7 @@ struct PasteShortcutTests {
         _ = handler?(try keyEvent(.keyDown, key: 9, flags: .command))
         _ = handler?(try keyEvent(.keyUp, key: 9))
         #expect(!conflicting.isRecording)
-        #expect(conflicting.message?.contains("another Muesli feature") == true)
+        #expect(conflicting.message?.contains("another muesli feature") == true)
         #expect(released == 2)
     }
 

@@ -21,9 +21,9 @@ public enum MeetingChatTurnState: String, Codable, Sendable {
 }
 
 public enum MeetingChatSourceKind: String, Codable, Sendable {
-    case transcript, manualNotes, generatedNotes
+    case transcript, manualNotes, generatedNotes, title
     public var label: String {
-        switch self { case .transcript: "Transcript"; case .manualNotes: "Written notes"; case .generatedNotes: "Generated notes" }
+        switch self { case .title: "Meeting title"; case .transcript: "Transcript"; case .manualNotes: "Written notes"; case .generatedNotes: "Generated notes" }
     }
 }
 
@@ -69,9 +69,11 @@ public struct MeetingChatSession: Codable, Identifiable, Sendable {
     /// Hydrated from normalized membership so deletion never leaves a dangling anchor.
     public var anchorMeetingID: Int64? = nil
     /// Nil denotes a legacy title, conservatively preserved as user-authored.
+    public var allowsRequestedMeetingDiscovery: Bool? = nil
     public var titleIsAutomatic: Bool? = nil
     public var generatedTitleTurnID: UUID? = nil
     public var rollingSummary: MeetingChatRollingSummary? = nil
+    public var fileAttachments: [ChatFileReference]? = nil
 }
 
 public struct MeetingChatTurn: Codable, Identifiable, Sendable {
@@ -91,6 +93,12 @@ public struct MeetingChatTurn: Codable, Identifiable, Sendable {
     public var isDraft: Bool = false
     public var attemptID: UUID?
     public var scopeLabel: String?
+    public var fileAttachments: [ChatFileReference]? = nil
+    public var fileDependencies: [ChatFileReference]? = nil
+    public var composerScopeAtSend: MeetingChatScope? = nil
+    public var skillTitle: String? = nil
+    public var skillRecentMeetingScope: MeetingChatScope? = nil
+    public var documentCoverage: [ChatDocumentCoverage]? = nil
 }
 
 public struct MeetingChatCoverage: Codable, Equatable, Sendable {

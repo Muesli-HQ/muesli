@@ -19,7 +19,7 @@ enum MeetingRecordingStartOrigin: Equatable {
     var signalLossResponse: MeetingSignalLossResponse {
         switch self {
         case .manual:
-            return .none
+            return .transcriptInactivity
         case .detectedPrompt:
             return .warnOnly
         case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
@@ -43,12 +43,21 @@ enum MeetingRecordingStartOrigin: Equatable {
 enum MeetingSignalLossResponse: Equatable {
     case none
     case warnOnly
+    case transcriptInactivity
 }
 
 struct MeetingSignalLossPromptState: Equatable {
     private(set) var isPromptSuppressed = false
     private(set) var isDismissedForRecording = false
     private(set) var lastTranscriptActivityAt: Date?
+
+    static let transcriptQuietPeriod: TimeInterval = 45
+    static let notificationDuration: TimeInterval = 30
+
+    var inactivityDeadline: Date? {
+        guard canPresentPrompt, let lastTranscriptActivityAt else { return nil }
+        return lastTranscriptActivityAt.addingTimeInterval(Self.transcriptQuietPeriod)
+    }
 
     var canPresentPrompt: Bool {
         !isPromptSuppressed && !isDismissedForRecording

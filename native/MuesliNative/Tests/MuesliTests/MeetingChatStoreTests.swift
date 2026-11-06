@@ -36,6 +36,30 @@ struct MeetingChatStoreTests {
         #expect(saved.state == .completed)
     }
 
+    @Test func documentCoverageIsOptionalAndFollowsAttemptAndSourceOwnership() throws {
+        let (_, chat, _) = try fixture()
+        let session = try chat.createSession(scope: .init(selection: .meetings([])), title: "PDF")
+        let file = ChatFileReference(id: "synthetic", name: "fixture.pdf", kind: .pdf, bookmark: Data(), byteCount: 100)
+        let turn = try chat.beginTurn(sessionID: session.id, question: "Summarize", scope: session.scope,
+            provider: "test", model: "test", fileAttachments: [file])
+        let data = try JSONEncoder().encode(turn)
+        var legacy = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "documentCoverage")
+        let decoded = try JSONDecoder().decode(MeetingChatTurn.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(decoded.documentCoverage == nil)
+        let coverage = [ChatDocumentCoverage(fileID: file.id, totalPages: 289, pagesWithoutText: 2, wasCondensed: true)]
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Notes", citations: [], dependencies: [], attemptID: UUID(), documentCoverage: coverage) == false)
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Notes", citations: [], dependencies: [], attemptID: turn.attemptID, documentCoverage: coverage))
+        #expect(try chat.turns(sessionID: session.id).first?.documentCoverage == coverage)
+        let retry = try #require(try chat.restartTurn(id: turn.id, provider: "test", model: "other"))
+        #expect(retry.documentCoverage == nil)
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "Stale", citations: [], dependencies: [], attemptID: turn.attemptID, documentCoverage: coverage) == false)
+        #expect(try chat.finishTurn(turnID: turn.id, answer: "New", citations: [], dependencies: [], attemptID: retry.attemptID, documentCoverage: coverage))
+        try chat.invalidateFileSources(sessionID: session.id, ids: [file.id])
+        let invalidated = try #require(chat.turns(sessionID: session.id).first)
+        #expect(invalidated.originalAnswer == nil && invalidated.documentCoverage == nil)
+    }
+
     @Test func recoversPendingTurnsAsInterrupted() throws {
         let (_, chat, id) = try fixture()
         let (session, _, _) = try pending(chat, id)

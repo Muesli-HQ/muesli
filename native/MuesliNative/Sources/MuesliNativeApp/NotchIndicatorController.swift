@@ -30,7 +30,7 @@ enum NotchOutcome: Equatable {
         switch self {
         case .success: return .systemGreen
         case .needsInput: return .systemYellow
-        case .failure: return .systemRed
+        case .failure: return NSColor.muesliHex(MuesliTheme.recordingFillHex)
         }
     }
     var title: String {
@@ -147,7 +147,8 @@ struct NotchIndicatorGeometry: Equatable {
 
     func instructionFrame(in screen: CGRect, requiresReview: Bool = false, resultCount: Int = 0) -> CGRect {
         let width = min(440, screen.width)
-        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 30
+        // Two 10pt Nunito Sans lines plus the VStack gap need 34pt per result.
+        let height: CGFloat = requiresReview ? 180 : 100 + CGFloat(min(max(resultCount, 0), 3)) * 34
         return CGRect(x: expandedOriginX(width: width, in: screen),
                       y: cutout.minY - height, width: width, height: height)
     }
@@ -185,6 +186,7 @@ final class NotchIndicatorController {
     private var title = "Ready"
     private var detail = ""
     private var recording = false
+    private(set) var cursorInsertionStopped = false
     private var paused = false
     private var meeting = false
     private(set) var meetingStatus: String?
@@ -200,8 +202,8 @@ final class NotchIndicatorController {
     private var instruction: String?
     private var instructionStatus = ""
     private var toolResults: [NotchToolResult] = []
-    private var appName = ""
-    private var appIcon: NSImage?
+    private(set) var appName = ""
+    private(set) var appIcon: NSImage?
     private var transcriptHovered = false
     private var transcriptDismissed = false
     private var transcriptExit: DispatchWorkItem?
@@ -258,16 +260,20 @@ final class NotchIndicatorController {
         instructionPanel?.isVisible == true ? instructionPanel?.frame : nil
     }
 
-    private func closeMeetingTranscript() {
+    private func closeMeetingTranscript(renderImmediately: Bool = true) {
         transcriptExit?.cancel()
         transcriptHovered = false
         meetingTranscript.hide()
-        renderInstruction()
+        if renderImmediately { renderInstruction() }
     }
 
     private var expanded = true
     private var screenBounds = CGRect.zero
     private var requiresReview = false
+    private(set) var quillAnswer: String?
+    private(set) var quillQuestion: String?
+    private var onQuillDismiss: (() -> Void)?
+    private var onQuillFollowUp: (() -> Void)?
     private(set) var outcome: NotchOutcome?
     private(set) var status: NotchStatus?
     private(set) var statusDismissAt: Date?
@@ -304,9 +310,13 @@ final class NotchIndicatorController {
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
               toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
-              meetingStatus: String? = nil) -> Bool {
+              meetingStatus: String? = nil, cursorInsertionStopped: Bool = false, renderImmediately: Bool = true) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         let continuesStatus = status != nil && self.status == status && isVisible
+        quillAnswer = nil
+        quillQuestion = nil
+        onQuillDismiss = nil
+        onQuillFollowUp = nil
         requiresReview = false
         self.status = status
         statusDismissAt = nil
@@ -342,9 +352,10 @@ final class NotchIndicatorController {
         self.detail = detail
         self.meetingStatus = meetingStatus
         self.recording = recording
+        self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
         self.paused = paused
         if !meeting || !recording {
-            closeMeetingTranscript()
+            closeMeetingTranscript(renderImmediately: false)
             meetingTranscript.reset()
             transcriptDismissed = false
         }
@@ -364,8 +375,10 @@ final class NotchIndicatorController {
             self.panel = panel
         }
         if status != nil && !continuesStatus { expanded = true }
-        render()
-        panel?.orderFrontRegardless()
+        if renderImmediately {
+            render()
+            panel?.orderFrontRegardless()
+        }
         logPresentation("show")
         scheduleDismissal()
         return true
@@ -389,7 +402,12 @@ final class NotchIndicatorController {
         closeMeetingTranscript()
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
+        quillAnswer = nil
+        quillQuestion = nil
+        onQuillDismiss = nil
+        onQuillFollowUp = nil
         status = nil
+        cursorInsertionStopped = false
         statusDismissAt = nil
         outcome = nil
         requiresReview = false
@@ -411,7 +429,7 @@ final class NotchIndicatorController {
     /// pending review; show that existing result below the external menu bar.
     @discardableResult
     func refreshOutcomePlacement(on screen: NSScreen?) -> Bool {
-        guard outcome != nil || status != nil else { return false }
+        guard outcome != nil || status != nil || quillAnswer != nil else { return false }
         guard let screen else { return true }
         let resolved = resolveGeometry(screen)
         if status != nil && resolved == nil { return false }
@@ -480,6 +498,35 @@ final class NotchIndicatorController {
         return true
     }
 
+    @discardableResult
+    func showQuillAnswer(_ answer: String, question: String? = nil, on screen: NSScreen, onDismiss: @escaping () -> Void,
+                         onFollowUp: @escaping () -> Void) -> Bool {
+        guard show(on: screen, title: "Quill", detail: "Response", recording: false, paused: false,
+            meeting: false, handsFree: false, active: true, icon: QuillIcon.image(), accent: .white,
+            instruction: answer, renderImmediately: false) else { return false }
+        quillAnswer = answer
+        quillQuestion = question
+        onQuillDismiss = onDismiss
+        onQuillFollowUp = onFollowUp
+        expanded = true
+        render()
+        panel?.orderFrontRegardless()
+        return true
+    }
+
+    func updateQuillQuestion(_ question: String) {
+        guard quillAnswer != nil else { return }
+        quillQuestion = question
+        render()
+    }
+
+    private func dismissQuillAnswer() {
+        guard quillAnswer != nil else { return }
+        let callback = onQuillDismiss
+        hide()
+        callback?()
+    }
+
     func toggleInstructionExpansion() {
         expanded.toggle()
         render()
@@ -498,10 +545,11 @@ final class NotchIndicatorController {
             onStopMeeting: { [weak self] in self?.onStopMeeting?() },
             onStopRecording: { [weak self] in self?.onStopRecording?() },
             onOpenHome: { [weak self] in self?.onOpenHome?() },
-            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil,
+            hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil || quillAnswer != nil, isQuillAnswer: quillAnswer != nil,
             onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
-            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
+            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) },
+            cursorInsertionStopped: cursorInsertionStopped)
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
             hosting.rootView = view
         } else {
@@ -549,6 +597,27 @@ final class NotchIndicatorController {
         }
         meetingTranscript.hide()
         (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if let quillAnswer {
+            let width = min(geometry.frame().width, screenBounds.width)
+            let naturalHeight = QuillAssistantLayout.contentHeight(answer: quillAnswer, question: quillQuestion, width: width)
+            let height = QuillAssistantLayout.height(contentHeight: naturalHeight,
+                maximumHeight: min(420, screenBounds.height))
+            let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
+                y: max(screenBounds.minY, geometry.cutout.minY - height), width: width, height: height)
+            let view = QuillAssistantView(answer: quillAnswer, question: quillQuestion,
+                contentHeight: max(1, height - QuillAssistantLayout.chromeHeight),
+                onFollowUp: { [weak self] in
+                    guard let self, self.quillAnswer != nil else { return }
+                    self.onQuillFollowUp?()
+                },
+                onDismiss: { [weak self] in self?.dismissQuillAnswer() })
+            if let hosting = instructionPanel?.contentView as? NSHostingView<QuillAssistantView> {
+                hosting.rootView = view
+            } else { instructionPanel?.contentView = NSHostingView(rootView: view) }
+            instructionPanel?.setFrame(frame, display: true)
+            instructionPanel?.orderFrontRegardless()
+            return
+        }
         if status != nil {
             let width = min(CGFloat(380), screenBounds.width)
             let frame = CGRect(x: geometry.expandedOriginX(width: width, in: screenBounds),
@@ -590,7 +659,8 @@ final class NotchIndicatorController {
     }
 
     private func cancelOrDismiss() {
-        if outcome != nil || status != nil { hide() } else { onCancel?() }
+        if quillAnswer != nil { dismissQuillAnswer() }
+        else if outcome != nil || status != nil { hide() } else { onCancel?() }
     }
 }
 
@@ -599,7 +669,7 @@ private struct NotchStatusView: View {
 
     var body: some View {
         Text(message)
-            .font(.system(size: 13, weight: .medium))
+            .font(MuesliTheme.font(size: 13, weight: .medium))
             .foregroundStyle(.white)
             .lineLimit(2)
             .help(message)
@@ -628,13 +698,13 @@ struct NotchLiveInstructionView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 if let appIcon { Image(nsImage: appIcon).resizable().frame(width: 18, height: 18) }
-                Text(appName.isEmpty ? "Instruction" : appName).font(.caption).foregroundStyle(.white.opacity(0.65))
+                Text(appName.isEmpty ? "Instruction" : appName).font(MuesliTheme.font(.caption)).foregroundStyle(.white.opacity(0.65))
                 Spacer()
                 Button(action: onCollapse) { Image(systemName: "chevron.up") }
                     .accessibilityLabel("Collapse instruction")
             }
             ScrollView {
-                Text(instruction).font(.system(size: 13, weight: .medium))
+                Text(instruction).font(MuesliTheme.font(size: 13, weight: .medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
@@ -642,7 +712,7 @@ struct NotchLiveInstructionView: View {
                 if outcome != nil || requiresReview {
                     Image(systemName: "exclamationmark.bubble").foregroundStyle(accent)
                 } else { ProgressView().controlSize(.small).tint(accent) }
-                Text(status).font(.caption).lineLimit(2)
+                Text(status).font(MuesliTheme.font(.caption)).lineLimit(2)
                 Spacer()
                 Button(outcome != nil || requiresReview ? "Dismiss" : "Cancel", action: onCancel).buttonStyle(.bordered)
             }
@@ -657,15 +727,15 @@ struct NotchLiveInstructionView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .font(.system(size: 10))
+                    .font(MuesliTheme.font(size: 10))
                     .foregroundStyle(.white.opacity(0.75))
-                    .frame(height: 24, alignment: .top)
+                    .frame(minHeight: 28, alignment: .top)
                     .help("Full response available in Timeline")
                 }
             }
             if requiresReview {
-                Text("Your attention is needed. Review the details in Muesli.")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.65))
+                Text("Your attention is needed. Review the details in muesli.")
+                    .font(MuesliTheme.caption()).foregroundStyle(.white.opacity(0.65))
                 Button("Review in app", action: onReview).buttonStyle(.borderedProminent)
             }
         }
@@ -677,6 +747,7 @@ struct NotchLiveInstructionView: View {
             UnevenRoundedRectangle(bottomLeadingRadius: 18, bottomTrailingRadius: 18)
                 .strokeBorder(accent.opacity(0.5), lineWidth: 0.75).allowsHitTesting(false)
         }
+        .font(MuesliTheme.callout())
         .foregroundStyle(.white).tint(accent).preferredColorScheme(.dark)
     }
 }
@@ -705,9 +776,11 @@ private struct NotchIndicatorView: View {
     let requiresReview: Bool
     let outcome: NotchOutcome?
     var isStatus = false
+    var isQuillAnswer = false
     let onToggleInstruction: () -> Void
     let power: () -> Float
     var onHover: (Bool) -> Void = { _ in }
+    var cursorInsertionStopped = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var edgeIntensity = 0.18
@@ -738,19 +811,21 @@ private struct NotchIndicatorView: View {
                 Button(action: onOpenHome) {
                     HStack(spacing: 5) {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 16, height: 16)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(title).font(.system(size: 10, weight: .semibold))
-                            if let meetingStatus {
-                                Text(meetingStatus).font(.system(size: 8)).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(title).font(MuesliTheme.font(size: 10, weight: .semibold))
+                                .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
+                            if cursorInsertionStopped {
+                                Text("Still recording").font(MuesliTheme.font(size: 9))
+                            } else if let meetingStatus {
+                                Text(meetingStatus).font(MuesliTheme.font(size: 9)).foregroundStyle(.secondary)
                             }
-                        }
-                        .lineLimit(1).minimumScaleFactor(0.8)
+                        }.lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                     .contentShape(Rectangle())
                 }
-                .accessibilityLabel("\(title). \(meetingStatus.map { $0 + ". " } ?? "")Open Muesli home")
-                .help("Open Muesli home")
+                .accessibilityLabel("\(cursorInsertionStopped ? detail : title). \(meetingStatus.map { $0 + ". " } ?? "")Open muesli home")
+                .help(cursorInsertionStopped ? detail : "Open muesli home")
                 if hasInstruction {
                     Button(action: onToggleInstruction) {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
@@ -775,6 +850,8 @@ private struct NotchIndicatorView: View {
                         Image(systemName: "pause.fill")
                     } else if let outcome {
                         Image(systemName: outcome == .success ? "circle.fill" : "exclamationmark.triangle.fill")
+                    } else if isQuillAnswer {
+                        Image(systemName: "text.bubble")
                     } else if active {
                         ProgressView().controlSize(.mini).tint(Color(nsColor: accent))
                     } else {

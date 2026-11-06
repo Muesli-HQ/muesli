@@ -31,9 +31,9 @@ struct NotchInstructionPreview: View {
         VStack(spacing: 20) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Expanded instruction panel").font(.headline)
+                    Text("Expanded instruction panel").font(MuesliTheme.font(.headline))
                     Text("Visual preview · sample content · no actions are executed")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -84,7 +84,7 @@ struct NotchInstructionPreview: View {
             .frame(height: 340)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             Text("The panel stays centered beneath the visible bar. Collapsing it keeps the instruction.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
         }
         .padding(24).frame(width: 700)
         .tint(accent)
@@ -125,13 +125,13 @@ struct NotchInstructionPreview: View {
 
     private var instructionDetails: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(instruction).font(.system(size: 17, weight: .medium))
+            Text(instruction).font(MuesliTheme.font(size: 17, weight: .medium))
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if mode == "Quill" {
                 DisclosureGroup("Selected text", isExpanded: $showContext) {
                     Text("We would like to arrange a review of the updated design tomorrow, if you have time.")
-                        .font(.callout).foregroundStyle(.white.opacity(0.65)).padding(.top, 8)
-                }.font(.callout).tint(accent)
+                        .font(MuesliTheme.font(.callout)).foregroundStyle(.white.opacity(0.65)).padding(.top, 8)
+                }.font(MuesliTheme.font(.callout)).tint(accent)
             } else {
                 Divider().overlay(.white.opacity(0.1))
                 HStack(spacing: 10) {
@@ -139,7 +139,7 @@ struct NotchInstructionPreview: View {
                         Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
                             .resizable().frame(width: 24, height: 24)
                     } else { Image(systemName: "calendar").foregroundStyle(accent) }
-                    Text("Opening Calendar").font(.callout)
+                    Text("Opening Calendar").font(MuesliTheme.font(.callout))
                 }
             }
             if phase == "Needs approval" {
@@ -147,7 +147,7 @@ struct NotchInstructionPreview: View {
                 HStack {
                     Image(systemName: "exclamationmark.bubble").foregroundStyle(accent)
                     Text(response ?? (mode == "Quill" ? "Replace selected text?" : "Create this event?"))
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                     Spacer()
                     Button("Cancel") { response = "Preview cancelled" }
                         .buttonStyle(.bordered)
@@ -155,7 +155,7 @@ struct NotchInstructionPreview: View {
                         .buttonStyle(.borderedProminent).tint(accent)
                 }
                 Text("Preview only — these buttons do not authorize real actions.")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.55))
+                    .font(MuesliTheme.font(.caption2)).foregroundStyle(.white.opacity(0.55))
             }
         }
         .padding(20).frame(width: 440, alignment: .leading)

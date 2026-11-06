@@ -120,9 +120,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private var bindingPublishWorkItem: DispatchWorkItem?
         private var scheduledCommandID: UUID?
 
-        private let bodyFont = NSFont.systemFont(ofSize: 16)
-        private let boldFont = NSFont.boldSystemFont(ofSize: 16)
-        private let headingFont = NSFont.systemFont(ofSize: 26, weight: .bold)
+        private let bodyFont = AppFonts.font(size: 16)
+        private let boldFont = AppFonts.bold(16)
+        private let headingFont = AppFonts.font(size: 26, weight: .bold)
         private let bodyColor = NSColor.labelColor
         private let secondaryColor = NSColor.secondaryLabelColor
 
@@ -665,7 +665,7 @@ private final class PlaceholderTextView: NSTextView {
             y: textContainerInset.height
         )
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 16),
+            .font: AppFonts.font(size: 16),
             .foregroundColor: NSColor.placeholderTextColor
         ]
         placeholder.draw(at: origin, withAttributes: attributes)

@@ -26,7 +26,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "bodhan", "sensevoice", "gemma4-litert", "apple-speech"]
+        let known: Set<String> = ["fluidaudio", "parakeet-unified", "whisper", "qwen", "nemotron35", "cohere", "medasr", "bodhan", "sensevoice", "gemma4-litert", "apple-speech"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -657,8 +657,8 @@ struct PostProcessorOptionTests {
         for option in PostProcessorOption.all {
             #expect(option.downloadURL.scheme == "https", "Non-HTTPS download URL for \(option.id)")
             if option.modelURL.pathExtension == "safetensors" {
-                #expect(option.managedModel != nil)
-                #expect(option.managedModel?.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
+                #expect(option.cleanupSlot != nil)
+                #expect(option.cleanupSlot?.bundled.artifact.files.allSatisfy { $0.expectedByteCount != nil && $0.sha256 != nil } == true)
             } else {
                 #expect(option.modelURL.pathExtension == "gguf")
             }
@@ -709,7 +709,7 @@ struct PostProcessorOptionTests {
             let config = try JSONDecoder().decode(AppConfig.self, from: data)
             #expect(config.activePostProcessorId == PostProcessorOption.finetunedV4.id)
         }
-        #expect(PostProcessorOption.finetunedV4.label == "Muesli Cleanup Lite")
+        #expect(PostProcessorOption.finetunedV4.label == "muesli Cleanup Lite")
     }
 
     @Test("resolveDownloaded prefers selected downloaded option")
@@ -1063,7 +1063,7 @@ struct MeetingSummaryBackendTests {
 
     @Test("all options listed")
     func allOptions() {
-        #expect(MeetingSummaryBackendOption.all.count == 8)
+        #expect(MeetingSummaryBackendOption.all.count == 9)
         #expect(MeetingSummaryBackendOption.all.contains(.openAI))
         #expect(MeetingSummaryBackendOption.all.contains(.anthropic))
         #expect(MeetingSummaryBackendOption.all.contains(.claudeCode))
@@ -1362,7 +1362,7 @@ struct AppConfigTests {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-openrouter-resolution-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         var config = AppConfig()
         config.openRouterAPIKey = ""
 
@@ -2468,6 +2468,78 @@ struct AppConfigTests {
 
 @Suite("HotkeyMonitor")
 struct HotkeyMonitorTests {
+    @Test("Follow-ups started by the button submit on the next hotkey press", arguments: [false, true])
+    @MainActor
+    func conversationalToggle(combination: Bool) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.doubleTapEnabled = false
+        monitor.combinationActivation = .pushToTalk
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        var events: [String] = []
+        monitor.onToggleStart = { events.append("start") }
+        monitor.onToggleStop = { events.append("submit") }
+        monitor.onPrepare = { events.append("unexpected prepare") }
+        monitor.onStart = { events.append("unexpected hold") }
+        monitor.onStop = { events.append("unexpected release") }
+        monitor.onCancel = { events.append("unexpected cancel") }
+        func press(_ down: Bool) {
+            if combination {
+                monitor.handleCombinationForTests(type: down ? .keyDown : .keyUp,
+                    keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 55, flags: down ? .command : [])
+            }
+        }
+        monitor.startToggleMode()
+        #expect(monitor.isToggleRecording)
+        monitor.startToggleMode() // Repeated UI clicks cannot start another take.
+        scheduler.advance(by: 1)
+        #expect(events == ["start"])
+        press(true)
+        press(false)
+        scheduler.advance(by: 1)
+        #expect(!monitor.isToggleRecording)
+        #expect(events == ["start", "submit"])
+        #expect(!monitor.hasPendingOrActiveSession)
+    }
+
+    @Test("Quill hotkey holds submit on release across repeated conversation turns", arguments: [false, true])
+    @MainActor
+    func conversationalHoldAndRelease(combination: Bool) {
+        let scheduler = ManualHotkeyScheduler()
+        let monitor = scheduler.makeMonitor()
+        monitor.targetKeyCode = 63 // Fn
+        monitor.doubleTapEnabled = true
+        monitor.combinationActivation = .pushToTalk
+        monitor.combinationModifiers = [.command, .shift]
+        monitor.combinationKeyCode = 15
+        var events: [String] = []
+        monitor.onPrepare = { events.append("prepare") }
+        monitor.onStart = { events.append("start") }
+        monitor.onStop = { events.append("submit") }
+        monitor.onToggleStart = { events.append("unexpected toggle") }
+        monitor.onCancel = { events.append("unexpected cancel") }
+        for _ in 0..<2 {
+            if combination {
+                monitor.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 63, flags: .function)
+            }
+            scheduler.advance(by: 0.30)
+            #expect(!monitor.isToggleRecording)
+            if combination {
+                monitor.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.command, .shift])
+            } else {
+                monitor.handleFlagsChanged(keyCode: 63, flags: [])
+            }
+            #expect(!monitor.hasPendingOrActiveSession)
+            scheduler.advance(by: 1)
+        }
+        #expect(events == ["prepare", "start", "submit", "prepare", "start", "submit"])
+    }
+
     final class ManualHotkeyScheduler {
         private struct ScheduledItem {
             let deadline: TimeInterval
