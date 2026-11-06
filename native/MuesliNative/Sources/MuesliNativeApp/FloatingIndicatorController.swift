@@ -1109,8 +1109,7 @@ final class FloatingIndicatorController: NSObject {
 
         switch state {
         case .recording:
-            if hasDictationOverlap { stopWaveformAnimation() }
-            else { ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode) }
+            ensureWaveformAnimation(in: targetFrame.size, mode: recordingWaveformMode)
             if isMeetingRecording {
                 removeStopLayer()
             } else {
@@ -1125,7 +1124,7 @@ final class FloatingIndicatorController: NSObject {
             }
         case .preparing:
             hideShortcutPillChrome()
-            if microphoneStartupPending || hasDictationOverlap { stopWaveformAnimation() }
+            if microphoneStartupPending { stopWaveformAnimation() }
             else { ensureWaveformAnimation(in: targetFrame.size, mode: .waiting) }
         default:
             break
@@ -1739,39 +1738,50 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    static func dictationOverlapText(state: DictationState, paused: Bool, insertionStopReason: BufferedDictationInsertionStopReason?) -> NSAttributedString {
+    static func dictationOverlapText(state: DictationState, insertionStopReason: BufferedDictationInsertionStopReason?) -> NSAttributedString {
         let title = state == .preparing ? "Preparing" : (state == .recording ? (insertionStopReason?.compactTitle ?? "Dictating") : "Transcribing")
-        let text = NSMutableAttributedString(string: title, attributes: [
+        return NSAttributedString(string: title, attributes: [
             .font: AppFonts.font(size: 10, weight: .semibold),
             .foregroundColor: insertionStopReason == nil ? NSColor.white : NSColor.systemYellow,
         ])
-        text.append(NSAttributedString(string: paused ? " · Meeting paused" : " · Meeting on", attributes: [
-            .font: AppFonts.font(size: 9, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.72),
-        ]))
-        return text
     }
 
     static func dictationOverlapSize(for text: NSAttributedString) -> NSSize {
-        NSSize(width: ceil(text.size().width) + 74, height: 28)
+        NSSize(width: ceil(text.size().width) + 124, height: 28)
     }
+
+    static func meetingOverlapSymbol(paused: Bool) -> String { paused ? "Ⅱ" : "●" }
 
     private func layoutDictationOverlap(in size: NSSize) {
         guard let status = overlapMeetingStatus, let contentView, let textLabel, let detail = iconLabel else { return }
         if hasDictationOverlap {
-            let text = Self.dictationOverlapText(state: state, paused: isMeetingRecordingPaused, insertionStopReason: insertionStopReason)
+            let text = Self.dictationOverlapText(state: state, insertionStopReason: insertionStopReason)
             configureTextLabelForTranscript(false)
             textLabel.alignment = .left
             textLabel.attributedStringValue = text
             textLabel.toolTip = cursorInsertionStopped ? insertionStoppedDetail : status
             textLabel.setAccessibilityLabel(cursorInsertionStopped ? "\(insertionStoppedDetail) \(status)." : "\(text.string). \(status).")
-            textLabel.frame = NSRect(x: 8, y: (size.height - 14) / 2, width: size.width - 74, height: 14)
+            textLabel.frame = NSRect(x: 8, y: (size.height - 14) / 2, width: size.width - 116, height: 14)
             textLabel.isHidden = false
             textLabel.alphaValue = 1
-            detail.isHidden = true
+            detail.alignment = .center
+            detail.font = .systemFont(ofSize: 10, weight: .semibold)
+            detail.stringValue = Self.meetingOverlapSymbol(paused: isMeetingRecordingPaused)
+            detail.textColor = isMeetingRecordingPaused ? .white.withAlphaComponent(0.72) : .systemRed
+            detail.frame = NSRect(x: size.width - 105, y: (size.height - 14) / 2, width: 10, height: 14)
+            detail.toolTip = status
+            detail.setAccessibilityLabel(status)
+            detail.isHidden = false
             wandIconView?.isHidden = true
-            loadingSpinner?.stopAnimation(nil)
-            loadingSpinner?.isHidden = true
+            if state == .transcribing {
+                ensureLoadingSpinner(in: contentView)
+                loadingSpinner?.frame = NSRect(x: size.width - 80, y: (size.height - 14) / 2, width: 14, height: 14)
+                loadingSpinner?.isHidden = false
+                loadingSpinner?.startAnimation(nil)
+            } else {
+                loadingSpinner?.stopAnimation(nil)
+                loadingSpinner?.isHidden = true
+            }
             return
         }
         textLabel.stringValue = meetingFeedbackMessage ?? (state == .preparing ? "Preparing" : (state == .recording ? (insertionStopReason?.compactTitle ?? "Dictating") : "Transcribing"))
@@ -1875,7 +1885,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     private func ensureWaveformAnimation(in frameSize: NSSize, mode: WaveformAnimationMode) {
-        if cursorInsertionStopped || hasDictationOverlap {
+        if cursorInsertionStopped {
             if !barLayers.isEmpty { stopWaveformAnimation() }
             return
         }
@@ -2655,7 +2665,7 @@ final class FloatingIndicatorController: NSObject {
         }
         let size: NSSize
         if overlapMeetingStatus != nil {
-            size = hasDictationOverlap ? Self.dictationOverlapSize(for: Self.dictationOverlapText(state: state, paused: isMeetingRecordingPaused, insertionStopReason: insertionStopReason)) : NSSize(width: 220, height: 40)
+            size = hasDictationOverlap ? Self.dictationOverlapSize(for: Self.dictationOverlapText(state: state, insertionStopReason: insertionStopReason)) : NSSize(width: 220, height: 40)
         } else { switch state {
         case .idle:
             if config.indicatorHoverStyle == .shortcutPill {

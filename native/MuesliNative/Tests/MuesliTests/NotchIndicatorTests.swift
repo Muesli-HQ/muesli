@@ -111,15 +111,17 @@ struct NotchIndicatorTests {
             for state: DictationState in [.preparing, .recording, .transcribing] {
                 for paused in [false, true] {
                     for reason: BufferedDictationInsertionStopReason? in [nil, .cursorOwnershipLost, .transcriptionFailed] {
-                        let text = FloatingIndicatorController.dictationOverlapText(state: state, paused: paused, insertionStopReason: reason)
+                        let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: reason)
                         let size = FloatingIndicatorController.dictationOverlapSize(for: text)
                         #expect(size.height == 28)
-                        #expect(ceil(text.size().width) <= size.width - 74)
-                        #expect(8 + ceil(text.size().width) < size.width - 58, "Text must not overlap the finish control")
-                        #expect(text.string.contains(paused ? "Meeting paused" : "Meeting on"))
+                        #expect(ceil(text.size().width) + 8 <= size.width - 116)
+                        #expect(8 + (size.width - 116) <= size.width - 105, "Text must not overlap the meeting indicator")
+                        #expect(FloatingIndicatorController.meetingOverlapSymbol(paused: paused) == (paused ? "Ⅱ" : "●"))
+                        let bars = (0..<5).map { IndicatorWaveformDynamics.standingBarFrame(index: $0, amplitude: 1, bounds: CGRect(origin: .zero, size: size), overlapsMeeting: true) }
+                        #expect(bars.allSatisfy { $0.minX >= size.width - 95 && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
                         if state == .recording && reason == nil {
                             #expect(text.string.hasPrefix("Dictating"))
-                            #expect(size.width * size.height < 190 * 36, "The overlap pill should occupy less area than the previous design")
+                            #expect(size.width * size.height < 220 * 40, "The overlap pill should remain compact")
                         }
                     }
                 }

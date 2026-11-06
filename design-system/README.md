@@ -77,11 +77,13 @@ and a Manage permissions action; returning refreshes permission state.
 ### Recording interactions
 
 While dictating during a meeting, the floating indicator is a 28pt-high single
-row, sized to its content: “Dictating · Meeting on” or “Dictating · Meeting paused”,
-followed by distinct Finish dictation and Cancel dictation controls. Preparing
-and transcribing use the same meeting status. A stopped live-insertion warning
-takes precedence over the dictation label. The notch retains its two-wing layout,
-with the same status on the left and waveform and dictation controls on the right.
+row, sized to its content: “Dictating”, a red dot for meeting recording (or a
+pause symbol for a paused meeting), a live waveform, and distinct Finish
+dictation and Cancel dictation controls. The meeting status has an accessible
+label and tooltip. Preparing and transcribing retain the meeting status; a
+stopped live-insertion warning takes precedence over the dictation label. The
+notch retains its two-wing layout, with meeting status on the left and waveform
+and dictation controls on the right.
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
 meeting headers move the status above the controls rather than compressing them.
