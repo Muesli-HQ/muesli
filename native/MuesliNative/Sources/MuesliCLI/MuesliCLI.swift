@@ -211,6 +211,7 @@ struct MeetingListRow: Encodable {
     let startTime: String
     let durationSeconds: Double
     let wordCount: Int
+    let meetingPlatform: String?
     let folderID: Int64?
     let status: String
     let manualNotes: String
@@ -225,6 +226,7 @@ struct MeetingListRow: Encodable {
         startTime = record.startTime
         durationSeconds = record.durationSeconds
         wordCount = record.wordCount
+        meetingPlatform = record.meetingPlatform
         folderID = record.folderID
         status = record.status.rawValue
         manualNotes = record.manualNotes
@@ -243,6 +245,7 @@ struct MeetingDetailPayload: Encodable {
     let rawTranscript: String
     let formattedNotes: String
     let wordCount: Int
+    let meetingPlatform: String?
     let folderID: Int64?
     let status: String
     let manualNotes: String
@@ -265,6 +268,7 @@ struct MeetingDetailPayload: Encodable {
         rawTranscript = record.rawTranscript
         formattedNotes = record.formattedNotes
         wordCount = record.wordCount
+        meetingPlatform = record.meetingPlatform
         folderID = record.folderID
         status = record.status.rawValue
         manualNotes = record.manualNotes

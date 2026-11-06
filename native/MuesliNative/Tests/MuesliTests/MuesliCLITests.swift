@@ -522,6 +522,21 @@ struct MuesliCLITests {
         #expect(warnings.isEmpty)
     }
 
+    @Test("meeting CLI payloads preserve supplied platform and omit unknown values",
+          arguments: [nil, "facetime", "googleMeet", "unknown", "FutureCall.v2", "  未來 Call  ", "",
+                      "future\u{0000}platform", "Cafe\u{0301}"] as [String?])
+    func meetingPayloadPlatform(platform: String?) throws {
+        let record = MeetingRecord(id: 42, title: "Synthetic meeting", startTime: "2026-11-06T10:00:00Z",
+            durationSeconds: 60, rawTranscript: "Words", formattedNotes: "Notes", wordCount: 1,
+            folderID: nil, meetingPlatform: platform)
+        for data in [try JSONEncoder().encode(MeetingListRow(record)),
+                     try JSONEncoder().encode(MeetingDetailPayload(record))] {
+            let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect((json["meetingPlatform"] as? String).map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+            if platform == nil { #expect(!json.keys.contains("meetingPlatform")) }
+        }
+    }
+
     @Test("meeting payloads expose applied template metadata")
     func meetingPayloadIncludesTemplateMetadata() {
         let record = MeetingRecord(
