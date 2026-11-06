@@ -418,7 +418,7 @@ public final class MuesliController: NSObject {
     private var quillPrivacy = ContentPrivacy.shared.capture()
     private var computerUsePrivacy = ContentPrivacy.shared.capture()
 
-    private var storedMeetingChatCoordinator: MeetingChatCoordinator?
+    private(set) var storedMeetingChatCoordinator: MeetingChatCoordinator?
     private var cotypistTimelineRefresh: Task<Void, Never>?
     var meetingChatCoordinator: MeetingChatCoordinator {
         get {
@@ -523,6 +523,8 @@ public final class MuesliController: NSObject {
     private let pushToTalkEnablementIntentStore = PushToTalkEnablementIntentStore()
     private var interactionPermissionMonitoringClientIDs = Set<UUID>()
     private var interactionPermissionMonitoringRevision = 0
+    private var isPresentingPermissionRestart = false
+    private(set) var isRelaunchRequested = false
     private lazy var interactionPermissionMonitor = InteractionPermissionMonitor { [weak self] snapshot in
         self?.applyInteractionPermissionSnapshot(snapshot)
     }
@@ -541,7 +543,7 @@ public final class MuesliController: NSObject {
     private var preferencesWindowController: PreferencesWindowController?
     private var onboardingWindowController: OnboardingWindowController?
     private lazy var systemPermissionGuideController: AccessibilityPermissionGuideController = {
-        let guide = AccessibilityPermissionGuideController()
+        let guide = AccessibilityPermissionGuideController.shared
         guide.onPresentationChanged = { [weak self] presentation in
             self?.onboardingWindowController?.applySystemSettingsGuidePresentation(presentation)
         }
@@ -734,6 +736,7 @@ public final class MuesliController: NSObject {
     private var dataDidChangeObserver: NSObjectProtocol?
     private var iCloudAppActiveObserver: NSObjectProtocol?
     private var iCloudWakeObserver: NSObjectProtocol?
+    private var permissionSettingsActivationObserver: NSObjectProtocol?
     private var isStartingMeetingRecording: Bool {
         meetingCapture?.session.capturePhase == .preparing || importSessionID != nil
     }
@@ -754,6 +757,7 @@ public final class MuesliController: NSObject {
     private var isPresentingMeetingTerminationConfirmation = false
     private var isTerminatingAfterMeetingConfirmation = false
     private var backgroundMeetingProcessingCount = 0
+    private var activeMeetingResummaryCount = 0
     private var meetingRetranscriptionTasks: [Int64: Task<Void, Never>] = [:]
     private var isShuttingDown = false
     private var modelFileMutationTokens: Set<UUID> = []
@@ -1293,6 +1297,10 @@ public final class MuesliController: NSObject {
         if let iCloudWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(iCloudWakeObserver)
             self.iCloudWakeObserver = nil
+        }
+        if let permissionSettingsActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(permissionSettingsActivationObserver)
+            self.permissionSettingsActivationObserver = nil
         }
         cancelActiveICloudSyncTask()
         iCloudSyncDebounceTask?.cancel()
@@ -2632,6 +2640,14 @@ public final class MuesliController: NSObject {
 
     private func installICloudPersistentSyncObservers() {
         guard iCloudAppActiveObserver == nil else { return }
+        permissionSettingsActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { notification in
+            let bundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor in
+                PermissionRestartRecovery.shared.applicationActivated(bundleID: bundleID)
+            }
+        }
         iCloudAppActiveObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -2640,6 +2656,7 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 Task { [weak self] in await self?.medASRTerms.refresh() }
                 self?.refreshInteractionPermissionSnapshot()
+                self?.offerPermissionRestartAfterSettings()
                 self?.refreshChatGPTAuthenticationStatus()
                 self?.refreshSettingsModelAvailability(force: true)
                 self?.scheduleICloudSync(
@@ -3310,6 +3327,16 @@ public final class MuesliController: NSObject {
         appState.selectedSettingsPane = .general
         appState.requestsPermissionsSettings = true
         openHistoryWindow(tab: .settings)
+    }
+
+    func restorePermissionRestartDestination(_ destination: PermissionRestartDestination) {
+        switch destination {
+        case .permissions:
+            showPermissionsSettings()
+        case .timeTurnerPermissions:
+            appState.requestsTimeTurnerPermissionSetup = true
+            openHistoryWindow(tab: .timeTurner)
+        }
     }
 
     func requestPushToTalkSettingsPermissions() { showPermissionsSettings() }
@@ -4935,8 +4962,7 @@ public final class MuesliController: NSObject {
             return true
         }
         markPendingDictionaryCorrectionAccessibilityEnable()
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        FeaturePermission.accessibility.request()
         return false
     }
 
@@ -5002,8 +5028,7 @@ public final class MuesliController: NSObject {
     func requestScreenContextEnable() -> Bool {
         guard AXIsProcessTrusted() else {
             updateConfig { $0.enableScreenContext = false }
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-            AXIsProcessTrustedWithOptions(options)
+            FeaturePermission.accessibility.request()
             return false
         }
 
@@ -5382,28 +5407,119 @@ public final class MuesliController: NSObject {
         }
     }
 
+    var permissionRestartActivity: PermissionRestartActivity {
+        // Checking restart safety must not initialize chat or read its database.
+        let chat = storedMeetingChatCoordinator
+        return PermissionRestartActivity(
+            recording: isInteractiveAudioActivityInProgress || meetingTerminationState != .none
+                || isStartingMeetingRecording || isCapturingShortcut,
+            processing: isMeetingAudioProcessing || !meetingRetranscriptionTasks.isEmpty
+                || backgroundMeetingProcessingCount > 0 || importTask != nil
+                || appState.activeAudioImportCount > 0 || appState.modelFileMutationCount > 0
+                || dictationRecoveryTask != nil,
+            assistant: activeMeetingResummaryCount > 0 || computerUseCommandTask != nil || quilTask != nil
+                || chat?.isBusy == true || chat?.isUpdatingChat == true
+                || chat?.isPreparingFiles == true,
+            unsentChat: chat?.hasUnsentComposerContent == true
+        )
+    }
+
+    private func offerPermissionRestartAfterSettings() {
+        guard config.hasCompletedOnboarding, !isPresentingPermissionRestart else { return }
+        let permissions = PermissionRestartRecovery.shared.takeNotice()
+        guard !permissions.isEmpty else { return }
+        confirmPermissionRestart(permissions: permissions)
+    }
+
+    func confirmPermissionRestart(
+        permissions: [FeaturePermission] = [],
+        onboarding: Bool = false,
+        beforeRestart: @escaping () -> Void = {},
+        onLater: @escaping () -> Void = {}
+    ) {
+        guard !isPresentingPermissionRestart, !isRelaunchRequested else { return }
+        let alert = NSAlert()
+        alert.messageText = "Restart muesli to apply permissions?"
+        alert.window.preventsApplicationTerminationWhenModal = false
+        let names = permissions.map(\.rawValue).joined(separator: ", ")
+        alert.informativeText = onboarding
+            ? "muesli will restart to apply permissions, then reopen at your recording test."
+            : names.isEmpty
+            ? "If you enabled access in System Settings, restart muesli to apply it. The app will reopen automatically."
+            : "If you enabled \(names) in System Settings, restart muesli to apply it. The app will reopen automatically."
+        alert.addButton(withTitle: "Restart muesli")
+        alert.addButton(withTitle: "Later")
+        isPresentingPermissionRestart = true
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return }
+            self.isPresentingPermissionRestart = false
+            if response == .alertFirstButtonReturn {
+                if let message = self.permissionRestartActivity.blockingMessage {
+                    onLater()
+                    self.presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
+                } else {
+                    beforeRestart()
+                    self.relaunchApp()
+                }
+            } else { onLater() }
+        }
+        let presented: Bool
+        if onboarding {
+            if let window = onboardingWindowController?.presentationWindow {
+                PermissionRestartPresentation.allowTermination(from: window)
+                onboardingWindowController?.bringToFront()
+                alert.beginSheetModal(for: PermissionRestartPresentation.host(in: window), completionHandler: completion)
+                presented = true
+            } else {
+                presented = false
+            }
+        } else {
+            presented = presentAlert(alert, fallbackLogContext: "permission restart", aboveExistingSheet: true, completion: completion)
+        }
+        if !presented {
+            isPresentingPermissionRestart = false
+            onLater()
+        }
+    }
+
+    /// Both onboarding and permission recovery use normal AppKit termination and cleanup.
     func relaunchApp() {
-        let bundlePath = Bundle.main.bundleURL.path
-        // Defer to next run-loop to escape any SwiftUI animation context
-        DispatchQueue.main.async {
-            // Launch a detached process that waits for us to die, then reopens the app.
-            // Uses /bin/sh only for the sleep; the path is passed as a positional arg
-            // to avoid shell interpolation of special characters.
-            let shell = Process()
-            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-            shell.arguments = ["-c", "sleep 1; open -- \"$1\"", "--", bundlePath]
-            do {
-                try shell.run()
-            } catch {
-                fputs("[muesli-native] relaunch failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
-            }
-            // Use exit(0) instead of NSApp.terminate(nil) — terminate can be
-            // blocked by SwiftUI animation contexts or applicationShouldTerminate,
-            // leaving the old process alive with stale floating indicator and
-            // status bar icon.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                exit(0)
-            }
+        guard !isRelaunchRequested, !isShuttingDown else { return }
+        if let message = permissionRestartActivity.blockingMessage {
+            presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
+            return
+        }
+        isRelaunchRequested = true
+        ApplicationTermination.request(afterTerminate: { [weak self] in
+            guard let self, self.isRelaunchRequested, !self.isShuttingDown else { return }
+            self.isRelaunchRequested = false
+            self.presentErrorAlert(
+                title: "muesli couldn’t restart",
+                message: "Close any other open dialogs, then try Restart muesli again in Permissions.",
+                aboveExistingSheet: true
+            )
+        })
+    }
+
+    /// Revalidate at termination admission: work may have started after the notice.
+    /// Schedule reopening only after admission succeeds, so cancellation cannot relaunch later.
+    func prepareRequestedRelaunch() -> Bool {
+        guard isRelaunchRequested else { return true }
+        if let message = permissionRestartActivity.blockingMessage {
+            isRelaunchRequested = false
+            presentErrorAlert(title: "Finish your current work first", message: message, aboveExistingSheet: true)
+            return false
+        }
+        do {
+            try ApplicationRelaunch.schedule(restorePermissions: config.hasCompletedOnboarding)
+            stopHotkeyMonitor()
+            quilHotkeyMonitor.stop()
+            isShuttingDown = true
+            return true
+        } catch {
+            isRelaunchRequested = false
+            presentErrorAlert(title: "Couldn’t restart muesli", message: "Quit and reopen muesli to apply permission changes.", aboveExistingSheet: true)
+            return false
         }
     }
 
@@ -6369,45 +6485,56 @@ public final class MuesliController: NSObject {
             return
         }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
-        Task { [weak self] in
-            guard let self else { return }
+        runMeetingResummary(operation: { [self] in
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
-            let participantNames = await self.summaryParticipantNames(meetingID: meeting.id)
+            let participantNames = await summaryParticipantNames(meetingID: meeting.id)
+            let notes = try await MeetingSummaryClient.summarize(
+                transcript: meeting.rawTranscript,
+                meetingTitle: plan.promptTitle,
+                config: summaryConfig,
+                template: templateSnapshot,
+                existingNotes: notesContextForResummary(meeting),
+                manualNotesToRetain: meeting.manualNotes,
+                participantNames: participantNames,
+                openRouterAPIKeyOverride: openRouterKey
+            )
             do {
-                let notes = try await MeetingSummaryClient.summarize(
-                    transcript: meeting.rawTranscript,
-                    meetingTitle: plan.promptTitle,
-                    config: summaryConfig,
-                    template: templateSnapshot,
-                    existingNotes: self.notesContextForResummary(meeting),
-                    manualNotesToRetain: meeting.manualNotes,
-                    participantNames: participantNames,
-                    openRouterAPIKeyOverride: openRouterKey
+                try dictationStore.updateMeetingSummary(
+                    id: meeting.id,
+                    title: plan.persistedTitle,
+                    formattedNotes: notes,
+                    selectedTemplateID: templateSnapshot.id,
+                    selectedTemplateName: templateSnapshot.name,
+                    selectedTemplateKind: templateSnapshot.kind,
+                    selectedTemplatePrompt: templateSnapshot.prompt
                 )
-                do {
-                    try self.dictationStore.updateMeetingSummary(
-                        id: meeting.id,
-                        title: plan.persistedTitle,
-                        formattedNotes: notes,
-                        selectedTemplateID: templateSnapshot.id,
-                        selectedTemplateName: templateSnapshot.name,
-                        selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
-                    )
-                } catch {
-                    throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
-                }
-                await MainActor.run {
-                    self.scheduleICloudSyncAfterLocalChange()
-                    self.syncAppState()
-                    self.historyWindowController?.reload()
-                    completion(.success(()))
-                }
             } catch {
-                fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
-                await MainActor.run {
-                    completion(.failure(error))
-                }
+                throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)
+            }
+            scheduleICloudSyncAfterLocalChange()
+            syncAppState()
+            historyWindowController?.reload()
+        }, completion: completion)
+    }
+
+    /// Protect the whole generation-and-save operation, including the gap before the task starts.
+    /// A count keeps overlapping requests protected until the last one settles.
+    @discardableResult
+    func runMeetingResummary(
+        operation: @escaping @MainActor () async throws -> Void,
+        log: @escaping (String) -> Void = { fputs($0 + "\n", stderr) },
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> Task<Void, Never> {
+        activeMeetingResummaryCount += 1
+        return Task { @MainActor in
+            defer { activeMeetingResummaryCount -= 1 }
+            do {
+                try Task.checkCancellation()
+                try await operation()
+                completion(.success(()))
+            } catch {
+                log("[muesli-native] failed to generate or persist meeting summary: \(MeetingSummaryLog.category(for: error))")
+                completion(.failure(error))
             }
         }
     }
@@ -6556,7 +6683,7 @@ public final class MuesliController: NSObject {
                     )
                 } catch {
                     try Task.checkCancellation()
-                    fputs("[muesli-native] re-transcription summary generation failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
+                    fputs("[muesli-native] re-transcription summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
                     formattedNotes = MeetingSummaryClient.notesAfterFailedRegeneration(
                         existingNotes: meeting.formattedNotes,
                         previousTranscript: meeting.rawTranscript,
@@ -6639,7 +6766,7 @@ public final class MuesliController: NSObject {
         do {
             return try await meetingParticipants(meetingID: meetingID).map(\.displayName)
         } catch {
-            fputs("[summary] failed to load participants for meeting \(meetingID): \(error.localizedDescription)\n", stderr)
+            fputs("[summary] failed to load summary participants: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return []
         }
     }
@@ -9245,7 +9372,7 @@ public final class MuesliController: NSObject {
                 visualContext: mergedVisualContext
             )
         } catch {
-            fputs("[muesli-native] resume summary regeneration failed: \(error.localizedDescription)\n", stderr)
+            fputs("[muesli-native] resume summary regeneration failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             regeneratedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: combined,
                 meetingTitle: result.title,
@@ -9664,6 +9791,7 @@ public final class MuesliController: NSObject {
         _ alert: NSAlert,
         fallbackLogContext: String,
         includeInformativeTextInFallbackLog: Bool = true,
+        aboveExistingSheet: Bool = false,
         completion: ((NSApplication.ModalResponse) -> Void)? = nil
     ) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
@@ -9678,7 +9806,9 @@ public final class MuesliController: NSObject {
             return false
         }
 
-        alert.beginSheetModal(for: window) { response in
+        let host = aboveExistingSheet ? PermissionRestartPresentation.host(in: window) : window
+        if aboveExistingSheet { PermissionRestartPresentation.allowTermination(from: host) }
+        alert.beginSheetModal(for: host) { response in
             completion?(response)
         }
         return true
@@ -9699,13 +9829,13 @@ public final class MuesliController: NSObject {
         }
     }
 
-    private func presentErrorAlert(title: String, message: String) {
+    private func presentErrorAlert(title: String, message: String, aboveExistingSheet: Bool = false) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
-        presentAlert(alert, fallbackLogContext: title)
+        presentAlert(alert, fallbackLogContext: title, aboveExistingSheet: aboveExistingSheet)
     }
 
     func copyToClipboard(_ text: String) {
@@ -11115,7 +11245,7 @@ public final class MuesliController: NSObject {
                 hasRequestedComputerUseScreenRecordingAccess = true
                 // macOS owns this prompt and its Open System Settings action.
                 // Opening Settings ourselves as well leaves the prompt behind.
-                _ = CGRequestScreenCaptureAccess()
+                FeaturePermission.screenRecording.request()
                 return false
             }
             // A denied request may no longer produce a system prompt. Offer a

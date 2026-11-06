@@ -409,6 +409,11 @@ final class MeetingChatCoordinator {
             if selectedSessionID == nil, !newValue.isEmpty { draftScopeWasChosen = true }
         }
     }
+    /// Text drafts in other conversations are still in memory. Existing-chat
+    /// file references are already persisted; only untitled attachments are transient.
+    var hasUnsentComposerContent: Bool {
+        composerDrafts.values.contains { !$0.isEmpty } || !(fileDrafts[nil] ?? []).isEmpty
+    }
     var errorMessage: String?
     var scrollAnchors: [UUID: UUID] = [:]
     private(set) var sourceMutationVersion: Int64 = 0

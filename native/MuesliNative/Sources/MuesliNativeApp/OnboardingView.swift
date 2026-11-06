@@ -921,7 +921,10 @@ struct OnboardingView: View {
                     "Screen & System Audio",
                     "Capture meeting audio from other participants",
                     screenRecordingGranted,
-                    { CGRequestScreenCaptureAccess() }
+                    {
+                        self.controller.beginSystemPermissionGuide(for: .screenRecording)
+                        CGRequestScreenCaptureAccess()
+                    }
                 ))
             }
         }
@@ -1395,8 +1398,11 @@ struct OnboardingView: View {
     }
 
     private func saveProgressAndRestart() {
-        saveProgress(atStep: Self.dictationTestStep)
-        controller.relaunchApp()
+        controller.confirmPermissionRestart(onboarding: true, beforeRestart: {
+            saveProgress(atStep: Self.dictationTestStep)
+        }, onLater: {
+            hasCompletedPermissionsStep = false
+        })
     }
 
     private func openSystemSettingsForPermission(at permissionIndex: Int) {

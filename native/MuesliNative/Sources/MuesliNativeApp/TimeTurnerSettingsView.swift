@@ -165,6 +165,10 @@ struct TimeTurnerSettingsView: View {
     }
 }
 
+enum TimeTurnerSetupStep: Int {
+    case introduction, permissions, storage
+}
+
 struct TimeTurnerSetupView: View {
     let controller: MuesliController
     let appState: AppState
@@ -177,6 +181,13 @@ struct TimeTurnerSetupView: View {
     @State private var error: String?
     @State private var permissionRefresh = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
     private var ready: Bool { screen && accessibility }
+
+    init(controller: MuesliController, appState: AppState, initialStep: TimeTurnerSetupStep = .introduction) {
+        self.controller = controller
+        self.appState = appState
+        _step = State(initialValue: initialStep.rawValue)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
@@ -196,18 +207,20 @@ struct TimeTurnerSetupView: View {
                 Text(ready ? "You're already set" : "A couple of permissions").font(MuesliTheme.font(.title).bold())
                 Text(ready ? "Muesli already has the permissions Time Turner needs. No need to grant them again." : "Allow the missing permissions below, then return here. We'll check again automatically.").foregroundStyle(.secondary)
                 permissionRow(.screenRecording, detail: "Save an image of the focused window.", granted: screen) {
+                    PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
                     FeaturePermission.screenRecording.request()
                     refresh()
                 }
                 permissionRow(.accessibility, detail: "Identify the focused window and help detect secure fields.", granted: accessibility) {
+                    PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
                     FeaturePermission.accessibility.request()
                     refresh()
                 }
-                Text("If macOS asks you to quit and reopen Muesli, do that, then return to setup. Your choices are saved. OCR needs no separate permission.").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                 HStack {
                     Button("Check again", action: refresh)
                     Spacer()
                     Button("Manage permissions") {
+                        PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
                         dismiss()
                         controller.showPermissionsSettings()
                     }
@@ -235,11 +248,18 @@ struct TimeTurnerSetupView: View {
             if let error { Text(error).font(MuesliTheme.font(.caption)).foregroundStyle(.red) }
             Spacer(minLength: 0)
             HStack {
-                Button("Not now") { dismiss() }.keyboardShortcut(.cancelAction)
-                if step > 0 { Button("Back") { step -= 1 } }
+                Button("Not now") { PermissionRestartResumeStore.shared.clear(); dismiss() }.keyboardShortcut(.cancelAction)
+                if step > 0 { Button("Back") { PermissionRestartResumeStore.shared.clear(); step -= 1 } }
                 Spacer()
                 if step < 2 {
-                    Button("Continue") { refresh(); step += 1 }.buttonStyle(.borderedProminent).disabled(step == 1 && !ready)
+                    Button("Continue") {
+                        refresh()
+                        if step == TimeTurnerSetupStep.permissions.rawValue {
+                            guard ready else { return }
+                            PermissionRestartResumeStore.shared.clear()
+                        }
+                        step += 1
+                    }.buttonStyle(.borderedProminent).disabled(step == 1 && !ready)
                 } else {
                     Button(appState.config.timeTurnerEnabled ? "Finish" : "Start Time Turner") { enable() }
                         .buttonStyle(.borderedProminent).disabled(!ready || enabling)
@@ -277,6 +297,7 @@ struct TimeTurnerSetupView: View {
             do {
                 try await controller.applySetting("time_turner_enabled", value: "on")
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .success)
+                PermissionRestartResumeStore.shared.clear()
                 dismiss()
             } catch {
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .failed, fields: [.stage: .setup])

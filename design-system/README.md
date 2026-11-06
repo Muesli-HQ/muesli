@@ -69,10 +69,45 @@ retention lifecycle. The explicit setup flow still explains capture before enabl
 Permission setup offers Set up later and finishes on Timeline. Completed onboarding
 never makes dashboard navigation depend on recording permissions. Block only the
 requested capture or paste action, with Open permissions and Not now actions.
-Post-onboarding recovery opens Settings → General and scrolls directly to Permissions.
+Post-onboarding recovery defaults to Settings → General → Permissions. A restart
+requested from Time Turner setup returns to Time Turner with its permission step
+(2 of 3) open and freshly checked. This one-shot return also handles macOS Quit &
+Reopen; it never enables capture or skips the final setup step.
 Feature controls show the missing prerequisite beside Review access, including when
 a previously enabled feature loses permission. Guided setup retains a visible exit
 and a Manage permissions action; returning refreshes permission state.
+
+Accessibility, Input Monitoring and Screen Recording requests share the compact
+System Settings arrow and draggable app-row guide across onboarding, feature
+setup and General Permissions. Screen Recording first directs users to turn on
+the existing app row, with dragging as a fallback when it is missing. Microphone
+uses its native consent prompt rather than an unsupported drag instruction.
+The Screen Recording guide ends when the user returns to muesli, handing off to
+the shared restart notice even if the running process still reports old access.
+
+Requests for Accessibility, Input Monitoring and Screen Recording offer a single
+restart notice on returning from System Settings, with Restart muesli and Later.
+Require an observed System Settings visit after the request; dismissing a native
+prompt or switching to another app is not enough. Pending notices and saved setup
+destinations expire after 15 minutes, so abandoned setup cannot reappear later.
+Do not infer a grant from the request: use conditional copy when macOS still
+reports access unavailable. Settings → General → Permissions keeps a Restart
+action for already-enabled access that needs a fresh process. Restart uses normal
+shutdown, restores the originating permission step or Permissions, and refuses to interrupt recordings,
+transcription, imports, AI requests or an unsent chat draft. Never reset permissions
+or restart automatically on a background permission poll.
+Present restart notices and blocking errors above any open setup sheet, never
+queued behind it. Keep the manual restart action only in Settings → General →
+Permissions. Feature setup screens use their existing Manage permissions action
+for recovery after choosing Later; do not add feature-specific restart controls.
+Permission dialogs must allow AppKit termination so System Settings' Quit &
+Reopen and the shared restart notice reach normal shutdown safeguards. If a quit
+is rejected before shutdown starts, clear the pending restart and allow retry.
+
+Time Turner empty states use the shared Nunito Sans hierarchy: a 20pt semibold
+title, 14pt body detail and semantic primary/secondary text colors. SF Symbols
+retain their system symbol font. Do not use the platform's default empty-state
+text styling, which differs from the dashboard typography.
 
 ### Recording interactions
 
