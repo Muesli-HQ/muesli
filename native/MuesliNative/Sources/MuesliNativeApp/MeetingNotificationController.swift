@@ -69,6 +69,7 @@ final class MeetingNotificationController {
         meetingURL: URL? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
+        icon explicitIcon: NSImage? = nil,
         dismissAfter: TimeInterval? = nil,
         defaultAction: MeetingJoinDefaultAction = .fallback,
         onStartRecording: @escaping () -> Void,
@@ -101,7 +102,7 @@ final class MeetingNotificationController {
         // keeps the plain single-action button.
         let hasJoinButton = !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
-        let platformIcon = platform?.loadIcon()
+        let platformIcon = explicitIcon ?? platform?.loadIcon()
         let iconSize: CGFloat = 26
         let textX: CGFloat = platformIcon == nil ? 14 : 14 + iconSize + 9
         let titleFont = AppFonts.font(size: 13, weight: .semibold)
@@ -190,6 +191,7 @@ final class MeetingNotificationController {
         // Platform icon + text layout
         if let icon = platformIcon {
             let iconView = NSImageView(image: icon)
+            if explicitIcon != nil { iconView.contentTintColor = .white }
             iconView.imageScaling = .scaleProportionallyUpOrDown
             iconView.frame = NSRect(x: 14, y: (cardHeight - iconSize) / 2 + 1, width: iconSize, height: iconSize)
             cardView.addSubview(iconView)
@@ -331,8 +333,9 @@ final class MeetingNotificationController {
         isVisible = false
         currentPromptID = nil
         shownAt = nil
-        onClose?()
+        let closed = onClose
         onClose = nil
+        closed?()
     }
 
     private func startDismissCountdown(duration: TimeInterval) {

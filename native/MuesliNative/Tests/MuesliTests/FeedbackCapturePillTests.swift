@@ -52,6 +52,23 @@ struct FeedbackCapturePillTests {
         }
     }
 
+    @Test("Backgrounding retires either Vidshot surface without dismissing other notch activity", arguments: [IndicatorAnchor.bottomCenter, .notch])
+    func backgroundRetiresFeedback(anchor: IndicatorAnchor) throws {
+        var config = AppConfig(); config.indicatorAnchor = anchor
+        try withIndicators(config: config) { indicator, notch, created in
+            indicator.showFeedbackCapture(.recording(seconds: 1, deadMicrophone: false), config: config,
+                power: { -30 }, finish: {}, discard: {}, open: {}, repairPermission: {})
+            let surface = try #require(created().first)
+            #expect(surface.presented)
+            indicator.dismissFeedbackCapturePreservingActivity()
+            #expect(!surface.presented)
+            let screen = try #require(NSScreen.main)
+            #expect(notch.showStatus(on: screen, kind: .loading, message: "Other activity", duration: nil))
+            indicator.dismissFeedbackCapturePreservingActivity()
+            #expect(notch.status == .loading)
+        }
+    }
+
     @Test func styleTransitionRetiresOnlyPreviousFeedbackSurface() throws {
         try withIndicators { indicator, notch, created in
             let screen = try #require(NSScreen.main)
@@ -140,11 +157,11 @@ struct FeedbackCapturePillTests {
                     let expected: Set<String>
                     switch state {
                     case .recording: expected = ["Cancel Vidshot", "Finish"]
-                    case .ready: expected = ["Open"]
+                    case .ready: expected = ["Copy", "Open"]
                     default: expected = []
                     }
                     #expect(Set(buttons.compactMap { $0.accessibilityLabel() }) == expected)
-                    for button in buttons { #expect(button.accessibilityPerformPress()) }
+                    for button in buttons where button.isAccessibilityEnabled() { #expect(button.accessibilityPerformPress()) }
                 }
             }
             #expect(finishes == 2 && discards == 2 && opens == 1)
@@ -198,6 +215,12 @@ struct FeedbackCapturePillTests {
 
     func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
 
+    @Test("Ready status does not repeat the Copy action")
+    func readyCopyLabel() {
+        #expect(FeedbackCapturePillState.readyToCopy(partial: nil).title == "Ready")
+        #expect(FeedbackCapturePillState.readyToCopy(partial: "frames failed").title == "Ready · frames failed")
+    }
+
     @Test("Shared states lay out in both appearances with Reduce Motion")
     func allStates() throws {
         _ = NSApplication.shared
@@ -235,8 +258,8 @@ struct FeedbackCapturePillTests {
                     switch state {
                     case .recording: expected = ["Cancel Vidshot", "Finish"]
                     case .blocked: expected = ["Open Settings"]
-                    case .readyToCopy: expected = ["Copy", "Open"]
-                    case .ready, .recovered, .copied, .failed(_, _, true): expected = ["Open"]
+                    case .readyToCopy, .ready, .recovered, .copied: expected = ["Copy", "Open"]
+                    case .failed(_, _, true): expected = ["Open"]
                     default: expected = []
                     }
                     let buttons = elements.filter { $0.accessibilityRole() == .button }

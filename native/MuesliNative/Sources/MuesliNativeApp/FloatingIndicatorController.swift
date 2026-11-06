@@ -580,7 +580,16 @@ final class FloatingIndicatorController: NSObject {
 
     func dismissFeedbackCapturePreservingActivity() {
         feedbackCapturePanel?.orderOut(nil); feedbackCapturePanel?.contentView = nil
+        notchIndicator.dismissFeedbackCapturePreservingActivity()
         feedbackCaptureIsPresented = false
+    }
+
+    /// Return to the idle indicator only if no other presentation owns it.
+    func backgroundFeedbackCapture(config: AppConfig) {
+        let shouldRestore = feedbackCaptureIsPresented && state == .idle && !isShowingLoading
+            && !isComputerUseCursorMode && notchIndicator.status == nil
+        dismissFeedbackCapturePreservingActivity()
+        if shouldRestore { setState(.idle, config: config) }
     }
 
     func showFeedbackCapture(_ state: FeedbackCapturePillState?, config: AppConfig,

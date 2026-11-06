@@ -246,6 +246,8 @@ final class FeedbackCaptureController {
     var finalizer = FeedbackCaptureFinalizer()
     var onStateChanged: ((FeedbackCapturePillState?) -> Void)?
     var onCatalogChanged: (() -> Void)?
+    /// Published only after the saved capture has finished processing and reloaded.
+    var onCompleted: ((String, FeedbackCapturePillState) -> Void)?
     var onMicrophoneReleased: (() -> Void)?
     var onAdmissionReset: (() -> Void)?
     private var attempt: FeedbackCaptureAttempt?
@@ -509,7 +511,7 @@ final class FeedbackCaptureController {
             return
         }
         present(.processing, captureID: capture.snapshot()?.id)
-        var presentation = presentationID
+        let presentation = presentationID
         let pendingStart = startTask
         let microphoneStop = Task { [weak self] in
             await pendingStart?.value
@@ -537,6 +539,7 @@ final class FeedbackCaptureController {
             }
             let id = manifest.id
             if !discard { self.latestID = id }
+            var completionNotice: FeedbackCapturePillState?
             do {
                 let result = try await Task.detached { () throws -> (manifest: FeedbackCaptureManifest, retainsContent: Bool)? in
                     if discard {
@@ -551,29 +554,24 @@ final class FeedbackCaptureController {
                 if let result {
                     let context = FeedbackCaptureFinalizer.Context(store: capture.store, finishPasteboardChangeCount: changeCount)
                     let completed = try await finalizer.finish(result.manifest, context: context)
+                    let completedState = Self.completionState(completed, delivery: context.delivery.result,
+                        retainsContent: result.retainsContent)
+                    completionNotice = completedState
                     if self.attempt === capture, self.presentationID == presentation {
-                        self.present(Self.completionState(completed, delivery: context.delivery.result,
-                            retainsContent: result.retainsContent), captureID: id)
+                        self.present(completedState, captureID: id)
                     }
                 } else if self.attempt === capture, self.presentationID == presentation { self.present(nil) }
             } catch {
                 self.errorMessage = error.localizedDescription
+                let failure = FeedbackCapturePillState.failed(stage: "Saving", message: error.localizedDescription, retainedMedia: true)
+                completionNotice = failure
                 if self.attempt === capture, self.presentationID == presentation {
-                    self.present(.failed(stage: "Saving", message: error.localizedDescription, retainedMedia: true), captureID: id)
+                    self.present(failure, captureID: id)
                 }
             }
             await Task.detached { capture.store.release(id: id) }.value
             await self.reload()
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            let completed = await self.waitUntil { self.attempt !== capture }
-            if !completed, self.attempt === capture, self.presentationID == presentation {
-                let id = capture.snapshot()?.id
-                self.present(.failed(stage: self.ownsMicrophone ? "Microphone teardown" : "Media finalization",
-                    message: "Finalization is still pending", retainedMedia: id != nil), captureID: id)
-                presentation = self.presentationID
-            }
+            if let completionNotice { self.onCompleted?(id, completionNotice) }
         }
     }
     private func waitUntil(_ complete: () -> Bool) async -> Bool {

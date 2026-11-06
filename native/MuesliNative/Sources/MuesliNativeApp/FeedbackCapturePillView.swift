@@ -43,10 +43,9 @@ struct FeedbackCapturePillView: View {
             default:
                 switch state {
                 case .blocked: Button("Open Settings", action: repairPermission)
-                case .readyToCopy:
+                case .readyToCopy, .ready, .recovered, .copied:
                     Button("Copy") { copy?() }.disabled(copy == nil)
                     Button("Open", action: open)
-                case .ready, .recovered, .copied: Button("Open", action: open)
                 case .failed(_, _, let retained) where retained: Button("Open", action: open)
                 default: EmptyView()
                 }

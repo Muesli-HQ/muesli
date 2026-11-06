@@ -558,6 +558,8 @@ struct FeedbackCaptureLifecycleTests {
             controller.finalizer.stages = [.init(name: .render, run: { _, _ in
                 await withCheckedContinuation { resume = $0 }
             })]
+            var completions: [(String, FeedbackCapturePillState)] = []
+            controller.onCompleted = { id, state in completions.append((id, state)) }
             let recovery: Task<Void, Never>?
             if recover {
                 let manifest = try store.begin(target: feedbackTarget())
@@ -586,9 +588,8 @@ struct FeedbackCaptureLifecycleTests {
             #expect(!controller.ownsMicrophone && controller.hasAttempt == !recover)
             let id = try #require(recover ? controller.records.first?.id : controller.presentedCaptureID)
             if !recover {
-                let pendingFinalization = FeedbackCapturePillState.failed(stage: "Media finalization",
-                    message: "Finalization is still pending", retainedMedia: true)
-                try await waitUntil(description: "pending finalization warning") { controller.state == pendingFinalization }
+                #expect(controller.state == .processing)
+                #expect(completions.isEmpty)
             }
             #expect(throws: (any Error).self) { try controller.store?.delete(id: id) }
             let denied = InteractionPermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: true, screenRecording: false)
@@ -597,6 +598,10 @@ struct FeedbackCaptureLifecycleTests {
             await recovery?.value
             try await waitUntil { !controller.hasAttempt }
             #expect(controller.state == .blocked(permission: "Screen Recording"))
+            if !recover {
+                #expect(completions.count == 1)
+                #expect(completions.first?.0 == id)
+            }
         }
     }
 

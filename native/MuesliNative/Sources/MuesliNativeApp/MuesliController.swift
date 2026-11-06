@@ -616,6 +616,17 @@ public final class MuesliController: NSObject {
         }
         capture.finalizer.stages += FeedbackCaptureFinalizer.contextStages()
         capture.finalizer.stages.append(FeedbackCaptureFinalizer.copyStage())
+        capture.onCompleted = { [weak self] id, state in
+            guard let self, !self.isShuttingDown else { return }
+            let partial: Bool
+            switch state {
+            case .readyToCopy(let detail), .copied(let detail): partial = detail != nil
+            case .failed: partial = true
+            default: partial = false
+            }
+            self.pendingVidshotNotifications.append((id: id, partial: partial))
+            self.showPendingMeetingCompletionNotificationIfPossible()
+        }
         capture.onAdmissionReset = { [weak self] in self?.feedbackCaptureHotkeyMonitor.cancelToggleMode() }
         capture.onMicrophoneReleased = { [weak self] in
             guard let self else { return }
@@ -626,6 +637,14 @@ public final class MuesliController: NSObject {
             guard let self, let capture else { return }
             let otherActivity = self.dictationState != .idle || self.isMeetingRecording() || self.isStartingMeetingRecording
                 || self.quilTask != nil || self.computerUseCommandTask != nil
+            if case .processing = state {
+                if otherActivity {
+                    self.indicator.dismissFeedbackCapturePreservingActivity()
+                } else {
+                    self.indicator.backgroundFeedbackCapture(config: self.config)
+                }
+                return
+            }
             if otherActivity {
                 if state == nil { self.indicator.dismissFeedbackCapturePreservingActivity(); return }
                 guard case .busy = state else { return }
@@ -951,6 +970,7 @@ public final class MuesliController: NSObject {
     private var modelFileMutationTokens: Set<UUID> = []
     private var meetingProcessingStages: [UUID: MeetingProcessingStage] = [:]
     private var pendingMeetingCompletionNotification: PendingMeetingCompletionNotification?
+    private var pendingVidshotNotifications: [(id: String, partial: Bool)] = []
     private var contributionMilestonePromptDismissedThisLaunch = false
     private var contributionMilestonePromptSeenIDsThisLaunch: Set<String> = []
     // Operation identity rejects a cancelled start's late UI work, including
@@ -10545,10 +10565,27 @@ public final class MuesliController: NSObject {
     }
 
     private func showPendingMeetingCompletionNotificationIfPossible() {
-        guard let notification = pendingMeetingCompletionNotification,
-              canShowMeetingCompletionNotification else { return }
-        pendingMeetingCompletionNotification = nil
-        showMeetingCompletionNotification(notification)
+        guard !isShuttingDown, canShowMeetingCompletionNotification else { return }
+        if let notification = pendingMeetingCompletionNotification {
+            pendingMeetingCompletionNotification = nil
+            showMeetingCompletionNotification(notification)
+            return
+        }
+        guard !pendingVidshotNotifications.isEmpty else { return }
+        let notification = pendingVidshotNotifications.removeFirst()
+        let shown = meetingNotification.show(promptID: "vidshot-" + notification.id,
+            title: notification.partial ? "Vidshot needs attention" : "Vidshot ready",
+            subtitle: notification.partial ? "Some processing did not complete" : "Recording and context are ready",
+            actionLabel: "Open Vidshot", opensFromBody: true, icon: VidshotIcon.image(),
+            onStartRecording: { [weak self] in
+                guard let self, self.feedbackCapture.records.contains(where: { $0.id == notification.id }) else { return }
+                self.appState.vidshotDetailReturnsToTimeline = false
+                self.appState.selectedVidshotID = notification.id
+                self.openHistoryWindow(tab: .vidshots)
+            }, onClose: { [weak self] in
+                Task { @MainActor [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() }
+            })
+        if !shown { pendingVidshotNotifications.insert(notification, at: 0) }
     }
 
     private var canShowMeetingCompletionNotification: Bool {

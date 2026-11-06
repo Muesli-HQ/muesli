@@ -27,7 +27,7 @@ enum FeedbackCapturePillState: Equatable {
         case .ready: "Ready"
         case .recovered: "Recovered"
         case .copied(let partial): "Copied" + (partial.map { " · \($0)" } ?? "")
-        case .readyToCopy(let partial): "Ready · Copy" + (partial.map { " · \($0)" } ?? "")
+        case .readyToCopy(let partial): "Ready" + (partial.map { " · \($0)" } ?? "")
         case .blocked(let permission): "Vidshot needs \(permission)"
         case .busy(let activity): "\(activity) first"
         case .failed(let stage, let message, _): "\(stage) failed: \(message)"
