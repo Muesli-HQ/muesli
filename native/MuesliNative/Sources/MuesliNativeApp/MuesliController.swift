@@ -202,6 +202,14 @@ enum MeetingResummarizationPolicy {
     }
 }
 
+enum MeetingResummaryError: Error, LocalizedError {
+    case alreadyRunning
+
+    var errorDescription: String? {
+        "Notes are already being generated for this meeting. Try again when that finishes."
+    }
+}
+
 enum MeetingSummaryPersistenceError: Error, LocalizedError {
     case failedToSaveSummary(underlying: Error)
 
@@ -6504,7 +6512,13 @@ public final class MuesliController: NSObject {
             completion(.failure(MeetingSummaryError.notConfigured(backend: provider.label)))
             return
         }
+        // One run per meeting: the run that inserted the mark is the one that removes it.
+        guard !appState.summarizingMeetingIDs.contains(meeting.id) else {
+            completion(.failure(MeetingResummaryError.alreadyRunning))
+            return
+        }
         let openRouterKey = openRouterAuth.resolvedAPIKey(legacyAPIKey: summaryConfig.openRouterAPIKey)
+        appState.summarizingMeetingIDs.insert(meeting.id)
         runMeetingResummary(operation: { [self] in
             let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let participantNames = await summaryParticipantNames(meetingID: meeting.id)
@@ -6552,7 +6566,11 @@ public final class MuesliController: NSObject {
             scheduleICloudSyncAfterLocalChange()
             syncAppState()
             historyWindowController?.reload()
-        }, completion: completion)
+        }, completion: { [weak self] result in
+            // The mark comes off on every path, including a cancel before the operation starts.
+            self?.appState.summarizingMeetingIDs.remove(meeting.id)
+            completion(result)
+        })
     }
 
     /// Protect the whole generation-and-save operation, including the gap before the task starts.
