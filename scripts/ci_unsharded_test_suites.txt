@@ -32,7 +32,6 @@ MeetingMarkdownAutoExporterTests
 MeetingMediaSessionTrackerTests
 MeetingMediaSignalFilterTests
 MeetingNeuralAecTests
-MeetingNotificationControllerTests
 MeetingPreviewTextTests
 MeetingPromptStateMachineTests
 MeetingSessionDiagnosticsTests
