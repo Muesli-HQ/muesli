@@ -676,6 +676,129 @@ struct DictationStoreTests {
         #expect(matched.calendarOccurrence == nil)
     }
 
+    @Test("meeting platform migrates without fabricating historical evidence")
+    func meetingPlatformMigrationKeepsHistoricalValuesUnknown() throws {
+        let store = try makeLegacyStore()
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, """
+            INSERT INTO meetings (title, start_time, raw_transcript, formatted_notes)
+            VALUES ('Zoom FaceTime Google Meet', '2026-04-10T14:00:00Z', '', '')
+            """, nil, nil, nil) == SQLITE_OK)
+
+        try store.migrateIfNeeded()
+        try store.migrateIfNeeded()
+
+        let record = try #require(try store.meeting(id: 1))
+        #expect(record.meetingPlatform == nil)
+        #expect(record.source == .meeting)
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT meeting_platform FROM meetings WHERE id = 1", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_type(statement, 0) == SQLITE_NULL)
+    }
+
+    @Test("meeting platform preserves exact optional strings through storage and Codable",
+          arguments: [nil, "facetime", "googleMeet", "unknown", "FutureCall.v2", "  未來 Call  ", "",
+                      "future\u{0000}platform", "\u{0000}", "Cafe\u{0301}", "Caf\u{00e9}"] as [String?])
+    func meetingPlatformStorageAndCodableRoundTrip(platform: String?) throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_770_000_000)
+        let liveID = try store.createLiveMeeting(title: "Detected", calendarEventID: nil,
+            startTime: start, meetingPlatform: platform)
+        let importedID = try store.insertMeeting(title: "Supplied", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(60), rawTranscript: "Words",
+            formattedNotes: "Notes", micAudioPath: nil, systemAudioPath: nil,
+            source: .audioImport, meetingPlatform: platform)
+
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        for id in [liveID, importedID] {
+            let record = try #require(try reopened.meeting(id: id))
+            #expect(record.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+            let data = try JSONEncoder().encode(record)
+            let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect((json["meetingPlatform"] as? String).map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+            if platform == nil { #expect(!json.keys.contains("meetingPlatform")) }
+            let decoded = try JSONDecoder().decode(MeetingRecord.self, from: data)
+            #expect(decoded.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+        }
+        #expect(try reopened.meeting(id: liveID)?.source == .meeting)
+        #expect(try reopened.meeting(id: importedID)?.source == .audioImport)
+        #expect(try reopened.recentMeetings(limit: 10).allSatisfy { $0.meetingPlatform == platform })
+        let searched = try #require(reopened.searchMeetings(query: "Detected").first)
+        #expect(searched.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+        let stale = try #require(reopened.staleLiveMeetings().first { $0.id == liveID })
+        #expect(stale.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+    }
+
+    @Test("MeetingRecord accepts an explicitly null platform in older JSON")
+    func meetingRecordDecodesNullPlatform() throws {
+        let json = """
+        {"id":42,"title":"Legacy","startTime":"2026-04-10T14:00:00Z",
+         "durationSeconds":60,"rawTranscript":"","formattedNotes":"","wordCount":0,
+         "meetingPlatform":null}
+        """
+        let record = try JSONDecoder().decode(MeetingRecord.self, from: Data(json.utf8))
+        #expect(record.meetingPlatform == nil)
+    }
+
+    @Test("meeting edits and resume completion retain platform while new meetings stay unknown",
+          arguments: [nil, "Future\u{0000}Call.v2"] as [String?])
+    func meetingPlatformSurvivesEditsWithoutBeingInherited(platform: String?) throws {
+        let store = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_770_000_000)
+        let id = try store.insertMeeting(title: "Original", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(60), rawTranscript: "Words",
+            formattedNotes: "Notes", micAudioPath: nil, systemAudioPath: nil,
+            meetingPlatform: platform)
+        try store.updateMeeting(id: id, title: "Renamed", formattedNotes: "New notes")
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Edited words")
+        try store.updateMeetingManualNotes(id: id, manualNotes: "My notes")
+        try store.updateMeetingSavedRecordingPath(id: id, path: "synthetic.wav")
+        #expect(try store.meeting(id: id)?.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+        _ = try store.prepareMeetingForResume(id: id)
+        #expect(try store.meeting(id: id)?.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+        try store.completeLiveMeeting(id: id, title: "Resumed", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(120), rawTranscript: "Combined words",
+            formattedNotes: "Final notes", micAudioPath: nil, systemAudioPath: nil)
+        #expect(try store.meeting(id: id)?.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+
+        let manualID = try store.createLiveMeeting(title: "FaceTime", calendarEventID: "zoom-calendar", startTime: start)
+        let followUpID = try store.createLiveMeeting(title: "Follow-up", calendarEventID: nil,
+            startTime: start, followUpToID: id)
+        #expect(try store.meeting(id: manualID)?.meetingPlatform == nil)
+        #expect(try store.meeting(id: followUpID)?.meetingPlatform == nil)
+    }
+
+    @Test("incoming sync preserves recorder-local platform without transmitting it",
+          arguments: [nil, "Future\u{0000}Call.v2"] as [String?])
+    func meetingPlatformRemainsLocalAcrossSyncUpdates(platform: String?) throws {
+        let store = try makeStore()
+        let target = try makeStore()
+        let start = Date(timeIntervalSince1970: 1_770_000_000)
+        let id = try store.insertMeeting(title: "Detected", calendarEventID: nil,
+            startTime: start, endTime: start.addingTimeInterval(60), rawTranscript: "Local words",
+            formattedNotes: "Notes", micAudioPath: nil, systemAudioPath: nil,
+            meetingPlatform: platform)
+        var remote = try #require(store.textRecordsNeedingSync().first { $0.kind == .meeting })
+        let outbound = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(remote)) as? [String: Any])
+        #expect(!outbound.keys.contains("meetingPlatform"))
+        #expect(!outbound.keys.contains("meeting_platform"))
+        remote.updatedAt = remote.updatedAt.addingTimeInterval(60)
+        remote.text = "Remote update"
+        #expect(try store.upsertSyncedTextRecord(remote))
+        let updated = try #require(try store.meeting(id: id))
+        #expect(updated.rawTranscript == "Remote update")
+        #expect(updated.meetingPlatform.map { Array($0.utf8) } == platform.map { Array($0.utf8) })
+        #expect(updated.source == .meeting)
+        #expect(try target.upsertSyncedTextRecord(remote))
+        let imported = try #require(target.recentMeetings(limit: 1).first)
+        #expect(imported.meetingPlatform == nil)
+    }
+
     @Test("MeetingRecord decodes legacy JSON without a calendar occurrence")
     func meetingRecordDecodesWithoutCalendarOccurrence() throws {
         let json = """
@@ -696,6 +819,7 @@ struct DictationStoreTests {
         )
 
         #expect(record.calendarOccurrence == nil)
+        #expect(record.meetingPlatform == nil)
     }
 
     @Test("MeetingRecord decodes legacy JSON without visual context")
@@ -1982,7 +2106,7 @@ struct DictationStoreTests {
     func completeLiveMeetingUpdatesExistingRow() throws {
         let store = try makeStore()
         let start = Date()
-        let id = try store.createLiveMeeting(title: "Draft", calendarEventID: nil, startTime: start)
+        let id = try store.createLiveMeeting(title: "Draft", calendarEventID: nil, startTime: start, meetingPlatform: "facetime")
         try store.updateMeetingManualNotes(id: id, manualNotes: "- Keep this")
 
         try store.completeLiveMeeting(
@@ -2006,6 +2130,7 @@ struct DictationStoreTests {
         #expect(meetings.count == 1)
         let completed = try #require(meetings.first)
         #expect(completed.id == id)
+        #expect(completed.meetingPlatform == "facetime")
         #expect(completed.status == .completed)
         #expect(completed.title == "Generated Title")
         #expect(completed.rawTranscript == "hello world")
@@ -2019,7 +2144,8 @@ struct DictationStoreTests {
         let id = try store.createLiveMeeting(
             title: "Crashed Meeting",
             calendarEventID: nil,
-            startTime: Date(timeIntervalSince1970: 1_700_000_000)
+            startTime: Date(timeIntervalSince1970: 1_700_000_000),
+            meetingPlatform: "unknown"
         )
         try store.updateMeetingManualNotes(id: id, manualNotes: "Remember this decision")
 
@@ -2033,6 +2159,7 @@ struct DictationStoreTests {
         #expect(recovered == true)
         let meeting = try #require(try store.meeting(id: id))
         #expect(meeting.status == .completed)
+        #expect(meeting.meetingPlatform == "unknown")
         #expect(meeting.notesState == .rawTranscriptFallback)
         #expect(meeting.rawTranscript.contains("[10:00:01] You: We should ship today."))
         #expect(meeting.rawTranscript.contains("[10:00:03] Others: Agreed with the plan."))
@@ -2054,7 +2181,8 @@ struct DictationStoreTests {
             rawTranscript: "Original transcript",
             formattedNotes: "## Summary\nOriginal notes",
             micAudioPath: nil,
-            systemAudioPath: nil
+            systemAudioPath: nil,
+            meetingPlatform: "FutureCall.v2"
         )
 
         #expect(try store.prepareMeetingForResume(id: id) == "Original transcript")
@@ -2067,6 +2195,7 @@ struct DictationStoreTests {
         #expect(recovered == true)
         let meeting = try #require(try store.meeting(id: id))
         #expect(meeting.status == .completed)
+        #expect(meeting.meetingPlatform == "FutureCall.v2")
         #expect(meeting.rawTranscript == "Original transcript\n\n— Resumed —\n\n[10:03:01] You: Resumed words")
         #expect(meeting.formattedNotes.contains("## Summary\nOriginal notes"))
         #expect(meeting.formattedNotes.contains("Recovered from live transcript checkpoints after a resumed meeting"))
@@ -2087,7 +2216,8 @@ struct DictationStoreTests {
             rawTranscript: "Original transcript",
             formattedNotes: "## Summary\nOriginal notes",
             micAudioPath: nil,
-            systemAudioPath: nil
+            systemAudioPath: nil,
+            meetingPlatform: "  未來 Call  "
         )
 
         _ = try store.prepareMeetingForResume(id: id)
@@ -2097,6 +2227,7 @@ struct DictationStoreTests {
         #expect(recovered == true)
         let meeting = try #require(try store.meeting(id: id))
         #expect(meeting.status == .completed)
+        #expect(meeting.meetingPlatform == "  未來 Call  ")
         #expect(meeting.rawTranscript == "Original transcript")
         #expect(meeting.formattedNotes == "## Summary\nOriginal notes")
         #expect(meeting.durationSeconds == 120)

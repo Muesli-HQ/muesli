@@ -50,7 +50,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, meeting_platform
     """
 
     public init() {
@@ -145,6 +145,7 @@ public final class DictationStore {
             follow_up_to_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
             follow_up_to_record_name TEXT,
             visual_context TEXT,
+            meeting_platform TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time DESC);
@@ -273,7 +274,8 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
             "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
+            "ALTER TABLE meetings ADD COLUMN visual_context TEXT",
+            "ALTER TABLE meetings ADD COLUMN meeting_platform TEXT"
         ] {
             guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
             // ADD COLUMN has no IF NOT EXISTS, so a duplicate column is the
@@ -1760,15 +1762,16 @@ public final class DictationStore {
         source: MeetingSource = .meeting,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
         visualContext: String? = nil,
-        folderID: Int64? = nil
+        folderID: Int64? = nil,
+        meetingPlatform: String? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?))
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id, meeting_platform)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?), ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1814,6 +1817,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 24)
         }
+        bindMeetingPlatform(meetingPlatform, at: 25, statement: statement)
 
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -2197,7 +2201,8 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         folderID: Int64? = nil,
         followUpToID: Int64? = nil,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        meetingPlatform: String? = nil
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -2205,8 +2210,8 @@ public final class DictationStore {
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
-        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, meeting_platform)
+        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -2244,6 +2249,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 17)
         }
+        bindMeetingPlatform(meetingPlatform, at: 18, statement: statement)
 
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -6010,7 +6016,8 @@ public final class DictationStore {
             source: source,
             followUpToID: followUpToID,
             followUpToRecordName: followUpToRecordName,
-            visualContext: optionalStringColumn(statement, index: 26)
+            visualContext: optionalStringColumn(statement, index: 26),
+            meetingPlatform: meetingPlatformColumn(statement, index: 27)
         )
     }
 
@@ -6085,6 +6092,26 @@ public final class DictationStore {
         }
         let value = String(cString: pointer)
         return value.isEmpty ? nil : value
+    }
+
+    // Platform identifiers preserve UTF-8 bytes, including embedded NUL and empty strings.
+    // Keep this separate from legacy text helpers, which use C-string semantics.
+    private func meetingPlatformColumn(_ statement: OpaquePointer?, index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+              let pointer = sqlite3_column_text(statement, index) else { return nil }
+        let bytes = UnsafeBufferPointer(start: pointer, count: Int(sqlite3_column_bytes(statement, index)))
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private func bindMeetingPlatform(_ value: String?, at index: Int32, statement: OpaquePointer?) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        _ = value.withCString { pointer in
+            sqlite3_bind_text(statement, index, pointer, Int32(value.utf8.count), transient)
+        }
     }
 
     private func optionalDataColumn(_ statement: OpaquePointer?, index: Int32) -> Data? {

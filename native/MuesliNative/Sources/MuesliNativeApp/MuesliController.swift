@@ -7666,7 +7666,8 @@ public final class MuesliController: NSObject {
         presentation: MeetingStartPresentation = .foregroundNotes,
         startOrigin: MeetingRecordingStartOrigin = .manual,
         dashboardWindowPresentation: DashboardWindowPresentation = .restored,
-        folderID: Int64? = nil
+        folderID: Int64? = nil,
+        meetingPlatform: String? = nil
     ) -> Bool {
         guard ensureOnboardingBeforeDashboard() else { return false }
         if isMeetingRecording() {
@@ -7687,7 +7688,8 @@ public final class MuesliController: NSObject {
             endDate: endDate,
             autoStopSource: autoStopSource,
             startOrigin: startOrigin,
-            inheritedFolderID: folderID
+            inheritedFolderID: folderID,
+            meetingPlatform: meetingPlatform
         )
         guard didStart else { return false }
         if presentation.presentsHistoryWindow {
@@ -7710,7 +7712,8 @@ public final class MuesliController: NSObject {
         startOrigin: MeetingRecordingStartOrigin = .manual,
         followUpToID: Int64? = nil,
         inheritedFolderID: Int64? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        meetingPlatform: String? = nil
     ) -> Bool {
         guard ensureNoMeetingRetranscription() else { return false }
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
@@ -7736,7 +7739,8 @@ public final class MuesliController: NSObject {
                 selectedTemplatePrompt: templateSnapshot.prompt,
                 folderID: inheritedFolderID,
                 followUpToID: followUpToID,
-                calendarOccurrence: calendarOccurrence
+                calendarOccurrence: calendarOccurrence,
+                meetingPlatform: meetingPlatform
             )
             persistCalendarAttendees(for: calendarOccurrence, meetingID: meetingID)
             installMeetingCapture(id: meetingID, title: title, calendarEventID: resolvedCalendarEventID,
@@ -10503,7 +10507,8 @@ public final class MuesliController: NSObject {
                     calendarOccurrence: calendarEvent?.calendarOccurrence,
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
                     presentation: .backgroundPill,
-                    startOrigin: .detectedPrompt
+                    startOrigin: .detectedPrompt,
+                    meetingPlatform: candidate.platform.rawValue
                 ) {
                     self.meetingMonitor.markRecordingStarted(candidate)
                     self.presentedMeetingCandidate = nil

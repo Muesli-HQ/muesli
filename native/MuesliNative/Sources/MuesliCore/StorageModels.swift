@@ -468,6 +468,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     /// Aggregated on-screen context (app text + OCR) captured during the
     /// meeting; nil when screen context was disabled or nothing was captured.
     public let visualContext: String?
+    /// Exact selected detection identifier, retained locally; absent when no candidate supplied it.
+    public let meetingPlatform: String?
 
     public init(
         id: Int64,
@@ -492,7 +494,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         source: MeetingSource = .meeting,
         followUpToID: Int64? = nil,
         followUpToRecordName: String? = nil,
-        visualContext: String? = nil
+        visualContext: String? = nil,
+        meetingPlatform: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -517,6 +520,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.followUpToID = followUpToID
         self.followUpToRecordName = followUpToRecordName
         self.visualContext = visualContext
+        self.meetingPlatform = meetingPlatform
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -543,6 +547,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case followUpToID
         case followUpToRecordName
         case visualContext
+        case meetingPlatform
     }
 
     public init(from decoder: Decoder) throws {
@@ -570,7 +575,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             source: (try? c.decode(MeetingSource.self, forKey: .source)) ?? .meeting,
             followUpToID: try c.decodeIfPresent(Int64.self, forKey: .followUpToID),
             followUpToRecordName: try c.decodeIfPresent(String.self, forKey: .followUpToRecordName),
-            visualContext: try c.decodeIfPresent(String.self, forKey: .visualContext)
+            visualContext: try c.decodeIfPresent(String.self, forKey: .visualContext),
+            meetingPlatform: try c.decodeIfPresent(String.self, forKey: .meetingPlatform)
         )
     }
 

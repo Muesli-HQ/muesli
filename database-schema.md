@@ -317,7 +317,8 @@ meeting, or iPhone meeting record.
 - Timing: `start_time`, `end_time`, `duration_seconds`, `created_at`
 - Lifecycle: `meeting_status` (`recording`, `processing`, `completed`,
   `note_only`, or `failed`)
-- Origin/type: `source` (`meeting`, `audio_import`, or `ios`)
+- Origin/type: `source` (`meeting`, `audio_import`, `granola_import`, or `ios`)
+- Detected service: nullable `meeting_platform`, an exact recorder-local identifier
 - Local files: `mic_audio_path`, `system_audio_path`, `saved_recording_path`
 - Local visual context: `visual_context` (serialized metadata; video files remain
   outside SQLite)
@@ -330,6 +331,16 @@ meeting, or iPhone meeting record.
   `follow_up_to_record_name` across devices
 - Sync/tombstone bookkeeping: `updated_at`, `deleted_at`, `cloud_*`,
   `last_synced_at`, `sync_dirty`
+
+`meeting_platform` records only the selected detection candidate's raw identifier
+(for example `facetime`, `googleMeet`, or literal `unknown`). Future identifiers
+remain verbatim strings. Manual, calendar-only, imported, follow-up and historical
+meetings stay NULL unless a value was explicitly supplied; there is no backfill
+or inference from titles, URLs, OCR or recording source. Resume, recovery and
+in-place edits preserve the existing value. This field is not sent through
+CloudKit: a newly synced meeting on another device has no platform value, while
+incoming sync edits retain local evidence. `MeetingRecord` Codable and CLI meeting
+list/detail JSON expose it as optional `meetingPlatform`, omitted when nil.
 
 Calendar IDs are lookup metadata, not unique meeting identities. A calendar
 occurrence can be recorded more than once.
