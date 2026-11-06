@@ -77,7 +77,6 @@ case "${shard}" in
       FeedbackCaptureContextTests
       FeedbackCaptureInputTests
       FeedbackCaptureRendererTests
-      FeedbackCaptureContextFinalizerTests
       FeedbackCaptureStoreTests
       FeedbackCaptureLifecycleTests
       FeedbackCaptureFinalizerTests
@@ -115,6 +114,7 @@ case "${shard}" in
     filters=(
       NotchIndicatorTests
       FeedbackCaptureTranscriptTests
+      FeedbackCaptureContextFinalizerTests
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests
