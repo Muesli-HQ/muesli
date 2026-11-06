@@ -33,6 +33,7 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     var onFinalizationResult: (@Sendable (Result<Double, Error>) -> Void)?
     var onFirstVideoFrame: (@Sendable (Int64) -> Void)?
     private let feedbackCapture: Bool
+    private let audioDrainInactivityLimit: TimeInterval
     private var lastSpaceCheck = Date.distantPast
     var onFailure: (@Sendable (String) -> Void)?
 
@@ -42,8 +43,9 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000
     ]
 
-    init(url: URL, feedbackCapture: Bool = false) {
-        self.url = url; self.feedbackCapture = feedbackCapture; super.init()
+    init(url: URL, feedbackCapture: Bool = false, audioDrainInactivityLimit: TimeInterval = 30) {
+        self.url = url; self.feedbackCapture = feedbackCapture
+        self.audioDrainInactivityLimit = audioDrainInactivityLimit; super.init()
         if feedbackCapture { audio.withLock { $0 = MeetingVideoAudioBuffer(start: 0) } }
     }
 
@@ -242,28 +244,33 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                 }
                 let end = self.collection.withLock { $0.cutoff } ?? CMClockGetTime(CMClockGetHostTimeClock())
                 let target = Int64(max(0, CMTimeGetSeconds(end - start)) * 16_000)
-                self.drainAndFinish(target: target, start: start, deadline: .now() + .seconds(2), complete: finalized)
+                self.drainAndFinish(target: target, start: start, deadline: .now() + .seconds(2), lastProgress: .now(), complete: finalized)
             }
         }
     }
-    private func drainAndFinish(target: Int64, start: CMTime, deadline: DispatchTime, complete: @escaping @Sendable (Result<Double, Error>) -> Void) {
+    private func drainAndFinish(target: Int64, start: CMTime, deadline: DispatchTime, lastProgress: DispatchTime, complete: @escaping @Sendable (Result<Double, Error>) -> Void) {
         guard !finished else { return }
         guard let writer, writer.status == .writing else {
             complete(.failure(writer?.error ?? Self.error("Video writer stopped."))); return
         }
+        let previousSamples = audioSamples
         writeAudio(flush: true, targetOverride: target)
-        if failure == nil, target > audioSamples, (feedbackCapture || DispatchTime.now() < deadline) {
+        let now = DispatchTime.now()
+        let progress = audioSamples > previousSamples ? now : lastProgress
+        let inactive = Double(now.uptimeNanoseconds - progress.uptimeNanoseconds) / 1_000_000_000
+        if failure == nil, target > audioSamples,
+           (feedbackCapture ? inactive < audioDrainInactivityLimit : now < deadline) {
             queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
-                self.drainAndFinish(target: target, start: start, deadline: deadline, complete: complete)
+                self.drainAndFinish(target: target, start: start, deadline: deadline, lastProgress: progress, complete: complete)
             }
             return
         }
-        // Meeting recordings retain their bounded drain policy. Vidshot waits for
-        // writer readiness or an actual writer error instead of truncating its tail
-        // after a fixed delay; its recovery journal remains owned while waiting.
+        // Bound inactivity, not total processing time: long recordings can keep
+        // draining indefinitely as long as the encoder continues making progress.
+        // If it stalls, finish the playable portion and retain the complete WAV.
         let incompleteAudio = failure == nil && target > audioSamples
         let finalizationError = failure ?? (feedbackCapture && incompleteAudio
-            ? Self.error("Narration encoding is incomplete. The complete WAV narration is retained.") : nil)
+            ? Self.error("Narration encoding stalled. The complete WAV narration is retained.") : nil)
         if incompleteAudio {
             Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.muesli", category: "MeetingVideo")
                 .warning("Audio drain timed out; finalizing encoded media without the remaining audio tail.")

@@ -11,6 +11,12 @@ SOURCE = ROOT / "native/MuesliNative/Sources/MuesliNativeApp/ScreenVideoRecorder
 HARNESS = r"""
 final class StalledAudioInput: AVAssetWriterInput, @unchecked Sendable {
  let blocked = OSAllocatedUnfairLock(initialState: false)
+ let blockAfterAppend = OSAllocatedUnfairLock(initialState: false)
+ override func append(_ sampleBuffer: CMSampleBuffer) -> Bool {
+  let appended = super.append(sampleBuffer)
+  if blockAfterAppend.withLock({ $0 }) { blocked.withLock { $0 = true } }
+  return appended
+ }
  override var isReadyForMoreMediaData: Bool {
   !blocked.withLock { $0 } && super.isReadyForMoreMediaData
  }
@@ -72,10 +78,59 @@ extension ScreenVideoRecorder {
   print("PASS: timed-out waiter allows delayed writer completion and playable media")
  }
 
+ static func probeSlowFeedbackDrain() async throws {
+  let url = URL(fileURLWithPath: CommandLine.arguments[1] + ".slow.mp4")
+  let recorder = ScreenVideoRecorder(url: url, feedbackCapture: true, audioDrainInactivityLimit: 4)
+  let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+  let input = StalledAudioInput(mediaType: .audio, outputSettings: audioOutputSettings)
+  writer.add(input); precondition(writer.startWriting())
+  let start = CMClockGetTime(CMClockGetHostTimeClock()) - CMTime(seconds: 1, preferredTimescale: 16000)
+  writer.startSession(atSourceTime: start)
+  while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+  let firstSample = try audioBuffer([Int16](repeating: 100, count: 1600), time: start)
+  precondition(input.append(firstSample))
+  recorder.writer = writer; recorder.audioInput = input
+  recorder.firstTime = start; recorder.audioSamples = 1600
+  recorder.requestStop(at: start + CMTime(seconds: 1, preferredTimescale: 16000))
+  input.blocked.withLock { $0 = true }
+  DispatchQueue.global().asyncAfter(deadline: .now() + 2.3) { input.blocked.withLock { $0 = false } }
+  let duration = try await recorder.stop(timeout: 6)
+  precondition(duration >= 1 && recorder.audioSamples == 16000 && writer.status == .completed)
+  print("PASS: delayed feedback encoder drains successfully beyond the old two-second limit")
+ }
+
+ static func probeProgressResetsInactivity() async throws {
+  let url = URL(fileURLWithPath: CommandLine.arguments[1] + ".progress.mp4")
+  let recorder = ScreenVideoRecorder(url: url, feedbackCapture: true, audioDrainInactivityLimit: 0.6)
+  let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+  let input = StalledAudioInput(mediaType: .audio, outputSettings: audioOutputSettings)
+  writer.add(input); precondition(writer.startWriting())
+  let start = CMClockGetTime(CMClockGetHostTimeClock()) - CMTime(seconds: 1, preferredTimescale: 16000)
+  writer.startSession(atSourceTime: start)
+  while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+  let firstSample = try audioBuffer([Int16](repeating: 100, count: 1600), time: start)
+  precondition(input.append(firstSample))
+  recorder.writer = writer; recorder.audioInput = input
+  recorder.firstTime = start; recorder.audioSamples = 1600
+  recorder.requestStop(at: start + CMTime(seconds: 1, preferredTimescale: 16000))
+  input.blocked.withLock { $0 = true }
+  input.blockAfterAppend.withLock { $0 = true }
+  for step in 1...12 {
+   DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(step * 120)) {
+    input.blocked.withLock { $0 = false }
+   }
+  }
+  let began = ContinuousClock.now
+  _ = try await recorder.stop(timeout: 5)
+  precondition(ContinuousClock.now - began > .seconds(0.6))
+  precondition(recorder.audioSamples == 16000 && writer.status == .completed)
+  print("PASS: ongoing audio progress resets the inactivity watchdog")
+ }
+
  static func probeStalledAudioDrain() async throws {
   for (feedback, recordedError) in [(false, false), (true, false), (true, true)] {
   let url = URL(fileURLWithPath: CommandLine.arguments[1] + (recordedError ? ".drain-error.mp4" : feedback ? ".partial-feedback.mp4" : ".stalled.mp4"))
-  let recorder = ScreenVideoRecorder(url: url, feedbackCapture: feedback)
+  let recorder = ScreenVideoRecorder(url: url, feedbackCapture: feedback, audioDrainInactivityLimit: 0.25)
   let wav = url.appendingPathExtension("wav")
   let narration = try MeetingRecordingWriter(destination: wav)
   try narration.appendMicrophone([Int16](repeating: 100, count: 16000), startFrame: 0)
@@ -137,7 +192,7 @@ extension ScreenVideoRecorder {
    }
    print("Recorded drain error survives actual finalization callback with playable media and complete WAV")
   } else {
-   precondition((reportedError != nil) == feedback, "Feedback AAC drain timeout must report partial narration instead of success")
+   precondition((reportedError != nil) == feedback, "A stalled feedback AAC drain must report partial narration instead of success")
   print(feedback ? "PASS: stalled feedback AAC reports partial narration while preserving playable MP4 and complete WAV" : "PASS: permanently stalled audio input finalizes existing media within the drain deadline")
   }
   }
@@ -343,7 +398,7 @@ extension ScreenVideoRecorder {
     delivery.asyncAfter(deadline: .now() + .milliseconds(50)) { stalled.blocked.withLock { $0 = false } }
    }
    let result: Result<Double, Error> = await withCheckedContinuation { continuation in
-    recorder.drainAndFinish(target: Int64(samples.count), start: start, deadline: .now() + .seconds(2)) {
+    recorder.drainAndFinish(target: Int64(samples.count), start: start, deadline: .now() + .seconds(2), lastProgress: .now()) {
      continuation.resume(returning: $0)
     }
    }
@@ -449,7 +504,7 @@ extension ScreenVideoRecorder {
  }
 
 }
-@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe(); try await ScreenVideoRecorder.probeDelayedFinalization(); try await ScreenVideoRecorder.probeStalledAudioDrain(); try await ScreenVideoRecorder.probeFeedbackFragments(); try await ScreenVideoRecorder.probeFeedbackAudioDelay(); try await ScreenVideoRecorder.probeFirstAcceptedVideoFrame(); try await ScreenVideoRecorder.probeDelayedFeedbackNarration() } }
+@main struct Probe { static func main() async throws { try await ScreenVideoRecorder.probe(); try await ScreenVideoRecorder.probeDelayedFinalization(); try await ScreenVideoRecorder.probeStalledAudioDrain(); try await ScreenVideoRecorder.probeSlowFeedbackDrain(); try await ScreenVideoRecorder.probeProgressResetsInactivity(); try await ScreenVideoRecorder.probeFeedbackFragments(); try await ScreenVideoRecorder.probeFeedbackAudioDelay(); try await ScreenVideoRecorder.probeFirstAcceptedVideoFrame(); try await ScreenVideoRecorder.probeDelayedFeedbackNarration() } }
 """
 
 with tempfile.TemporaryDirectory(prefix="muesli-meeting-encoding-") as directory:

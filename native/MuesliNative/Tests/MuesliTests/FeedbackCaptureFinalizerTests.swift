@@ -10,7 +10,7 @@ import os
 struct FeedbackCaptureFinalizerTests {
     @Test func redundantAudioIsRemovedOnlyAfterSuccessfulDurableTranscription() async throws {
         try await withFeedbackStoreAsync { store, _ in
-            for mode in ["success", "failed", "unsafeVideo"] {
+            for mode in ["success", "failed", "unsafeVideo", "failedVideo"] {
                 var manifest = try store.begin(target: feedbackTarget())
                 manifest.audio = "narration.wav"; manifest.video = "recording.mp4"
                 manifest.videoOffsetMs = 0
@@ -19,6 +19,7 @@ struct FeedbackCaptureFinalizerTests {
                 try Data([4, 5, 6]).write(to: store.mediaURL(id: manifest.id, path: "recording.mp4"))
                 manifest.transcript = mode == "failed" ? .unavailable("transcription failed") :
                     .init(source: "fixture", text: "hello", words: [], segments: [], estimated: false)
+                if mode == "failedVideo" { manifest.failures.append(.init(stage: "video", message: "Encoding stalled")) }
                 var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages().filter { $0.name == .summary })
                 finalizer.audioIsSafelyInVideo = { _, _, _ in mode != "unsafeVideo" }
                 let result = try await finalizer.finish(manifest, context: .init(store: store, finishPasteboardChangeCount: 0))

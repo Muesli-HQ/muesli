@@ -93,7 +93,7 @@ struct FeedbackCaptureFinalizer {
         guard let audio = manifest.audio, let video = manifest.video,
               let transcript = manifest.transcript, transcript.missing == nil,
               !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !manifest.failures.contains(where: { $0.stage == "transcribe" }), !Task.isCancelled,
+              !manifest.failures.contains(where: { $0.stage == "transcribe" || $0.stage == "video" }), !Task.isCancelled,
               let audioURL = try? store.mediaURL(id: manifest.id, path: audio),
               let videoURL = try? store.mediaURL(id: manifest.id, path: video),
               await audioIsSafelyInVideo(audioURL, videoURL, manifest.videoOffsetMs), !Task.isCancelled else { return manifest }
