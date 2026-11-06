@@ -59,6 +59,7 @@ protocol MeetingMicRecording: AnyObject {
     /// before copying input, not when delivering it after a processing delay.
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool)
     func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?)
+    func setUntimedSampleAdmissionCheck(_ check: @escaping () -> Bool)
     /// True only when callbacks represent buffers gated before asynchronous work.
     var hasBufferedSampleAdmission: Bool { get }
 
@@ -78,6 +79,7 @@ protocol MeetingMicRecording: AnyObject {
 extension MeetingMicRecording {
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
     func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {}
+    func setUntimedSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
     var hasBufferedSampleAdmission: Bool { false }
     func waitForQuiescence() {}
     func drainAcceptedAudio() {}
@@ -176,12 +178,16 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
             }
             self.onRawPCMSamples?(MicrophoneCaptureAudio(samples: int16Samples,
                 startFrame: MicrophoneCaptureAudio.frame(atHostTime: mach_absolute_time()) - Int64(samples.count),
-                admitted: false))
+                admitted: false, hasCaptureTime: false))
         }
     }
 
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
         (recorder as? BufferedMicrophoneAdmissionControlling)?.shouldAdmitSamples = check
+    }
+
+    func setUntimedSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        (recorder as? MicrophoneCaptureReporting)?.shouldAdmitUntimedSamples = check
     }
 
     func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {
@@ -293,6 +299,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         var onRawPCMSamplesStorage: ((MicrophoneCaptureAudio) -> Void)?
         var onRecordingFailedStorage: ((Error) -> Void)?
         var onHandoffOutcomeStorage: ((MeetingMicHandoffOutcome) -> Void)?
+        var untimedSampleAdmissionCheck: (() -> Bool)?
         var sampleAdmissionCheck: (() -> Bool)?
         var nativeStopDrainRange: (() -> Range<Int64>?)?
 
@@ -320,6 +327,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private var lifecycleState: LifecycleState { lock.withLock { $0.lifecycleState } }
     private var onRawPCMSamplesStorage: ((MicrophoneCaptureAudio) -> Void)? { lock.withLock { $0.onRawPCMSamplesStorage } }
     private var onRecordingFailedStorage: ((Error) -> Void)? { lock.withLock { $0.onRecordingFailedStorage } }
+
+    func setUntimedSampleAdmissionCheck(_ check: @escaping () -> Bool) {
+        lock.withLock { $0.untimedSampleAdmissionCheck = check }
+    }
 
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {
         lock.withLock { $0.sampleAdmissionCheck = check }
@@ -764,6 +775,9 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
             seededAppScopedRecorder = nil
         }
         recorder.preferredInputDeviceID = deviceID
+        if let check = lock.withLock({ $0.untimedSampleAdmissionCheck }) {
+            recorder.setUntimedSampleAdmissionCheck(check)
+        }
         if let check = lock.withLock({ $0.sampleAdmissionCheck }) {
             recorder.setSampleAdmissionCheck(check)
         }
@@ -992,6 +1006,7 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
         StreamingMeetingMicRecorderAdapter(
             recorder: StreamingMicRecorder(
                 directoryName: "muesli-meeting-mic",
+                purpose: .meeting,
                 recoversFromInputConfigurationChanges: true,
                 // This outer recorder owns route recovery. A child restart can
                 // itself emit another configuration-change notification and
@@ -1005,9 +1020,10 @@ final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     private static func makeAppScopedRecorder() -> MeetingMicRecording {
         StreamingMeetingMicRecorderAdapter(
             recorder: FallbackStreamingDictationRecorder(
-                primary: AudioQueueInputRecorder(directoryName: "muesli-meeting-mic-audioqueue"),
+                primary: AudioQueueInputRecorder(directoryName: "muesli-meeting-mic-audioqueue", purpose: .meeting),
                 fallback: StreamingMicRecorder(
                     directoryName: "muesli-meeting-mic-app-scoped-fallback",
+                    purpose: .meeting,
                     recoversFromInputConfigurationChanges: true,
                     observesInputConfigurationChanges: false
                 )

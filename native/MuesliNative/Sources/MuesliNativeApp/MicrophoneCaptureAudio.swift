@@ -1,12 +1,21 @@
 import AVFoundation
 import Foundation
 
+/// Meeting audio is persisted only by the redacted meeting pipeline. Native
+/// meeting capture requires trustworthy timing whenever dictation exclusions exist.
+enum MicrophoneRecordingPurpose {
+    case dictation
+    case meeting
+}
+
 /// A 16 kHz mono block. Timing and admission belong to the captured input, not
 /// the currently selected recorder or the wall-clock time of delayed delivery.
 struct MicrophoneCaptureAudio: Sendable {
     var samples: [Int16]
     var startFrame: Int64
     var admitted: Bool
+    /// False when the producer has no native capture timestamp. Delivery time is not capture time.
+    var hasCaptureTime: Bool = true
     var endFrame: Int64 { startFrame + Int64(samples.count) }
 
     static func frame(atHostTime time: UInt64) -> Int64 {
@@ -95,6 +104,9 @@ final class MeetingMicrophoneExclusions {
 /// Meeting consumers use this path; dictation keeps its existing Float callback.
 protocol MicrophoneCaptureReporting: BufferedMicrophoneAdmissionControlling {
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)? { get set }
+    /// Installed before start; checked before conversion so private untimed PCM
+    /// cannot contaminate a later timestamped converter output.
+    var shouldAdmitUntimedSamples: (() -> Bool)? { get set }
     /// Installed before start. Allowed capture-time interval for native-held
     /// buffers arriving during child retirement or meeting stop. Nil closes
     /// late native admission; the route owner separately enforces source
@@ -103,6 +115,10 @@ protocol MicrophoneCaptureReporting: BufferedMicrophoneAdmissionControlling {
 }
 
 extension MicrophoneCaptureReporting {
+    var shouldAdmitUntimedSamples: (() -> Bool)? {
+        get { nil }
+        set {}
+    }
     // Only backends with an explicit native final-buffer drain need this path.
     var nativeStopDrainRange: (() -> Range<Int64>?)? {
         get { nil }
@@ -113,7 +129,7 @@ extension MicrophoneCaptureReporting {
 /// Worker-owned mapping from a converter's continuous output to accepted input
 /// spans. In particular, filter output held across Pause retains its OLD time.
 final class MicrophoneCaptureTimeline {
-    private struct Span { var start: Int64; var count: Int }
+    private struct Span { var start: Int64; var count: Int; var hasCaptureTime: Bool }
     private var spans: [Span] = []
     private var inputFrames: Double = 0
     private var assignedFrames = 0
@@ -123,7 +139,7 @@ final class MicrophoneCaptureTimeline {
         spans.removeAll(); inputFrames = 0; assignedFrames = 0; previousEnd = nil
     }
 
-    func append(frames: Int, rate: Double, start: Int64) {
+    func append(frames: Int, rate: Double, start: Int64, hasCaptureTime: Bool = true) {
         inputFrames += Double(frames)
         let total = Int(ceil(inputFrames * 16_000 / rate))
         let count = total - assignedFrames
@@ -133,10 +149,11 @@ final class MicrophoneCaptureTimeline {
             // spans within one output frame, but preserve actual pause gaps.
             let aligned = previousEnd.flatMap { abs(start - $0) <= 1 ? $0 : nil } ?? start
             previousEnd = aligned + Int64(count)
-            if let last = spans.indices.last, spans[last].start + Int64(spans[last].count) == aligned {
+            if let last = spans.indices.last, spans[last].start + Int64(spans[last].count) == aligned,
+               spans[last].hasCaptureTime == hasCaptureTime {
                 spans[last].count += count
             } else {
-                spans.append(Span(start: aligned, count: count))
+                spans.append(Span(start: aligned, count: count, hasCaptureTime: hasCaptureTime))
             }
         }
     }
@@ -146,7 +163,7 @@ final class MicrophoneCaptureTimeline {
         while offset < samples.count, !spans.isEmpty {
             let count = min(spans[0].count, samples.count - offset)
             deliver(MicrophoneCaptureAudio(samples: Array(samples[offset..<offset + count]),
-                startFrame: spans[0].start, admitted: true))
+                startFrame: spans[0].start, admitted: true, hasCaptureTime: spans[0].hasCaptureTime))
             spans[0].start += Int64(count)
             spans[0].count -= count
             if spans[0].count == 0 { spans.removeFirst() }

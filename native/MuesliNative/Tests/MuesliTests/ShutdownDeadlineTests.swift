@@ -66,6 +66,40 @@ struct ShutdownDeadlineTests {
         #expect(controller.shutdownStep == "finished")
     }
 
+    @Test("audio devices are cleaned before shutdown waits for in-flight inference")
+    @MainActor
+    func cleanupPrecedesInferenceReservation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = try makeController(directory: directory)
+        let entered = StuckWork(), inference = StuckWork(), cleaned = StuckWork(), waiting = StuckWork()
+        defer { inference.release() }
+        await controller.transcriptionCoordinator.testingInstallASR(
+            onWait: { waiting.release() }, prepare: { _ in }, infer: { _, _ in
+                entered.release()
+                await inference.park() // Simulates native inference ignoring cancellation.
+                return .init(text: "meeting", segments: [])
+            })
+        let transcription = Task {
+            try await controller.transcriptionCoordinator.transcribeMeeting(
+                at: directory.appendingPathComponent("synthetic.wav"), backend: .parakeetEnglish)
+        }
+        let started = await ShutdownDeadline.run(seconds: 2) { await entered.park() }
+        try #require(started)
+        let shutdown = Task { @MainActor in
+            await controller.shutdown(discardScreenRecording: {}, cleanupAudioDevices: { cleaned.release() })
+        }
+        let reachedWait = await ShutdownDeadline.run(seconds: 2) { await waiting.park() }
+        #expect(reachedWait)
+        let cleanupFinished = await ShutdownDeadline.run(seconds: 0.2) { await cleaned.park() }
+        #expect(cleanupFinished, "Device cleanup must not depend on releasing the model reservation")
+        #expect(controller.shutdownStep == "transcription coordinator")
+        inference.release()
+        _ = try await transcription.value
+        await shutdown.value
+        #expect(controller.shutdownStep == "finished")
+    }
+
     @MainActor
     private func makeController(directory: URL) throws -> MuesliController {
         let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))

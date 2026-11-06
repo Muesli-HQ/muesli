@@ -258,6 +258,56 @@ struct MeetingMicrophoneDeliveryTests {
         }
     }
 
+    @Test("untimed microphone input cannot contaminate resampler history")
+    func untimedResamplerInput() throws {
+        func capture(includeUntimed: Bool) throws -> [Int16] {
+            let recorder = StreamingMicRecorder(purpose: .meeting)
+            defer { recorder.cancel() }
+            let output = OSAllocatedUnfairLock(initialState: [Int16]())
+            recorder.onCapturedAudio = { audio in output.withLock { $0 += audio.samples } }
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+            let tap = try recorder.testing_startWithTap(format: format)
+            func emit(_ value: Float, at frame: Int64, timed: Bool) throws {
+                let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480))
+                buffer.frameLength = 480
+                buffer.floatChannelData![0].update(repeating: value, count: 480)
+                let time = timed ? AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(frame) / 16_000))
+                    : AVAudioTime(sampleTime: 0, atRate: 48_000)
+                tap(buffer, time)
+            }
+            try emit(0.1, at: 1000, timed: true)
+            if includeUntimed { try emit(0.9, at: 1160, timed: false) }
+            try emit(0.1, at: 1320, timed: true)
+            #expect(recorder.stop() == nil)
+            return output.withLock { $0 }
+        }
+        let reference = try capture(includeUntimed: false)
+        #expect(!reference.isEmpty)
+        #expect(try capture(includeUntimed: true) == reference)
+    }
+
+    @Test("meeting native capture never persists raw PCM and rejects untimed input", arguments: [false, true])
+    func meetingCapturePrivacy(useQueue: Bool) throws {
+        let directory = "meeting-private-\(UUID().uuidString)"
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(directory)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let producer = ContractProducer(useQueue: useQueue, purpose: .meeting, directoryName: directory)
+        defer { producer.cancel() }
+        let blocks = OSAllocatedUnfairLock(initialState: [MicrophoneCaptureAudio]())
+        producer.onCapturedAudio = { audio in blocks.withLock { $0.append(audio) } }
+        try producer.prepare()
+        try producer.start()
+        try producer.emit([4, 4, 4, 4], at: 100)
+        try producer.emit([15, 15, 15, 15], at: 104, timed: false)
+        try producer.emit([8, 8, 8, 8], at: 108)
+        producer.drainAcceptedAudio()
+        #expect(!FileManager.default.fileExists(atPath: path.path), "No raw WAV exists even before Stop (crash-safe)")
+        #expect(producer.stop() == nil)
+        #expect(blocks.withLock { $0.flatMap(\.samples) } == [Int16](repeating: 8191, count: 4) + [Int16](repeating: 16383, count: 4))
+        #expect(blocks.withLock { $0.allSatisfy(\.hasCaptureTime) })
+        #expect(!FileManager.default.fileExists(atPath: path.path))
+    }
+
     @Test("closed exclusions sanitize delayed and handoff PCM at every retained sink", arguments: [false, true], [false, true])
     func excludedMicrophoneSinks(delayedReference: Bool, handoffRoute: Bool) async throws {
         let old = ContractProducer(useQueue: true), next = ContractProducer(useQueue: false)
@@ -287,6 +337,10 @@ struct MeetingMicrophoneDeliveryTests {
         try await MeetingCaptureLifecycle.onDriverQueue { route.drainAcceptedAudio() }
         session.endMicrophoneExclusion(token, at: 107)
         session.endMicrophoneExclusion(UUID(), at: 0) // A foreign take cannot change it.
+        // Late delivery time cannot establish when private audio was captured.
+        // Legacy/default recorders still forward this receipt; every meeting
+        // sink must reject it even though the exclusion has already closed.
+        try old.emit([15, 15, 15, 15], at: 200, timed: false)
         if handoffRoute {
             let promoted = DispatchSemaphore(value: 0)
             let handoff = route.onHandoffOutcome
@@ -299,6 +353,7 @@ struct MeetingMicrophoneDeliveryTests {
             try next.emit([5, 6, 7], at: 104)
             let promotion = try await MeetingCaptureLifecycle.onDriverQueue { promoted.wait(timeout: .now() + 5) }
             try #require(promotion == .success)
+            try next.emit([15, 15, 15, 15], at: 200, timed: false)
             try next.emit([8, 9, 10], at: 107)
         } else {
             try old.emit([5, 6, 7], at: 104) // Delayed until after the window closed.
@@ -409,7 +464,7 @@ struct MeetingMicrophoneDeliveryTests {
     @Test("normal session preserves both tracks regardless of microphone timestamp jitter",
           arguments: ["stream", "queue", "fallback"], ["exact", "jitter", "missing", "mixed"])
     func normalSessionKeepsEverySample(backend: String, timing: String) async throws {
-        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback")
+        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback", purpose: .meeting)
         let route = RouteAwareMeetingMicRecorder(systemDefaultRecorder:
             StreamingMeetingMicRecorderAdapter(recorder: producer, kind: .systemDefaultStreaming))
         let system = ContractSystemAudio()
@@ -590,7 +645,7 @@ struct MeetingMicrophoneDeliveryTests {
     @Test("session pause drains admitted PCM before chunk rotation and AEC reset",
           arguments: ["stream", "queue", "fallback"], ["paused", "resume", "rapid", "stop", "discard"])
     func sessionPauseBoundary(backend: String, ending: String) async throws {
-        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback")
+        let producer = ContractProducer(useQueue: backend != "stream", wrapped: backend == "fallback", purpose: .meeting)
         let delayed = ContractGate(), pipeline = ContractGate()
         let draining = DispatchSemaphore(value: 0), resumed = DispatchSemaphore(value: 0)
         producer.beforeFirstDelivery = { delayed.block() }
@@ -1265,19 +1320,24 @@ private final class ContractProducer: StreamingDictationRecording, PausableStrea
         get { child.shouldAdmitSamples }
         set { child.shouldAdmitSamples = newValue }
     }
+    var shouldAdmitUntimedSamples: (() -> Bool)? {
+        get { child.shouldAdmitUntimedSamples }
+        set { child.shouldAdmitUntimedSamples = newValue }
+    }
     var nativeStopDrainRange: (() -> Range<Int64>?)? {
         get { child.nativeStopDrainRange }
         set { child.nativeStopDrainRange = newValue }
     }
-    init(useQueue: Bool, wrapped: Bool = false) {
+    init(useQueue: Bool, wrapped: Bool = false, purpose: MicrophoneRecordingPurpose = .dictation,
+         directoryName: String = "meeting-delivery-contract-tests") {
         if useQueue {
             let driver = ContractQueueDriver()
             self.driver = driver; streaming = nil
-            let queue = AudioQueueInputRecorder(directoryName: "meeting-delivery-contract-tests", native: driver.operations)
+            let queue = AudioQueueInputRecorder(directoryName: directoryName, purpose: purpose, native: driver.operations)
             child = wrapped ? FallbackStreamingDictationRecorder(primary: queue, fallback: StreamingMicRecorder()) : queue
         } else {
             driver = nil
-            let stream = StreamingMicRecorder(directoryName: "meeting-delivery-contract-tests")
+            let stream = StreamingMicRecorder(directoryName: directoryName, purpose: purpose)
             streaming = stream; child = stream
         }
     }

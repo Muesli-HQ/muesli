@@ -1301,7 +1301,9 @@ public final class MuesliController: NSObject {
             await visualMemory.stopRecording(discard: true)
         }
         discardMeetingStateForTermination()
-        await cancelMeetingRetranscriptionsForShutdown()
+        // Request cancellation now, but do not await inference before releasing
+        // audio devices. Native inference can ignore cancellation until it returns.
+        meetingRetranscriptionTasks.values.forEach { $0.cancel() }
         systemPermissionGuideController.dismiss()
         if let dataDidChangeObserver {
             DistributedNotificationCenter.default().removeObserver(dataDidChangeObserver)
@@ -1379,8 +1381,6 @@ public final class MuesliController: NSObject {
         await syncEngineCancellationTask?.value
         await dictationRecoveryTask?.value
         nativeRecordingGate.invalidate()
-        shutdownStep = "transcription coordinator"
-        await transcriptionCoordinator.shutdown()
         shutdownStep = "audio device cleanup"
         indicator.close()
         // CoreAudio may block in a driver. Keep both MainActor and Swift's
@@ -1391,6 +1391,11 @@ public final class MuesliController: NSObject {
                 continuation.resume()
             }
         }
+        // Retranscriptions and model reservations can wait for non-cancellable
+        // inference. CoreAudio cleanup must precede both waits on Quit Anyway.
+        await cancelMeetingRetranscriptionsForShutdown()
+        shutdownStep = "transcription coordinator"
+        await transcriptionCoordinator.shutdown()
         shutdownStep = "finished"
     }
 

@@ -6,6 +6,7 @@ import os
 final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
     var shouldAdmitSamples: (() -> Bool)?
     var nativeStopDrainRange: (() -> Range<Int64>?)?
+    var shouldAdmitUntimedSamples: (() -> Bool)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)? {
@@ -56,6 +57,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private let native: NativeOperations
+    private let purpose: MicrophoneRecordingPurpose
     private let directoryName: String
     // Serializes native commands only. Neither native callbacks nor the PCM
     // processing queue acquire this lock, including during synchronous disposal.
@@ -91,9 +93,10 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         var latestPowerDB: Float = -160
     }
 
-    init(directoryName: String = "muesli-native-dictation", native: NativeOperations = NativeOperations()) {
+    init(directoryName: String = "muesli-native-dictation", purpose: MicrophoneRecordingPurpose = .dictation, native: NativeOperations = NativeOperations()) {
         self.native = native
         self.directoryName = directoryName
+        self.purpose = purpose
     }
 
     deinit {
@@ -380,6 +383,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             // Only teardown or overload retires its buffers.
             let requeue = !state.isDraining && !state.invalidated && !state.overloaded
             guard byteCount > 0, !state.overloaded else { return (requeue, false) }
+            // Keep recycling native buffers even when their capture time is
+            // unavailable; no untimed meeting PCM may reach processing or disk.
+            guard time.mFlags.contains(.hostTimeValid) || (shouldAdmitUntimedSamples?() ?? (purpose != .meeting)) else { return (requeue, false) }
             var firstFrame = startFrame
             var frameCount = byteCount / MemoryLayout<Float>.size
             if state.isPaused || state.invalidated || !(shouldAdmitSamples?() ?? true) {
@@ -409,7 +415,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             // Neither native commands nor arbitrary consumers run under it.
             processingQueue.async { [weak self] in
                 guard let self else { return }
-                self.processAudioData(data, generation: generation, startFrame: firstFrame)
+                self.processAudioData(data, generation: generation, startFrame: firstFrame, hasCaptureTime: time.mFlags.contains(.hostTimeValid))
                 self.callbackState.withLock { $0.pendingBuffers -= 1 }
             }
             return (requeue, false)
@@ -425,8 +431,9 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
         }
     }
 
-    private func processAudioData(_ data: Data, generation: UInt64, startFrame: Int64) {
+    private func processAudioData(_ data: Data, generation: UInt64, startFrame: Int64, hasCaptureTime: Bool) {
         guard callbackState.withLock({ $0.generation == generation }) else { return }
+        guard hasCaptureTime || (shouldAdmitUntimedSamples?() ?? (purpose != .meeting)) else { return }
 
         let sampleCount = data.count / MemoryLayout<Float>.size
         guard sampleCount > 0 else { return }
@@ -460,7 +467,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
             state.latestPowerDB = powerDB
         }
         onAudioBuffer?(samples)
-        onCapturedAudio?(MicrophoneCaptureAudio(samples: int16Samples, startFrame: startFrame, admitted: true))
+        onCapturedAudio?(MicrophoneCaptureAudio(samples: int16Samples, startFrame: startFrame, admitted: true, hasCaptureTime: hasCaptureTime))
     }
 
     private func cleanupAfterStartFailure() {
@@ -555,6 +562,7 @@ final class AudioQueueInputRecorder: StreamingDictationRecording, StreamingDicta
     }
 
     private func createNewFile() throws -> FileState {
+        guard purpose != .meeting else { return FileState() }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

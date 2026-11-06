@@ -312,6 +312,9 @@ final class MeetingSession {
         self.meetingMicRecorder = meetingMicRecorder
         self.neuralAec = aec
         self.microphoneClock = microphoneClock
+        meetingMicRecorder.setUntimedSampleAdmissionCheck { [microphoneExclusions] in
+            !microphoneExclusions.hasExclusions
+        }
         if let systemAudioCapture {
             self.systemAudioRecorder = systemAudioCapture
         } else if config.useCoreAudioTap {
@@ -1388,6 +1391,9 @@ final class MeetingSession {
 
         captureLifecycle.enqueueMicrophoneSamples(audio, on: chunkRotationQueue) { [weak self] in
             guard let self else { return }
+            // Revalidate after queueing. No finite padding proves that a late
+            // untimed buffer does not contain dictation from a closed exclusion.
+            guard audio.hasCaptureTime || !self.microphoneExclusions.hasExclusions else { return }
 
             if self.capturePhase.acceptsSamples {
                 let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)

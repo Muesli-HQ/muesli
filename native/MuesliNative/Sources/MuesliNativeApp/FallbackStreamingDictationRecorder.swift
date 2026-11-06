@@ -8,6 +8,14 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     }
     private var capturedHandler: ((MicrophoneCaptureAudio) -> Void)?
     private var stopDrainRange: (() -> Range<Int64>?)?
+    var shouldAdmitUntimedSamples: (() -> Bool)? {
+        get { lock.withLock { untimedSampleAdmissionCheck } }
+        set {
+            lock.withLock { untimedSampleAdmissionCheck = newValue }
+            (primary as? MicrophoneCaptureReporting)?.shouldAdmitUntimedSamples = newValue
+            (fallback as? MicrophoneCaptureReporting)?.shouldAdmitUntimedSamples = newValue
+        }
+    }
     var nativeStopDrainRange: (() -> Range<Int64>?)? {
         get { lock.withLock { stopDrainRange } }
         set {
@@ -72,6 +80,7 @@ final class FallbackStreamingDictationRecorder: StreamingDictationRecording, Str
     private var generation: UInt64 = 0
     private var invalidated = false
     private var preferredInputDeviceIDStorage: AudioObjectID?
+    private var untimedSampleAdmissionCheck: (() -> Bool)?
     private var sampleAdmissionCheck: (() -> Bool)?
 
     init(

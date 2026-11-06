@@ -68,6 +68,7 @@ struct StreamingMicRecorderRunState: Equatable {
 }
 
 final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
+    var shouldAdmitUntimedSamples: (() -> Bool)?
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var shouldAdmitSamples: (() -> Bool)?
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
@@ -88,6 +89,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         engineStorage = created
         return created
     }
+    private let purpose: MicrophoneRecordingPurpose
     private let directoryName: String
     private let recoversFromInputConfigurationChanges: Bool
     private let observesInputConfigurationChanges: Bool
@@ -133,11 +135,13 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
     init(
         directoryName: String = "muesli-meeting-mic",
+        purpose: MicrophoneRecordingPurpose = .dictation,
         recoversFromInputConfigurationChanges: Bool = false,
         observesInputConfigurationChanges: Bool? = nil,
         makeEngine: @escaping () -> AVAudioEngine = { AVAudioEngine() }
     ) {
         self.directoryName = directoryName
+        self.purpose = purpose
         self.makeEngine = makeEngine
         self.recoversFromInputConfigurationChanges = recoversFromInputConfigurationChanges
         self.observesInputConfigurationChanges = observesInputConfigurationChanges
@@ -338,9 +342,10 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
 
             // File lifecycle is serialized on processingQueue. Snapshot the
             // handle so currentPower()/pause() never wait behind disk I/O.
-            guard let handle = self.lock.withLock({ $0.fileHandle }) else { return }
             do {
-                try handle.write(contentsOf: pcmData)
+                if let handle = self.lock.withLock({ $0.fileHandle }) {
+                    try handle.write(contentsOf: pcmData)
+                }
             } catch {
                 self.bufferedCapture?.close()
                 self.reportRecordingFailure(error, recordingID: recordingID)
@@ -374,8 +379,12 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let capture = try BufferedMicrophoneCapture(
             format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
             shouldAdmitSamples: shouldAdmitSamples ?? { true }
-        ) { buffer, start in
-            timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate, start: start)
+        ) { [weak self] buffer, start, hasCaptureTime in
+            // Reject before resampling: converter filter history must never carry
+            // untimed private PCM into a later, timestamped output block.
+            guard let self, hasCaptureTime || (self.shouldAdmitUntimedSamples?() ?? (self.purpose != .meeting)) else { return }
+            timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate,
+                            start: start, hasCaptureTime: hasCaptureTime)
             convert(buffer)
         }
         finishBufferedConversion = {
@@ -786,6 +795,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
     // MARK: - File Management
 
     private func createNewFile() throws -> FileState {
+        guard purpose != .meeting else { return FileState() }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
