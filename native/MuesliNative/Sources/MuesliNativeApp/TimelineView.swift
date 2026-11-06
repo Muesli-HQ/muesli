@@ -443,7 +443,8 @@ struct TimelineVidshotRow: View {
                         }
                         TimelineRowActionButton(
                             symbol: copyConfirmation == nil ? "doc.on.doc" : "checkmark",
-                            label: "Copy Vidshot context", help: copyConfirmation == nil ? "Copy Vidshot context" : "Vidshot context copied",
+                            label: "Copy Vidshot summary and transcript",
+                            help: copyConfirmation == nil ? "Copy summary and transcript; image may paste in supported apps" : "Vidshot summary copied",
                             color: copyConfirmation == nil ? MuesliTheme.textTertiary : MuesliTheme.successText
                         ) {
                             Task {
@@ -473,26 +474,34 @@ struct TimelineVidshotRow: View {
                 }
                 HStack(alignment: .top, spacing: 12) {
                     if player == nil {
-                        Button {
-                            guard let videoURL else { return }
-                            playingID = record.id
-                            let newPlayer = AVPlayer(url: videoURL)
-                            player = newPlayer
-                            newPlayer.play()
-                        } label: {
-                            ZStack {
+                        ZStack {
+                            Button(action: onSelect) {
                                 Group {
                                     if let preview { Image(nsImage: preview).resizable().scaledToFill() }
                                     else { Image(systemName: "video").foregroundStyle(MuesliTheme.textTertiary) }
                                 }
                                 .frame(width: 120, height: 68).background(MuesliTheme.backgroundRaised)
                                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                                if videoURL != nil {
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open Vidshot")
+                            if let videoURL {
+                                Button {
+                                    playingID = record.id
+                                    let newPlayer = AVPlayer(url: videoURL)
+                                    player = newPlayer
+                                    newPlayer.play()
+                                } label: {
                                     Image(systemName: "play.circle.fill").font(.system(size: 27))
                                         .foregroundStyle(.white).shadow(radius: 3)
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Play Vidshot inline")
+                                .help("Play inline")
+                                .zIndex(1)
                             }
-                        }.buttonStyle(.plain).disabled(videoURL == nil).accessibilityLabel("Play Vidshot")
+                        }
                     }
                     Button(action: onSelect) {
                         Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
@@ -509,6 +518,7 @@ struct TimelineVidshotRow: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
                 .padding(.horizontal, MuesliTheme.spacing20)
+                .allowsHitTesting(false)
         }
         .background {
             Button(action: onSelect) {
