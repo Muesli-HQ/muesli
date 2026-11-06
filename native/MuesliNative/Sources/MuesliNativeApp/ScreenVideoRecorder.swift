@@ -252,14 +252,15 @@ final class ScreenVideoRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             complete(.failure(writer?.error ?? Self.error("Video writer stopped."))); return
         }
         writeAudio(flush: true, targetOverride: target)
-        if failure == nil, target > audioSamples, DispatchTime.now() < deadline {
+        if failure == nil, target > audioSamples, (feedbackCapture || DispatchTime.now() < deadline) {
             queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
                 self.drainAndFinish(target: target, start: start, deadline: deadline, complete: complete)
             }
             return
         }
-        // Backpressure must not prevent finalization forever. After the bounded
-        // drain window, preserve encoded media even if the audio tail is incomplete.
+        // Meeting recordings retain their bounded drain policy. Vidshot waits for
+        // writer readiness or an actual writer error instead of truncating its tail
+        // after a fixed delay; its recovery journal remains owned while waiting.
         let incompleteAudio = failure == nil && target > audioSamples
         let finalizationError = failure ?? (feedbackCapture && incompleteAudio
             ? Self.error("Narration encoding is incomplete. The complete WAV narration is retained.") : nil)

@@ -231,6 +231,15 @@ struct FeedbackCaptureTranscriptTests {
         #expect(try Data(contentsOf: directory.appendingPathComponent("model.mil")) == Data([42]))
     }
 
+    @Test func transcriptionWithoutDeadlineCanFinishAfterActiveWork() async throws {
+        let result = await FeedbackCaptureTranscriptionJob().run {
+            try await FeedbackCaptureTranscriptionJob.withActiveWork { try await Task.sleep(for: .milliseconds(100)) }
+            return .init(source: "fixture", text: "completed", words: [], segments: [], estimated: true)
+        }
+        #expect(result.text == "completed")
+        #expect(result.missing == nil)
+    }
+
     @Test func cumulativeBudgetSurvivesPausesWithoutResetting() async throws {
         let result = await FeedbackCaptureTranscriptionJob().run(timeout: .milliseconds(70)) {
             await FeedbackCaptureTranscriptionJob.current?.setActive(false)

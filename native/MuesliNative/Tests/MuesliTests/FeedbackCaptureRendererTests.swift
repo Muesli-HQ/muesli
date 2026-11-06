@@ -159,6 +159,25 @@ struct FeedbackCaptureRendererTests {
         await writer.finishWriting()
         try #require(writer.status == .completed)
     }
+    @Test("Long synthetic media keeps its timestamps and bounded frame budget", arguments: [300, 600, 1800])
+    func longSparseVideoTiming(seconds: Int) async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            defer { store.release(id: capture.id) }
+            let url = try store.mediaURL(id: capture.id, path: "recording.mp4")
+            try await makeVideo(url, samples: [
+                (time: CMTime(value: 0, timescale: 1), value: 20),
+                (time: CMTime(value: Int64(seconds - 1), timescale: 1), value: 200)
+            ])
+            let thumbnails = try await FeedbackCaptureRenderer.thumbnails(url: url, videoOffsetMs: 0,
+                cancellation: FeedbackCaptureDecodeCancellation())
+            #expect(thumbnails.first?.t == 0)
+            #expect(thumbnails.last?.t == Int64(seconds - 1) * 1000)
+            let selected = FeedbackCaptureContext.select(durationMs: Int64(seconds) * 1000, events: [], thumbnails: thumbnails)
+            #expect(!selected.isEmpty && selected.count <= 12)
+        }
+    }
+
     @Test func sequentialThumbnailsUseCaptureClockAndFullFramesRecordActualTime() async throws {
         try await withFeedbackStoreAsync { store, _ in
             var m = try store.begin(target: feedbackTarget())
@@ -346,6 +365,31 @@ struct FeedbackCaptureRendererTests {
             store.release(id: m.id)
         }
     }
+    @Test func mediaWithoutDeadlineWaitsUntilExplicitCancellation() async throws {
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        let release = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
+        let job = FeedbackCaptureMediaJob<Int>()
+        let task = Task {
+            try await job.run(cancel: { cancelled.withLock { $0 = true } }) {
+                await withCheckedContinuation { continuation in release.withLock { $0 = continuation } }
+                return 42
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while release.withLock({ $0 == nil }) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(release.withLock { $0 != nil })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!cancelled.withLock { $0 })
+        task.cancel()
+        do { _ = try await task.value; Issue.record("Cancelled media result was published") }
+        catch { #expect(error is CancellationError) }
+        #expect(cancelled.withLock { $0 })
+        let continuation = release.withLock { value in let saved = value; value = nil; return saved }
+        continuation?.resume()
+    }
+
     @Test func mediaDeadlineCancelsNativeWorkAndDiscardsLateResult() async throws {
         let cancelled = OSAllocatedUnfairLock(initialState: false)
         let returned = OSAllocatedUnfairLock(initialState: false)

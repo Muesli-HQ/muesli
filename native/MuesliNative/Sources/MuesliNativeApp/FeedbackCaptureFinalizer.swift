@@ -178,14 +178,14 @@ enum FeedbackCaptureAudioRetention {
 /// immediately; native work keeps its own permit/files until it actually returns.
 actor FeedbackCaptureTranscriptionJob {
     @TaskLocal static var current: FeedbackCaptureTranscriptionJob?
-    private var remaining: Duration = .zero
+    private var remaining: Duration?
     private var activeSince: ContinuousClock.Instant?
     private var timerID = UUID()
     private var result: CheckedContinuation<FeedbackCaptureTranscript, Never>?
     private var worker: Task<Void, Never>?
     private var timer: Task<Void, Never>?
 
-    func run(timeout: Duration = .seconds(600),
+    func run(timeout: Duration? = nil,
              operation: @escaping @Sendable () async throws -> FeedbackCaptureTranscript) async -> FeedbackCaptureTranscript {
         guard !Task.isCancelled else { return .unavailable("transcription cancelled") }
         return await withTaskCancellationHandler {
@@ -205,11 +205,11 @@ actor FeedbackCaptureTranscriptionJob {
 
     /// Only the coordinator's preparation/decoding sections consume this job's budget.
     func setActive(_ active: Bool) {
-        if let activeSince { remaining -= activeSince.duration(to: .now) }
+        if let activeSince, let budget = remaining { remaining = budget - activeSince.duration(to: .now) }
         activeSince = nil
         timer?.cancel(); timer = nil
         timerID = UUID()
-        guard result != nil else { return }
+        guard result != nil, let remaining else { return }
         guard remaining > .zero else { expire("transcription timed out after ten minutes"); return }
         guard active else { return }
         activeSince = .now
@@ -302,7 +302,7 @@ final class FeedbackCaptureDelivery: @unchecked Sendable {
     }
 }
 extension FeedbackCaptureFinalizer {
-    static func prepareContextThumbnails(_ manifest: FeedbackCaptureManifest, context: Context, timeout: Duration = .seconds(5)) async throws -> [FeedbackCaptureContext.Thumbnail] {
+    static func prepareContextThumbnails(_ manifest: FeedbackCaptureManifest, context: Context, timeout: Duration? = nil) async throws -> [FeedbackCaptureContext.Thumbnail] {
         guard let video = manifest.video else { return [] }
         let url = try context.store.mediaURL(id: manifest.id, path: video)
         let cancellation = FeedbackCaptureDecodeCancellation()
@@ -339,7 +339,7 @@ extension FeedbackCaptureFinalizer {
                 guard let video = selected.video, !selected.keyframes.isEmpty else { return }
                 let url = try context.store.mediaURL(id: selected.id, path: video)
                 let cancellation = FeedbackCaptureDecodeCancellation()
-                let output = try await FeedbackCaptureMediaJob<FeedbackCaptureRenderer.Output>().run(timeout: .seconds(30), cancel: cancellation.cancel) {
+                let output = try await FeedbackCaptureMediaJob<FeedbackCaptureRenderer.Output>().run(cancel: cancellation.cancel) {
                     try await FeedbackCaptureMediaLimiter.render.perform {
                         try await FeedbackCaptureRenderer.render(selected, url: url, cancellation: cancellation)
                     }

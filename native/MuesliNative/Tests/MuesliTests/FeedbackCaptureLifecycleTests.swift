@@ -577,10 +577,6 @@ struct FeedbackCaptureLifecycleTests {
             if !recover {
                 let processingPresentation = controller.presentationID
                 let processingID = controller.presentedCaptureID
-                var notice: FeedbackCapturePillState?
-                controller.onStateChanged = { notice = $0 }
-                #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
-                #expect(notice == .busy(activity: "Wait for feedback processing"))
                 #expect(controller.state == .processing)
                 #expect(controller.presentationID == processingPresentation && controller.presentedCaptureID == processingID)
             }
@@ -602,6 +598,58 @@ struct FeedbackCaptureLifecycleTests {
                 #expect(completions.count == 1)
                 #expect(completions.first?.0 == id)
             }
+        }
+    }
+
+    @Test("A second recording starts after microphone release while the first finalizes", arguments: [false, true])
+    func recordingOverlapsEarlierFinalization(finishSecondFirst: Bool) async throws {
+        try await withFeedbackStoreAsync { _, root in
+            var attempts: [FeedbackCaptureAttempt] = []
+            var firstID: String?
+            var resumeFirst: CheckedContinuation<Void, Never>?
+            var completed: [String] = []
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
+                pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
+                    try attempt.install(device: device, microphone: FeedbackMicrophoneFixture())
+                    attempts.append(attempt)
+                    if firstID == nil { firstID = attempt.snapshot()?.id }
+                }, observeSystem: false)
+            controller.onCompleted = { id, _ in completed.append(id) }
+            controller.finalizer.stages = [.init(name: .render, run: { manifest, _ in
+                if manifest.id == firstID { await withCheckedContinuation { resumeFirst = $0 } }
+            })]
+            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+            try await waitUntil { controller.state?.isRecording == true }
+            let first = try #require(firstID)
+            controller.finish()
+            try await waitUntil { resumeFirst != nil && !controller.ownsMicrophone }
+            let store = try #require(controller.store)
+            #expect(store.isActive(id: first))
+            #expect(throws: (any Error).self) { try store.delete(id: first) }
+
+            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+            try await waitUntil { attempts.count == 2 && controller.state?.isRecording == true }
+            let second = try #require(attempts.last?.snapshot()?.id)
+            #expect(second != first)
+            if !finishSecondFirst {
+                resumeFirst?.resume(); resumeFirst = nil
+                try await waitUntil { completed.contains(first) }
+                #expect(controller.state?.isRecording == true, "Older completion must not replace the new recording")
+                #expect(controller.ownsMicrophone)
+            }
+            controller.finish()
+            try await waitUntil { completed.contains(second) }
+            if finishSecondFirst {
+                #expect(store.isActive(id: first))
+                resumeFirst?.resume(); resumeFirst = nil
+                try await waitUntil { completed.contains(first) }
+            }
+            try await waitUntil { !controller.hasAttempt }
+            #expect(Set(completed) == [first, second])
+            #expect(try store.manifest(id: first).state == .ready)
+            #expect(try store.manifest(id: second).state == .ready)
+            #expect(!store.isActive(id: first) && !store.isActive(id: second))
+            #expect(await controller.shutdown())
         }
     }
 
@@ -629,15 +677,14 @@ struct FeedbackCaptureLifecycleTests {
             controller.onStateChanged = { notice = $0 }
 
             #expect(!controller.start(permissions: granted, busyActivity: "Stop the meeting", device: { nil }))
-            #expect(notice == .busy(activity: "Wait for feedback processing"))
-            #expect(controller.state == .processing)
-            #expect(controller.presentationID == pendingPresentation)
-            #expect(controller.presentedCaptureID == pendingCaptureID)
+            #expect(notice == .busy(activity: "Stop the meeting"))
+            #expect(controller.state == .busy(activity: "Stop the meeting"))
+            #expect(controller.presentationID != pendingPresentation)
 
             resumeRender?.resume()
             try await waitUntil(description: "finalization completion") { !controller.hasAttempt }
-            #expect(controller.state == .ready)
-            #expect(controller.presentedCaptureID == pendingCaptureID)
+            #expect(controller.state == .busy(activity: "Stop the meeting"))
+            #expect(pendingCaptureID != nil)
             await controller.shutdown()
         }
     }

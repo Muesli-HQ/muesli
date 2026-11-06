@@ -32,7 +32,7 @@ actor FeedbackCaptureMediaJob<Value: Sendable> {
     private var timer: Task<Void, Never>?
     private var cancelNative: (@Sendable () -> Void)?
     private var used = false
-    func run(timeout: Duration, cancel: @escaping @Sendable () -> Void,
+    func run(timeout: Duration? = nil, cancel: @escaping @Sendable () -> Void,
              operation: @escaping @Sendable () async throws -> Value) async throws -> Value {
         try Task.checkCancellation()
         guard !used else { throw ScreenVideoRecorder.error("Media job already used") }
@@ -47,9 +47,11 @@ actor FeedbackCaptureMediaJob<Value: Sendable> {
                         await self.complete(.success(value))
                     } catch { await self.complete(.failure(error)) }
                 }
-                timer = Task {
-                    do { try await Task.sleep(for: timeout) } catch { return }
-                    expire(ScreenVideoRecorder.error("Media stage timed out"))
+                if let timeout {
+                    timer = Task {
+                        do { try await Task.sleep(for: timeout) } catch { return }
+                        expire(ScreenVideoRecorder.error("Media stage timed out"))
+                    }
                 }
             }
         } onCancel: { Task { await self.expire(CancellationError()) } }
@@ -99,7 +101,7 @@ public enum FeedbackCaptureRenderer {
             throw ScreenVideoRecorder.error("Vidshot is still recording or processing; zoom it after completion.")
         }
         let cancellation = FeedbackCaptureDecodeCancellation()
-        return try await FeedbackCaptureMediaJob<ZoomOutput>().run(timeout: .seconds(30), cancel: { cancellation.cancel() }) {
+        return try await FeedbackCaptureMediaJob<ZoomOutput>().run(cancel: { cancellation.cancel() }) {
             try await FeedbackCaptureMediaLimiter.render.perform {
                 let asset = AVURLAsset(url: url)
                 let duration = try await asset.load(.duration).seconds * 1000

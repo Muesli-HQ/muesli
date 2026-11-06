@@ -251,6 +251,8 @@ final class FeedbackCaptureController {
     var onMicrophoneReleased: (() -> Void)?
     var onAdmissionReset: (() -> Void)?
     private var attempt: FeedbackCaptureAttempt?
+    /// Stopping/finalizing attempts retain their files independently of the next recording.
+    private var processingAttempts: Set<ObjectIdentifier> = []
     private var picker: (any FeedbackCaptureSelecting)?
     private var selectionStartedAt: Date?
     private let makePicker: @MainActor () -> any FeedbackCaptureSelecting
@@ -275,7 +277,7 @@ final class FeedbackCaptureController {
     private let now: () -> Date
     private let observeInput: Bool
     private let repairAudio: @Sendable (URL) throws -> Int64?
-    var hasAttempt: Bool { attempt != nil || picker != nil }
+    var hasAttempt: Bool { attempt != nil || picker != nil || !processingAttempts.isEmpty }
     var admittedAt: Date? { attempt.flatMap { $0.isCurrent ? $0.admittedAt : nil } ?? selectionStartedAt }
 
     init(databaseURL: URL, supportDirectory: URL,
@@ -511,12 +513,15 @@ final class FeedbackCaptureController {
             return
         }
         present(.processing, captureID: capture.snapshot()?.id)
+        let processingID = ObjectIdentifier(capture)
+        processingAttempts.insert(processingID)
         let presentation = presentationID
         let pendingStart = startTask
         let microphoneStop = Task { [weak self] in
             await pendingStart?.value
             await capture.stopMicrophone()
             guard let self, self.attempt === capture else { return }
+            self.attempt = nil; self.startTask = nil
             self.ownsMicrophone = false; self.onMicrophoneReleased?()
         }
         let finalizer = self.finalizer
@@ -528,17 +533,15 @@ final class FeedbackCaptureController {
             await capture.finishVideo()
             await capture.drainJournal()
             guard let self else { return }
-            defer {
-                if self.attempt === capture { self.attempt = nil; self.startTask = nil }
-            }
+            defer { self.processingAttempts.remove(processingID) }
             guard let manifest = capture.snapshot() else {
-                if self.attempt === capture, self.presentationID == presentation {
+                if self.presentationID == presentation {
                     self.present(.failed(stage: "Preparation", message: self.errorMessage ?? "No media captured", retainedMedia: false))
                 }
                 return
             }
             let id = manifest.id
-            if !discard { self.latestID = id }
+            if !discard, self.presentationID == presentation { self.latestID = id }
             var completionNotice: FeedbackCapturePillState?
             do {
                 let result = try await Task.detached { () throws -> (manifest: FeedbackCaptureManifest, retainsContent: Bool)? in
@@ -557,15 +560,15 @@ final class FeedbackCaptureController {
                     let completedState = Self.completionState(completed, delivery: context.delivery.result,
                         retainsContent: result.retainsContent)
                     completionNotice = completedState
-                    if self.attempt === capture, self.presentationID == presentation {
+                    if self.presentationID == presentation {
                         self.present(completedState, captureID: id)
                     }
-                } else if self.attempt === capture, self.presentationID == presentation { self.present(nil) }
+                } else if self.presentationID == presentation { self.present(nil) }
             } catch {
-                self.errorMessage = error.localizedDescription
                 let failure = FeedbackCapturePillState.failed(stage: "Saving", message: error.localizedDescription, retainedMedia: true)
                 completionNotice = failure
-                if self.attempt === capture, self.presentationID == presentation {
+                if self.presentationID == presentation {
+                    self.errorMessage = error.localizedDescription
                     self.present(failure, captureID: id)
                 }
             }
@@ -591,7 +594,7 @@ final class FeedbackCaptureController {
     }
     @discardableResult func shutdown() async -> Bool {
         finish()
-        let completed = await waitUntil { attempt == nil && recoveryTask == nil }
+        let completed = await waitUntil { attempt == nil && processingAttempts.isEmpty && recoveryTask == nil }
         if !completed { errorMessage = "Feedback finalization timed out" }
         return completed
     }
