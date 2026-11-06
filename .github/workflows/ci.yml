@@ -393,7 +393,19 @@ jobs:
           swift --version
 
       - name: Run test shard
-        run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
+        run: |
+          set -o pipefail
+          bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}" 2>&1 | tee "$RUNNER_TEMP/test-shard.log"
+
+      - name: Isolate a core process crash
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          if grep -q 'unexpected signal code 11' "$RUNNER_TEMP/test-shard.log"; then
+            python3 scripts/diagnose_core_crash.py
+          else
+            echo 'Core did not terminate with signal 11; skipping crash isolation.'
+          fi
 
       - name: Collect core test crash reports
         if: failure() && matrix.shard == 'core'
