@@ -115,10 +115,13 @@ struct NotchIndicatorTests {
                         let size = FloatingIndicatorController.dictationOverlapSize(for: text)
                         #expect(size.height == 28)
                         #expect(ceil(text.size().width) + 8 <= size.width - 116)
-                        #expect(8 + (size.width - 116) <= size.width - 105, "Text must not overlap the meeting indicator")
-                        #expect(FloatingIndicatorController.meetingOverlapSymbol(paused: paused) == (paused ? "Ⅱ" : "●"))
+                        let label = NSTextField(labelWithString: "")
+                        FloatingIndicatorController.layoutDictationOverlapLabel(label, text: text, in: size)
+                        let status = NSRect(x: size.width - 107, y: (size.height - 14) / 2, width: 14, height: 14)
+                        #expect(label.frame.maxX <= status.minX, "Text must not overlap the meeting indicator")
+                        #expect(abs(label.frame.midY - size.height / 2) <= 1.5, "Text must be vertically centered")
                         let bars = (0..<5).map { IndicatorWaveformDynamics.standingBarFrame(index: $0, amplitude: 1, bounds: CGRect(origin: .zero, size: size), overlapsMeeting: true) }
-                        #expect(bars.allSatisfy { $0.minX >= size.width - 95 && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
+                        #expect(bars.allSatisfy { $0.minX >= status.maxX && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
                         if state == .recording && reason == nil {
                             #expect(text.string.hasPrefix("Dictating"))
                             #expect(size.width * size.height < 220 * 40, "The overlap pill should remain compact")
@@ -187,6 +190,24 @@ struct NotchIndicatorTests {
         compactWrites.forEach { $0() }
         completions.forEach { $0() }
         #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+    }
+
+    @Test("meeting status draws an unclipped recording dot")
+    @MainActor
+    func meetingStatusDotRendering() throws {
+        let view = MeetingOverlapStatusView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 14, pixelsHigh: 14,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        #expect((bitmap.colorAt(x: 4, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 9, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 0, y: 7)?.alphaComponent ?? 1) == 0)
+        #expect((bitmap.colorAt(x: 13, y: 7)?.alphaComponent ?? 1) == 0)
     }
 
     @Test("Quill processing labels the assistant, not the foreground app")

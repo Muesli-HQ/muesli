@@ -32,6 +32,23 @@ private final class FloatingIndicatorButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+final class MeetingOverlapStatusView: NSView {
+    var paused = false { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if paused {
+            NSColor.white.withAlphaComponent(0.72).setFill()
+            for offset: CGFloat in [-2, 2] {
+                NSBezierPath(roundedRect: NSRect(x: bounds.midX + offset - 1, y: bounds.midY - 4, width: 2, height: 8), xRadius: 1, yRadius: 1).fill()
+            }
+        } else {
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: NSRect(x: bounds.midX - 4, y: bounds.midY - 4, width: 8, height: 8)).fill()
+        }
+    }
+}
+
 @MainActor
 final class HoverIndicatorView: NSView {
     weak var owner: FloatingIndicatorController?
@@ -231,6 +248,7 @@ final class FloatingIndicatorController: NSObject {
     private var contentView: HoverIndicatorView?
     private var iconLabel: NSTextField?
     private var textLabel: NSTextField?
+    private var meetingOverlapStatusView: MeetingOverlapStatusView?
     private(set) var meetingFeedbackMessage: String?
     private(set) var activityRevision = 0
     var presentsWindows = true
@@ -1648,6 +1666,7 @@ final class FloatingIndicatorController: NSObject {
         contentView = nil
         iconLabel = nil
         textLabel = nil
+        meetingOverlapStatusView = nil
         glassView = nil
         tintLayer = nil
         micIconView = nil
@@ -1750,28 +1769,34 @@ final class FloatingIndicatorController: NSObject {
         NSSize(width: ceil(text.size().width) + 124, height: 28)
     }
 
-    static func meetingOverlapSymbol(paused: Bool) -> String { paused ? "Ⅱ" : "●" }
+    static func layoutDictationOverlapLabel(_ label: NSTextField, text: NSAttributedString, in size: NSSize) {
+        label.attributedStringValue = text
+        let textHeight = min(size.height, ceil(label.intrinsicContentSize.height))
+        label.frame = NSRect(x: 8, y: floor((size.height - textHeight) / 2) + 1, width: size.width - 116, height: textHeight)
+    }
 
     private func layoutDictationOverlap(in size: NSSize) {
+        if !hasDictationOverlap { meetingOverlapStatusView?.isHidden = true }
         guard let status = overlapMeetingStatus, let contentView, let textLabel, let detail = iconLabel else { return }
         if hasDictationOverlap {
             let text = Self.dictationOverlapText(state: state, insertionStopReason: insertionStopReason)
             configureTextLabelForTranscript(false)
             textLabel.alignment = .left
-            textLabel.attributedStringValue = text
+            Self.layoutDictationOverlapLabel(textLabel, text: text, in: size)
             textLabel.toolTip = cursorInsertionStopped ? insertionStoppedDetail : status
             textLabel.setAccessibilityLabel(cursorInsertionStopped ? "\(insertionStoppedDetail) \(status)." : "\(text.string). \(status).")
-            textLabel.frame = NSRect(x: 8, y: (size.height - 14) / 2, width: size.width - 116, height: 14)
             textLabel.isHidden = false
             textLabel.alphaValue = 1
-            detail.alignment = .center
-            detail.font = .systemFont(ofSize: 10, weight: .semibold)
-            detail.stringValue = Self.meetingOverlapSymbol(paused: isMeetingRecordingPaused)
-            detail.textColor = isMeetingRecordingPaused ? .white.withAlphaComponent(0.72) : .systemRed
-            detail.frame = NSRect(x: size.width - 105, y: (size.height - 14) / 2, width: 10, height: 14)
-            detail.toolTip = status
-            detail.setAccessibilityLabel(status)
-            detail.isHidden = false
+            detail.isHidden = true
+            let statusView = meetingOverlapStatusView ?? MeetingOverlapStatusView(frame: .zero)
+            if statusView.superview == nil { contentView.addSubview(statusView) }
+            meetingOverlapStatusView = statusView
+            statusView.paused = isMeetingRecordingPaused
+            statusView.frame = NSRect(x: size.width - 107, y: (size.height - 14) / 2, width: 14, height: 14)
+            statusView.toolTip = status
+            statusView.setAccessibilityElement(true)
+            statusView.setAccessibilityLabel(status)
+            statusView.isHidden = false
             wandIconView?.isHidden = true
             if state == .transcribing {
                 ensureLoadingSpinner(in: contentView)
