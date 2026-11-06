@@ -817,7 +817,8 @@ private struct NotchIndicatorView: View {
                             if cursorInsertionStopped {
                                 Text("Still recording").font(MuesliTheme.font(size: 9))
                             } else if let meetingStatus {
-                                Text(meetingStatus).font(MuesliTheme.font(size: 9)).foregroundStyle(.secondary)
+                                Text(meetingStatus == "Meeting recording" ? "Meeting on" : meetingStatus)
+                                    .font(MuesliTheme.font(size: 9)).foregroundStyle(.secondary)
                             }
                         }.lineLimit(1).minimumScaleFactor(0.8)
                     }
@@ -882,7 +883,7 @@ private struct NotchIndicatorView: View {
                         Button(action: onStopRecording) {
                             Image(systemName: "stop.fill").font(.system(size: 10))
                                 .frame(width: 20, height: 22)
-                        }.accessibilityLabel("Finish instruction recording")
+                        }.accessibilityLabel(meetingStatus == nil ? "Finish instruction recording" : "Finish dictation")
                     }
                     Button(action: onCancel) {
                         Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
@@ -894,8 +895,8 @@ private struct NotchIndicatorView: View {
                             .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 0.5) }
                             .contentShape(Circle())
                     }
-                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : "Cancel activity"))
-                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : "Cancel · Esc"))
+                    .accessibilityLabel((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting" : (meetingStatus == nil ? "Cancel activity" : "Cancel dictation")))
+                    .help((outcome != nil || isStatus) ? "Dismiss result" : (meeting ? "Discard meeting…" : (meetingStatus == nil ? "Cancel · Esc" : "Cancel dictation")))
                 }
             }
             .padding(.horizontal, 6)

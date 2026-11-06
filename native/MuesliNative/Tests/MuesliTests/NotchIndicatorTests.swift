@@ -108,29 +108,20 @@ struct NotchIndicatorTests {
             #expect(indicator.recordingWaveformMode == .waiting)
             indicator.setDictationState(.preparing, config: config)
             #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
-            let size = FloatingIndicatorController.dictationOverlapSize
-            let bounds = CGRect(origin: .zero, size: size)
-            let primary = FloatingIndicatorController.dictationOverlapLabelFrame(in: size, secondary: false)
-            let secondary = FloatingIndicatorController.dictationOverlapLabelFrame(in: size, secondary: true)
-            #expect(!primary.intersects(secondary))
-            for title in ["Preparing", "Dictating", "Transcribing", "Cursor stopped", "Live text stopped"] {
-                let width = (title as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .semibold)]).width
-                #expect(width <= primary.width, "Overlap title must fit: \(title)")
-            }
-            for title in ["Meeting recording", "Meeting paused"] {
-                let width = (title as NSString).size(withAttributes: [.font: AppFonts.font(size: 9, weight: .medium)]).width
-                #expect(width <= secondary.width, "Meeting status must fit: \(title)")
-            }
-            let initial = (0..<5).map { indicator.standingWaveformFrame(index: $0, amplitude: 1 / 11, bounds: bounds) }
-            for waiting in [false, true] {
-                for value: CGFloat in [0, 0.5, 1] {
-                    let frames = (0..<5).map { index in
-                        let weight = IndicatorWaveformDynamics.standingWeight(index: index, count: 5)
-                        let amplitude = waiting ? 0.28 + (sin(value * 5.8 + CGFloat(index) * 0.72) + 1) * 0.22 * weight : value * weight
-                        return indicator.standingWaveformFrame(index: index, amplitude: amplitude, bounds: bounds)
+            for state: DictationState in [.preparing, .recording, .transcribing] {
+                for paused in [false, true] {
+                    for reason: BufferedDictationInsertionStopReason? in [nil, .cursorOwnershipLost, .transcriptionFailed] {
+                        let text = FloatingIndicatorController.dictationOverlapText(state: state, paused: paused, insertionStopReason: reason)
+                        let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+                        #expect(size.height == 28)
+                        #expect(ceil(text.size().width) <= size.width - 74)
+                        #expect(8 + ceil(text.size().width) < size.width - 58, "Text must not overlap the finish control")
+                        #expect(text.string.contains(paused ? "Meeting paused" : "Meeting on"))
+                        if state == .recording && reason == nil {
+                            #expect(text.string.hasPrefix("Dictating"))
+                            #expect(size.width * size.height < 190 * 36, "The overlap pill should occupy less area than the previous design")
+                        }
                     }
-                    #expect(frames.allSatisfy { $0.minX >= primary.maxX && $0.maxX <= size.width - 56 }, "Bars must stay between the labels and controls")
-                    #expect(frames.map(\.minX) == initial.map(\.minX))
                 }
             }
             indicator.setDictationState(target, config: config)
