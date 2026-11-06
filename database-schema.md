@@ -644,7 +644,7 @@ The idempotent migration creates `vidshots` and the
 - `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
 - `bundle_path TEXT`, relative to the support directory;
 - `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
-- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, and optional `transcriptSource`.
+- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, optional `transcriptSource`, and optional `transcript` for local retrieval. Existing manifests backfill this projection during capture recovery.
 
 For development builds that previously used `feedback_captures`, migration
 copies its rows into `vidshots` and removes the old table and index in one
@@ -652,8 +652,7 @@ transaction. Conflicting IDs or invalid legacy data fail the migration without
 removing either table. New installations create only `vidshots`. Capture bundle
 paths are unchanged.
 
-Captures have no meeting/dictation foreign key and never enter CloudKit, global search,
-telemetry, or automatic exports. Media lives in mode-0700
+Captures have no meeting/dictation foreign key and never enter CloudKit, telemetry, or automatic exports. Saved narration and capture metadata participate in local search and permitted history retrieval; video, frames and screen contents are not indexed. Media lives in mode-0700
 `feedback-captures/fc-<epochms>-<4 hex>.capture/` directories. `capture.json`
 uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
 Readers ignore unknown fields and reject unsupported versions. Future produced
@@ -990,7 +989,7 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   unchanged.
 
 Prepared source writes in `DictationStore`, `MeetingChatSQL`, and
-`TimeTurnerRecapStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
+`TimeTurnerRecapStore`, and `FeedbackCaptureStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
 is retried only for `SQLITE_CORRUPT_VTAB` after a separate FTS integrity check
 confirms corruption of **global_search_fts**. A savepoint rebuilds its tokens from
 `global_search_documents` (recreating the virtual table only if the rebuild itself
@@ -1002,7 +1001,7 @@ permission to rebuild. Unrecoverable corruption remains an explicit save error.
 
 Sources are dictations, CUA **input commands only**, meetings (title, transcript,
 manual/generated notes as one result), Quill conversations, accepted Cotypist
-text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
+text, Chat conversations, recap insight text, and Vidshot narration and capture metadata. CUA traces/results, unaccepted
 Cotypist suggestions, chat drafts/provider fields, rolling model memory, and
 recap source snapshots are deliberately excluded.
 

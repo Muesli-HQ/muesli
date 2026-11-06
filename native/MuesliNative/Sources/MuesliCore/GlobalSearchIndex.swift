@@ -5,7 +5,7 @@ public enum GlobalSearchError: Error { case changedSources, unavailableSources(S
 
 /// Source identities remain owned by their stores. Search never becomes a second history store.
 public enum GlobalSearchKind: String, CaseIterable, Codable, Sendable {
-    case dictation, meeting, command, quill, cotypist, screenHistory, chat, recap
+    case dictation, meeting, command, quill, cotypist, screenHistory, chat, recap, vidshot
 }
 
 public struct GlobalSearchQuery: Sendable {
@@ -327,6 +327,12 @@ public final class GlobalSearchIndex: @unchecked Sendable {
     }
     private static func unix(_ expression: String) -> String { "coalesce((julianday(\(expression))-2440587.5)*86400.0,0)" }
     private static let sources: [Source] = [
+        .init(prefix: "vidshot", tables: ["vidshots"], watches: [("vidshots", "id")], select: """
+            SELECT 'vidshot:' || id AS identity,'vidshot' AS kind,id AS source_id,created_at AS timestamp,
+                title,coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.transcript') END,'') AS text,
+                coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.targetApp') END,'') AS app_name,'' AS bundle_id
+            FROM vidshots WHERE state IN ('ready','recovered','failed')
+            """),
         .init(prefix: "dictation", tables: ["dictations"], watches: [("dictations", "id")], select: """
             SELECT 'dictation:' || id AS identity, CASE WHEN source='cua' THEN 'command' ELSE 'dictation' END AS kind,
                 CAST(id AS TEXT) AS source_id, \(unix("timestamp")) AS timestamp,

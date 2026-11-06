@@ -47,6 +47,56 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Vidshot storage")
 struct FeedbackCaptureStoreTests {
+    @Test("Vidshot narration is indexed, revisioned and removed with its source")
+    func retrievalTracksCaptureLifecycle() throws {
+        try withFeedbackStore { captures, _, root in
+            let url = root.appendingPathComponent("muesli.db")
+            let search = try GlobalSearchIndex(databaseURL: url)
+            let reader = try MuesliHistoryReader(databaseURL: url)
+            let now = Date(timeIntervalSince1970: 1_776_000_000)
+            var capture = try captures.begin(target: feedbackTarget(), now: now)
+            capture.transcript = .init(source: "fixture", text: "first sentence. A heliotrope action", words: [], segments: [], estimated: false)
+            capture.state = .ready
+            try captures.publish(capture)
+            captures.release(id: capture.id)
+            let query = GlobalSearchQuery(text: "heliotrope", kinds: [.vidshot])
+            #expect(try search.search(query).map(\.sourceID) == [capture.id])
+            let original = try #require(try reader.read(kind: .vidshots, id: capture.id))
+            #expect(original.text.contains("heliotrope"))
+            let access = MuesliHistoryAccess(databaseURL: url, screenRoot: nil)
+            let interval = DateInterval(start: now.addingTimeInterval(-1), end: now.addingTimeInterval(1))
+            #expect(try access.sample(interval: interval, kinds: []).history.isEmpty)
+            #expect(try access.sample(interval: interval, kinds: [.vidshots], query: "heliotrope").history.map(\.id) == [capture.id])
+            try captures.save(capture)
+            #expect(try reader.areCurrent([original]))
+            capture.transcript = .init(source: "fixture", text: "An updated juniper action", words: [], segments: [], estimated: false)
+            try captures.publish(capture)
+            #expect(try search.search(query).isEmpty)
+            #expect(try search.search(.init(text: "juniper", kinds: [.vidshot])).map(\.sourceID) == [capture.id])
+            #expect(try !reader.areCurrent([original]))
+            try captures.delete(id: capture.id)
+            #expect(try search.search(.init(text: "juniper", kinds: [.vidshot])).isEmpty)
+            #expect(try reader.read(kind: .vidshots, id: capture.id) == nil)
+        }
+    }
+
+    @Test("Recovery backfills narration from older captures")
+    func recoveryBackfillsRetrievalProjection() throws {
+        try withFeedbackStore { captures, db, root in
+            var capture = try captures.begin(target: feedbackTarget())
+            capture.state = .ready
+            capture.transcript = .init(source: "fixture", text: "Introduction. Synthetic older periwinkle narration", words: [], segments: [], estimated: false)
+            try captures.publish(capture)
+            captures.release(id: capture.id)
+            try #require(sqlite3_exec(db, "UPDATE vidshots SET body=json_remove(body,'$.transcript')", nil, nil, nil) == SQLITE_OK)
+            let search = try GlobalSearchIndex(databaseURL: root.appendingPathComponent("muesli.db"))
+            let query = GlobalSearchQuery(text: "periwinkle", kinds: [.vidshot])
+            #expect(try search.search(query).isEmpty)
+            try captures.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil })
+            #expect(try search.search(query).map(\.sourceID) == [capture.id])
+        }
+    }
+
     @Test("Legacy captures migrate to the Vidshots table without losing rows")
     func legacyTableMigration() throws {
         var db: OpaquePointer?

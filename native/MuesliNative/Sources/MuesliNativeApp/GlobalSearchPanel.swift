@@ -13,10 +13,12 @@ extension GlobalSearchKind {
         case .screenHistory: "Screen history"
         case .chat: "Chat"
         case .recap: "Recaps"
+        case .vidshot: "Vidshots"
         }
     }
-    var searchImage: Image {
+    @MainActor var searchImage: Image {
         if self == .screenHistory { return Image(nsImage: TimeTurnerIcon.image()) }
+        if self == .vidshot { return Image(nsImage: VidshotIcon.image()) }
         return Image(systemName: searchSymbol)
     }
     private var searchSymbol: String {
@@ -29,6 +31,7 @@ extension GlobalSearchKind {
         case .screenHistory: "clock.arrow.circlepath"
         case .chat: "bubble.left.and.bubble.right"
         case .recap: "doc.text"
+        case .vidshot: "viewfinder"
         }
     }
 }
@@ -357,6 +360,12 @@ struct GlobalSearchPanel: View {
                 case .capture(let capture):
                     controller.clearSearch()
                     appState.openTimeTurnerCapture(capture)
+                    dismiss()
+                case .vidshot(let id):
+                    controller.clearSearch()
+                    appState.vidshotDetailReturnsToTimeline = false
+                    appState.selectedVidshotID = id
+                    appState.selectedTab = .vidshots
                     dismiss()
                 case .recap(let recap):
                     controller.clearSearch()

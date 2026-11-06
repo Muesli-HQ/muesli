@@ -330,7 +330,7 @@ struct TimeTurnerRecapSourceTests {
         #expect(TimeTurnerRecapInput.selected(config) == [.meetings])
         for kind in TimeTurnerRecapInput.allCases { config[keyPath: kind.configKey].toggle() }
         let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
-        #expect(TimeTurnerRecapInput.selected(decoded) == [.dictations, .commands, .quill, .cotypist, .chat])
+        #expect(TimeTurnerRecapInput.selected(decoded) == [.dictations, .commands, .quill, .cotypist, .chat, .vidshots])
     }
     @Test func packetHonorsOptInAndAlwaysIncludesScreenEvidence() throws {
         var config = AppConfig(); config.recapIncludeMeetings = false

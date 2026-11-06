@@ -148,11 +148,12 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         _ = try bundleURL(id: manifest.id)
         try validatePaths(manifest)
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO vidshots VALUES(?,?,?,?,?,?,?)", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
+        guard sqlite3_prepare_v2(db, "INSERT INTO vidshots(id,created_at,duration_ms,state,bundle_path,title,body) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET created_at=excluded.created_at,duration_ms=excluded.duration_ms,state=excluded.state,bundle_path=excluded.bundle_path,title=excluded.title,body=excluded.body WHERE vidshots.created_at IS NOT excluded.created_at OR vidshots.duration_ms IS NOT excluded.duration_ms OR vidshots.state IS NOT excluded.state OR vidshots.bundle_path IS NOT excluded.bundle_path OR vidshots.title IS NOT excluded.title OR vidshots.body IS NOT excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare capture save") }
         defer { sqlite3_finalize(stmt) }
         var projection: [String: Any] = ["keyframeCount": manifest.keyframes.count, "targetApp": manifest.target.appName]
         projection["transcriptSource"] = manifest.transcript?.source
-        let body = String(decoding: try JSONSerialization.data(withJSONObject: projection), as: UTF8.self)
+        projection["transcript"] = manifest.transcript?.text
+        let body = String(decoding: try JSONSerialization.data(withJSONObject: projection, options: [.sortedKeys]), as: UTF8.self)
         sqlite3_bind_text(stmt, 1, manifest.id, -1, transient)
         sqlite3_bind_double(stmt, 2, Double(manifest.createdAtMs) / 1000)
         sqlite3_bind_int64(stmt, 3, manifest.durationMs)
@@ -160,7 +161,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         sqlite3_bind_text(stmt, 5, "feedback-captures/\(manifest.id).capture", -1, transient)
         sqlite3_bind_text(stmt, 6, manifest.transcript?.firstClause ?? manifest.target.appName, -1, transient)
         sqlite3_bind_text(stmt, 7, body, -1, transient)
-        guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Save capture: \(String(cString: sqlite3_errmsg(db)))") }
+        guard try GlobalSearchIndex.stepSourceWrite(stmt) == SQLITE_DONE else { throw failure("Save capture: \(String(cString: sqlite3_errmsg(db)))") }
     }
     public func publish(_ manifest: FeedbackCaptureManifest) throws {
         lock.lock(); defer { lock.unlock() }
@@ -265,7 +266,7 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
             guard sqlite3_prepare_v2(db, "DELETE FROM vidshots WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Delete capture") }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id, -1, transient)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
+            guard try GlobalSearchIndex.stepSourceWrite(stmt) == SQLITE_DONE else { throw failure("Delete capture row") }
         }
     }
     /// Repair and claim interrupted bundles. The caller resumes its finalizer before publication.

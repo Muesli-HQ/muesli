@@ -67,6 +67,7 @@ extension MeetingChatSQL {
         case "cotypist": rules = [("cotypist_sessions","parent_id","id","deleted_at"),("cotypist_suggestions","source_id","id","accepted_text,timestamp,session_id")]
         case "quillSession": rules = [("quill_conversations","parent_id","id","timestamp,deleted_at"),("quill_conversation_turns","parent_id","conversation_id","body,conversation_id")]
         case "cotypistSession": rules = [("cotypist_sessions","parent_id","id","timestamp,target_app_name,target_app_bundle_id,deleted_at"),("cotypist_suggestions","parent_id","session_id","accepted_text,session_id,timestamp")]
+        case "vidshots": rules = [("vidshots","source_id","id","created_at,state,title,body")]
         case "recap": rules = [("time_turner_recaps","source_id","day_key","body,day_start")]
         case "chat": rules = [("meeting_chat_sessions","source_id","id","body,updated_at"),("meeting_chat_turns","parent_id","session_id","body,state")]
         default: return // Capture deletions arrive via the screen catalog outbox.

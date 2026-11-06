@@ -2433,6 +2433,7 @@ struct AppConfig: Codable, Equatable {
     var recapIncludeQuill: Bool = false
     var recapIncludeCotypist: Bool = false
     var recapIncludeChat: Bool = false
+    var recapIncludeVidshots: Bool = false
     var timeTurnerExcludedApps: String = ""
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
@@ -2625,6 +2626,7 @@ struct AppConfig: Codable, Equatable {
         case recapIncludeQuill = "recap_include_quill"
         case recapIncludeCotypist = "recap_include_cotypist"
         case recapIncludeChat = "recap_include_chat"
+        case recapIncludeVidshots = "recap_include_vidshots"
         case timeTurnerExcludedApps = "time_turner_excluded_apps"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
@@ -2932,6 +2934,7 @@ struct AppConfig: Codable, Equatable {
         recapIncludeQuill = (try? c.decode(Bool.self, forKey: .recapIncludeQuill)) ?? false
         recapIncludeCotypist = (try? c.decode(Bool.self, forKey: .recapIncludeCotypist)) ?? false
         recapIncludeChat = (try? c.decode(Bool.self, forKey: .recapIncludeChat)) ?? false
+        recapIncludeVidshots = (try? c.decode(Bool.self, forKey: .recapIncludeVidshots)) ?? false
         timeTurnerExcludedApps = (try? c.decode(String.self, forKey: .timeTurnerExcludedApps)) ?? ""
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext

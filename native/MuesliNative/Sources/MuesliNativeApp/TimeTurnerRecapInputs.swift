@@ -14,6 +14,7 @@ extension MuesliHistoryKind {
         case .quill: \.recapIncludeQuill
         case .cotypist: \.recapIncludeCotypist
         case .chat: \.recapIncludeChat
+        case .vidshots: \.recapIncludeVidshots
         }
     }
     static func selected(_ config: AppConfig) -> [Self] { allCases.filter { config[keyPath: $0.configKey] } }
