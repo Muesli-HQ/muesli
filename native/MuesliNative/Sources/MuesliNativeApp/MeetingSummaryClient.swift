@@ -29,6 +29,24 @@ enum MeetingSummaryError: LocalizedError {
     }
 }
 
+/// Only fixed categories may enter summary logs; provider and nested error text stays in the UI.
+enum MeetingSummaryLog {
+    static func category(for error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if error is MeetingSummaryPersistenceError { return "persistence_failed" }
+        if let error = error as? MeetingSummaryError {
+            switch error {
+            case .notConfigured: return "not_configured"
+            case .backendFailed: return "provider_failed"
+            case .emptyResponse: return "empty_response"
+            case .requestFailed: return "request_failed"
+            }
+        }
+        if error is URLError { return "transport_failed" }
+        return "unclassified_failure"
+    }
+}
+
 enum AnthropicModelPolicy {
     static let titleMaxOutputTokens = 1_024
     static let cleanupMaxOutputTokens = 12_000
@@ -256,6 +274,7 @@ enum MeetingSummaryClient {
         sleep: (TimeInterval) async throws -> Void = { delay in
             try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         },
+        log: (String) -> Void = { fputs($0 + "\n", stderr) },
         operation: (TimeInterval?) async throws -> String
     ) async throws -> String {
         let retryCount = MeetingSummaryRetryPolicy.clampedRetryCount(maxRetries)
@@ -276,7 +295,7 @@ enum MeetingSummaryClient {
                     throw error
                 }
                 attempt += 1
-                fputs("[summary] retrying summary generation after failure (\(attempt)/\(effectiveRetryCount)): \(error.localizedDescription)\n", stderr)
+                log("[summary] retrying summary generation after failure (\(attempt)/\(effectiveRetryCount)): \(MeetingSummaryLog.category(for: error))")
                 try await sleep(delay)
                 if let deadline, deadline <= now() { throw error }
             }
@@ -974,7 +993,7 @@ enum MeetingSummaryClient {
             }
             return text
         } catch {
-            fputs("[summary] ChatGPT summarization failed: \(error)\n", stderr)
+            fputs("[summary] ChatGPT summarization failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             throw summaryRequestError(backend: "ChatGPT", error: error)
         }
     }
@@ -1760,7 +1779,7 @@ enum MeetingSummaryClient {
             if result == nil { fputs("[summary] title generation returned no title\n", stderr) }
             return result
         } catch {
-            fputs("[summary] title generation failed: \(type(of: error))\n", stderr)
+            fputs("[summary] title generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return nil
         }
     }
@@ -1809,7 +1828,7 @@ enum MeetingSummaryClient {
             return extractAnthropicText(from: json)?
                 .trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "\"")))
         } catch {
-            fputs("[summary] Anthropic title generation failed: \(type(of: error))\n", stderr)
+            fputs("[summary] Anthropic title generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return nil
         }
     }
@@ -1828,14 +1847,14 @@ enum MeetingSummaryClient {
             guard !title.isEmpty else { return nil }
             return title
         } catch {
-            fputs("[summary] ChatGPT title generation failed: \(type(of: error))\n", stderr)
+            fputs("[summary] ChatGPT title generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return nil
         }
     }
 
     private static func generateTitleWithLMStudio(transcript: String, config: AppConfig) async -> String? {
         guard let requestURL = resolveLMStudioURL(config: config) else {
-            fputs("[summary] LM Studio title generation: invalid URL \(config.lmStudioURL)\n", stderr)
+            fputs("[summary] LM Studio title generation: invalid URL\n", stderr)
             return nil
         }
         let model = config.lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1913,7 +1932,7 @@ enum MeetingSummaryClient {
             baseURL = defaultOllamaBaseURL
         } else {
             guard let url = URL(string: baseURLString) else {
-                fputs("[summary] Ollama title generation: invalid URL \(baseURLString)\n", stderr)
+                fputs("[summary] Ollama title generation: invalid URL\n", stderr)
                 return nil
             }
             baseURL = url
@@ -1955,7 +1974,7 @@ enum MeetingSummaryClient {
             }
             return title
         } catch {
-            fputs("[summary] Ollama title generation failed: \(type(of: error))\n", stderr)
+            fputs("[summary] Ollama title generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return nil
         }
     }

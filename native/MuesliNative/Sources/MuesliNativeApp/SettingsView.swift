@@ -3207,6 +3207,12 @@ struct SettingsView: View {
                 SettingsNote(errorMessage, tone: .error)
                     .padding(.bottom, MuesliTheme.spacing4)
             }
+            Divider().background(MuesliTheme.surfaceBorder)
+            SettingsRow(label: "", description: "Already enabled access in System Settings? Restart muesli to apply permission changes.") {
+                compactActionButton("Restart muesli…") {
+                    controller.confirmPermissionRestart()
+                }
+            }
         }
         .id("settings.permissions")
     }
@@ -3279,6 +3285,11 @@ struct SettingsView: View {
     }
 
     private func openPrivacyPane(_ pane: String) {
+        if let permission = [FeaturePermission.accessibility, .inputMonitoring, .screenRecording]
+            .first(where: { $0.privacyPane == pane }) {
+            permission.openSettings()
+            return
+        }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
         }
@@ -3318,7 +3329,7 @@ struct SettingsView: View {
             settingsControl("ocr_context")
         } else {
             accentActionButton("Grant") {
-                _ = CGRequestScreenCaptureAccess()
+                FeaturePermission.screenRecording.request()
                 refreshPermissionStatuses(for: .permissionRequested)
             }
         }
