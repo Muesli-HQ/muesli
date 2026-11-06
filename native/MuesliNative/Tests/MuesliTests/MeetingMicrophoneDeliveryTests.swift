@@ -41,6 +41,10 @@ struct MeetingMicrophoneDeliveryTests {
         let controller = MuesliController(runtime: runtime, dictationStore: store, configStore: configStore,
             audioDuckingController: FakeDuckingManager(), dictationAudioRoutingController: route,
             downloadedBackendOptions: { nemotron ? [.nemotron35Multilingual] : [] })
+        // The recorder is synthetic: host TCC permissions must not open real
+        // permission sheets or prevent the capture lifecycle from being exercised.
+        controller.testingPermissionSnapshot = .init(microphone: true, accessibility: false,
+            inputMonitoring: false, systemAudio: false, screenRecording: false)
         controller.testingIndicator.presentsWindows = false
         let loading = AsyncStream<Void>.makeStream(), startup = AsyncStream<Void>.makeStream()
         defer { loading.continuation.finish(); startup.continuation.finish() }
@@ -139,7 +143,7 @@ struct MeetingMicrophoneDeliveryTests {
         if !speculative {
             if ending == "toggle" || streamingPreparation { controller.testingDictationAction("toggle") }
             else { scheduler.advance(by: 0.30) }
-            if !blockedWarmup { try await flush(); #expect(recorder.startCalls == (streamingPreparation ? 0 : 1)) }
+            if !blockedWarmup { try await flush(); try #require(recorder.startCalls == (streamingPreparation ? 0 : 1)) }
             if !ending.hasSuffix("failure") && !streamingPreparation {
                 for _ in 0..<100 where controller.appState.dictationState != .recording {
                     try await Task.sleep(for: .milliseconds(5))
@@ -172,6 +176,7 @@ struct MeetingMicrophoneDeliveryTests {
         }
         if ending == "finish-release" || ending == "finish-cancel" || ending.hasPrefix("pending-") {
             let gate = ContractGate()
+            defer { recorder.onStop = nil; gate.release.signal() }
             recorder.onStop = { gate.block() }
             controller.testingDictationAction("stop") // Same action as overlap Finish while held.
             try await gate.waitUntilEntered()
@@ -1235,7 +1240,7 @@ private final class ContractGate {
     func block() { entered.signal(); #expect(release.wait(timeout: .now() + 10) == .success) }
     func waitUntilEntered() async throws {
         let result = try await MeetingCaptureLifecycle.onDriverQueue { self.entered.wait(timeout: .now() + 5) }
-        #expect(result == .success)
+        try #require(result == .success)
     }
 }
 

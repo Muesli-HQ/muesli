@@ -6009,7 +6009,10 @@ public final class MuesliController: NSObject {
     }
 
     private func currentOnboardingPermissionSnapshot() -> OnboardingPermissionSnapshot {
-        OnboardingPermissionSnapshot(
+        #if DEBUG
+        if let testingPermissionSnapshot { return testingPermissionSnapshot }
+        #endif
+        return OnboardingPermissionSnapshot(
             microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             accessibility: AXIsProcessTrusted(),
             inputMonitoring: CGPreflightListenEventAccess(),
@@ -12889,6 +12892,7 @@ public final class MuesliController: NSObject {
     }
 
     #if DEBUG
+    var testingPermissionSnapshot: OnboardingPermissionSnapshot?
     var testingPreparationPlan: GemmaPreparationPlan?
     var testingPrepareModels: (() async throws -> Bool)?
     var testingIndicator: FloatingIndicatorController { indicator }
