@@ -401,13 +401,18 @@ jobs:
         run: |
           destination="${RUNNER_TEMP}/core-test-crashes"
           mkdir -p "$destination"
-          for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
-            if [[ -d "$directory" ]]; then
-              find "$directory" -maxdepth 1 -type f -mmin -30 \
-                \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
-                   -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
-                -exec cp {} "$destination/" \;
-            fi
+          # ReportCrash may finish writing after the test process has exited.
+          for attempt in {1..10}; do
+            for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              if [[ -d "$directory" ]]; then
+                find "$directory" -maxdepth 1 -type f -mmin -30 \
+                  \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
+                     -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
+                  -exec cp {} "$destination/" \; || true
+              fi
+            done
+            [[ -n "$(ls -A "$destination")" ]] && break
+            sleep 1
           done
 
       - name: Upload core test crash reports
