@@ -265,6 +265,7 @@ enum BufferedDictationInsertionStopReason: Equatable {
 @MainActor
 final class FloatingIndicatorController: NSObject {
     private let notchIndicator: NotchIndicatorController
+    private let scheduleMeetingFeedbackDismissal: (TimeInterval, DispatchWorkItem) -> Void
     private var question: ComputerUseQuestionSession?
     private var questionReturnFrame: CGRect?
     private var questionHostingView: NSHostingView<ComputerUseQuestionView>?
@@ -276,6 +277,7 @@ final class FloatingIndicatorController: NSObject {
     private var meetingOverlapStatusView: MeetingOverlapStatusView?
     private var meetingOverlapTitleView: MeetingOverlapTitleView?
     private(set) var meetingFeedbackMessage: String?
+    private var meetingFeedbackGeneration = 0
     private(set) var activityRevision = 0
     var presentsWindows = true
     private(set) var state: DictationState = .idle
@@ -356,8 +358,12 @@ final class FloatingIndicatorController: NSObject {
 
     init(configStore: ConfigStore, pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
          notchIndicator injectedNotch: NotchIndicatorController? = nil,
-         loadFeedbackConfiguration: (() -> AppConfig)? = nil) {
+         loadFeedbackConfiguration: (() -> AppConfig)? = nil,
+         scheduleMeetingFeedbackDismissal: @escaping (TimeInterval, DispatchWorkItem) -> Void = { duration, item in
+             DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: item)
+         }) {
         self.notchIndicator = injectedNotch ?? NotchIndicatorController()
+        self.scheduleMeetingFeedbackDismissal = scheduleMeetingFeedbackDismissal
         self.configStore = configStore
         self.loadFeedbackConfiguration = loadFeedbackConfiguration ?? { configStore.loadForReading() }
         self.pointerLocation = pointerLocation
@@ -1561,15 +1567,19 @@ final class FloatingIndicatorController: NSObject {
             return true
         }
         deferredLoadingMessage = nil
+        meetingFeedbackGeneration &+= 1
         meetingFeedbackMessage = message
         setState(.recording, config: feedbackConfiguration())
         isShowingLoading = loading
         if let duration {
             let owner = activityRevision
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-                guard let self, self.activityRevision == owner, self.meetingFeedbackMessage == message else { return }
+            let generation = meetingFeedbackGeneration
+            let dismissal = DispatchWorkItem { [weak self] in
+                guard let self, self.activityRevision == owner,
+                      self.meetingFeedbackGeneration == generation, self.meetingFeedbackMessage == message else { return }
                 self.hideLoading()
             }
+            scheduleMeetingFeedbackDismissal(duration, dismissal)
         }
         return true
     }

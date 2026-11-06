@@ -6,6 +6,28 @@ import MuesliCore
 
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
+    @Test("repeated meeting notices each retain their dismissal deadline")
+    @MainActor
+    func repeatedMeetingNotice() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        var dismissals: [DispatchWorkItem] = []
+        let indicator = FloatingIndicatorController(
+            configStore: ConfigStore(supportDirectory: directory),
+            scheduleMeetingFeedbackDismissal: { _, item in dismissals.append(item) }
+        )
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.presentsWindows = false
+        indicator.setMeetingRecording(true, config: AppConfig())
+        indicator.showWarning("Model preparation failed. Try again.")
+        indicator.showWarning("Model preparation failed. Try again.")
+        #expect(dismissals.count == 2)
+        guard dismissals.count == 2 else { return }
+        dismissals[0].perform()
+        #expect(indicator.meetingFeedbackMessage == "Model preparation failed. Try again.")
+        dismissals[1].perform()
+        #expect(indicator.meetingFeedbackMessage == nil)
+    }
+
     @MainActor
     private func makeNotch(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) -> NotchIndicatorController {
         NotchIndicatorController(resolveGeometry: { screen in
