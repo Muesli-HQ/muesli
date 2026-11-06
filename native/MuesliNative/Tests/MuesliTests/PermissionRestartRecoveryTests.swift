@@ -229,23 +229,28 @@ struct PermissionRestartRecoveryTests {
         let directory = summaryTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let controller = try summaryController(directory: directory)
+        let secret = "Synthetic confidential meeting detail"
+        var logs: [String] = []
         var completions = 0
         let task = controller.runMeetingResummary(operation: {
             #expect(controller.permissionRestartActivity.blockingMessage != nil)
-            let error = NSError(domain: "synthetic-summary", code: 1)
+            let error = MeetingSummaryError.backendFailed(backend: "OpenAI", statusCode: 500, message: secret)
             if saveFailure { throw MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error) }
             throw error
-        }, completion: { result in
+        }, log: { logs.append($0) }, completion: { result in
             guard case .failure(let error) = result else {
                 Issue.record("Failed summary unexpectedly succeeded")
                 return
             }
             #expect((error is MeetingSummaryPersistenceError) == saveFailure)
+            #expect(error.localizedDescription.contains(secret))
             completions += 1
         })
         #expect(controller.permissionRestartActivity.assistant)
         await task.value
         #expect(completions == 1)
+        let category = saveFailure ? "persistence_failed" : "provider_failed"
+        #expect(logs == ["[muesli-native] failed to generate or persist meeting summary: \(category)"])
         #expect(controller.permissionRestartActivity.blockingMessage == nil)
     }
 

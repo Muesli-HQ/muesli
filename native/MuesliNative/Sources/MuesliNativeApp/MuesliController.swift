@@ -6522,6 +6522,7 @@ public final class MuesliController: NSObject {
     @discardableResult
     func runMeetingResummary(
         operation: @escaping @MainActor () async throws -> Void,
+        log: @escaping (String) -> Void = { fputs($0 + "\n", stderr) },
         completion: @escaping (Result<Void, Error>) -> Void
     ) -> Task<Void, Never> {
         activeMeetingResummaryCount += 1
@@ -6532,7 +6533,7 @@ public final class MuesliController: NSObject {
                 try await operation()
                 completion(.success(()))
             } catch {
-                fputs("[muesli-native] failed to generate or persist meeting summary: \(error.localizedDescription)\n", stderr)
+                log("[muesli-native] failed to generate or persist meeting summary: \(MeetingSummaryLog.category(for: error))")
                 completion(.failure(error))
             }
         }
@@ -6682,7 +6683,7 @@ public final class MuesliController: NSObject {
                     )
                 } catch {
                     try Task.checkCancellation()
-                    fputs("[muesli-native] re-transcription summary generation failed: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
+                    fputs("[muesli-native] re-transcription summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
                     formattedNotes = MeetingSummaryClient.notesAfterFailedRegeneration(
                         existingNotes: meeting.formattedNotes,
                         previousTranscript: meeting.rawTranscript,
@@ -6765,7 +6766,7 @@ public final class MuesliController: NSObject {
         do {
             return try await meetingParticipants(meetingID: meetingID).map(\.displayName)
         } catch {
-            fputs("[summary] failed to load participants for meeting \(meetingID): \(error.localizedDescription)\n", stderr)
+            fputs("[summary] failed to load summary participants: \(MeetingSummaryLog.category(for: error))\n", stderr)
             return []
         }
     }
@@ -9371,7 +9372,7 @@ public final class MuesliController: NSObject {
                 visualContext: mergedVisualContext
             )
         } catch {
-            fputs("[muesli-native] resume summary regeneration failed: \(error.localizedDescription)\n", stderr)
+            fputs("[muesli-native] resume summary regeneration failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             regeneratedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: combined,
                 meetingTitle: result.title,
