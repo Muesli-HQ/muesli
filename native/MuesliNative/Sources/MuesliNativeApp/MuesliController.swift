@@ -11024,7 +11024,7 @@ public final class MuesliController: NSObject {
         meetingAutoStopObserver = observer
         meetingAutoStopMeetingID = meetingID
         meetingAssertionTarget = target
-        observer.start(target: target, isEligible: { [weak self, weak observer] in
+        let isEligible: @MainActor () -> Bool = { [weak self, weak observer] in
             guard let self, let observer else { return false }
             return self.meetingAutoStopObserver === observer
                 && self.meetingAutoStopMeetingID == meetingID
@@ -11034,16 +11034,9 @@ public final class MuesliController: NSObject {
                 && self.activeMeetingSession?.isRecording == true
                 && self.activeMeetingSession?.isPaused == false
                 && !self.isStoppingMeetingRecording
-        }, onStop: { [weak self, weak observer] in
-            guard let self, let observer,
-                  self.meetingAutoStopObserver === observer,
-                  self.meetingAutoStopMeetingID == meetingID,
-                  self.activeMeetingID == meetingID,
-                  self.config.meetingAutoStopEnabled,
-                  self.activeMeetingAutoStop.source?.assertionTarget == target,
-                  self.activeMeetingSession?.isRecording == true,
-                  self.activeMeetingSession?.isPaused == false,
-                  !self.isStoppingMeetingRecording else { return false }
+        }
+        observer.start(target: target, isEligible: isEligible, onStop: { [weak self] in
+            guard let self, isEligible() else { return false }
             self.stopMeetingRecording()
             return true
         })

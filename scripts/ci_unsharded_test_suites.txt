@@ -4,7 +4,6 @@
 AppConfigAppearanceTests
 AudioDuckingControllerTests
 AudioRouteClassifierTests
-BrowserMeetingActivityCollectorTests
 CohereTranscribeLanguageTests
 CohereTranscribeUtilsTests
 ControlCenterSensorAttributionMonitorTests
@@ -23,8 +22,6 @@ ICloudSyncCallbackDeadlineTests
 InferenceGateTests
 LaunchAtLoginManagerTests
 MediaPlaybackControllerTests
-MeetingAutoStopPolicyTests
-MeetingCandidateResolverTests
 MeetingChunkTimingTrackerTests
 MeetingExporterTests
 MeetingHookRunnerTests

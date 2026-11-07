@@ -8,6 +8,7 @@ private final class MeetingAutoStopObserverHarness {
     var assertion: Bool? = true
     var eligible = true
     var stopCount = 0
+    var acceptStop = true
     private var pollContinuation: CheckedContinuation<Void, Never>?
     private var probeContinuation: CheckedContinuation<Bool, Never>?
     var waitingForPoll: Bool { pollContinuation != nil }
@@ -30,7 +31,7 @@ private final class MeetingAutoStopObserverHarness {
     func start(_ observer: MeetingAutoStopObserver) {
         observer.start(target: .zoom, isEligible: { [self] in eligible }, onStop: { [self] in
             stopCount += 1
-            return true
+            return acceptStop
         })
         observer.observeNetwork(.available)
     }
@@ -158,6 +159,39 @@ struct MeetingAutoStopPolicyTests {
         #expect(await harness.waitUntil { harness.waitingForPoll })
         #expect(observer.hasObservedAssertion)
         #expect(harness.stopCount == 0)
+        harness.finish(observer)
+    }
+
+    @Test("a declined stop requires a fresh full loss grace before retrying")
+    @MainActor func declinedStopRetriesAfterFreshGrace() async {
+        let harness = MeetingAutoStopObserverHarness()
+        harness.acceptStop = false
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(15)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.stopCount == 1 && harness.waitingForPoll })
+        #expect(observer.hasObservedAssertion)
+        harness.acceptStop = true
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(14)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(harness.stopCount == 1)
+        harness.clock = harness.clock.addingTimeInterval(1)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.stopCount == 2 })
         harness.finish(observer)
     }
 
@@ -337,6 +371,7 @@ struct MeetingAutoStopPolicyTests {
         #expect(MeetingAssertionTarget.teams.matches(name: "Call in progress", type: "PreventUserIdleDisplaySleep", level: on))
         #expect(!MeetingAssertionTarget.teams.matches(name: "Video Wake Lock", type: "PreventUserIdleDisplaySleep", level: on))
         #expect(MeetingAssertionTarget.webex.matches(name: "On a call", type: "PreventUserIdleDisplaySleep", level: on))
+        #expect(!MeetingAssertionTarget.webex.matches(name: "Webex idle", type: "PreventUserIdleDisplaySleep", level: on))
         #expect(!MeetingAssertionTarget.webex.matches(name: "Video Wake Lock", type: "PreventUserIdleDisplaySleep", level: on))
         let browser = MeetingAssertionTarget.browser(bundleID: "com.google.Chrome")
         #expect(browser.matches(name: "WebRTC has active PeerConnections", type: "NoIdleSleepAssertion", level: on))

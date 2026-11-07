@@ -206,6 +206,7 @@ case "${shard}" in
     ;;
   meetings)
     filters=(
+      BrowserMeetingActivityCollectorTests
       BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
@@ -221,6 +222,8 @@ case "${shard}" in
       MeetingCaptureShutdownTests
       ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
+      MeetingAutoStopPolicyTests
+      MeetingCandidateResolverTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
       MeetingMicRecoveryCoordinatorTests

@@ -100,7 +100,7 @@ enum MeetingAssertionTarget: Equatable, Sendable {
         case .teams:
             return name.contains("call in progress")
         case .webex:
-            return name.contains("on a call") || name.contains("webex")
+            return name.contains("on a call")
         case .browser:
             return name.contains("webrtc") && name.contains("peerconnection")
         }
@@ -239,7 +239,8 @@ final class MeetingAutoStopObserver {
                 }
                 if self.facts.shouldStop(now: self.now()) {
                     if onStop() { return }
-                    // A paused or otherwise ineligible recording must earn a fresh grace period.
+                    // Retain the observed assertion but require a fresh loss grace
+                    // if the controller declined this stop attempt.
                     self.facts.assertionLostAt = nil
                     self.facts.networkInterruptedDuringLoss = false
                 }
