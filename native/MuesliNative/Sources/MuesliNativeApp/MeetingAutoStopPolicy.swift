@@ -152,10 +152,10 @@ struct MeetingAutoStopSource: Equatable {
         if same(bundle, "us.zoom.xos") { return .zoom }
         if ["com.microsoft.teams2", "com.microsoft.teams"].contains(where: { same(bundle, $0) }) { return .teams }
         if ["com.webex.meetingmanager", "com.cisco.webexmeetingsapp"].contains(where: { same(bundle, $0) }) { return .webex }
-        // A generic browser audio session is not evidence of a meeting. The
-        // room and browser must both have been attributed to this recording.
-        guard normalizedURL != nil,
-              let root = MeetingCandidateResolver.browserApps.keys.first(where: { same(bundle, $0) }) else { return nil }
+        // A source exists only for an accepted detected or calendar recording.
+        // Chromium's assertion is process-wide, so another tab can prolong or
+        // be mistaken for this meeting; absence alone never arms the observer.
+        guard let root = MeetingCandidateResolver.browserApps.keys.first(where: { same(bundle, $0) }) else { return nil }
         return .browser(bundleID: root)
     }
 

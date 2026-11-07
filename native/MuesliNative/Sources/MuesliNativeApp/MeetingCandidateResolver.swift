@@ -170,7 +170,9 @@ enum MeetingURLNormalizer {
             .joined(separator: "/")
 
         if host == "meet.google.com" {
-            guard let code = path.split(separator: "/").first.map(String.init),
+            let pathParts = path.split(separator: "/")
+            let codePart = pathParts.first == "meet" ? pathParts.dropFirst().first : pathParts.first
+            guard let code = codePart.map(String.init),
                   isGoogleMeetCode(code) else { return nil }
             let identity = "meet.google.com/\(code.lowercased())"
             return NormalizedMeetingURL(

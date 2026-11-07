@@ -10,7 +10,7 @@ struct ZoomAutoStopFacts {
     enum Assertion: Equatable { case unknown, present, absent }
     enum Probe: Equatable { case unknown, reachable, unavailable }
 
-    static let onlineGrace: TimeInterval = 30
+    static let onlineGrace: TimeInterval = 15
     static let offlineGrace: TimeInterval = 8 * 60
     static let reconnectGrace: TimeInterval = 60
 

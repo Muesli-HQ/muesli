@@ -1114,11 +1114,17 @@ struct MeetingCandidateResolverTests {
         #expect(normalized?.id == "googleMeet:meet.google.com/pwm-txwq-txy")
         #expect(normalized?.url == "meet.google.com/pwm-txwq-txy")
         #expect(normalized?.platform == .googleMeet)
+        let prefixed = MeetingURLNormalizer.normalize("https://meet.google.com/meet/pwm-txwq-txy?authuser=0")
+        #expect(prefixed?.id == normalized?.id)
+        #expect(prefixed?.url == normalized?.url)
+        #expect(prefixed?.platform == .googleMeet)
     }
 
     @Test("URL normalizer rejects Google Meet landing pages")
     func googleMeetURLNormalizationRejectsLandingPages() {
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/landing") == nil)
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://meet.google.com/meet/") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://meet.google.com/meet/landing") == nil)
     }
 }
