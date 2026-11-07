@@ -1,5 +1,9 @@
 import Contacts
 import MuesliCore
+
+enum ParticipantSuggestionPrivacy {
+    static let disclosure = "AI may send part of this meeting to your provider."
+}
 import SwiftUI
 
 extension Notification.Name {
@@ -15,6 +19,15 @@ struct MeetingParticipantsView: View {
     @State private var isContactPickerPresented = false
     @State private var isNewContactPresented = false
     @State private var isPeoplePopoverPresented = false
+    @State private var isManualPersonPresented = false
+    @State private var manualPersonName = ""
+    @State private var suggestions: [MeetingParticipantSuggestion] = []
+    @State private var suggestionFingerprint = ""
+    @State private var suggestionTask: Task<Void, Never>?
+    @State private var findingPeople = false
+    @State private var suggestionMessage: String?
+    @State private var evidenceSuggestionID: String?
+    @State private var matchingPeople: [String: [MeetingParticipantDraft]] = [:]
     @State private var errorMessage: String?
 
     init(
@@ -53,6 +66,20 @@ struct MeetingParticipantsView: View {
         }
         .task(id: meetingID) {
             await reload()
+            await reloadSuggestions()
+        }
+        .onDisappear { suggestionTask?.cancel(); suggestionTask = nil }
+        .onChange(of: isPeoplePopoverPresented) { _, presented in
+            if presented {
+                Task {
+                    await reload()
+                    await reloadSuggestions()
+                }
+            }
+        }
+        .onChange(of: meetingID) { _, _ in
+            suggestionTask?.cancel(); suggestionTask = nil
+            suggestions = []; matchingPeople = [:]; suggestionMessage = nil; evidenceSuggestionID = nil; findingPeople = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { notification in
             guard notification.object as? Int64 == meetingID else { return }
@@ -61,6 +88,16 @@ struct MeetingParticipantsView: View {
         .sheet(isPresented: $isNewContactPresented) {
             NewMeetingContactView { participant in
                 Task { await attach(participant) }
+            }
+        }
+        .alert("Add person", isPresented: $isManualPersonPresented) {
+            TextField("Name", text: $manualPersonName)
+            Button("Cancel", role: .cancel) { manualPersonName = "" }
+            Button("Add") {
+                let name = manualPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+                manualPersonName = ""
+                guard !name.isEmpty else { return }
+                Task { await attach(MeetingParticipantDraft(participantIdentifier: "manual:\(UUID().uuidString)", displayName: name)) }
             }
         }
         .alert("Couldn't Update People", isPresented: errorBinding) {
@@ -159,30 +196,105 @@ struct MeetingParticipantsView: View {
             }
 
             Divider()
-
-            if participants.isEmpty {
+            ScrollViewReader { proxy in
+            ScrollView {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            if participants.isEmpty && suggestions.isEmpty {
                 Text("No one has been added yet.")
                     .font(MuesliTheme.callout())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, MuesliTheme.spacing8)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                        ForEach(participants) { participant in
-                            participantListRow(participant)
-                        }
+            } else if !participants.isEmpty {
+                LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(participants) { participant in
+                        participantListRow(participant)
                     }
                 }
-                .frame(maxHeight: 320)
+            }
+
+            if !participants.isEmpty || suggestions.isEmpty { Divider() }
+            HStack {
+                Button(findingPeople ? "Finding people…" : "Find participants") { findParticipants() }
+                    .disabled(findingPeople)
+                if findingPeople { ProgressView().controlSize(.small) }
+            }
+            Text(ParticipantSuggestionPrivacy.disclosure)
+                .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let suggestionMessage {
+                Text(suggestionMessage).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true).id("suggestionMessage")
+            }
+            if !suggestions.isEmpty {
+                    Text("Suggested")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                        ForEach(suggestions) { suggestion in
+                            HStack(spacing: MuesliTheme.spacing8) {
+                                    Image(systemName: "person.crop.circle")
+                                        .foregroundStyle(MuesliTheme.textTertiary)
+                                    Text(suggestion.name).font(MuesliTheme.callout()).lineLimit(2)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Button { evidenceSuggestionID = suggestion.id } label: {
+                                        Image(systemName: "info.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Show supporting excerpt")
+                                    .accessibilityLabel("Show evidence for \(suggestion.name)")
+                                    .popover(isPresented: Binding(
+                                        get: { evidenceSuggestionID == suggestion.id },
+                                        set: { if !$0 { evidenceSuggestionID = nil } }
+                                    )) {
+                                        ScrollView {
+                                            Text(suggestion.excerpt).font(MuesliTheme.callout())
+                                                .textSelection(.enabled)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }.frame(width: 260, height: 110).padding(MuesliTheme.spacing12)
+                                    }
+                                    Menu("Add") {
+                                        Button("Add as new person") { resolve(suggestion, add: true) }
+                                        ForEach(matchingPeople[suggestion.id] ?? [], id: \.participantIdentifier) { person in
+                                            Button("Use \(person.displayName)\(person.emailAddress.map { " · " + $0 } ?? "")") {
+                                                resolve(suggestion, add: true, existingPerson: person)
+                                            }
+                                        }
+                                    }
+                                    Button { resolve(suggestion, add: false) } label: {
+                                        Image(systemName: "xmark").frame(width: 24, height: 24)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Dismiss suggestion")
+                                    .accessibilityLabel("Dismiss \(suggestion.name)")
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }.id("suggestions")
+            }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: suggestions) { _, updated in
+                if !updated.isEmpty { proxy.scrollTo("suggestions", anchor: .top) }
+            }
+            .onChange(of: suggestionMessage) { _, updated in
+                if updated != nil { proxy.scrollTo("suggestionMessage", anchor: .bottom) }
+            }
             }
         }
         .padding(MuesliTheme.spacing16)
-        .frame(width: 340)
+        .frame(width: 340, height: 220)
     }
 
     private var addPersonMenu: some View {
         Menu {
+            Button {
+                isPeoplePopoverPresented = false
+                Task { @MainActor in
+                    await Task.yield()
+                    isManualPersonPresented = true
+                }
+            } label: {
+                Label("Enter a name…", systemImage: "person.badge.plus")
+            }
             Button {
                 chooseExistingContact()
             } label: {
@@ -290,6 +402,53 @@ struct MeetingParticipantsView: View {
             participants = try await controller.meetingParticipants(meetingID: meetingID)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reloadSuggestions() async {
+        do {
+            let (fingerprint, found) = try await controller.participantSuggestions(meetingID: meetingID)
+            guard !Task.isCancelled else { return }
+            suggestionFingerprint = fingerprint; suggestions = found
+            var matches: [String: [MeetingParticipantDraft]] = [:]
+            for suggestion in found {
+                try Task.checkCancellation()
+                matches[suggestion.id] = try await controller.globalSearchWorker.people(matching: suggestion.name)
+            }
+            guard !Task.isCancelled else { return }
+            matchingPeople = matches
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled else { return }
+            suggestionMessage = error.localizedDescription
+        }
+    }
+
+    private func findParticipants() {
+        suggestionTask?.cancel()
+        findingPeople = true; suggestionMessage = nil
+        suggestionTask = Task {
+            defer { findingPeople = false }
+            do {
+                let wasTruncated = try await controller.findParticipantSuggestions(meetingID: meetingID)
+                try Task.checkCancellation()
+                await reloadSuggestions()
+                if wasTruncated {
+                    suggestionMessage = suggestions.isEmpty ? "No suggestions found. Only part of this meeting was reviewed." : "Only part of this meeting was reviewed."
+                } else if suggestions.isEmpty { suggestionMessage = "No new suggestions in the reviewed text." }
+            } catch is CancellationError {} catch { suggestionMessage = error.localizedDescription }
+        }
+    }
+
+    private func resolve(_ suggestion: MeetingParticipantSuggestion, add: Bool, existingPerson: MeetingParticipantDraft? = nil) {
+        Task {
+            do {
+                try await controller.resolveParticipantSuggestion(meetingID: meetingID, fingerprint: suggestionFingerprint, name: suggestion.name, add: add, existingPerson: existingPerson)
+                await reloadSuggestions()
+                if add { await reload() }
+            } catch {
+                suggestionMessage = error.localizedDescription
+                await reloadSuggestions()
+            }
         }
     }
 

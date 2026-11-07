@@ -4,6 +4,41 @@ import Testing
 
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
+    @Test("Clamshell microphone warning appears once per built-in input episode")
+    func clamshellMicWarning() {
+        var state = MeetingClamshellMicWarningState()
+        func check(_ closed: Bool, _ builtIn: Bool?, _ expected: Bool) {
+            let result = state.update(lidClosed: closed, effectiveInputIsBuiltIn: builtIn)
+            #expect(result == expected)
+        }
+        check(false, true, false)
+        check(true, nil, false)
+        check(true, false, false)
+        check(true, true, true)
+        state.markShown()
+        check(true, true, false)
+        check(true, nil, false)
+        check(true, false, false)
+        check(true, true, true)
+        state.markShown()
+        check(false, true, false)
+        check(true, true, true)
+    }
+    @Test("Lid closure preserves recording with an active external display")
+    func clamshellPolicy() {
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: true))
+        #expect(MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: false))
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: false, hasActiveExternalDisplay: false))
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: nil))
+    }
+    @Test("System stop handles preparation and paused capture without stopping twice")
+    func systemStopPhases() {
+        #expect(MeetingSystemStopAction.action(phase: .preparing) == .cancelPreparation)
+        #expect(MeetingSystemStopAction.action(phase: .capturing) == .stopRecording)
+        #expect(MeetingSystemStopAction.action(phase: .paused) == .stopRecording)
+        #expect(MeetingSystemStopAction.action(phase: .stopping) == .none)
+        #expect(MeetingSystemStopAction.action(phase: .stopped) == .none)
+    }
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let room = "meet.google.com/aaa-bbbb-ccc"
 
