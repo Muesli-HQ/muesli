@@ -47,6 +47,49 @@ func feedbackTarget() -> FeedbackCaptureTarget {
 
 @Suite("Vidshot storage")
 struct FeedbackCaptureStoreTests {
+    @Test("Discard markers survive checkpoints and recovery deletes without probing media")
+    func interruptedDiscardIsNeverRecovered() throws {
+        try withFeedbackStore { store, _, root in
+            let capture = try store.begin(target: feedbackTarget())
+            let folder = try store.bundleURL(id: capture.id)
+            try Data([1, 2, 3]).write(to: store.mediaURL(id: capture.id, path: "recording.mp4"))
+            try store.markForDiscard(id: capture.id)
+            try store.checkpoint(capture) // A late clock checkpoint cannot undo discard.
+            #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }).isEmpty)
+            #expect(FileManager.default.fileExists(atPath: folder.path), "Live writer still owns its files")
+            store.release(id: capture.id)
+            // Corrupt journals and unrecognized media must not cause an explicit discard to be recovered.
+            try Data("invalid".utf8).write(to: store.mediaURL(id: capture.id, path: "unfinished.json"))
+            let relaunched = try FeedbackCaptureStore(databaseURL: root.appendingPathComponent("muesli.db"), support: root)
+            let pending = try relaunched.recover(audioDuration: { _ in Issue.record("Discarded audio was probed"); return nil },
+                                                 videoDuration: { _ in Issue.record("Discarded video was probed"); return nil })
+            #expect(pending.isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(try store.get(id: capture.id) == nil)
+            #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }).isEmpty)
+        }
+    }
+
+    @Test("A failed discard deletion preserves its marker for retry")
+    func failedDiscardDeletionIsRetried() throws {
+        try withFeedbackStore { store, db, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            let folder = try store.bundleURL(id: capture.id)
+            try store.markForDiscard(id: capture.id)
+            store.release(id: capture.id)
+            try #require(sqlite3_exec(db, "CREATE TRIGGER reject_discard BEFORE DELETE ON vidshots BEGIN SELECT RAISE(ABORT,'synthetic failure'); END", nil, nil, nil) == SQLITE_OK)
+            var failures: [String] = []
+            #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }) { id, _ in failures.append(id) }.isEmpty)
+            #expect(failures == [capture.id])
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: capture.id, path: "discard.pending").path))
+            #expect(try store.get(id: capture.id) != nil)
+            try #require(sqlite3_exec(db, "DROP TRIGGER reject_discard", nil, nil, nil) == SQLITE_OK)
+            #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }).isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(try store.get(id: capture.id) == nil)
+        }
+    }
+
     @Test("Vidshot narration is indexed, revisioned and removed with its source")
     func retrievalTracksCaptureLifecycle() throws {
         try withFeedbackStore { captures, _, root in

@@ -909,6 +909,63 @@ struct FeedbackCaptureLifecycleTests {
             #expect(mic.starts == 1 && mic.stops == 1)
         }
     }
+    @Test("Discard is journaled before microphone teardown completes")
+    func discardIsDurableBeforeStopCompletes() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            let mic = FeedbackMicrophoneFixture()
+            let gate = DispatchSemaphore(value: 0)
+            let entered = OSAllocatedUnfairLock(initialState: false)
+            mic.stopAction = { entered.withLock { $0 = true }; gate.wait() }
+            defer { gate.signal() }
+            var id: String?
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
+                pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
+                    try attempt.install(device: device, microphone: mic)
+                    id = attempt.snapshot()?.id
+                }, observeSystem: false)
+            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+            try await waitUntil { controller.state?.isRecording == true }
+            let captureID = try #require(id)
+            controller.discard()
+            try await waitUntil { entered.withLock { $0 } }
+            #expect(controller.ownsMicrophone)
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: captureID, path: "discard.pending").path))
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: captureID, path: "unfinished.json").path))
+            gate.signal()
+            #expect(await controller.shutdown())
+            #expect(try store.list().isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: try store.bundleURL(id: captureID).path))
+        }
+    }
+
+    @Test("A failed discard marker reports failure and never copies retained content")
+    func failedDiscardMarkerRetainsCaptureWithoutCopy() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            let mic = FeedbackMicrophoneFixture()
+            var id: String?
+            var copied = false
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
+                pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
+                    try attempt.install(device: device, microphone: mic)
+                    id = attempt.snapshot()?.id
+                }, observeSystem: false)
+            controller.finalizer.stages = [.init(name: .copy, run: { _, _ in copied = true })]
+            #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
+            try await waitUntil { controller.state?.isRecording == true }
+            let captureID = try #require(id)
+            let marker = try store.mediaURL(id: captureID, path: "discard.pending")
+            try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+            controller.discard()
+            if case .some(.failed(let stage, _, let retained)) = controller.state {
+                #expect(stage == "Discard" && retained)
+            } else { Issue.record("Discard failure was not shown") }
+            #expect(await controller.shutdown())
+            #expect(!copied)
+            #expect(try store.manifest(id: captureID).failures.contains { $0.stage == "discard" })
+            #expect(try store.get(id: captureID) != nil)
+        }
+    }
+
     @Test func geometryAndDiscardUseNormalStop() async throws {
         try await withFeedbackStoreAsync { store, root in
             let mic = FeedbackMicrophoneFixture()
@@ -927,6 +984,7 @@ struct FeedbackCaptureLifecycleTests {
         }
         let target = feedbackTarget(), start = Date(timeIntervalSince1970: 1000)
         #expect(!FeedbackCaptureAdmission.mustFinish(start: start, now: start.addingTimeInterval(599), original: target, current: target))
+        #expect(FeedbackCaptureAdmission.mustFinish(start: start, now: start.addingTimeInterval(600), original: target, current: target))
         #expect(FeedbackCaptureAdmission.mustFinish(start: start, now: start, original: target, current: nil))
         let changed = FeedbackCaptureTarget(displayId: target.displayId, frame: .init(x: 0, y: 0, width: 1280, height: 720, scale: 1), appName: target.appName)
         #expect(FeedbackCaptureAdmission.mustFinish(start: start, now: start, original: target, current: changed))

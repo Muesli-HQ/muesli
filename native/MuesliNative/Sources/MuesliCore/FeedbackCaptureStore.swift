@@ -128,6 +128,39 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         try validatePaths(manifest)
         try JSONEncoder().encode(manifest).write(to: mediaURL(id: manifest.id, path: "unfinished.json"), options: .atomic)
     }
+    /// Record the user's discard decision separately from the mutable capture journal.
+    /// Later clock checkpoints cannot overwrite it, and recovery checks it first.
+    public func markForDiscard(id: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        try withCaptureMutationLock(id: id) {
+            let marker = try mediaURL(id: id, path: "discard.pending")
+            try Data("discard\n".utf8).write(to: marker, options: .atomic)
+        }
+    }
+    /// Delete the row first so a failure or interruption leaves the marker and
+    /// media together for recovery to retry, never republishing a discarded clip.
+    private func deleteMarkedDiscard(id: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !active.contains(id) else { throw failure("Capture is still recording or finalizing") }
+        let folder = try bundleURL(id: id)
+        try withCaptureMutationLock(id: id) {
+            let marker = try mediaURL(id: id, path: "discard.pending")
+            guard FileManager.default.fileExists(atPath: marker.path) else { throw failure("Missing discard marker") }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM vidshots WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare discarded capture deletion") }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, id, -1, transient)
+            guard try GlobalSearchIndex.stepSourceWrite(stmt) == SQLITE_DONE else { throw failure("Delete discarded capture row") }
+            try FileManager.default.removeItem(at: folder)
+        }
+    }
+    /// Drop the live ownership and finish deletion atomically with respect to
+    /// this store's recovery pass. Failures remain marked for a later retry.
+    public func finishDiscard(id: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        active.remove(id)
+        try deleteMarkedDiscard(id: id)
+    }
     public func isActive(id: String) -> Bool { lock.withLock { active.contains(id) } }
     public func release(id: String) { lock.lock(); defer { lock.unlock() }; active.remove(id) }
     public func manifest(id: String) throws -> FeedbackCaptureManifest {
@@ -280,6 +313,11 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
             let id = folder.deletingPathExtension().lastPathComponent
             do {
                 guard !active.contains(id), validID(id) else { continue }
+                let discardMarker = try mediaURL(id: id, path: "discard.pending")
+                if FileManager.default.fileExists(atPath: discardMarker.path) {
+                    try deleteMarkedDiscard(id: id)
+                    continue
+                }
                 let entries = try FileManager.default.contentsOfDirectory(at: bundleURL(id: id), includingPropertiesForKeys: nil)
                 if entries.isEmpty {
                     try delete(id: id); continue

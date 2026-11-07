@@ -509,6 +509,20 @@ final class FeedbackCaptureController {
         guard let capture = attempt, capture.isCurrent else { return }
         let changeCount = NSPasteboard.general.changeCount
         capture.finishAdmission(); capture.stopInputMonitoring(); onAdmissionReset?()
+        var shouldDiscard = discard
+        var discardError: String?
+        if discard {
+            do {
+                guard let id = capture.snapshot()?.id else { throw ScreenVideoRecorder.error("Capture is unavailable") }
+                try capture.store.markForDiscard(id: id)
+            } catch {
+                shouldDiscard = false
+                let message = "Could not discard Vidshot: \(error.localizedDescription)"
+                discardError = message
+                capture.addFailure(stage: "discard", message: message)
+            }
+        }
+        let discardRecorded = shouldDiscard
         timer?.invalidate(); timer = nil; startupDeadline?.cancel(); startTask?.cancel()
         // No native acquisition has begun: invalidate immediately. Discovery may
         // remain suspended, but its attempt can never install or start resources.
@@ -518,6 +532,9 @@ final class FeedbackCaptureController {
             return
         }
         present(.processing, captureID: capture.snapshot()?.id)
+        if let discardError {
+            present(.failed(stage: "Discard", message: discardError, retainedMedia: true), captureID: capture.snapshot()?.id)
+        }
         let processingID = ObjectIdentifier(capture)
         processingAttempts.insert(processingID)
         let presentation = presentationID
@@ -529,7 +546,12 @@ final class FeedbackCaptureController {
             self.attempt = nil; self.startTask = nil
             self.ownsMicrophone = false; self.onMicrophoneReleased?()
         }
-        let finalizer = self.finalizer
+        var selectedFinalizer = self.finalizer
+        if discard && !discardRecorded {
+            // A failed discard must not copy the retained capture to the clipboard.
+            selectedFinalizer.stages.removeAll { $0.name == .copy }
+        }
+        let finalizer = selectedFinalizer
         let repairAudio = self.repairAudio
         Task { [weak self] in
             await microphoneStop.value
@@ -546,12 +568,12 @@ final class FeedbackCaptureController {
                 return
             }
             let id = manifest.id
-            if !discard, self.presentationID == presentation { self.latestID = id }
+            if !discardRecorded, self.presentationID == presentation { self.latestID = id }
             var completionNotice: FeedbackCapturePillState?
             do {
                 let result = try await Task.detached { () throws -> (manifest: FeedbackCaptureManifest, retainsContent: Bool)? in
-                    if discard {
-                        capture.store.release(id: id); try capture.store.delete(id: id); return nil
+                    if discardRecorded {
+                        try capture.store.finishDiscard(id: id); return nil
                     }
                     // Successful writers already established their media. Probe
                     // uncertain outputs independently, including partial failures.

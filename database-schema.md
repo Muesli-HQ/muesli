@@ -693,6 +693,12 @@ Action anchors drive narration partitioning separately from decoded frame times.
 All artifact paths pass the store's bundle containment checks. The row's
 `keyframeCount` reflects the published frames, including partial render results.
 
+Discard writes a separate atomic `discard.pending` marker before asynchronous
+media teardown. Clock checkpoints cannot overwrite it. Recovery checks the marker
+before decoding the journal and deletes the row before the bundle so a failed or
+interrupted deletion leaves the marker available for retry. Failed marker writes
+are reported and retain the capture rather than claiming it was discarded.
+
 Before capture, `unfinished.json` journals the manifest atomically. The first
 microphone host frame and first accepted video host frame are checkpointed as
 soon as known; `videoOffsetMs` aligns video zero to narration sample zero.
