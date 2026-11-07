@@ -9243,7 +9243,7 @@ public final class MuesliController: NSObject {
             endDate: endDate,
             autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL, requiresExactRoomMatch: requiresExactRoomMatch),
             presentation: presentation,
-            startOrigin: .joinAndRecord
+            startOrigin: requiresExactRoomMatch ? .calendarRecordingSwitch : .joinAndRecord
         )
     }
 
@@ -9264,7 +9264,7 @@ public final class MuesliController: NSObject {
             endDate: endDate,
             autoStopSource: meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: requiresExactRoomMatch) },
             presentation: presentation,
-            startOrigin: .scheduledMeetingPrompt
+            startOrigin: requiresExactRoomMatch ? .calendarRecordingSwitch : .scheduledMeetingPrompt
         )
     }
 

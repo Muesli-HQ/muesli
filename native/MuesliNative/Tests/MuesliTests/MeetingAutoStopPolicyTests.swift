@@ -376,6 +376,30 @@ struct MeetingAutoStopPolicyTests {
         #expect(source.refined(with: matching).requiresExactRoomMatch)
     }
 
+    @Test("switching to an unsupported meeting never binds the previous Zoom call")
+    func unsupportedSwitchDoesNotUsePreviousCall() throws {
+        let unsupportedURL = try #require(URL(string: "https://chime.aws/123456789"))
+        let newSource = MeetingAutoStopSource(meetingURL: unsupportedURL, requiresExactRoomMatch: true)
+        #expect(newSource == nil)
+        let previousCall = candidate(id: "zoom-old", url: nil, bundle: "us.zoom.xos")
+        let previousSource = MeetingAutoStopSource(candidate: previousCall)
+        var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: MeetingRecordingStartOrigin.calendarRecordingSwitch.signalLossSource(
+            explicitSource: newSource, recentSource: previousSource
+        ))
+        tracker.observeBeforeRecordingStarted(candidate: previousCall)
+        tracker.markRecordingStarted(now: now)
+        #expect(!tracker.isArmed)
+        let shouldStop = tracker.observe(candidate: nil, now: now.addingTimeInterval(60), gracePeriod: 15)
+        #expect(!shouldStop)
+
+        let supportedURL = try #require(URL(string: "https://zoom.us/j/123456789"))
+        let supportedSource = try #require(MeetingAutoStopSource(meetingURL: supportedURL, requiresExactRoomMatch: true))
+        #expect(MeetingRecordingStartOrigin.calendarRecordingSwitch.signalLossSource(
+            explicitSource: supportedSource, recentSource: previousSource
+        ) == supportedSource)
+    }
+
     @Test("assertion signatures are specific to each platform")
     func assertionPatterns() {
         let on = 255
@@ -454,7 +478,7 @@ struct MeetingAutoStopPolicyTests {
 
     @Test("source-backed origins warn without stopping recording", arguments: [
         MeetingRecordingStartOrigin.manual, .detectedPrompt, .calendarAutoRecord,
-        .scheduledMeetingPrompt, .joinAndRecord
+        .scheduledMeetingPrompt, .joinAndRecord, .calendarRecordingSwitch
     ])
     func startOrigin(origin: MeetingRecordingStartOrigin) {
         let explicit = MeetingAutoStopSource(candidate: candidate())
@@ -464,7 +488,8 @@ struct MeetingAutoStopPolicyTests {
         #expect(origin.tracksMeetingSource == tracksSource)
         #expect(origin.signalLossResponse == expectedSignalLoss)
         #expect(origin.signalLossSource(explicitSource: explicit, recentSource: recent) == (tracksSource ? explicit : nil))
-        #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) == (tracksSource ? recent : nil))
+        #expect(origin.signalLossSource(explicitSource: nil, recentSource: recent) ==
+                (tracksSource && origin != .calendarRecordingSwitch ? recent : nil))
     }
 
     @Test("manual reminder waits a full quiet period, including an initially empty transcript")

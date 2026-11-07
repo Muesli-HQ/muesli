@@ -49,12 +49,13 @@ enum MeetingRecordingStartOrigin: Equatable {
     case calendarAutoRecord
     case scheduledMeetingPrompt
     case joinAndRecord
+    case calendarRecordingSwitch
 
     var tracksMeetingSource: Bool {
         switch self {
         case .manual:
             return false
-        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord, .calendarRecordingSwitch:
             return true
         }
     }
@@ -65,7 +66,7 @@ enum MeetingRecordingStartOrigin: Equatable {
             return .transcriptInactivity
         case .detectedPrompt:
             return .warnOnly
-        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord, .calendarRecordingSwitch:
             return .warnOnly
         }
     }
@@ -77,6 +78,8 @@ enum MeetingRecordingStartOrigin: Equatable {
         switch self {
         case .manual:
             return nil
+        case .calendarRecordingSwitch:
+            return explicitSource
         case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
             return explicitSource ?? recentSource()
         }
