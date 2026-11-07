@@ -276,7 +276,8 @@ actor MeetingRecordingTranscriber {
     /// nil when they cannot, such as whole phrases, tokens missing the text's
     /// punctuation, or the untimed placeholders most backends return.
     static func alignedTokens(_ tokens: [SpeechSegment], to text: String, offset: Double) -> [SpeechSegment]? {
-        var words = text.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
+        let originals = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        var words = originals.map { $0.lowercased() }
         var aligned: [SpeechSegment] = []
         var wordTokens: [SpeechSegment] = []
         var matched = ""
@@ -298,8 +299,12 @@ actor MeetingRecordingTranscriber {
                 text: tokenText
             ))
             matched = part + matched
-            if matched == word, let first = wordTokens.popLast() {
-                aligned.append(contentsOf: wordTokens)
+            if matched == word {
+                // Take the characters from the reconciled text, so cleanup's
+                // capitalization survives, while keeping each token's times.
+                let cased = casedTokens(Array(wordTokens.reversed()), from: originals[words.count - 1])
+                let first = cased[0]
+                aligned.append(contentsOf: cased.dropFirst().reversed())
                 aligned.append(SpeechSegment(start: first.start, end: first.end, text: " " + first.text))
                 wordTokens = []
                 matched = ""
@@ -308,6 +313,20 @@ actor MeetingRecordingTranscriber {
         }
         guard words.isEmpty, !aligned.isEmpty else { return nil }
         return aligned.reversed()
+    }
+
+    /// Rewrites a word's tokens, in spoken order, with the matching characters of
+    /// `original`. Keeps the token text when a slice does not match it ignoring case.
+    private static func casedTokens(_ tokens: [SpeechSegment], from original: String) -> [SpeechSegment] {
+        var rest = Substring(original)
+        var cased: [SpeechSegment] = []
+        for token in tokens {
+            let slice = rest.prefix(token.text.count)
+            guard slice.lowercased() == token.text.lowercased() else { return tokens }
+            cased.append(SpeechSegment(start: token.start, end: token.end, text: String(slice)))
+            rest = rest.dropFirst(slice.count)
+        }
+        return rest.isEmpty ? cased : tokens
     }
 
     /// Only reconcile the short shared boundary; never deduplicate the body of a chunk.

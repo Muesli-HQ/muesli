@@ -313,6 +313,22 @@ struct MeetingRecordingTranscriberTests {
         #expect(aligned.map(\.text) == [" Hello", ",", " world", "."])
     }
 
+    @Test("token alignment keeps the cleaned text's capitalization")
+    func tokenAlignmentKeepsCleanedCapitalization() throws {
+        // Cleanup turned "um hello there" into "Hello there."; the tokens keep their times.
+        let tokens = [
+            SpeechSegment(start: 0.0, end: 0.2, text: "um"),
+            SpeechSegment(start: 0.2, end: 0.4, text: "hel"),
+            SpeechSegment(start: 0.4, end: 0.6, text: "lo"),
+            SpeechSegment(start: 0.6, end: 0.9, text: "there"),
+            SpeechSegment(start: 0.9, end: 1.0, text: "."),
+        ]
+        let aligned = try #require(MeetingRecordingTranscriber.alignedTokens(tokens, to: "Hello there.", offset: 5))
+        #expect(aligned.map(\.text) == [" Hel", "lo", " there", "."])
+        #expect(aligned.map(\.text).joined() == " Hello there.")
+        #expect(aligned.first?.start == 5.2)
+    }
+
     @Test("segments that are not tokens of the text keep the window fallback")
     func tokenAlignmentRejectsOtherSegments() async throws {
         let phrases = [SpeechSegment(start: 0, end: 2, text: "hello there")]
