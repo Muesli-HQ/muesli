@@ -956,8 +956,8 @@ public final class MuesliController: NSObject {
     private var latestMeetingActivityCandidateObservedAt: Date?
     private var activeMeetingAutoStop = MeetingAutoStopTracker()
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
-    private var zoomAutoStopObserver: ZoomMeetingAutoStopObserver?
-    private var zoomAutoStopMeetingID: Int64?
+    private var meetingAutoStopObserver: MeetingAutoStopObserver?
+    private var meetingAutoStopMeetingID: Int64?
     private var meetingAssertionTarget: MeetingAssertionTarget?
     private var meetingSignalLossPromptState = MeetingSignalLossPromptState()
     private let meetingAutoStopGracePeriod: TimeInterval = 20
@@ -8013,6 +8013,7 @@ public final class MuesliController: NSObject {
               !activeMeetingSession.isPaused,
               !isStoppingMeetingRecording else { return }
         visualMemory.setMeetingPaused(true)
+        meetingAutoStopObserver?.resetObservation()
         activeMeetingSession.pause()
         meetingInactivityReminder?.invalidate()
         meetingInactivityReminder = nil
@@ -9016,7 +9017,7 @@ public final class MuesliController: NSObject {
                 guard meetingSession.capturePhase.isRecording else { throw CancellationError() }
                 checkMeetingClamshellMicrophone(owner: owner)
                 activeMeetingAutoStop.markRecordingStarted(now: Date())
-                syncZoomMeetingAutoStop()
+                syncMeetingAssertionAutoStop()
                 if activeMeetingSignalLossResponse == .transcriptInactivity {
                     noteMeetingTranscriptActivity()
                 }
@@ -10935,9 +10936,9 @@ public final class MuesliController: NSObject {
     }
 
     private func disarmMeetingAutoStop() {
-        zoomAutoStopObserver?.stop()
-        zoomAutoStopObserver = nil
-        zoomAutoStopMeetingID = nil
+        meetingAutoStopObserver?.stop()
+        meetingAutoStopObserver = nil
+        meetingAutoStopMeetingID = nil
         meetingAssertionTarget = nil
         meetingInactivityReminder?.invalidate()
         meetingInactivityReminder = nil
@@ -10994,51 +10995,51 @@ public final class MuesliController: NSObject {
             now: now,
             gracePeriod: meetingAutoStopGracePeriod
         ) {
-            if zoomAutoStopObserver?.hasObservedAssertion != true {
+            if meetingAutoStopObserver?.hasObservedAssertion != true {
                 presentMeetingSignalLossPromptIfNeeded()
             }
         }
-        syncZoomMeetingAutoStop()
+        syncMeetingAssertionAutoStop()
     }
 
-    func setZoomMeetingAutoStopEnabled(_ enabled: Bool) {
-        updateConfig { $0.zoomMeetingAutoStopEnabled = enabled }
-        syncZoomMeetingAutoStop()
+    func setMeetingAutoStopEnabled(_ enabled: Bool) {
+        updateConfig { $0.meetingAutoStopEnabled = enabled }
+        syncMeetingAssertionAutoStop()
     }
 
-    private func syncZoomMeetingAutoStop() {
-        guard config.zoomMeetingAutoStopEnabled,
+    private func syncMeetingAssertionAutoStop() {
+        guard config.meetingAutoStopEnabled,
               let meetingID = activeMeetingID,
               activeMeetingSession?.isRecording == true,
               let target = activeMeetingAutoStop.source?.assertionTarget else {
-            zoomAutoStopObserver?.stop()
-            zoomAutoStopObserver = nil
-            zoomAutoStopMeetingID = nil
+            meetingAutoStopObserver?.stop()
+            meetingAutoStopObserver = nil
+            meetingAutoStopMeetingID = nil
             meetingAssertionTarget = nil
             return
         }
-        guard zoomAutoStopMeetingID != meetingID || meetingAssertionTarget != target else { return }
-        zoomAutoStopObserver?.stop()
-        let observer = ZoomMeetingAutoStopObserver()
-        zoomAutoStopObserver = observer
-        zoomAutoStopMeetingID = meetingID
+        guard meetingAutoStopMeetingID != meetingID || meetingAssertionTarget != target else { return }
+        meetingAutoStopObserver?.stop()
+        let observer = MeetingAutoStopObserver()
+        meetingAutoStopObserver = observer
+        meetingAutoStopMeetingID = meetingID
         meetingAssertionTarget = target
         observer.start(target: target, isEligible: { [weak self, weak observer] in
             guard let self, let observer else { return false }
-            return self.zoomAutoStopObserver === observer
-                && self.zoomAutoStopMeetingID == meetingID
+            return self.meetingAutoStopObserver === observer
+                && self.meetingAutoStopMeetingID == meetingID
                 && self.activeMeetingID == meetingID
-                && self.config.zoomMeetingAutoStopEnabled
+                && self.config.meetingAutoStopEnabled
                 && self.activeMeetingAutoStop.source?.assertionTarget == target
                 && self.activeMeetingSession?.isRecording == true
                 && self.activeMeetingSession?.isPaused == false
                 && !self.isStoppingMeetingRecording
         }, onStop: { [weak self, weak observer] in
             guard let self, let observer,
-                  self.zoomAutoStopObserver === observer,
-                  self.zoomAutoStopMeetingID == meetingID,
+                  self.meetingAutoStopObserver === observer,
+                  self.meetingAutoStopMeetingID == meetingID,
                   self.activeMeetingID == meetingID,
-                  self.config.zoomMeetingAutoStopEnabled,
+                  self.config.meetingAutoStopEnabled,
                   self.activeMeetingAutoStop.source?.assertionTarget == target,
                   self.activeMeetingSession?.isRecording == true,
                   self.activeMeetingSession?.isPaused == false,

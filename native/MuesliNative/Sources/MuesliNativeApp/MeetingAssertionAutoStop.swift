@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 import Network
 
 /// Facts for one recording. An unavailable observation is never evidence of an end.
-struct ZoomAutoStopFacts {
+struct MeetingAutoStopFacts {
     enum Network: Equatable { case unknown, available, unavailable }
     enum Assertion: Equatable { case unknown, present, absent }
     enum Probe: Equatable { case unknown, reachable, unavailable }
@@ -78,7 +78,7 @@ struct ZoomAutoStopFacts {
     }
 }
 
-enum MeetingAssertionTarget: Equatable {
+enum MeetingAssertionTarget: Equatable, Sendable {
     case zoom, teams, webex
     case browser(bundleID: String)
 
@@ -107,7 +107,7 @@ enum MeetingAssertionTarget: Equatable {
     }
 }
 
-enum ZoomAssertionReader {
+enum MeetingAssertionReader {
     /// Public IOKit snapshot. Call off the main actor; nil means the query failed.
     static func hasAssertion(target: MeetingAssertionTarget, roots: [(pid_t, String)]) -> Bool? {
         var unmanaged: Unmanaged<CFDictionary>?
@@ -131,7 +131,7 @@ enum ZoomAssertionReader {
     }
 }
 
-enum ZoomConnectivityProbe {
+enum MeetingConnectivityProbe {
     static let endpoint = URL(string: "https://connectivitycheck.gstatic.com/generate_204")!
 
     static func isReachable() async -> Bool {
@@ -156,10 +156,19 @@ enum ZoomConnectivityProbe {
 }
 
 @MainActor
-final class ZoomMeetingAutoStopObserver {
+final class MeetingAutoStopObserver {
+    typealias AssertionReader = @MainActor (MeetingAssertionTarget) async -> Bool?
+    typealias ConnectivityProbe = @MainActor () async -> Bool
+    typealias PollWait = @MainActor () async -> Void
+
+    private let readAssertion: AssertionReader
+    private let probeConnectivity: ConnectivityProbe
+    private let now: @MainActor () -> Date
+    private let waitForNextPoll: PollWait
+    private let monitorNetwork: Bool
     private var networkMonitor: NWPathMonitor?
     private var pollTask: Task<Void, Never>?
-    private var facts = ZoomAutoStopFacts()
+    private var facts = MeetingAutoStopFacts()
     private var generation = UUID()
     private var observationGeneration = UUID()
     private var networkGeneration = UUID()
@@ -167,66 +176,89 @@ final class ZoomMeetingAutoStopObserver {
     private var lastProbeAt: Date?
     var hasObservedAssertion: Bool { facts.assertionObserved }
 
+    init(
+        readAssertion: @escaping AssertionReader = { target in
+            await Task.detached(priority: .utility) {
+                let roots = target.bundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
+                    .compactMap { app -> (pid_t, String)? in
+                        guard let path = app.bundleURL?.path else { return nil }
+                        return (app.processIdentifier, path)
+                    }
+                return MeetingAssertionReader.hasAssertion(target: target, roots: roots)
+            }.value
+        },
+        probeConnectivity: @escaping ConnectivityProbe = { await MeetingConnectivityProbe.isReachable() },
+        now: @escaping @MainActor () -> Date = { Date() },
+        waitForNextPoll: @escaping PollWait = { try? await Task.sleep(nanoseconds: 3_000_000_000) },
+        monitorNetwork: Bool = true
+    ) {
+        self.readAssertion = readAssertion
+        self.probeConnectivity = probeConnectivity
+        self.now = now
+        self.waitForNextPoll = waitForNextPoll
+        self.monitorNetwork = monitorNetwork
+    }
+
     func start(target: MeetingAssertionTarget, isEligible: @escaping @MainActor () -> Bool, onStop: @escaping @MainActor () -> Bool) {
         stop()
         let owner = generation
-        startNetworkMonitor(owner: owner)
+        if monitorNetwork { startNetworkMonitor(owner: owner) }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == owner else { return }
                 // Clock gaps across sleep are not continuous observation.
-                self.observationGeneration = UUID()
-                self.facts.assertionObserved = false
-                self.facts.assertionLostAt = nil
-                self.facts.networkInterruptedDuringLoss = false
-                self.facts.network = .unknown
-                self.startNetworkMonitor(owner: owner)
+                self.resetObservation(preservingNetwork: false)
+                if self.monitorNetwork { self.startNetworkMonitor(owner: owner) }
             }
         }
         pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, self.generation == owner else { return }
                 let observationOwner = self.observationGeneration
-                let roots = target.bundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
-                    .compactMap { app -> (pid_t, String)? in
-                        guard let path = app.bundleURL?.path else { return nil }
-                        return (app.processIdentifier, path)
-                    }
-                let result = await Task.detached(priority: .utility) {
-                    ZoomAssertionReader.hasAssertion(target: target, roots: roots)
-                }.value
+                let result = await self.readAssertion(target)
                 guard !Task.isCancelled, self.generation == owner else { return }
                 guard self.observationGeneration == observationOwner else { continue }
                 guard isEligible() else {
-                    self.facts.assertionObserved = false
-                    self.facts.assertionLostAt = nil
-                    self.facts.networkInterruptedDuringLoss = false
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    self.resetObservation(preservingNetwork: true)
+                    await self.waitForNextPoll()
                     continue
                 }
-                self.facts.observeAssertion(result.map { $0 ? .present : .absent } ?? .unknown, now: Date())
+                self.facts.observeAssertion(result.map { $0 ? .present : .absent } ?? .unknown, now: self.now())
                 if self.facts.assertionLostAt == nil { self.lastProbeAt = nil }
                 if self.facts.assertionLostAt != nil, self.facts.network == .available,
-                   self.lastProbeAt.map({ Date().timeIntervalSince($0) >= 15 }) ?? true {
-                    self.lastProbeAt = Date()
-                    let reachable = await ZoomConnectivityProbe.isReachable()
-                    guard !Task.isCancelled, self.generation == owner,
-                          self.observationGeneration == observationOwner else { return }
-                    self.facts.observeProbe(reachable ? .reachable : .unavailable, now: Date())
-                    // Re-read Zoom's assertion after the asynchronous probe before stopping.
+                   self.lastProbeAt.map({ self.now().timeIntervalSince($0) >= 15 }) ?? true {
+                    self.lastProbeAt = self.now()
+                    let reachable = await self.probeConnectivity()
+                    guard !Task.isCancelled, self.generation == owner else { return }
+                    guard self.observationGeneration == observationOwner else { continue }
+                    self.facts.observeProbe(reachable ? .reachable : .unavailable, now: self.now())
+                    // Re-read the assertion after the asynchronous probe before stopping.
                     continue
                 }
-                if self.facts.shouldStop(now: Date()) {
+                if self.facts.shouldStop(now: self.now()) {
                     if onStop() { return }
                     // A paused or otherwise ineligible recording must earn a fresh grace period.
                     self.facts.assertionLostAt = nil
                     self.facts.networkInterruptedDuringLoss = false
                 }
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await self.waitForNextPoll()
             }
         }
+    }
+
+    /// Invalidates any in-flight snapshot/probe and requires a fresh assertion.
+    func resetObservation(preservingNetwork: Bool = true) {
+        observationGeneration = UUID()
+        let network = preservingNetwork ? facts.network : .unknown
+        facts = MeetingAutoStopFacts()
+        facts.observeNetwork(network, now: now())
+        lastProbeAt = nil
+    }
+
+    func observeNetwork(_ value: MeetingAutoStopFacts.Network) {
+        facts.observeNetwork(value, now: now())
     }
 
     private func startNetworkMonitor(owner: UUID) {
@@ -236,7 +268,7 @@ final class ZoomMeetingAutoStopObserver {
         let monitor = NWPathMonitor()
         networkMonitor = monitor
         monitor.pathUpdateHandler = { [weak self] path in
-            let network: ZoomAutoStopFacts.Network
+            let network: MeetingAutoStopFacts.Network
             switch path.status {
             case .satisfied: network = .available
             case .unsatisfied: network = .unavailable
@@ -245,10 +277,10 @@ final class ZoomMeetingAutoStopObserver {
             }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == owner, self.networkGeneration == networkOwner else { return }
-                self.facts.observeNetwork(network, now: Date())
+                self.observeNetwork(network)
             }
         }
-        monitor.start(queue: DispatchQueue(label: "com.muesli.zoom-network-monitor"))
+        monitor.start(queue: DispatchQueue(label: "com.muesli.meeting-network-monitor"))
     }
 
     func stop() {
@@ -263,7 +295,7 @@ final class ZoomMeetingAutoStopObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
         }
-        facts = ZoomAutoStopFacts()
+        facts = MeetingAutoStopFacts()
         lastProbeAt = nil
     }
 }

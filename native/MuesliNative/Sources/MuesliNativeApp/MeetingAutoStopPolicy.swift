@@ -279,8 +279,8 @@ enum MeetingAutoStopPolicy {
             return true
         }
         // Calendar and join-link sources start with a room URL but no desktop
-        // bundle. Allow actual Zoom input attribution to refine that source;
-        // a running Zoom process or a browser URL alone cannot bind it.
+        // bundle. Allow matching desktop input attribution to refine that source;
+        // a running process or a browser URL alone cannot bind it.
         if source.sourceBundleID == nil,
            candidate.url == nil,
            let bundle = candidate.sourceBundleID,

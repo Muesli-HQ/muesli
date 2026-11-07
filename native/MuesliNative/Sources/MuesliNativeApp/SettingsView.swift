@@ -2463,6 +2463,10 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow("Stop recording when a meeting ends", description: "Supports Zoom, Teams, Webex and browser meetings. Checks connectivity with Google when the meeting signal disappears. If the check fails, recording may continue for up to 8 minutes.") {
+                    settingsControl("meeting_auto_stop")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
@@ -2530,10 +2534,6 @@ struct SettingsView: View {
                     mutedMeetingDetectionAppsControl
                 }
 
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsCompactRow("Automatically stop supported meetings", description: "Supports Zoom, Teams, Webex and attributed browser meetings. Checks connectivity with Google when a meeting signal disappears; network interruptions receive extra recovery time.") {
-                    settingsControl("zoom_auto_stop")
-                }
             }
 
             settingsSection("Calendars") {

@@ -2,8 +2,215 @@ import Foundation
 import Testing
 @testable import MuesliNativeApp
 
+@MainActor
+private final class MeetingAutoStopObserverHarness {
+    var clock = Date(timeIntervalSince1970: 1_800_000_000)
+    var assertion: Bool? = true
+    var eligible = true
+    var stopCount = 0
+    private var pollContinuation: CheckedContinuation<Void, Never>?
+    private var probeContinuation: CheckedContinuation<Bool, Never>?
+    var waitingForPoll: Bool { pollContinuation != nil }
+    var waitingForProbe: Bool { probeContinuation != nil }
+
+    func makeObserver() -> MeetingAutoStopObserver {
+        MeetingAutoStopObserver(
+            readAssertion: { [self] _ in assertion },
+            probeConnectivity: { [self] in
+                await withCheckedContinuation { probeContinuation = $0 }
+            },
+            now: { [self] in clock },
+            waitForNextPoll: { [self] in
+                await withCheckedContinuation { pollContinuation = $0 }
+            },
+            monitorNetwork: false
+        )
+    }
+
+    func start(_ observer: MeetingAutoStopObserver) {
+        observer.start(target: .zoom, isEligible: { [self] in eligible }, onStop: { [self] in
+            stopCount += 1
+            return true
+        })
+        observer.observeNetwork(.available)
+    }
+
+    func waitUntil(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<10_000 {
+            if condition() { return true }
+            await Task.yield()
+        }
+        return condition()
+    }
+
+    func advancePoll() {
+        let continuation = pollContinuation
+        pollContinuation = nil
+        continuation?.resume()
+    }
+
+    func finishProbe(_ reachable: Bool) {
+        let continuation = probeContinuation
+        probeContinuation = nil
+        continuation?.resume(returning: reachable)
+    }
+
+    func finish(_ observer: MeetingAutoStopObserver) {
+        observer.stop()
+        advancePoll()
+        finishProbe(false)
+    }
+}
+
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
+    @Test("assertion recovery while the connectivity probe is pending does not stop")
+    @MainActor func assertionRecoveryDuringProbe() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.assertion = true
+        harness.clock = harness.clock.addingTimeInterval(30)
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(harness.stopCount == 0)
+        #expect(observer.hasObservedAssertion)
+        harness.finish(observer)
+    }
+
+    @Test("pause during a pending probe discards the result and requires a fresh assertion")
+    @MainActor func pauseDuringProbe() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.eligible = false
+        observer.resetObservation()
+        harness.clock = harness.clock.addingTimeInterval(40)
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.eligible = true
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(!observer.hasObservedAssertion)
+        #expect(harness.stopCount == 0)
+        harness.finish(observer)
+    }
+
+    @Test("cancellation while a connectivity probe is pending cannot stop a recording")
+    @MainActor func cancellationDuringProbe() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        observer.stop()
+        harness.clock = harness.clock.addingTimeInterval(40)
+        harness.finishProbe(true)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(harness.stopCount == 0)
+        #expect(!observer.hasObservedAssertion)
+    }
+
+    @Test("confirmed assertion loss stops only once after the online grace")
+    @MainActor func stopOnlyOnce() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(15)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.stopCount == 1 })
+        for _ in 0..<20 { await Task.yield() }
+        #expect(harness.stopCount == 1)
+        harness.finish(observer)
+    }
+
+    @Test("wake invalidates a pending probe and the observer continues monitoring")
+    @MainActor func wakeDuringProbe() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        observer.resetObservation(preservingNetwork: false)
+        observer.observeNetwork(.available)
+        harness.assertion = true
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(observer.hasObservedAssertion)
+        #expect(harness.stopCount == 0)
+        harness.finish(observer)
+    }
+
+    @Test("network recovery waits a full minute for the meeting assertion to return")
+    @MainActor func outageRecoveryGraceInPollingLoop() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        observer.observeNetwork(.unavailable)
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(55)
+        observer.observeNetwork(.available)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(59)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForProbe })
+        harness.finishProbe(true)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(harness.stopCount == 0)
+        harness.clock = harness.clock.addingTimeInterval(1)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.stopCount == 1 })
+        harness.finish(observer)
+    }
+
+    @Test("the same meeting returning after an outage keeps the recording running")
+    @MainActor func outageMeetingReturnsInPollingLoop() async {
+        let harness = MeetingAutoStopObserverHarness()
+        let observer = harness.makeObserver()
+        harness.start(observer)
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        observer.observeNetwork(.unavailable)
+        harness.assertion = false
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(60)
+        observer.observeNetwork(.available)
+        harness.assertion = true
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        harness.clock = harness.clock.addingTimeInterval(600)
+        harness.advancePoll()
+        #expect(await harness.waitUntil { harness.waitingForPoll })
+        #expect(observer.hasObservedAssertion)
+        #expect(harness.stopCount == 0)
+        harness.finish(observer)
+    }
     @Test("Clamshell microphone warning appears once per built-in input episode")
     func clamshellMicWarning() {
         var state = MeetingClamshellMicWarningState()
@@ -44,7 +251,7 @@ struct MeetingAutoStopPolicyTests {
 
     @Test("Zoom assertion absence requires a prior positive observation and healthy network knowledge")
     func zoomNeedsObservedAssertion() {
-        var facts = ZoomAutoStopFacts()
+        var facts = MeetingAutoStopFacts()
         facts.observeNetwork(.available, now: now)
         facts.observeAssertion(.absent, now: now)
         #expect(!facts.shouldStop(now: now.addingTimeInterval(600)))
@@ -59,7 +266,7 @@ struct MeetingAutoStopPolicyTests {
 
     @Test("network interruption preserves a recording and assertion recovery cancels loss")
     func zoomReconnect() {
-        var facts = ZoomAutoStopFacts()
+        var facts = MeetingAutoStopFacts()
         facts.observeNetwork(.available, now: now)
         facts.observeAssertion(.present, now: now)
         facts.observeNetwork(.unavailable, now: now)
@@ -76,7 +283,7 @@ struct MeetingAutoStopPolicyTests {
 
     @Test("recent reconnect is correlated even if loss is observed later")
     func zoomLateLossAndUnknown() {
-        var facts = ZoomAutoStopFacts()
+        var facts = MeetingAutoStopFacts()
         facts.observeNetwork(.available, now: now)
         facts.observeAssertion(.present, now: now)
         facts.observeNetwork(.unavailable, now: now)
@@ -92,7 +299,7 @@ struct MeetingAutoStopPolicyTests {
 
     @Test("failed connectivity checks extend recovery and successful checks restart grace")
     func zoomCanaryRecovery() {
-        var facts = ZoomAutoStopFacts()
+        var facts = MeetingAutoStopFacts()
         facts.observeNetwork(.available, now: now)
         facts.observeAssertion(.present, now: now)
         facts.observeAssertion(.absent, now: now)
