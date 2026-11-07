@@ -271,15 +271,43 @@ struct MeetingParticipantStoreTests {
         #expect(try store.searchMeetingPeople(query: "Legacy").first?.personID == id)
     }
 
-    @Test("Calendar attendee renames update the People search index")
-    func calendarRenameUpdatesPeopleSearch() throws {
+    @Test("Calendar attendee renames update the People search index", arguments: ["calendar:alice", "email:alice@example.test"])
+    func calendarRenameUpdatesPeopleSearch(identifier: String) throws {
         let store = try makeStore()
         let meetingID = try makeMeeting(in: store)
-        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant("calendar:alice", name: "Alice Old")])
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant(identifier, name: "Alice Old")])
         let original = try #require(store.searchMeetingPeople(query: "Alice Old").first?.personID)
-        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant("calendar:alice", name: "Alice New")])
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant(identifier, name: "Alice New")])
         #expect(try store.searchMeetingPeople(query: "Alice New").first?.personID == original)
         #expect(try store.searchMeetingPeople(query: "Alice Old").isEmpty)
+    }
+
+    @Test("Calendar updates do not overwrite a manually curated identity")
+    func calendarRenamePreservesManualName() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+        let id = "email:alice@example.test"
+        try store.attachMeetingParticipant(meetingID: meetingID, participant: participant(id, name: "Alice Preferred"))
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant(id, name: "Alice Calendar")])
+        #expect(try store.searchMeetingPeople(query: "Alice Preferred").count == 1)
+        #expect(try store.searchMeetingPeople(query: "Alice Calendar").isEmpty)
+    }
+
+    @Test("Calendar renames preserve the chosen merged contact name")
+    func calendarRenamePreservesMergedContact() throws {
+        let store = try makeStore()
+        let calendar = try makeMeeting(in: store)
+        let contact = try makeMeeting(in: store)
+        let email = "alice@example.test"
+        try store.attachCalendarMeetingParticipants(meetingID: calendar, participants: [participant("email:\(email)", name: "Alice Calendar", email: email)])
+        try store.attachMeetingParticipant(meetingID: contact, participant: participant("contact:alice", name: "Alice Preferred", email: email))
+        let pair = try #require(store.duplicateMeetingPeople().first)
+        let target = try #require(pair.first.displayName == "Alice Preferred" ? pair.first.personID : pair.second.personID)
+        let source = try #require(pair.first.personID == target ? pair.second.personID : pair.first.personID)
+        try store.mergeMeetingPeople(targetID: target, sourceID: source)
+        try store.reconcileCalendarMeetingParticipants(meetingID: calendar, participants: [participant("email:\(email)", name: "Alice Renamed", email: email)])
+        #expect(try store.searchMeetingPeople(query: "Alice Preferred").first?.personID == target)
+        #expect(try store.searchMeetingPeople(query: "Alice Renamed").isEmpty)
     }
 
     @Test("calendar attendee snapshots retain their names and emails")

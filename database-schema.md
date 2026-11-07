@@ -400,6 +400,8 @@ Recording recovery sidecars may also carry an optional pending retention decisio
 System-suspension stops preserve the audio and finalize the meeting before asking;
 the sidecar survives until the user decides and reopens that decision after restart.
 Older sidecars without the field retain their existing recovery behavior.
+An invalid pending-decision value is treated as unresolved so recovery can
+reattach the audio and ask again; required identity fields still fail closed.
 
 Before an EventKit meeting begins, an initial launch refresh and subsequent
 `EKEventStoreChanged` notifications reconcile the calendar-owned participant

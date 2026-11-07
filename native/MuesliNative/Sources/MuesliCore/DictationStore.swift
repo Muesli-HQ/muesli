@@ -2442,7 +2442,7 @@ public final class DictationStore {
             """, db: db)
     }
 
-    private func resolveMeetingPerson(_ participant: MeetingParticipantDraft, db: OpaquePointer?) throws -> String {
+    private func resolveMeetingPerson(_ participant: MeetingParticipantDraft, source: MeetingParticipantSource? = nil, db: OpaquePointer?) throws -> String {
         let identifier = participant.participantIdentifier
         let existing = try MeetingChatSQL.rows("SELECT person_id FROM meeting_person_identifiers WHERE identifier=?", [.text(identifier)], db: db) { MeetingChatSQL.text($0, 0) }.first
         let requested = participant.personID.flatMap { $0.isEmpty ? nil : $0 }
@@ -2466,16 +2466,18 @@ public final class DictationStore {
                 SELECT m.source_id FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
                 WHERE m.undone=0 AND i.identifier=? ORDER BY m.rowid LIMIT 1)
               """, [.text(participant.displayName), .text(identifier)], db: db)
-        } else if identifier.hasPrefix("calendar:") {
+        } else if source == .calendar {
             // Calendar-only identities can follow attendee edits. A contact or
             // a confirmed merge owns the canonical name and must not be overwritten.
             try MeetingChatSQL.execute("""
               UPDATE meeting_people SET display_name=? WHERE id=?
                 AND NOT EXISTS (SELECT 1 FROM meeting_person_identifiers i
-                                WHERE i.person_id=? AND i.identifier NOT LIKE 'calendar:%')
+                                WHERE i.person_id=? AND i.identifier NOT LIKE 'calendar:%' AND i.identifier NOT LIKE 'email:%')
+                AND NOT EXISTS (SELECT 1 FROM meeting_participants p
+                                WHERE p.person_id=? AND p.source='manual')
                 AND NOT EXISTS (SELECT 1 FROM meeting_people_merges m
                                 WHERE m.undone=0 AND m.target_id=?)
-              """, [.text(participant.displayName), .text(id), .text(id), .text(id)], db: db)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(id), .text(id)], db: db)
         }
         for email in emails {
             try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier) VALUES(?,?,?)", [.text(id), .text(email), .text(identifier)], db: db)
@@ -2535,7 +2537,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
 
         for participant in participants {
-            let personID = try resolveMeetingPerson(participant, db: db)
+            let personID = try resolveMeetingPerson(participant, source: source, db: db)
             sqlite3_reset(statement)
             sqlite3_clear_bindings(statement)
             sqlite3_bind_int64(statement, 1, meetingID)

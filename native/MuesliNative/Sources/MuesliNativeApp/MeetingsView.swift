@@ -1095,7 +1095,10 @@ private struct MeetingPeopleDirectory: View {
     @State private var duplicates: [DuplicateMeetingPeople] = []
     @State private var history: [MeetingPeopleMerge] = []
     @State private var candidate: DuplicateMeetingPeople?
-    @State private var error: String?
+    @State private var peopleError: String?
+    @State private var meetingsError: String?
+    @State private var reviewError: String?
+    @State private var actionError: String?
     @State private var busy = false
     @State private var revision = 0
 
@@ -1210,7 +1213,12 @@ private struct MeetingPeopleDirectory: View {
                     }
                 }
             }
-            if let error { Text(error).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary) }
+            Group {
+                if let peopleError { Text(peopleError) }
+                if let meetingsError { Text(meetingsError) }
+                if let reviewError { Text(reviewError) }
+                if let actionError { Text(actionError) }
+            }.font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
         }
         .task(id: "\(query)|\(revision)") {
             do {
@@ -1218,12 +1226,15 @@ private struct MeetingPeopleDirectory: View {
                 let result = try await controller.globalSearchWorker.people(matching: query)
                 guard !Task.isCancelled else { return }
                 people = result
-                error = nil
-            } catch is CancellationError {} catch { self.error = "People couldn’t load. Try again." }
+                peopleError = nil
+            } catch is CancellationError {} catch {
+                guard !Task.isCancelled else { return }
+                peopleError = "People couldn’t load. Try again."
+            }
         }
         .task(id: selected?.personID) {
             meetingPageGeneration = UUID()
-            meetings = []; moreMeetings = false; displayedMeetingsRevision = nil
+            meetings = []; moreMeetings = false; displayedMeetingsRevision = nil; meetingsError = nil
             if let selected { await loadMeetings(selected, append: false) }
         }
         .task(id: revision) { await refreshReview() }
@@ -1241,7 +1252,12 @@ private struct MeetingPeopleDirectory: View {
         do {
             duplicates = try await controller.globalSearchWorker.duplicatePeople()
             history = try await controller.globalSearchWorker.peopleMergeHistory()
-        } catch { self.error = "Duplicate review couldn’t load." }
+            guard !Task.isCancelled else { return }
+            reviewError = nil
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled else { return }
+            reviewError = "Duplicate review couldn’t load."
+        }
     }
 
     private func merge(_ pair: DuplicateMeetingPeople, keep: MeetingParticipantDraft) async {
@@ -1251,16 +1267,16 @@ private struct MeetingPeopleDirectory: View {
         busy = true; defer { busy = false }
         do {
             try await controller.globalSearchWorker.mergePeople(targetID: target, sourceID: other)
-            candidate = nil; error = nil; revision += 1
-        } catch { self.error = error.localizedDescription; revision += 1 }
+            candidate = nil; actionError = nil; revision += 1
+        } catch { actionError = error.localizedDescription; revision += 1 }
     }
 
     private func undo(_ merge: MeetingPeopleMerge) async {
         busy = true; defer { busy = false }
         do {
             try await controller.globalSearchWorker.undoPeopleMerge(id: merge.id)
-            error = nil; revision += 1
-        } catch { self.error = error.localizedDescription }
+            actionError = nil; revision += 1
+        } catch { actionError = error.localizedDescription }
     }
 
     private func loadMeetings(_ person: MeetingParticipantDraft, append: Bool) async {
@@ -1290,17 +1306,17 @@ private struct MeetingPeopleDirectory: View {
             }
             if latest != token {
                 if append { await loadMeetings(person, append: false) }
-                else { self.error = "Meetings changed. Try again." }
+                else { meetingsError = "Meetings changed. Try again." }
                 return
             }
             if append { meetings.append(contentsOf: found.prefix(100)) }
             else { meetings = Array(found.prefix(100)) }
             moreMeetings = found.count > 100
             displayedMeetingsRevision = latest
-            error = nil
+            meetingsError = nil
         } catch is CancellationError {} catch {
             guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
-            self.error = "Meetings couldn’t load."
+            meetingsError = "Meetings couldn’t load."
         }
     }
 }

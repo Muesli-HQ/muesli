@@ -1,5 +1,9 @@
 import Contacts
 import MuesliCore
+
+enum ParticipantSuggestionPrivacy {
+    static let disclosure = "AI may send part of this meeting to your provider."
+}
 import SwiftUI
 
 extension Notification.Name {
@@ -215,7 +219,7 @@ struct MeetingParticipantsView: View {
                     .disabled(findingPeople)
                 if findingPeople { ProgressView().controlSize(.small) }
             }
-            Text("AI may send part of this meeting to your provider.")
+            Text(ParticipantSuggestionPrivacy.disclosure)
                 .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let suggestionMessage {

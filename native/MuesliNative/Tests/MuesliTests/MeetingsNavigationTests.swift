@@ -6,6 +6,22 @@ import SQLite3
 import Observation
 @testable import MuesliNativeApp
 
+private actor ParticipantSuggestionTransportProbe {
+    private var captured: (url: String, body: Data)?
+    private(set) var callCount = 0
+
+    func load(_ request: URLRequest) throws -> (Data, URLResponse) {
+        callCount += 1
+        let url = try #require(request.url)
+        captured = (url.absoluteString, try #require(request.httpBody))
+        let result = #"[{"name":"Maya","source":"transcript","excerpt":"Maya joined the meeting"}]"#
+        let data = try JSONSerialization.data(withJSONObject: ["content": [["type": "text", "text": result]]])
+        return (data, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+    }
+
+    func snapshot() -> (url: String, body: Data)? { captured }
+}
+
 @MainActor
 private final class HistoryRefreshPublicationCounter {
     private(set) var count = 0
@@ -113,6 +129,41 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+    @Test("Participant suggestion action discloses and sends bounded meeting text to the configured provider")
+    func participantSuggestionsSendOnlyBoundedMeetingText() async throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
+        controller.updateConfig { $0.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend }
+        let transcript = "Maya joined the meeting. " + String(repeating: "t", count: 40_001) + "TRANSCRIPT_TAIL"
+        let notes = "Synthetic notes. " + String(repeating: "n", count: 20_001) + "NOTES_TAIL"
+        let id = try store.insertMeeting(title: "Private synthetic title", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), rawTranscript: transcript, formattedNotes: "Private formatted notes",
+            micAudioPath: nil, systemAudioPath: nil)
+        try store.updateMeetingManualNotes(id: id, manualNotes: notes)
+        let probe = ParticipantSuggestionTransportProbe()
+        var generator = MeetingTextGenerationClient()
+        generator.credentialResolver = { _ in "synthetic-test-key" }
+        generator.load = { request in try await probe.load(request) }
+        let truncated = try await controller.findParticipantSuggestions(meetingID: id, generator: generator)
+        let captured = try #require(await probe.snapshot())
+        let envelope = try #require(JSONSerialization.jsonObject(with: captured.body) as? [String: Any])
+        let messages = try #require(envelope["messages"] as? [[String: String]])
+        let user = try #require(messages.first?["content"])
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(user.utf8)) as? [String: String])
+        #expect(await probe.callCount == 1)
+        #expect(captured.url == "https://api.anthropic.com/v1/messages")
+        #expect(payload.count == 2)
+        #expect(payload["transcript"] == String(transcript.prefix(40_000)))
+        #expect(payload["notes"] == String(notes.prefix(20_000)))
+        #expect(!user.contains("Private synthetic title"))
+        #expect(!user.contains("Private formatted notes"))
+        #expect(truncated)
+        #expect(ParticipantSuggestionPrivacy.disclosure.contains("provider"))
+        #expect(try store.participantSuggestions(meetingID: id).map(\.name) == ["Maya"])
+        #expect(try store.listMeetingParticipants(meetingID: id).isEmpty)
+    }
     @Test func timelinePaginationKeepsRowsButChangedSearchInvalidatesThem() {
         let completed = TimelineSearchRequest(scope: "release|revision1", limit: 50)
         #expect(completed.canDisplay(completed))
@@ -1186,6 +1237,11 @@ struct MeetingsNavigationTests {
         let pending = MeetingRecordingRecoveryReference(meetingID: 1, startTime: "date", databasePath: "/local", pendingRetentionDecision: true)
         let encoded = try JSONEncoder().encode(pending)
         #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: encoded).pendingRetentionDecision == true)
+        let malformed = Data(#"{"meetingID":1,"startTime":"date","databasePath":"/local","pendingRetentionDecision":"invalid"}"#.utf8)
+        let recovered = try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: malformed)
+        #expect(recovered.meetingID == 1 && recovered.pendingRetentionDecision == true)
+        let refused = MeetingRecordingRecoveryReference(meetingID: 1, startTime: "date", databasePath: "/local", pendingRetentionDecision: false)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: JSONEncoder().encode(refused)).pendingRetentionDecision == false)
     }
 
     @Test("retained recording reference survives restart and repeated database failure")
