@@ -457,6 +457,36 @@ struct TranscriptFormatterTests {
         #expect(!result.contains("Speaker 2: ."))
     }
 
+    @Test("diarization keeps a contraction or hyphenated word with one speaker")
+    func diarizationKeepsWordInternalPunctuationTogether() {
+        let system = [
+            SpeechSegment(start: 0.7, end: 0.85, text: " can"),
+            SpeechSegment(start: 0.85, end: 0.95, text: "'"),
+            SpeechSegment(start: 1.0, end: 1.2, text: "t"),
+            SpeechSegment(start: 1.6, end: 1.75, text: " co"),
+            SpeechSegment(start: 1.75, end: 1.85, text: "-"),
+            SpeechSegment(start: 2.05, end: 2.3, text: "op"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+            makeDiarSeg(speakerId: "spk_0", start: 2.0, end: 3.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: Date(timeIntervalSince1970: 0),
+            systemSegmentsAreTokenTimed: true
+        )
+
+        #expect(result.contains("can't"))
+        #expect(result.contains("co-op"))
+        #expect(!result.contains(": t"))
+        #expect(!result.contains(": op"))
+    }
+
     @Test("attached punctuation does not turn a broad window into a reconstructed word")
     func diarizationKeepsPunctuationJoinConservative() {
         let system = [

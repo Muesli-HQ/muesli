@@ -242,13 +242,18 @@ enum TranscriptFormatter {
         }
 
         guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
-        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace, !lhsLast.isPunctuation else {
+        // An apostrophe or hyphen inside a word ("can'" + "t") continues it;
+        // other punctuation ends the word.
+        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace,
+              !lhsLast.isPunctuation || wordInternalPunctuation.contains(lhsLast) else {
             return false
         }
 
         return !trimmedLHS.contains(where: \.isWhitespace)
             && !trimmedRHS.contains(where: \.isWhitespace)
     }
+
+    private static let wordInternalPunctuation: Set<Character> = ["'", "\u{2019}", "-", "\u{2010}"]
 
     private static func isPunctuationOnly(_ text: String) -> Bool {
         text.allSatisfy { $0.isPunctuation || $0.isSymbol }
