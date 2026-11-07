@@ -70,6 +70,49 @@ struct FeedbackCaptureStoreTests {
         }
     }
 
+    @Test("Recovery completes discard after partial bundle removal or a missing bundle", arguments: [false, true])
+    func recoveryCompletesPartiallyDeletedDiscard(bundleMissing: Bool) throws {
+        try withFeedbackStore { store, db, root in
+            let capture = try store.begin(target: feedbackTarget())
+            let folder = try store.bundleURL(id: capture.id)
+            let marker = try store.discardMarkerURL(id: capture.id)
+            try Data([1, 2, 3]).write(to: store.mediaURL(id: capture.id, path: "recording.mp4"))
+            try store.markForDiscard(id: capture.id)
+            store.release(id: capture.id)
+            if bundleMissing { try FileManager.default.removeItem(at: folder) }
+            else {
+                // The normal deletion removes the row first; simulate a crash
+                // after that and after one bundle file was already removed.
+                let sql = "DELETE FROM vidshots WHERE id='\(capture.id)'"
+                try #require(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+                try FileManager.default.removeItem(at: store.mediaURL(id: capture.id, path: "recording.mp4"))
+            }
+            #expect(FileManager.default.fileExists(atPath: marker.path))
+            let relaunched = try FeedbackCaptureStore(databaseURL: root.appendingPathComponent("muesli.db"), support: root)
+            var errors: [String] = []
+            let recovered = try relaunched.recover(audioDuration: { _ in Issue.record("Discarded audio was probed"); return nil },
+                videoDuration: { _ in Issue.record("Discarded video was probed"); return nil }) { id, _ in errors.append(id) }
+            #expect(errors.isEmpty && recovered.isEmpty)
+            #expect(try relaunched.get(id: capture.id) == nil)
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(!FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    @Test("Recovery promotes legacy discard markers before deleting the bundle")
+    func recoveryHandlesLegacyDiscardMarker() throws {
+        try withFeedbackStore { store, _, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            let folder = try store.bundleURL(id: capture.id)
+            try Data("discard".utf8).write(to: store.mediaURL(id: capture.id, path: "discard.pending"))
+            store.release(id: capture.id)
+            #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }).isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            #expect(!FileManager.default.fileExists(atPath: try store.discardMarkerURL(id: capture.id).path))
+            #expect(try store.get(id: capture.id) == nil)
+        }
+    }
+
     @Test("A failed discard deletion preserves its marker for retry")
     func failedDiscardDeletionIsRetried() throws {
         try withFeedbackStore { store, db, _ in
@@ -81,7 +124,7 @@ struct FeedbackCaptureStoreTests {
             var failures: [String] = []
             #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }) { id, _ in failures.append(id) }.isEmpty)
             #expect(failures == [capture.id])
-            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: capture.id, path: "discard.pending").path))
+            #expect(FileManager.default.fileExists(atPath: try store.discardMarkerURL(id: capture.id).path))
             #expect(try store.get(id: capture.id) != nil)
             try #require(sqlite3_exec(db, "DROP TRIGGER reject_discard", nil, nil, nil) == SQLITE_OK)
             #expect(try store.recover(audioDuration: { _ in nil }, videoDuration: { _ in nil }).isEmpty)

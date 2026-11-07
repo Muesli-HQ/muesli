@@ -71,6 +71,17 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         guard !path.hasPrefix("/"), result.path.hasPrefix(bundle.path + "/") else { throw failure("Invalid capture media path") }
         return result
     }
+    /// Discard markers live outside the bundle so partial directory removal
+    /// cannot erase the user's decision before all captured files are gone.
+    public func discardMarkerURL(id: String) throws -> URL {
+        guard validID(id) else { throw failure("Invalid capture ID") }
+        let base = root.standardizedFileURL.resolvingSymlinksInPath()
+        let directory = root.appendingPathComponent(".discarded", isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        guard directory.path == base.appendingPathComponent(".discarded", isDirectory: true).path else { throw failure("Invalid discard marker path") }
+        let marker = directory.appendingPathComponent(id + ".pending").standardizedFileURL.resolvingSymlinksInPath()
+        guard marker.path == directory.appendingPathComponent(id + ".pending").path else { throw failure("Invalid discard marker path") }
+        return marker
+    }
     private func withCaptureMutationLock<T>(id: String, _ body: () throws -> T) throws -> T {
         guard validID(id) else { throw failure("Invalid capture ID") }
         _ = try bundleURL(id: id)
@@ -133,7 +144,9 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
     public func markForDiscard(id: String) throws {
         lock.lock(); defer { lock.unlock() }
         try withCaptureMutationLock(id: id) {
-            let marker = try mediaURL(id: id, path: "discard.pending")
+            let marker = try discardMarkerURL(id: id)
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
             try Data("discard\n".utf8).write(to: marker, options: .atomic)
         }
     }
@@ -144,14 +157,15 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         guard !active.contains(id) else { throw failure("Capture is still recording or finalizing") }
         let folder = try bundleURL(id: id)
         try withCaptureMutationLock(id: id) {
-            let marker = try mediaURL(id: id, path: "discard.pending")
+            let marker = try discardMarkerURL(id: id)
             guard FileManager.default.fileExists(atPath: marker.path) else { throw failure("Missing discard marker") }
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, "DELETE FROM vidshots WHERE id=?", -1, &stmt, nil) == SQLITE_OK else { throw failure("Prepare discarded capture deletion") }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id, -1, transient)
             guard try GlobalSearchIndex.stepSourceWrite(stmt) == SQLITE_DONE else { throw failure("Delete discarded capture row") }
-            try FileManager.default.removeItem(at: folder)
+            if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
+            try FileManager.default.removeItem(at: marker)
         }
     }
     /// Drop the live ownership and finish deletion atomically with respect to
@@ -309,12 +323,29 @@ public final class FeedbackCaptureStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         var pending: [FeedbackCaptureManifest] = []
+        // Scan markers independently: the bundle may already be gone when a
+        // previous deletion was interrupted before removing its marker.
+        let markerDirectory = root.appendingPathComponent(".discarded", isDirectory: true)
+        if FileManager.default.fileExists(atPath: markerDirectory.path) {
+            for marker in try FileManager.default.contentsOfDirectory(at: markerDirectory, includingPropertiesForKeys: nil) where marker.pathExtension == "pending" {
+                let id = marker.deletingPathExtension().lastPathComponent
+                guard validID(id), !active.contains(id) else { continue }
+                do { try deleteMarkedDiscard(id: id) }
+                catch { onError(id, error) }
+            }
+        }
         for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where folder.pathExtension == "capture" {
             let id = folder.deletingPathExtension().lastPathComponent
             do {
                 guard !active.contains(id), validID(id) else { continue }
-                let discardMarker = try mediaURL(id: id, path: "discard.pending")
-                if FileManager.default.fileExists(atPath: discardMarker.path) {
+                let discardMarker = try discardMarkerURL(id: id)
+                // A failed deletion remains marked and must not be recovered.
+                if FileManager.default.fileExists(atPath: discardMarker.path) { continue }
+                // Migrate markers written by earlier development builds before
+                // deleting anything from the bundle.
+                let legacyMarker = try mediaURL(id: id, path: "discard.pending")
+                if FileManager.default.fileExists(atPath: legacyMarker.path) {
+                    try markForDiscard(id: id)
                     try deleteMarkedDiscard(id: id)
                     continue
                 }

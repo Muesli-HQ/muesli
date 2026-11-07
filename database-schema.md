@@ -693,10 +693,12 @@ Action anchors drive narration partitioning separately from decoded frame times.
 All artifact paths pass the store's bundle containment checks. The row's
 `keyframeCount` reflects the published frames, including partial render results.
 
-Discard writes a separate atomic `discard.pending` marker before asynchronous
-media teardown. Clock checkpoints cannot overwrite it. Recovery checks the marker
-before decoding the journal and deletes the row before the bundle so a failed or
-interrupted deletion leaves the marker available for retry. Failed marker writes
+Discard writes an atomic `.discarded/<capture-id>.pending` marker outside the
+capture bundle before asynchronous media teardown. Clock checkpoints and partial
+bundle deletion cannot overwrite it. Recovery scans markers even when bundles are
+missing, deletes the row and remaining bundle, then removes the marker last. Failed
+or interrupted deletion leaves the marker available for retry; legacy in-bundle
+markers are promoted before deletion. Failed marker writes
 are reported and retain the capture rather than claiming it was discarded.
 
 Before capture, `unfinished.json` journals the manifest atomically. The first

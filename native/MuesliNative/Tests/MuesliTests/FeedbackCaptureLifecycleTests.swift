@@ -929,7 +929,7 @@ struct FeedbackCaptureLifecycleTests {
             controller.discard()
             try await waitUntil { entered.withLock { $0 } }
             #expect(controller.ownsMicrophone)
-            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: captureID, path: "discard.pending").path))
+            #expect(FileManager.default.fileExists(atPath: try store.discardMarkerURL(id: captureID).path))
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: captureID, path: "unfinished.json").path))
             gate.signal()
             #expect(await controller.shutdown())
@@ -953,8 +953,8 @@ struct FeedbackCaptureLifecycleTests {
             #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
             try await waitUntil { controller.state?.isRecording == true }
             let captureID = try #require(id)
-            let marker = try store.mediaURL(id: captureID, path: "discard.pending")
-            try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+            let marker = try store.discardMarkerURL(id: captureID)
+            try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: true)
             controller.discard()
             if case .some(.failed(let stage, _, let retained)) = controller.state {
                 #expect(stage == "Discard" && retained)
