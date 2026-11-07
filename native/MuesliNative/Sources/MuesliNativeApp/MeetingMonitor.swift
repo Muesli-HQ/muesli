@@ -550,6 +550,8 @@ private actor MeetingDetectionService {
             refreshBrowserMeetings: refreshDecision.refreshBrowserMeetings,
             refreshPolicy: refreshPolicy,
             refreshState: signalRefreshState,
+            // A browser the system says is using the mic or camera may hold the call in any tab.
+            scanAllTabsBundleIDs: context.sensorAttributions.micBundleIDs.union(context.sensorAttributions.cameraBundleIDs),
             now: now
         )
         let audioResult = await audioAttributionResult
@@ -1047,6 +1049,7 @@ private actor MeetingSignalCollector {
         refreshBrowserMeetings: Bool,
         refreshPolicy: MeetingSignalRefreshPolicy,
         refreshState: MeetingSignalRefreshState,
+        scanAllTabsBundleIDs: Set<String>,
         now: Date
     ) async -> MeetingCollectedSignals {
         var activeTabFallbackAttemptedBundleIDs = Set<String>()
@@ -1058,7 +1061,8 @@ private actor MeetingSignalCollector {
         let browserMeetings = await browserCollector.collect(
             runningApps: browserProbeApps,
             refresh: refreshBrowserMeetings,
-            now: now
+            now: now,
+            scanAllTabsBundleIDs: scanAllTabsBundleIDs
         ) { bundleID in
             guard refreshPolicy.allowsActiveTabFallbackProbe(for: bundleID, state: refreshState, now: now) else {
                 return false
