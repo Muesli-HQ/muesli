@@ -63,12 +63,12 @@ public final class GlobalSearchService: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard !query.kinds.isEmpty, query.from < query.until else { return .init() }
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.utf8.count <= 4096 else { return .init() }
+        guard (!text.isEmpty || query.person != nil), text.utf8.count <= 4096 else { return .init() }
         var candidateQuery = query
-        candidateQuery.limit = 200
+        candidateQuery.limit = query.person == nil ? 200 : query.limit
         var results: [GlobalSearchResult] = []
         var unavailable: Set<GlobalSearchKind> = []
-        let mainKinds = query.kinds.subtracting([.screenHistory])
+        let mainKinds = query.person == nil ? query.kinds.subtracting([.screenHistory]) : query.kinds.intersection([.meeting])
         if !mainKinds.isEmpty {
             let mainRead = try GlobalSearchRead<[GlobalSearchResult]>.perform {
                 if index == nil { index = try GlobalSearchIndex(databaseURL: databaseURL) }
@@ -89,7 +89,7 @@ public final class GlobalSearchService: @unchecked Sendable {
             case .unavailable: unavailable.formUnion(mainKinds); index = nil
             }
         }
-        if query.kinds.contains(.screenHistory), let screenHistory = screenHistoryStore ?? screenHistory {
+        if query.person == nil, query.kinds.contains(.screenHistory), let screenHistory = screenHistoryStore ?? screenHistory {
             let screenRead = try GlobalSearchRead<[VisualMemoryItem]>.perform {
                 try screenHistory.searchMoments(text: text, from: query.from, until: query.until, app: query.app, limit: 200)
             }

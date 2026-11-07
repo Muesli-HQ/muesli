@@ -18,6 +18,7 @@ struct GlobalSearchTests {
                 CREATE TABLE dictations(id INTEGER PRIMARY KEY,timestamp TEXT,raw_text TEXT,source TEXT,target_app_name TEXT,target_app_bundle_id TEXT,deleted_at REAL);
                 CREATE TABLE computer_use_traces(dictation_id INTEGER,final_message TEXT,trace_json TEXT);
                 CREATE TABLE meetings(id INTEGER PRIMARY KEY,start_time TEXT,title TEXT,raw_transcript TEXT,manual_notes TEXT,formatted_notes TEXT,deleted_at REAL);
+                CREATE TABLE meeting_participants(meeting_id INTEGER,participant_identifier TEXT,display_name TEXT,email_address TEXT,is_suppressed INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE quill_conversations(id INTEGER PRIMARY KEY,timestamp TEXT,deleted_at REAL);
                 CREATE TABLE quill_conversation_turns(id INTEGER PRIMARY KEY,conversation_id INTEGER REFERENCES quill_conversations(id) ON DELETE CASCADE,body TEXT);
                 CREATE TABLE cotypist_sessions(id INTEGER PRIMARY KEY,timestamp TEXT,target_app_name TEXT,target_app_bundle_id TEXT,deleted_at REAL);
@@ -38,6 +39,46 @@ struct GlobalSearchTests {
             try sql("PRAGMA foreign_keys=ON")
         }
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
+    }
+
+    @Test("Participant names and email addresses follow meeting search updates")
+    func meetingParticipantsAreIndexed() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO meetings VALUES(1,'2026-11-01T10:00:00Z','Planning','','','',NULL);
+            INSERT INTO meeting_participants VALUES(1,'person:1','Amara Stone','amara@example.test',0);
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try index.search(.init(text: "Amara", kinds: [.meeting])).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "amara@example.test", kinds: [.meeting])).map(\.sourceID) == ["1"])
+        let person = MeetingParticipantDraft(participantIdentifier: "person:1", displayName: "Amara Stone", emailAddress: "amara@example.test")
+        #expect(try index.search(.init(text: "", kinds: [.meeting], person: person)).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "absent", kinds: [.meeting], person: person)).isEmpty)
+        try f.sql("UPDATE meeting_participants SET display_name='Bianca',email_address='bianca@example.test' WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Amara", kinds: [.meeting])).isEmpty)
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).count == 1)
+        try f.sql("UPDATE meeting_participants SET is_suppressed=1 WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).isEmpty)
+        #expect(try index.search(.init(text: "", kinds: [.meeting], person: person)).isEmpty)
+        try f.sql("UPDATE meeting_participants SET is_suppressed=0 WHERE meeting_id=1")
+        try f.sql("DELETE FROM meeting_participants WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).isEmpty)
+    }
+
+    @Test("Person meeting results can page through more than 100 meetings")
+    func personMeetingPages() throws {
+        let f = try Fixture()
+        for id in 1...105 {
+            try f.sql("INSERT INTO meetings VALUES(\(id),'2026-11-01T10:00:00Z','Meeting','','','',NULL)")
+            try f.sql("INSERT INTO meeting_participants VALUES(\(id),'contact:alice','Alice','alice@example.test',0)")
+        }
+        let service = try GlobalSearchService(databaseURL: f.url)
+        let person = MeetingParticipantDraft(participantIdentifier: "contact:alice", displayName: "Alice", emailAddress: "alice@example.test")
+        let first = try service.search(.init(text: "", kinds: [.meeting], person: person, limit: 100))
+        let second = try service.search(.init(text: "", kinds: [.meeting], person: person, limit: 100, offset: 100))
+        #expect(first.count == 100)
+        #expect(second.count == 5)
+        #expect(Set((first + second).map(\.sourceID)).count == 105)
     }
 
     @Test("Evidence failures withhold only unverifiable candidates and report partial completeness", arguments: [GlobalSearchKind.chat, .recap])

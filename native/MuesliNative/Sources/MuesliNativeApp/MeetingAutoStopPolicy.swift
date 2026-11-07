@@ -1,5 +1,17 @@
 import Foundation
 
+enum MeetingSystemStopAction: Equatable {
+    case none, cancelPreparation, stopRecording
+
+    static func action(phase: MeetingCapturePhase) -> Self {
+        switch phase {
+        case .preparing: .cancelPreparation
+        case .capturing, .paused: .stopRecording
+        case .stopping, .stopped: .none
+        }
+    }
+}
+
 enum MeetingRecordingStartOrigin: Equatable {
     case manual
     case detectedPrompt

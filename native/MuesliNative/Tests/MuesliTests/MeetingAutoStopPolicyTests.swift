@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
+    @Test("System stop handles preparation and paused capture without stopping twice")
+    func systemStopPhases() {
+        #expect(MeetingSystemStopAction.action(phase: .preparing) == .cancelPreparation)
+        #expect(MeetingSystemStopAction.action(phase: .capturing) == .stopRecording)
+        #expect(MeetingSystemStopAction.action(phase: .paused) == .stopRecording)
+        #expect(MeetingSystemStopAction.action(phase: .stopping) == .none)
+        #expect(MeetingSystemStopAction.action(phase: .stopped) == .none)
+    }
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let room = "meet.google.com/aaa-bbbb-ccc"
 

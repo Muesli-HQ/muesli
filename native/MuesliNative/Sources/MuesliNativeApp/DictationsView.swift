@@ -202,10 +202,12 @@ struct DictationsView: View {
 
     private var dictationFilterBar: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            RecordOriginPicker(selection: Binding(
-                get: { appState.dictationOriginFilter },
-                set: { controller.filterDictations(origin: $0) }
-            ))
+            if appState.showsDeviceOriginFilter {
+                RecordOriginPicker(selection: Binding(
+                    get: { appState.dictationOriginFilter },
+                    set: { controller.filterDictations(origin: $0) }
+                ))
+            }
             if !appState.dictationTargetApplications.isEmpty || appState.dictationApplicationFilter != nil {
                 TargetApplicationFilterMenu(
                     applications: appState.dictationTargetApplications,

@@ -158,10 +158,12 @@ struct TimelineView: View {
 
     private var originControls: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            RecordOriginPicker(selection: Binding(
-                get: { appState.timelineOriginFilter },
-                set: { controller.filterTimeline(origin: $0) }
-            ))
+            if appState.showsDeviceOriginFilter {
+                RecordOriginPicker(selection: Binding(
+                    get: { appState.timelineOriginFilter },
+                    set: { controller.filterTimeline(origin: $0) }
+                ))
+            }
             if !appState.timelineTargetApplications.isEmpty || appState.timelineApplicationFilter != nil {
                 TargetApplicationFilterMenu(
                     applications: appState.timelineTargetApplications,

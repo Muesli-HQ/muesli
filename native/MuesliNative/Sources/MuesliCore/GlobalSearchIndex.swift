@@ -14,10 +14,12 @@ public struct GlobalSearchQuery: Sendable {
     public var from: Date
     public var until: Date
     public var app: String?
+    public var person: MeetingParticipantDraft?
     public var limit: Int
+    public var offset: Int
     public init(text: String, kinds: Set<GlobalSearchKind> = Set(GlobalSearchKind.allCases),
-                from: Date = .distantPast, until: Date = .distantFuture, app: String? = nil, limit: Int = 50) {
-        self.text = text; self.kinds = kinds; self.from = from; self.until = until; self.app = app; self.limit = limit
+                from: Date = .distantPast, until: Date = .distantFuture, app: String? = nil, person: MeetingParticipantDraft? = nil, limit: Int = 50, offset: Int = 0) {
+        self.text = text; self.kinds = kinds; self.from = from; self.until = until; self.app = app; self.person = person; self.limit = limit; self.offset = offset
     }
 }
 
@@ -251,30 +253,37 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         guard !query.kinds.isEmpty, query.from < query.until else { return [] }
         try installAvailableSources()
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.utf8.count <= 4096 else { return [] }
+        guard (!text.isEmpty || query.person != nil), text.utf8.count <= 4096 else { return [] }
         let excluded: Set<GlobalSearchKind> = validateDerived == nil ? [.screenHistory, .chat, .recap] : [.screenHistory]
-        let kinds = query.kinds.subtracting(excluded).map(\.rawValue).sorted()
+        let kinds = query.kinds.subtracting(excluded).filter { query.person == nil || $0 == .meeting }.map(\.rawValue).sorted()
         guard !kinds.isEmpty else { return [] }
         let appClause = query.app == nil ? "" : " AND (d.bundle_id=? COLLATE NOCASE OR d.app_name=? COLLATE NOCASE)"
+        let personClause = query.person == nil ? "" : " AND EXISTS (SELECT 1 FROM meeting_participants p WHERE p.meeting_id=CAST(d.source_id AS INTEGER) AND p.is_suppressed=0 AND " + (query.person?.personID == nil ? "p.participant_identifier=?" : "p.person_id=?") + ")"
         let revision = try dataVersion()
         let limit = max(1, min(200, query.limit))
         let batchSize = limit
         func candidates(offset: Int) throws -> [GlobalSearchResult] {
+            let match = text.isEmpty ? "" : "global_search_fts MATCH ? AND "
+            let excerpt = text.isEmpty ? "substr(d.text,1,240)" : "snippet(global_search_fts,-1,'','',' … ',28)"
+            let order = text.isEmpty ? "d.timestamp DESC,d.identity" : "bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity"
             let s = try prepare("""
                 SELECT d.kind,d.source_id,d.timestamp,d.title,
-                    snippet(global_search_fts,-1,'','',' … ',28),d.app_name,d.bundle_id
+                    \(excerpt),d.app_name,d.bundle_id
                 FROM global_search_fts JOIN global_search_documents d ON d.rowid=global_search_fts.rowid
-                WHERE global_search_fts MATCH ? AND d.timestamp>=? AND d.timestamp<?
-                    AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)
-                ORDER BY bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity LIMIT ? OFFSET ?
+                WHERE \(match)d.timestamp>=? AND d.timestamp<?
+                    AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)\(personClause)
+                ORDER BY \(order) LIMIT ? OFFSET ?
                 """)
             defer { sqlite3_finalize(s) }
-            bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, 1)
-            sqlite3_bind_double(s, 2, query.from.timeIntervalSince1970)
-            sqlite3_bind_double(s, 3, query.until.timeIntervalSince1970)
-            var slot: Int32 = 4
+            var slot: Int32 = 1
+            if !text.isEmpty { bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, slot); slot += 1 }
+            sqlite3_bind_double(s, slot, query.from.timeIntervalSince1970); slot += 1
+            sqlite3_bind_double(s, slot, query.until.timeIntervalSince1970); slot += 1
             for kind in kinds { bind(kind, s, slot); slot += 1 }
             if let app = query.app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
+            if let person = query.person {
+                bind(person.personID ?? person.participantIdentifier, s, slot); slot += 1
+            }
             sqlite3_bind_int(s, slot, Int32(batchSize))
             sqlite3_bind_int64(s, slot + 1, Int64(offset))
             var batch: [GlobalSearchResult] = []
@@ -291,7 +300,7 @@ public final class GlobalSearchIndex: @unchecked Sendable {
             return batch
         }
         var result: [GlobalSearchResult] = []
-        var offset = 0
+        var offset = query.person == nil ? 0 : max(0, query.offset)
         while result.count < limit {
             try Task.checkCancellation()
             let batch = try candidates(offset: offset)
@@ -318,12 +327,12 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         let tables: [String]
         let watches: [(String, String)]
         let select: String
-        var version: Int { ["quill", "chat", "recap"].contains(prefix) ? 2 : 1 }
+        var version: Int { ["meeting", "quill", "chat", "recap"].contains(prefix) ? 2 : 1 }
         var view: String { "global_search_\(prefix)_v\(version)" }
         var triggerNames: [String] {
             watches.flatMap { table, _ in ["INSERT", "UPDATE", "DELETE"].map { "\(view)_\(table)_\($0)" } }
         }
-        var primaryKey: String { prefix == "recap" ? "day_key" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
+        var primaryKey: String { prefix == "recap" ? "day_key" : prefix == "meeting" ? "m.id" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
     }
     private static func unix(_ expression: String) -> String { "coalesce((julianday(\(expression))-2440587.5)*86400.0,0)" }
     private static let sources: [Source] = [
@@ -340,11 +349,13 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 coalesce(target_app_name,'') AS app_name,coalesce(target_app_bundle_id,'') AS bundle_id
             FROM dictations WHERE deleted_at IS NULL
             """),
-        .init(prefix: "meeting", tables: ["meetings"], watches: [("meetings", "id")], select: """
-            SELECT 'meeting:' || id AS identity,'meeting' AS kind,CAST(id AS TEXT) AS source_id,
-                \(unix("start_time")) AS timestamp, title,
-                coalesce(raw_transcript,'') || char(10) || coalesce(manual_notes,'') || char(10) || coalesce(formatted_notes,'') AS text,
-                '' AS app_name,'' AS bundle_id FROM meetings WHERE deleted_at IS NULL
+        .init(prefix: "meeting", tables: ["meetings", "meeting_participants"], watches: [("meetings", "id"), ("meeting_participants", "meeting_id")], select: """
+            SELECT 'meeting:' || m.id AS identity,'meeting' AS kind,CAST(m.id AS TEXT) AS source_id,
+                \(unix("m.start_time")) AS timestamp, m.title,
+                coalesce(m.raw_transcript,'') || char(10) || coalesce(m.manual_notes,'') || char(10) || coalesce(m.formatted_notes,'') || char(10) ||
+                coalesce((SELECT group_concat(p.display_name || ' ' || coalesce(p.email_address,''),char(10))
+                          FROM meeting_participants p WHERE p.meeting_id=m.id AND p.is_suppressed=0),'') AS text,
+                '' AS app_name,'' AS bundle_id FROM meetings m WHERE m.deleted_at IS NULL
             """),
         .init(prefix: "quill", tables: ["quill_conversations","quill_conversation_turns"],
               watches: [("quill_conversations","id"),("quill_conversation_turns","conversation_id")], select: """

@@ -39,6 +39,177 @@ struct MeetingParticipantStoreTests {
         )
     }
 
+    @Test("People search finds a surname through the existing meeting index")
+    func peopleSearchBySurname() throws {
+        let store = try makeStore()
+        let id = try makeMeeting(in: store)
+        try store.attachMeetingParticipant(meetingID: id, participant: participant("contact:alice", name: "Alice Example", email: "alice@example.test"))
+        _ = try GlobalSearchIndex(databaseURL: store.databasePath())
+        #expect(try store.searchMeetingPeople(query: "Exam").map(\.displayName) == ["Alice Example"])
+        #expect(try store.searchMeetingPeople(query: "missing").isEmpty)
+        try store.removeMeetingParticipant(meetingID: id, participantIdentifier: "contact:alice")
+        #expect(try store.searchMeetingPeople(query: "Exam").isEmpty)
+    }
+
+    @Test("Related meetings use stable identities and ignore suppressed participants")
+    func relatedMeetings() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store, title: "First")
+        let second = try makeMeeting(in: store, title: "Second")
+        let unrelated = try makeMeeting(in: store, title: "Different Alex")
+        try store.attachMeetingParticipant(meetingID: first, participant: participant("contact:alex", name: "Alex"))
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("contact:alex", name: "Alex"))
+        try store.attachMeetingParticipant(meetingID: unrelated, participant: participant("contact:other", name: "Alex"))
+        #expect(try store.relatedMeetings(meetingID: first).map(\.meetingID) == [second])
+        try store.removeMeetingParticipant(meetingID: second, participantIdentifier: "contact:alex")
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+    }
+
+    @Test("Exact email duplicates require confirmation and merges can be undone")
+    func multipleContactEmails() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store, title: "Work")
+        let second = try makeMeeting(in: store, title: "Personal")
+        try store.attachCalendarMeetingParticipants(meetingID: first, participants: [participant("email:work@example.test", name: "Alex", email: "work@example.test")])
+        try store.attachCalendarMeetingParticipants(meetingID: second, participants: [participant("email:home@example.test", name: "Alex", email: "home@example.test")])
+        try store.attachMeetingParticipant(meetingID: first, participant: .init(participantIdentifier: "contact:alex", displayName: "Alex Smith", emailAddress: "work@example.test", emailAddresses: ["work@example.test", "home@example.test"]))
+        #expect(try store.duplicateMeetingPeople().count == 2)
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+        let person = try #require(store.searchMeetingPeople(query: "Alex Smith").first)
+        let target = try #require(person.personID)
+        for candidate in try store.duplicateMeetingPeople() {
+            let source = candidate.first.personID == target ? candidate.second.personID : candidate.first.personID
+            try store.mergeMeetingPeople(targetID: target, sourceID: try #require(source))
+        }
+        #expect(try store.listMeetingParticipants(meetingID: first).count == 1)
+        #expect(try store.relatedMeetings(meetingID: first).map(\.meetingID) == [second])
+        let index = try GlobalSearchIndex(databaseURL: store.databasePath())
+        let results = try index.search(.init(text: "", kinds: [.meeting], person: person))
+        #expect(Set(results.map(\.sourceID)) == Set([String(first), String(second)]))
+        let history = try store.meetingPeopleMergeHistory()
+        #expect(history.count == 2)
+        #expect(throws: DictationStoreError.self) { try store.undoMeetingPeopleMerge(id: history[1].id) }
+        try store.undoMeetingPeopleMerge(id: history[0].id)
+        try store.undoMeetingPeopleMerge(id: history[1].id)
+        #expect(try store.duplicateMeetingPeople().count == 2)
+        #expect(try store.listMeetingParticipants(meetingID: first).count == 2)
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+    }
+
+    @Test("People with the same name remain separate")
+    func distinctNamesakes() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store)
+        let second = try makeMeeting(in: store)
+        try store.attachMeetingParticipant(meetingID: first, participant: participant("contact:1", name: "Alex"))
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("contact:2", name: "Alex"))
+        let namesakes = try store.searchMeetingPeople(query: "Alex")
+        #expect(namesakes.count == 2)
+        #expect(try store.duplicateMeetingPeople().isEmpty)
+        #expect(throws: DictationStoreError.self) {
+            try store.mergeMeetingPeople(targetID: try #require(namesakes[0].personID), sourceID: try #require(namesakes[1].personID))
+        }
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+    }
+
+    @Test("Shared email does not identify either contact")
+    func ambiguousEmail() throws {
+        let store = try makeStore()
+        let calendar = try makeMeeting(in: store)
+        let first = try makeMeeting(in: store)
+        let second = try makeMeeting(in: store)
+        try store.attachCalendarMeetingParticipants(meetingID: calendar, participants: [participant("email:team@example.test", name: "Team", email: "team@example.test")])
+        try store.attachMeetingParticipant(meetingID: first, participant: participant("contact:1", name: "One", email: "team@example.test"))
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("contact:2", name: "Two", email: "team@example.test"))
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+        #expect(try store.relatedMeetings(meetingID: second).isEmpty)
+        #expect(try store.searchMeetingPeople(query: "team@example.test").count == 3)
+    }
+
+    @Test("Undo restores new source-identifier associations without restoring removed ones")
+    func undoHonorsSubsequentEdits() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store)
+        let second = try makeMeeting(in: store)
+        let later = try makeMeeting(in: store)
+        try store.attachMeetingParticipant(meetingID: first, participant: participant("contact:one", name: "One", email: "shared@example.test"))
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("email:shared@example.test", name: "Two", email: "shared@example.test"))
+        let candidate = try #require(store.duplicateMeetingPeople().first)
+        let target = try #require(candidate.first.displayName == "One" ? candidate.first.personID : candidate.second.personID)
+        let source = try #require(candidate.first.personID == target ? candidate.second.personID : candidate.first.personID)
+        try store.mergeMeetingPeople(targetID: target, sourceID: source)
+        try store.attachMeetingParticipant(meetingID: later, participant: .init(participantIdentifier: "email:shared@example.test", displayName: "Two", emailAddress: "shared@example.test", emailAddresses: ["new-address@example.test"]))
+        try store.removeMeetingParticipant(meetingID: second, participantIdentifier: "email:shared@example.test")
+        try store.undoMeetingPeopleMerge(id: try #require(store.meetingPeopleMergeHistory().first?.id))
+        #expect(try store.listMeetingParticipants(meetingID: second).isEmpty)
+        #expect(try store.relatedMeetings(meetingID: first).isEmpty)
+        #expect(try store.listMeetingParticipants(meetingID: later).count == 1)
+        #expect(try store.searchMeetingPeople(query: "new-address@example.test").first?.personID == source)
+        #expect(try store.duplicateMeetingPeople().count == 1)
+    }
+
+    @Test("Refreshing a merged source contact preserves the chosen name")
+    func mergeKeepsChosenName() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store)
+        let second = try makeMeeting(in: store)
+        try store.attachMeetingParticipant(meetingID: first, participant: participant("contact:first", name: "Preferred", email: "shared@example.test"))
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("contact:second", name: "Other", email: "shared@example.test"))
+        let pair = try #require(store.duplicateMeetingPeople().first)
+        let target = try #require(pair.first.displayName == "Preferred" ? pair.first.personID : pair.second.personID)
+        let source = try #require(pair.first.personID == target ? pair.second.personID : pair.first.personID)
+        try store.mergeMeetingPeople(targetID: target, sourceID: source)
+        try store.attachMeetingParticipant(meetingID: second, participant: participant("contact:second", name: "Updated Other", email: "shared@example.test"))
+        #expect(try store.searchMeetingPeople(query: "Preferred").first?.personID == target)
+        try store.undoMeetingPeopleMerge(id: try #require(store.meetingPeopleMergeHistory().first?.id))
+        #expect(try store.searchMeetingPeople(query: "Preferred").first?.personID == target)
+        #expect(try store.searchMeetingPeople(query: "Updated Other").first?.personID == source)
+    }
+
+    @Test("Suggestions require current evidence and explicit confirmation")
+    func suggestionEvidenceAndConfirmation() throws {
+        let store = try makeStore()
+        let id = try makeMeeting(in: store)
+        let transcript = "Welcome Maya, thanks for joining us today."
+        try store.updateMeetingTranscript(id: id, rawTranscript: transcript)
+        let fingerprint = DictationStore.participantEvidenceFingerprint(transcript: transcript, notes: "")
+        let supported = MeetingParticipantSuggestion(id: "Maya", name: "Maya", source: "transcript", excerpt: "Welcome Maya, thanks for joining")
+        let unsupported = MeetingParticipantSuggestion(id: "Lee", name: "Lee", source: "transcript", excerpt: "Lee joined the discussion")
+        try store.saveParticipantSuggestions(meetingID: id, fingerprint: fingerprint, suggestions: [supported, unsupported])
+        #expect(try store.listMeetingParticipants(meetingID: id).isEmpty)
+        #expect(try store.participantSuggestions(meetingID: id).map(\.name) == ["Maya"])
+        try store.updateMeetingTranscript(id: id, rawTranscript: "Changed transcript")
+        #expect(try store.participantSuggestions(meetingID: id).isEmpty)
+        #expect(throws: DictationStoreError.self) {
+            try store.resolveParticipantSuggestion(meetingID: id, fingerprint: fingerprint, name: "Maya", add: true)
+        }
+        #expect(try store.listMeetingParticipants(meetingID: id).isEmpty)
+        try store.updateMeetingTranscript(id: id, rawTranscript: transcript)
+        try store.saveParticipantSuggestions(meetingID: id, fingerprint: fingerprint, suggestions: [supported])
+        try store.resolveParticipantSuggestion(meetingID: id, fingerprint: fingerprint, name: "Maya", add: true)
+        #expect(try store.listMeetingParticipants(meetingID: id).map(\.displayName) == ["Maya"])
+        #expect(try store.participantSuggestions(meetingID: id).isEmpty)
+        try store.saveParticipantSuggestions(meetingID: id, fingerprint: fingerprint, suggestions: [supported])
+        #expect(try store.participantSuggestions(meetingID: id).isEmpty)
+    }
+
+    @Test("Confirming a suggested existing person links its canonical identity")
+    func confirmExistingPerson() throws {
+        let store = try makeStore()
+        let earlier = try makeMeeting(in: store)
+        let current = try makeMeeting(in: store)
+        try store.attachMeetingParticipant(meetingID: earlier, participant: participant("contact:maya", name: "Maya"))
+        let person = try #require(store.searchMeetingPeople(query: "Maya").first)
+        let transcript = "Welcome Maya, thanks for joining us today."
+        try store.updateMeetingTranscript(id: current, rawTranscript: transcript)
+        let fingerprint = DictationStore.participantEvidenceFingerprint(transcript: transcript, notes: "")
+        let suggestion = MeetingParticipantSuggestion(id: "Maya", name: "Maya", source: "transcript", excerpt: "Welcome Maya, thanks for joining")
+        try store.saveParticipantSuggestions(meetingID: current, fingerprint: fingerprint, suggestions: [suggestion])
+        #expect(try store.relatedMeetings(meetingID: earlier).isEmpty)
+        try store.resolveParticipantSuggestion(meetingID: current, fingerprint: fingerprint, name: "Maya", add: true, existingPerson: person)
+        #expect(try store.relatedMeetings(meetingID: earlier).map(\.meetingID) == [current])
+    }
+
     @Test("participant migration is idempotent and creates the expected columns")
     func migrationIsIdempotent() throws {
         let store = try makeStore()
@@ -73,7 +244,30 @@ struct MeetingParticipantStoreTests {
             "insertion_order",
             "source",
             "is_suppressed",
+            "person_id",
         ])
+    }
+
+    @Test("Legacy participant snapshots get stable person identities on migration")
+    func legacyPeopleMigration() throws {
+        let store = try makeStore()
+        let first = try makeMeeting(in: store)
+        let second = try makeMeeting(in: store)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.databasePath().path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = """
+          DELETE FROM local_migrations WHERE identifier='meeting_people_v1';
+          INSERT INTO meeting_participants(meeting_id,participant_identifier,display_name,email_address,insertion_order)
+          VALUES(\(first),'email:legacy@example.test','Legacy Person','legacy@example.test',0),
+                (\(second),'email:legacy@example.test','Legacy Person','legacy@example.test',0);
+          """
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        try store.migrateIfNeeded()
+        let id = try #require(store.searchMeetingPeople(query: "Legacy").first?.personID)
+        #expect(try store.relatedMeetings(meetingID: first).map(\.meetingID) == [second])
+        try store.migrateIfNeeded()
+        #expect(try store.searchMeetingPeople(query: "Legacy").first?.personID == id)
     }
 
     @Test("calendar attendee snapshots retain their names and emails")

@@ -640,15 +640,58 @@ public struct MeetingParticipantDraft: Equatable, Sendable {
     public let participantIdentifier: String
     public let displayName: String
     public let emailAddress: String?
+    public let emailAddresses: [String]
+    public let personID: String?
 
     public init(
         participantIdentifier: String,
         displayName: String,
-        emailAddress: String? = nil
+        emailAddress: String? = nil,
+        emailAddresses: [String] = [],
+        personID: String? = nil
     ) {
         self.participantIdentifier = participantIdentifier
         self.displayName = displayName
         self.emailAddress = emailAddress
+        self.emailAddresses = emailAddresses
+        self.personID = personID
+    }
+}
+
+public struct DuplicateMeetingPeople: Identifiable, Sendable, Equatable {
+    public let first: MeetingParticipantDraft
+    public let second: MeetingParticipantDraft
+    public let evidence: String
+    public var id: String { first.participantIdentifier + "|" + second.participantIdentifier }
+    public init(first: MeetingParticipantDraft, second: MeetingParticipantDraft, evidence: String) {
+        self.first = first; self.second = second; self.evidence = evidence
+    }
+}
+
+public struct MeetingPeopleMerge: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let targetName: String
+    public let sourceName: String
+    public init(id: String, targetName: String, sourceName: String) {
+        self.id = id; self.targetName = targetName; self.sourceName = sourceName
+    }
+}
+
+public struct RelatedMeeting: Identifiable, Sendable, Equatable {
+    public let meetingID: Int64
+    public let title: String
+    public let startTime: String
+    public let sharedNames: [String]
+    public var id: Int64 { meetingID }
+}
+
+public struct MeetingParticipantSuggestion: Identifiable, Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let source: String
+    public let excerpt: String
+    public init(id: String, name: String, source: String, excerpt: String) {
+        self.id = id; self.name = name; self.source = source; self.excerpt = excerpt
     }
 }
 

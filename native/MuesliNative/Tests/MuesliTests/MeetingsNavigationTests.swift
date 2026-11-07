@@ -511,6 +511,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let meetingID = try insertMeeting(in: store, title: "Timeline meeting", savedRecordingPath: nil)
         let controller = makeController(dictationStore: store)
+        controller.appState.hasMobileOriginHistory = true
         controller.appState.timelineOriginFilter = .fromIPhone
         controller.appState.timelineDateFilter = .lastWeek
         controller.appState.timelineFromDate = "2026-08-09T00:00:00Z"
@@ -585,6 +586,7 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.hasMoreTimelineEntries)
 
         controller.appState.timelineScrollAnchor = controller.appState.timelineRows.last?.id
+        controller.appState.hasMobileOriginHistory = true
         controller.filterTimeline(origin: .thisMac)
         #expect(controller.appState.timelineRows.count == 2)
         #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)

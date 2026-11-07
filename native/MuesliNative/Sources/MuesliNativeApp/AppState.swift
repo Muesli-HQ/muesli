@@ -281,6 +281,17 @@ final class AppState {
             return false
         }
     }
+    /// Synced history also covers upgrades from versions without a device record.
+    var hasMobileOriginHistory = false
+    var showsDeviceOriginFilter: Bool {
+        iCloudBridgeCompanionDeviceName != nil || hasMobileOriginHistory
+    }
+    func clearUnavailableDeviceOriginFilters() {
+        guard !showsDeviceOriginFilter else { return }
+        if timelineOriginFilter != .all { timelineOriginFilter = .all }
+        if dictationOriginFilter != .all { dictationOriginFilter = .all }
+        if meetingOriginFilter != .all { meetingOriginFilter = .all }
+    }
     var iCloudLastSyncSummary: String?
     var iCloudLastSyncedAt: Date?
     var contributionMilestonePrompt: ContributionMilestonePrompt?

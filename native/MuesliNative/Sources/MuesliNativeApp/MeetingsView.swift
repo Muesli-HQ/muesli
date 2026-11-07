@@ -245,6 +245,9 @@ struct MeetingsView: View {
     @State private var isGranolaImportPresented = false
     @State private var selectedFilter: MeetingBrowserFilter = .all
     @State private var selectedSort: MeetingBrowserSort = .newestFirst
+    @State private var showsPeople = false
+    @State private var newMeetingHovered = false
+    @FocusState private var newMeetingFocused: Bool
     // Bumped when the system locale changes so cached start-time labels redraw.
     @State private var localeChangeVersion = 0
 
@@ -325,6 +328,19 @@ struct MeetingsView: View {
                     controller: controller
                 )
 
+                Picker("Meetings view", selection: $showsPeople) {
+                    Text("Meetings").tag(false)
+                    Text("People").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Meetings view")
+                .frame(maxWidth: 240)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+                if showsPeople {
+                    MeetingPeopleDirectory(controller: controller)
+                } else {
                 if !appState.visibleUpcomingCalendarEvents.isEmpty {
                     comingUpSection
                 }
@@ -368,12 +384,19 @@ struct MeetingsView: View {
                         }
                     }
                 }
+                }
             }
             .frame(maxWidth: 960, alignment: .leading)
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
-            .padding(.bottom, 32)
+            // Leave the last row accessible above the floating action.
+            .padding(.bottom, 96)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            newMeetingButton
+                .padding(.trailing, MuesliTheme.pageInset)
+                .padding(.bottom, 20)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
             localeChangeVersion &+= 1
@@ -392,6 +415,61 @@ struct MeetingsView: View {
             }
             return true
         }
+    }
+
+    private var newMeetingButton: some View {
+        let disabled = appState.isMeetingRecording || appState.isMeetingStarting
+        let highlighted = newMeetingHovered && !disabled
+        let fill = highlighted ? MuesliTheme.joinAction : MuesliTheme.accent
+        let ink = highlighted ? MuesliTheme.onJoinAction : MuesliTheme.onAccent
+        return Button {
+            controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
+        } label: {
+            Image(systemName: "person.wave.2")
+                .font(.system(size: 22, weight: .semibold))
+                .frame(width: 56, height: 56)
+                .foregroundStyle(ink)
+                .background(fill, in: Circle())
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(ink)
+                        .padding(3)
+                        .background(fill, in: Circle())
+                        .offset(x: -7, y: -7)
+                        .allowsHitTesting(false)
+                }
+                .overlay {
+                    Circle().strokeBorder(newMeetingFocused ? MuesliTheme.textPrimary : MuesliTheme.surfaceBorder,
+                                          lineWidth: newMeetingFocused ? 2 : 1)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Circle())
+                .opacity(disabled ? 0.5 : 1)
+        }
+        .buttonStyle(.plain)
+        .focused($newMeetingFocused)
+        .disabled(disabled)
+        .onHover { newMeetingHovered = $0 }
+        .overlay(alignment: .trailing) {
+            if highlighted || newMeetingFocused {
+                Text("Quick Note")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(MuesliTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    }
+                    .fixedSize()
+                    .offset(x: -68)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityLabel("Start a new meeting")
     }
 
     // MARK: - Coming Up
@@ -694,10 +772,19 @@ struct MeetingsView: View {
 
             browserHeaderMeta(meetingCount: meetingCount)
 
-            RecordOriginPicker(selection: Binding(
-                get: { appState.meetingOriginFilter },
-                set: { controller.filterMeetings(origin: $0) }
-            ))
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: MuesliTheme.spacing12) {
+                    browserOriginPicker
+                    Spacer(minLength: MuesliTheme.spacing12)
+                    browserSortAndFilter
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    browserOriginPicker
+                    browserSortAndFilter
+                }
+            }
         }
     }
 
@@ -709,47 +796,33 @@ struct MeetingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func browserHeaderMeta(meetingCount: Int) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
-            Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .fixedSize()
+        Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
+            .font(MuesliTheme.callout())
+            .foregroundStyle(MuesliTheme.textSecondary)
+    }
 
-            Text("\u{2022}")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .fixedSize()
-
-            Text("Open a meeting to review notes, transcript, and template-driven summaries")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textTertiary)
+    @ViewBuilder
+    private var browserOriginPicker: some View {
+        if appState.showsDeviceOriginFilter {
+            RecordOriginPicker(selection: Binding(
+                get: { appState.meetingOriginFilter },
+                set: { controller.filterMeetings(origin: $0) }
+            ))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var browserSortAndFilter: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            sortButton
+            dateFilterButton
+        }
+        .fixedSize()
     }
 
     @ViewBuilder
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Button {
-                controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Quick Note")
-                        .font(MuesliTheme.font(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.muesli(.primary))
-            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
-            .help("Start a quick meeting note")
-            .fixedSize()
-
             Menu {
                 Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
                 Button("Granola…") {
@@ -781,16 +854,13 @@ struct MeetingsView: View {
             .fixedSize()
             .featureTourTarget(.granolaImport)
 
-            sortButton
-            dateFilterButton
-
             Button {
                 controller.showMeetingTemplatesManager()
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Manage Templates")
+                    Text("Templates")
                         .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -1008,5 +1078,206 @@ struct MeetingsView: View {
         return appState.selectedFolderID == nil
             ? "Start a recording from the menu bar to create your first meeting note."
             : "Choose another folder or move a meeting here from the browser."
+    }
+}
+
+
+/// The meeting directory uses the same bounded indexed queries as global search.
+private struct MeetingPeopleDirectory: View {
+    let controller: MuesliController
+    @State private var query = ""
+    @State private var people: [MeetingParticipantDraft] = []
+    @State private var selected: MeetingParticipantDraft?
+    @State private var meetings: [GlobalSearchResult] = []
+    @State private var moreMeetings = false
+    @State private var duplicates: [DuplicateMeetingPeople] = []
+    @State private var history: [MeetingPeopleMerge] = []
+    @State private var candidate: DuplicateMeetingPeople?
+    @State private var error: String?
+    @State private var busy = false
+    @State private var revision = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let selected {
+                Button { self.selected = nil; meetings = [] } label: {
+                    Label("People", systemImage: "chevron.left")
+                }.buttonStyle(.muesli(.quiet))
+                Text(selected.displayName).font(MuesliTheme.title2())
+                if let email = selected.emailAddress { Text(email).foregroundStyle(MuesliTheme.textSecondary) }
+                if meetings.isEmpty { Text("No meetings found.").foregroundStyle(MuesliTheme.textSecondary) }
+                ForEach(meetings) { meeting in
+                    Button {
+                        if let id = Int64(meeting.sourceID) { controller.showMeetingDocument(id: id) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(meeting.title).font(MuesliTheme.headline())
+                                Text(meeting.date.formatted(date: .abbreviated, time: .shortened))
+                                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(MuesliTheme.textSecondary)
+                        }.padding(12).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+                if moreMeetings {
+                    Button("Show more meetings") { Task { await loadMeetings(selected, append: true) } }
+                        .buttonStyle(.muesli(.quiet)).disabled(busy)
+                }
+            } else {
+                TextField("Search people…", text: $query)
+                    .textFieldStyle(.roundedBorder).accessibilityLabel("Search people")
+                if !duplicates.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Possible duplicates", systemImage: "person.2.fill")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.warningText)
+                        if duplicates.count == 100 {
+                            Text("Showing the first 100 pairs.").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                        }
+                        ForEach(duplicates) { pair in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(pair.first.displayName) · \(pair.second.displayName)")
+                                    Text(pair.evidence.hasPrefix("contact:") ? "Same contact" : "Same email: \(pair.evidence)")
+                                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.warningText)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                Button { candidate = pair } label: {
+                                    Text("Review")
+                                        .font(MuesliTheme.callout())
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.muesli(.secondary))
+                                .fixedSize()
+                                .disabled(busy)
+                            }
+                            .padding(16)
+                            .background {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(MuesliTheme.backgroundRaised)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(MuesliTheme.warningText.opacity(0.10))
+                                    }
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder(MuesliTheme.warningText.opacity(0.35), lineWidth: 1)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                }
+                if !history.isEmpty {
+                    DisclosureGroup("Merged people") {
+                        ForEach(history) { merge in
+                            HStack {
+                                Text("\(merge.sourceName) → \(merge.targetName)")
+                                Spacer()
+                                Button("Undo") { Task { await undo(merge) } }.disabled(busy)
+                            }.padding(.vertical, 5)
+                        }
+                    }
+                }
+                if people.isEmpty {
+                    Text("No people found.").foregroundStyle(MuesliTheme.textSecondary)
+                } else {
+                    if people.count == 100 {
+                        Text("Showing the first 100 people. Search to narrow the list.").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    LazyVStack(spacing: 0) {
+                        ForEach(people, id: \.participantIdentifier) { person in
+                            Button { selected = person } label: {
+                                HStack {
+                                    Image(systemName: "person.crop.circle").foregroundStyle(MuesliTheme.accentText)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(person.displayName).font(MuesliTheme.headline())
+                                        if let email = person.emailAddress {
+                                            Text(email).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(MuesliTheme.textSecondary)
+                                }.padding(12).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            if let error { Text(error).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary) }
+        }
+        .task(id: "\(query)|\(revision)") {
+            do {
+                try await Task.sleep(for: .milliseconds(200))
+                let result = try await controller.globalSearchWorker.people(matching: query)
+                guard !Task.isCancelled else { return }
+                people = result
+            } catch is CancellationError {} catch { self.error = "People couldn’t load. Try again." }
+        }
+        .task(id: selected?.personID) {
+            if let selected { await loadMeetings(selected, append: false) }
+        }
+        .task(id: revision) { await refreshReview() }
+        .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { _ in revision += 1 }
+        .confirmationDialog("Merge these people?", isPresented: Binding(get: { candidate != nil }, set: { if !$0 { candidate = nil } }), titleVisibility: .visible, presenting: candidate) { pair in
+            Button("Merge as \(pair.first.displayName)") { Task { await merge(pair, keep: pair.first) } }
+            Button("Merge as \(pair.second.displayName)") { Task { await merge(pair, keep: pair.second) } }
+            Button("Cancel", role: .cancel) { candidate = nil }
+        } message: { pair in
+            Text("Choose a name for the merged person. Their meetings and email addresses will be combined. You can undo this from Merged people.")
+        }
+    }
+
+    private func refreshReview() async {
+        do {
+            duplicates = try await controller.globalSearchWorker.duplicatePeople()
+            history = try await controller.globalSearchWorker.peopleMergeHistory()
+        } catch { self.error = "Duplicate review couldn’t load." }
+    }
+
+    private func merge(_ pair: DuplicateMeetingPeople, keep: MeetingParticipantDraft) async {
+        guard let target = keep.personID else { return }
+        let other = pair.first.personID == target ? pair.second.personID : pair.first.personID
+        guard let other else { return }
+        busy = true; defer { busy = false }
+        do {
+            try await controller.globalSearchWorker.mergePeople(targetID: target, sourceID: other)
+            candidate = nil; error = nil; revision += 1
+        } catch { self.error = error.localizedDescription; revision += 1 }
+    }
+
+    private func undo(_ merge: MeetingPeopleMerge) async {
+        busy = true; defer { busy = false }
+        do {
+            try await controller.globalSearchWorker.undoPeopleMerge(id: merge.id)
+            error = nil; revision += 1
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func loadMeetings(_ person: MeetingParticipantDraft, append: Bool) async {
+        guard !append || !busy else { return }
+        if append { busy = true }
+        defer { if append { busy = false } }
+        do {
+            let token = try await controller.globalSearchWorker.changeToken()
+            var request = GlobalSearchQuery(text: "", kinds: [.meeting], person: person, limit: 101)
+            if append { request.offset = meetings.count }
+            let found = try await controller.globalSearchWorker.search(request)
+            guard !Task.isCancelled, selected?.personID == person.personID else { return }
+            if append {
+                let latest = try await controller.globalSearchWorker.changeToken()
+                if latest != token {
+                    await loadMeetings(person, append: false)
+                    return
+                }
+            }
+            if append { meetings.append(contentsOf: found.prefix(100)) }
+            else { meetings = Array(found.prefix(100)) }
+            moreMeetings = found.count > 100
+        } catch { self.error = "Meetings couldn’t load." }
     }
 }
