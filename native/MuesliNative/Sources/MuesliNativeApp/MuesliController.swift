@@ -1682,10 +1682,11 @@ public final class MuesliController: NSObject {
     }
 
     func refreshIndicatorVisibility() {
-        if config.showFloatingIndicator {
+        // Re-render active sessions too, so toggling full hiding applies mid-recording.
+        if config.showFloatingIndicator || config.hideRecordingIndicator || indicator.isActive {
             indicator.ensureVisible(config: config)
         } else {
-            indicator.closeIfIdle()
+            indicator.closeIfIdle(config: config)
         }
         indicator.refreshMeetingTranscriptPreference(config: config)
     }

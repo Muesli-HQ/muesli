@@ -2327,6 +2327,7 @@ struct AppConfig: Codable, Equatable {
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
+    var hideRecordingIndicator: Bool = false
     var showHotkeyOnFloatingIndicator: Bool = false
     var indicatorHoverStyle: IndicatorHoverStyle = .classic
     var indicatorAnchor: IndicatorAnchor = .midTrailing
@@ -2518,6 +2519,7 @@ struct AppConfig: Codable, Equatable {
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
+        case hideRecordingIndicator = "hide_recording_indicator"
         case showHotkeyOnFloatingIndicator = "show_hotkey_on_floating_indicator"
         case indicatorHoverStyle = "indicator_hover_style"
         case indicatorAnchor = "indicator_anchor"
@@ -2760,6 +2762,7 @@ struct AppConfig: Codable, Equatable {
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
+        hideRecordingIndicator = (try? c.decode(Bool.self, forKey: .hideRecordingIndicator)) ?? defaults.hideRecordingIndicator
         showHotkeyOnFloatingIndicator =
             (try? c.decode(Bool.self, forKey: .showHotkeyOnFloatingIndicator))
             ?? defaults.showHotkeyOnFloatingIndicator

@@ -79,6 +79,80 @@ struct FloatingIndicatorVisibilityTests {
         #expect(config.showFloatingIndicator == false)
     }
 
+    @Test("hideRecordingIndicator defaults off and decodes from snake_case JSON")
+    func hideRecordingIndicatorConfig() throws {
+        #expect(AppConfig().hideRecordingIndicator == false)
+        let json = #"{"hide_recording_indicator": true}"#
+        let config = try JSONDecoder().decode(AppConfig.self, from: json.data(using: .utf8)!)
+        #expect(config.hideRecordingIndicator)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(decoded.hideRecordingIndicator)
+    }
+
+    @MainActor
+    @Test("hideRecordingIndicator suppresses the indicator in every state and style")
+    func hideRecordingIndicatorSuppressesPresentation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory)
+        let indicator = FloatingIndicatorController(configStore: store)
+        defer {
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        struct QuillError: Error {}
+        for anchor in [IndicatorAnchor.midTrailing, .notch] {
+            var config = AppConfig()
+            config.indicatorAnchor = anchor
+            config.hideRecordingIndicator = true
+            store.save(config)
+            for state in [DictationState.idle, .preparing, .recording, .transcribing] {
+                indicator.setState(state, config: config)
+                #expect(!indicator.isPresenting, "\(anchor) \(state)")
+            }
+            indicator.setMeetingRecording(true, config: config)
+            #expect(!indicator.isPresenting)
+            indicator.setMeetingRecording(false, config: config)
+            indicator.showWarning("Heads up")
+            indicator.showSuccess("Done")
+            indicator.showLoading("Loading model")
+            #expect(!indicator.isPresenting)
+            indicator.hideLoading()
+            // Failures have no other surface, so they still show while hidden.
+            indicator.showWarning("Dictation wasn't pasted", icon: "!")
+            #expect(indicator.isPresenting)
+            indicator.setState(.idle, config: config)
+            #expect(!indicator.isPresenting)
+            #expect(!indicator.showInstructionOutcome(.quillFailure(QuillError()), mode: .quill,
+                                                      instruction: "Rewrite", message: "Failed", config: config))
+            #expect(!indicator.isPresenting)
+        }
+
+        // Turning it back off mid-recording brings the indicator back.
+        var config = AppConfig()
+        config.indicatorAnchor = .midTrailing
+        store.save(config)
+        indicator.setState(.recording, config: config)
+        #expect(indicator.isPresenting)
+        config.hideRecordingIndicator = true
+        indicator.ensureVisible(config: config)
+        #expect(!indicator.isPresenting)
+        config.hideRecordingIndicator = false
+        indicator.ensureVisible(config: config)
+        #expect(indicator.isPresenting)
+        indicator.setState(.idle, config: config)
+
+        // Turning it off while idle (via closeIfIdle) must not leave notices suppressed.
+        config.showFloatingIndicator = false
+        config.hideRecordingIndicator = true
+        store.save(config)
+        indicator.ensureVisible(config: config)
+        config.hideRecordingIndicator = false
+        store.save(config)
+        indicator.closeIfIdle(config: config)
+        indicator.showWarning("Heads up")
+        #expect(indicator.isPresenting)
+    }
+
     @Test("floating hotkey defaults off while menu bar hotkey defaults on")
     func hotkeyVisibilityRoundTrip() throws {
         var config = AppConfig()
