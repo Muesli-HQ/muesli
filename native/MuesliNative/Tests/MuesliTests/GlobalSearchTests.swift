@@ -79,6 +79,14 @@ struct GlobalSearchTests {
         #expect(first.count == 100)
         #expect(second.count == 5)
         #expect(Set((first + second).map(\.sourceID)).count == 105)
+        // The panel requests an extra row to determine whether another page exists.
+        // Text hits vary in title relevance and BM25 rank across the page boundary.
+        try f.sql("UPDATE meetings SET title=CASE WHEN id % 3 = 0 THEN 'Alice meeting' ELSE 'Meeting' END")
+        let preview = try service.search(.init(text: "Alice", kinds: [.meeting], person: person, limit: 101))
+        let more = try service.search(.init(text: "Alice", kinds: [.meeting], person: person, limit: 100, offset: 100))
+        #expect(preview.count == 101)
+        #expect(more.count == 5)
+        #expect(Set((Array(preview.prefix(100)) + more).map(\.sourceID)).count == 105)
     }
 
     @Test("Evidence failures withhold only unverifiable candidates and report partial completeness", arguments: [GlobalSearchKind.chat, .recap])

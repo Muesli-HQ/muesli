@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
+    @Test("Lid closure preserves recording with an active external display")
+    func clamshellPolicy() {
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: true))
+        #expect(MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: false))
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: false, hasActiveExternalDisplay: false))
+        #expect(!MeetingLidStopPolicy.shouldStop(lidClosed: true, hasActiveExternalDisplay: nil))
+    }
     @Test("System stop handles preparation and paused capture without stopping twice")
     func systemStopPhases() {
         #expect(MeetingSystemStopAction.action(phase: .preparing) == .cancelPreparation)

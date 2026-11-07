@@ -149,10 +149,13 @@ final class GlobalSearchPresentation {
         defer { if generation == token { isLoading = false } }
         do {
             let revision = try await worker.changeToken()
+            guard !Task.isCancelled, generation == token else { return }
             var query = request.query(); query.offset = results.count
             let response = try await worker.searchResponse(query)
             guard !Task.isCancelled, generation == token else { return }
-            guard try await worker.changeToken() == revision else {
+            let currentRevision = try await worker.changeToken()
+            guard !Task.isCancelled, generation == token else { return }
+            guard currentRevision == revision else {
                 await refresh(request, using: worker, debounce: false)
                 return
             }

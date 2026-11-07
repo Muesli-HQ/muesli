@@ -103,6 +103,10 @@ public final class GlobalSearchService: @unchecked Sendable {
                 }
             }
         }
+        // Person queries are paginated by the index; preserve its order across page boundaries.
+        if query.person != nil {
+            return GlobalSearchResponse(results: results, unavailableKinds: unavailable)
+        }
         // BM25 scores from independent corpora cannot be compared. Use shared title-match tiers,
         // then recency and a stable identity. Source-local FTS still bounds the candidate set.
         return GlobalSearchResponse(results: Array(results.sorted { lhs, rhs in

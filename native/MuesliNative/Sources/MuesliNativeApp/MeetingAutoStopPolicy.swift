@@ -1,4 +1,21 @@
 import Foundation
+import CoreGraphics
+
+enum MeetingLidStopPolicy {
+    static func shouldStop(lidClosed: Bool, hasActiveExternalDisplay: Bool?) -> Bool {
+        lidClosed && hasActiveExternalDisplay == false
+    }
+
+    static func hasActiveExternalDisplay() -> Bool? {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).contains {
+            CGDisplayIsBuiltin($0) == 0 && CGDisplayIsActive($0) != 0 && CGDisplayIsAsleep($0) == 0
+        }
+    }
+}
 
 enum MeetingSystemStopAction: Equatable {
     case none, cancelPreparation, stopRecording

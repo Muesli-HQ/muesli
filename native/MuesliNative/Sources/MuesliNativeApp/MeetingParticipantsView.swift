@@ -405,10 +405,12 @@ struct MeetingParticipantsView: View {
         suggestionTask = Task {
             defer { findingPeople = false }
             do {
-                try await controller.findParticipantSuggestions(meetingID: meetingID)
+                let wasTruncated = try await controller.findParticipantSuggestions(meetingID: meetingID)
                 try Task.checkCancellation()
                 await reloadSuggestions()
-                if suggestions.isEmpty { suggestionMessage = "No new suggestions in the reviewed text." }
+                if wasTruncated {
+                    suggestionMessage = suggestions.isEmpty ? "No suggestions found. Only part of this meeting was reviewed." : "Only part of this meeting was reviewed."
+                } else if suggestions.isEmpty { suggestionMessage = "No new suggestions in the reviewed text." }
             } catch is CancellationError {} catch { suggestionMessage = error.localizedDescription }
         }
     }

@@ -1957,7 +1957,8 @@ public final class DictationStore {
                 let name = suggestion.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 let excerpt = suggestion.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
                 let text = suggestion.source == "transcript" ? meeting.rawTranscript : suggestion.source == "notes" ? meeting.manualNotes : ""
-                guard !name.isEmpty, name.count <= 200, excerpt.count >= 8, excerpt.count <= 500, text.contains(excerpt) else { continue }
+                guard !name.isEmpty, name.count <= 200, excerpt.count >= 8, excerpt.count <= 500,
+                      text.contains(excerpt), excerpt.range(of: name, options: [.caseInsensitive, .diacriticInsensitive]) != nil else { continue }
                 sqlite3_reset(statement); sqlite3_clear_bindings(statement)
                 sqlite3_bind_int64(statement, 1, meetingID)
                 for (slot, value) in [(2, fingerprint), (3, name), (4, suggestion.source), (5, excerpt)] {
