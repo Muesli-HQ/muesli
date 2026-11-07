@@ -1,6 +1,20 @@
 import Foundation
 import CoreGraphics
 
+struct MeetingClamshellMicWarningState {
+    private(set) var hasWarned = false
+
+    mutating func update(lidClosed: Bool, effectiveInputIsBuiltIn: Bool?) -> Bool {
+        guard lidClosed else { hasWarned = false; return false }
+        guard let effectiveInputIsBuiltIn else { return false }
+        guard effectiveInputIsBuiltIn else { hasWarned = false; return false }
+        guard !hasWarned else { return false }
+        return true
+    }
+
+    mutating func markShown() { hasWarned = true }
+}
+
 enum MeetingLidStopPolicy {
     static func shouldStop(lidClosed: Bool, hasActiveExternalDisplay: Bool?) -> Bool {
         lidClosed && hasActiveExternalDisplay == false

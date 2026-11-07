@@ -963,6 +963,8 @@ public final class MuesliController: NSObject {
     private var meetingLidObserver: NSObjectProtocol?
     private var meetingSleepObserver: NSObjectProtocol?
     private var meetingLidCheckTask: Task<Void, Never>?
+    private var meetingMicWarningCheckTask: Task<Void, Never>?
+    private var meetingClamshellMicWarning = MeetingClamshellMicWarningState()
     private var isStoppingMeetingRecording: Bool { meetingCapture?.session.capturePhase == .stopping }
     private var isPresentingMeetingTerminationConfirmation = false
     private var isTerminatingAfterMeetingConfirmation = false
@@ -3501,6 +3503,7 @@ public final class MuesliController: NSObject {
     private func applyMeetingInputDevice(_ deviceID: AudioObjectID?) {
         guard let capture = meetingCapture, !capture.session.capturePhase.isEnding else { return }
         capture.session.setPreferredMicrophoneInputDeviceID(deviceID)
+        checkMeetingClamshellMicrophone(owner: ObjectIdentifier(capture.session))
     }
 
     func updateUpcomingMeetingsWindow(_ window: UpcomingMeetingsWindow) {
@@ -8660,7 +8663,10 @@ public final class MuesliController: NSObject {
         meetingLidObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkMeetingLid(owner: owner) }
+            MainActor.assumeIsolated {
+                self?.checkMeetingLid(owner: owner)
+                self?.checkMeetingClamshellMicrophone(owner: owner)
+            }
         }
         meetingSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -8668,6 +8674,38 @@ public final class MuesliController: NSObject {
             // System sleep suspends audio capture even if the clamshell property
             // has not updated yet. Start shutdown before returning to AppKit.
             MainActor.assumeIsolated { self?.stopMeetingForSystemSuspension(owner: owner) }
+        }
+    }
+
+    private func checkMeetingClamshellMicrophone(owner: ObjectIdentifier) {
+        meetingMicWarningCheckTask?.cancel()
+        meetingMicWarningCheckTask = Task { [weak self] in
+            let closed = await Task.detached(priority: .utility) { ClamshellState.isClosed() }.value
+            guard !Task.isCancelled, let self, let capture = self.meetingCapture,
+                  ObjectIdentifier(capture.session) == owner, capture.session.capturePhase.isRecording else { return }
+            let route = self.dictationAudioRoutingController.meetingInputRouteSnapshot()
+            let builtIn = route.effectiveInputIsBuiltIn(devices: self.dictationAudioRoutingController.cachedAvailableInputDevices())
+            let shouldWarn = self.meetingClamshellMicWarning.update(lidClosed: closed, effectiveInputIsBuiltIn: builtIn)
+            let promptID = "meeting-clamshell-microphone-\(capture.id)"
+            if !closed || builtIn == false {
+                if self.meetingNotification.currentPromptID == promptID { self.meetingNotification.close() }
+                return
+            }
+            guard shouldWarn else { return }
+            // Do not replace another meeting prompt. Retry while this episode is current.
+            while true {
+                guard !Task.isCancelled, let current = self.meetingCapture,
+                      ObjectIdentifier(current.session) == owner, current.session.capturePhase.isRecording else { return }
+                if !self.meetingNotification.isVisible {
+                    let shown = self.meetingNotification.show(
+                        promptID: promptID, title: "MacBook microphone is off",
+                        subtitle: "Open the lid or use an external microphone.",
+                        actionLabel: "Got it", dismissAfter: 30, onStartRecording: {})
+                    if shown { self.meetingClamshellMicWarning.markShown() }
+                    return
+                }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
         }
     }
 
@@ -8700,6 +8738,11 @@ public final class MuesliController: NSObject {
 
     private func removeMeetingSystemStopObservers() {
         meetingLidCheckTask?.cancel(); meetingLidCheckTask = nil
+        meetingMicWarningCheckTask?.cancel(); meetingMicWarningCheckTask = nil
+        meetingClamshellMicWarning = MeetingClamshellMicWarningState()
+        if let id = meetingCapture?.id, meetingNotification.currentPromptID == "meeting-clamshell-microphone-\(id)" {
+            meetingNotification.close()
+        }
         if let observer = meetingLidObserver { NotificationCenter.default.removeObserver(observer) }
         if let observer = meetingSleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         meetingLidObserver = nil; meetingSleepObserver = nil
@@ -8949,6 +8992,7 @@ public final class MuesliController: NSObject {
                 try Task.checkCancellation()
                 try checkMeetingStartStillCurrent(owner)
                 guard meetingSession.capturePhase.isRecording else { throw CancellationError() }
+                checkMeetingClamshellMicrophone(owner: owner)
                 activeMeetingAutoStop.markRecordingStarted(now: Date())
                 if activeMeetingSignalLossResponse == .transcriptInactivity {
                     noteMeetingTranscriptActivity()

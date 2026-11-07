@@ -18,6 +18,11 @@ struct MeetingMicRouteDiagnosticsSnapshot: Codable, Equatable {
     let defaultInputDeviceName: String?
     let builtInInputDeviceID: AudioObjectID?
     let systemDefaultInputIsBuiltIn: Bool
+
+    func effectiveInputIsBuiltIn(devices: [AudioInputDeviceInfo]) -> Bool? {
+        guard let id = preferredInputDeviceID ?? defaultInputDeviceID else { return nil }
+        return devices.first { $0.deviceID == id }?.isBuiltIn
+    }
 }
 
 struct MeetingMicRecorderDiagnosticsSnapshot: Codable, Equatable {
