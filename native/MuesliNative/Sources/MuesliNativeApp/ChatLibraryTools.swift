@@ -364,9 +364,9 @@ actor ChatLibraryTools {
         let rows = DictationStore(databaseURL: db, readOnly: true)
         func ref(_ kind: String) -> [ChatHistoryDependency] { [.init(kind: kind, id: hit.id, parent: hit.id)] }
         switch hit.kind {
-        case .dictation, .command, .chat:
+        case .dictation, .command, .chat, .vidshot:
             if hit.kind == .chat && hit.id == turn.sessionID.uuidString { return nil }
-            let kind: MuesliHistoryKind = hit.kind == .chat ? .chat : (hit.kind == .command ? .commands : .dictations)
+            let kind: MuesliHistoryKind = hit.kind == .vidshot ? .vidshots : (hit.kind == .chat ? .chat : (hit.kind == .command ? .commands : .dictations))
             guard let row = try MuesliHistoryReader(databaseURL: db).read(kind: kind, id: hit.id, fullText: true) else { return nil }
             return .init(title: row.title, text: row.text, dependencies: ref(kind.rawValue))
         case .quill:

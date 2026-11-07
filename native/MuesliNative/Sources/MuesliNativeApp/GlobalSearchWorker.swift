@@ -107,6 +107,7 @@ enum GlobalSearchDestination: Sendable {
     case chat(UUID)
     case capture(VisualMemoryItem)
     case recap(SavedTimeTurnerRecap)
+    case vidshot(String)
 }
 
 extension GlobalSearchWorker {
@@ -153,6 +154,9 @@ extension GlobalSearchWorker {
             guard let screenRoot,
                   let capture = try VisualMemoryStore(root: screenRoot, readOnly: true).moment(id: result.sourceID) else { return nil }
             return .capture(capture)
+        case .vidshot:
+            guard try MuesliHistoryReader(databaseURL: databaseURL).read(kind: .vidshots, id: result.sourceID) != nil else { return nil }
+            return .vidshot(result.sourceID)
         case .recap:
             guard let recap = try TimeTurnerRecapStore(databaseURL: databaseURL, readOnly: true).load(key: result.sourceID),
                   try TimeTurnerRecap.sourcesAreCurrent(recap.sources, root: screenRoot, databaseURL: databaseURL) else { return nil }

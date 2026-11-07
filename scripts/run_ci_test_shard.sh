@@ -48,6 +48,7 @@ case "${shard}" in
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
+      CapturesCLITests
       ChatGPTAuthTests
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
@@ -62,12 +63,24 @@ case "${shard}" in
       FloatingIndicatorVisibilityTests
       FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
-      NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
       MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      FeedbackCaptureInkTests
+      FeedbackCaptureInkOverlayTests
+      FeedbackCaptureInkPersistenceTests
+      FeedbackCaptureInkExportTests
+      FeedbackCaptureInkInputTests
+      FeedbackCaptureEventsTests
+      FeedbackCaptureContextTests
+      FeedbackCaptureInputTests
+      FeedbackCaptureRendererTests
+      FeedbackCaptureStoreTests
+      FeedbackCaptureLifecycleTests
+      FeedbackCaptureFinalizerTests
+      FeedbackCapturePillTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
       MeetingVideoAudioTests
@@ -99,6 +112,9 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      NotchIndicatorTests
+      FeedbackCaptureTranscriptTests
+      FeedbackCaptureContextFinalizerTests
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests
@@ -185,6 +201,7 @@ case "${shard}" in
       DictationCorrectionMonitorTests
       DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
+      NemotronWavLoaderTests
     )
     ;;
   meetings)

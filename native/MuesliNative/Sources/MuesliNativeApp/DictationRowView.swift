@@ -211,28 +211,19 @@ struct DictationRowView: View {
                         .accessibilityLabel("Copy CUA trace")
                     }
 
-                    Button { copy(.copy, using: onCopy) } label: {
-                        Image(systemName: copiedAction == .copy ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 12))
-                            .foregroundStyle(copiedAction == .copy ? MuesliTheme.successText : MuesliTheme.textTertiary)
-                            .frame(width: actionSize, height: actionSize)
-                    }
-                    .buttonStyle(.muesli(.quiet))
+                    TimelineRowActionButton(
+                        symbol: copiedAction == .copy ? "checkmark" : "doc.on.doc",
+                        label: "Copy dictation", help: copiedAction == .copy ? "Dictation copied" : "Copy dictation",
+                        color: copiedAction == .copy ? MuesliTheme.successText : MuesliTheme.textTertiary
+                    ) { copy(.copy, using: onCopy) }
                     .focused($focusedAction, equals: .copy)
-                    .help(copiedAction == .copy ? "Dictation copied" : "Copy dictation")
-                    .accessibilityLabel("Copy dictation")
 
                     if onDelete != nil {
-                        Button { showDeleteConfirmation = true } label: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 12))
-                                .foregroundStyle(MuesliTheme.destructiveText)
-                                .frame(width: actionSize, height: actionSize)
+                        TimelineRowActionButton(symbol: "trash", label: "Delete dictation",
+                                                help: "Delete dictation", color: MuesliTheme.destructiveText) {
+                            showDeleteConfirmation = true
                         }
-                        .buttonStyle(.muesli(.quiet))
                         .focused($focusedAction, equals: .delete)
-                        .help("Delete dictation")
-                        .accessibilityLabel("Delete dictation")
                     }
                 }
                 // Glyphs keep their former vertical position beside the first text line.
@@ -356,5 +347,26 @@ struct DictationRowView: View {
         default:
             return status.capitalized
         }
+    }
+}
+
+/// The shared quiet copy/delete control used by Timeline activity rows.
+struct TimelineRowActionButton: View {
+    let symbol: String
+    let label: String
+    let help: String
+    let color: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(color)
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.muesli(.quiet))
+        .help(help)
+        .accessibilityLabel(label)
     }
 }

@@ -708,6 +708,7 @@ enum CohereTranscribeModelStore {
             progress?(1.0, "Cohere Transcribe already downloaded")
             return target
         }
+        guard !ManagedASRModelDownloader.localOnly else { throw CocoaError(.fileNoSuchFile) }
         try await downloadMissingFiles(to: target, progress: progress, progressSnapshot: progressSnapshot)
         return target
     }

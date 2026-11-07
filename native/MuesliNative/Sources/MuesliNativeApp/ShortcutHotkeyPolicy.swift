@@ -37,7 +37,7 @@ struct ShortcutHotkeyPolicy {
             return hotkey.isValidDictationShortcut
         case .quil:
             return isValidQuilShortcut(hotkey)
-        case .meetingRecording:
+        case .meetingRecording, .feedbackCapture:
             return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
         case .computerUse:
             return false
@@ -96,6 +96,30 @@ struct ShortcutHotkeyPolicy {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
+
+    /// Bare modifiers start only when pressed alone: HotkeyMonitor rejects other
+    /// held modifiers and cancels pending holds on later modifiers or keys;
+    /// feedback admission refuses active dictation. Keep the shared overlap rule unchanged.
+    static func feedbackCaptureHotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {
+        a.isCombination && b.isCombination && hotkeysConflict(a, b)
+    }
+
+    static func validateFeedbackCaptureHotkey(_ hotkey: HotkeyConfig, config: AppConfig) -> ShortcutHotkeyUpdateResult {
+        guard hotkey.isCombination, let modifiers = hotkey.resolvedCombinationModifiers, !modifiers.isEmpty,
+              allowsCombination(hotkey, action: .feedbackCapture) else {
+            return .conflict(message: "Choose a modifier and letter chord.")
+        }
+        let others: [(String, HotkeyConfig, Bool)] = [
+            ("Dictation", config.dictationHotkey, true),
+            ("Computer Use Command", config.computerUseHotkey, config.enableComputerUseHotkey),
+            ("Quill", config.quilHotkey, config.enableQuilMode),
+            ("Meeting Recording", config.meetingRecordingHotkey, config.enableMeetingRecordingHotkey)
+        ]
+        for (name, key, enabled) in others where enabled && feedbackCaptureHotkeysConflict(hotkey, key) {
+            return conflict(with: name, hotkey: key)
+        }
+        return .updated
     }
 
     static func hotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {

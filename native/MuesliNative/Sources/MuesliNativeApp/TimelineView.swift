@@ -1,11 +1,13 @@
 import SwiftUI
 import MuesliCore
 import AIElementsSwift
+import AVFoundation
 
 struct TimelineView: View {
     let appState: AppState
     let controller: MuesliController
 
+    @State private var playingVidshotID: String?
     @State private var contentFilter = "All activity"
     @State private var search = ""
     @State private var searchRows: [TimelineEntry] = []
@@ -78,7 +80,7 @@ struct TimelineView: View {
             HStack {
                 TextField("Search activity…", text: $search).textFieldStyle(.roundedBorder)
                 Picker("Activity", selection: $contentFilter) {
-                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill"], id: \.self) { Text($0) }
+                    ForEach(["All activity", "Meetings", "Dictations", "Cotypist", "Quill", "Vidshots"], id: \.self) { Text($0) }
                 }
                 .labelsHidden()
                 .accessibilityLabel("Activity")
@@ -309,6 +311,16 @@ struct TimelineView: View {
                 onCopy: { controller.copyToClipboard(record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")) },
                 onDelete: { controller.deleteCotypistSession(id: record.id) }
             )
+        case .vidshot(let record):
+            TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
+                revision: appState.timelineHistoryRevision, playingID: $playingVidshotID,
+                onSelect: {
+                    appState.vidshotDetailReturnsToTimeline = true
+                    appState.selectedVidshotID = record.id
+                    appState.selectedTab = .vidshots
+                },
+                onCopy: { await controller.feedbackCapture.copy(id: record.id) },
+                onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
         }
     }
 
@@ -324,6 +336,310 @@ struct TimelineView: View {
             return MeetingBrowserLogic.formatStartTime(raw)
         }
         return timeFormatter.string(from: date)
+    }
+}
+
+struct VidshotsPage: View {
+    let appState: AppState
+    let controller: MuesliController
+    @State private var playingID: String?
+
+    var body: some View {
+        let records = controller.feedbackCapture.records
+        if let id = appState.selectedVidshotID {
+            FeedbackCaptureView(controller: controller.feedbackCapture, selectedID: id,
+                onBack: {
+                    appState.selectedVidshotID = nil
+                    if appState.vidshotDetailReturnsToTimeline {
+                        appState.vidshotDetailReturnsToTimeline = false
+                        controller.showTimelineHome()
+                    }
+                }, backLabel: appState.vidshotDetailReturnsToTimeline ? "Timeline" : "Vidshots")
+                .id(id)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: MuesliTheme.spacing16) {
+                            vidshotsTitle
+                            Spacer(minLength: MuesliTheme.spacing16)
+                            recordingButton
+                        }
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                            vidshotsTitle
+                            recordingButton
+                        }
+                    }
+                    .padding(.horizontal, MuesliTheme.pageInset)
+                    if records.isEmpty {
+                        ContentUnavailableView {
+                            Label { Text("No Vidshots yet") } icon: { VidshotIcon().frame(width: 36, height: 36) }
+                        } description: {
+                            Text("Record a window or screen region to create a Vidshot.")
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 250)
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                                if index == 0 || !Calendar.current.isDate(
+                                    Date(timeIntervalSince1970: record.createdAt),
+                                    inSameDayAs: Date(timeIntervalSince1970: records[index - 1].createdAt)) {
+                                    Text(Date(timeIntervalSince1970: record.createdAt).formatted(date: .abbreviated, time: .omitted))
+                                        .font(MuesliTheme.font(size: 12, weight: .semibold))
+                                        .foregroundStyle(MuesliTheme.textSecondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, MuesliTheme.pageInset)
+                                        .padding(.top, MuesliTheme.spacing16)
+                                }
+                                TimelineVidshotRow(record: record, store: controller.feedbackCapture.store,
+                                    revision: appState.timelineHistoryRevision, playingID: $playingID,
+                                    onSelect: {
+                                        appState.vidshotDetailReturnsToTimeline = false
+                                        appState.selectedVidshotID = record.id
+                                    },
+                                    onCopy: { await controller.feedbackCapture.copy(id: record.id) },
+                                    onDelete: { try await controller.feedbackCapture.delete(id: record.id) })
+                            }
+                        }
+                    }
+                }
+                .padding(.top, MuesliTheme.spacing20)
+            }
+            .task { await controller.feedbackCapture.reload() }
+        }
+    }
+
+    private var vidshotsTitle: some View {
+        Text("Vidshots")
+            .font(MuesliTheme.font(size: 26, weight: .bold))
+            .foregroundStyle(MuesliTheme.textPrimary)
+    }
+
+    private var recordingButton: some View {
+        let isRecording = controller.feedbackCapture.ownsMicrophone
+        return Button {
+            controller.toggleFeedbackCapture()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isRecording ? "stop.fill" : "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(isRecording ? "Finish Vidshot" : "Start Vidshot")
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, MuesliTheme.spacing12)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.muesli(.primary))
+        .disabled(!controller.config.enableFeedbackCapture && !isRecording)
+        .help(!controller.config.enableFeedbackCapture && !isRecording
+            ? "Enable Vidshot in Settings to start recording"
+            : (isRecording ? "Finish recording" : "Start a Vidshot"))
+        .accessibilityIdentifier("vidshots.record")
+        .fixedSize()
+    }
+}
+
+struct TimelineVidshotRow: View {
+    let record: FeedbackCaptureRecord
+    let store: FeedbackCaptureStore?
+    let revision: UInt64
+    @Binding var playingID: String?
+    let onSelect: () -> Void
+    let onCopy: () async -> FeedbackCaptureDelivery.Result
+    let onDelete: () async throws -> Void
+    private enum RowAction: Hashable { case copy, delete }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var focusedAction: RowAction?
+    @State private var isHovered = false
+    @State private var copyConfirmation: UUID?
+    @State private var copyError = false
+    @State private var transcript = ""
+    @State private var appName = ""
+    @State private var preview: NSImage?
+    @State private var videoURL: URL?
+    @State private var player: AVPlayer?
+    @State private var confirmDelete = false
+    @State private var deleting = false
+    @State private var deleteError: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: MuesliTheme.spacing20) {
+            Button(action: onSelect) {
+                Text(TimelineView.formatTime(Date(timeIntervalSince1970: record.createdAt).ISO8601Format()))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(MuesliTheme.textTertiary)
+                    .frame(width: 80, alignment: .leading).padding(.top, 2)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("Open Vidshot recorded \(Date(timeIntervalSince1970: record.createdAt).formatted())")
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                HStack(spacing: MuesliTheme.spacing8) {
+                    Button(action: onSelect) {
+                        HStack(spacing: MuesliTheme.spacing8) {
+                            VidshotIcon().frame(width: 14, height: 14).foregroundStyle(MuesliTheme.accentText)
+                            Text("Vidshot").font(MuesliTheme.font(size: 14, weight: .semibold)).foregroundStyle(MuesliTheme.textPrimary)
+                            if !appName.isEmpty {
+                                Text(appName).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
+                            }
+                            Text(String(format: "%d:%02d", record.durationMs / 60_000, (record.durationMs / 1000) % 60))
+                                .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                        }
+                    }.buttonStyle(.plain).accessibilityHint("Open Vidshot")
+                    Spacer(minLength: 0)
+                    HStack(spacing: 2) {
+                        if copyConfirmation != nil {
+                            Text("Copied").font(MuesliTheme.captionMedium())
+                                .foregroundStyle(MuesliTheme.successText).padding(.trailing, 4)
+                        }
+                        TimelineRowActionButton(
+                            symbol: copyConfirmation == nil ? "doc.on.doc" : "checkmark",
+                            label: "Copy Vidshot summary and transcript",
+                            help: copyConfirmation == nil ? "Copy summary and transcript; image may paste in supported apps" : "Vidshot summary copied",
+                            color: copyConfirmation == nil ? MuesliTheme.textTertiary : MuesliTheme.successText
+                        ) {
+                            Task {
+                                switch await onCopy() {
+                                case .copied:
+                                    copyConfirmation = UUID()
+                                    AccessibilityNotification.Announcement("Copied").post()
+                                case .failed: copyError = true
+                                case .skipped: break
+                                }
+                            }
+                        }
+                        .disabled(record.state == .recording || record.state == .processing)
+                        .focused($focusedAction, equals: .copy)
+                        TimelineRowActionButton(symbol: "trash", label: "Delete Vidshot", help: "Delete Vidshot",
+                                                color: MuesliTheme.destructiveText) { confirmDelete = true }
+                            .disabled(deleting || record.state == .recording || record.state == .processing)
+                            .focused($focusedAction, equals: .delete)
+                    }
+                    .opacity(isHovered || focusedAction != nil || copyConfirmation != nil ? 1 : 0)
+                }
+                if let player {
+                    MeetingVideoPlayerView(player: player)
+                        .frame(maxWidth: 480)
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                }
+                HStack(alignment: .top, spacing: 12) {
+                    if player == nil {
+                        ZStack {
+                            Button(action: onSelect) {
+                                Group {
+                                    if let preview { Image(nsImage: preview).resizable().scaledToFill() }
+                                    else { Image(systemName: "video").foregroundStyle(MuesliTheme.textTertiary) }
+                                }
+                                .frame(width: 120, height: 68).background(MuesliTheme.backgroundRaised)
+                                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Open Vidshot")
+                            if let videoURL {
+                                Button {
+                                    playingID = record.id
+                                    let newPlayer = AVPlayer(url: videoURL)
+                                    player = newPlayer
+                                    newPlayer.play()
+                                } label: {
+                                    Image(systemName: "play.circle.fill").font(.system(size: 27))
+                                        .foregroundStyle(.white).shadow(radius: 3)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Play Vidshot inline")
+                                .help("Play inline")
+                                .zIndex(1)
+                            }
+                        }
+                    }
+                    Button(action: onSelect) {
+                        Text(transcript.isEmpty ? (record.state == .recording || record.state == .processing ? "Processing…" : "No transcript available") : transcript)
+                            .font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary)
+                            .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityHint("Open Vidshot")
+                }
+            }
+        }
+        .padding(.horizontal, MuesliTheme.spacing20).padding(.vertical, MuesliTheme.spacing16)
+        .background(isHovered ? MuesliTheme.backgroundHover : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
+                .padding(.horizontal, MuesliTheme.spacing20)
+                .allowsHitTesting(false)
+        }
+        .background {
+            Button(action: onSelect) {
+                Rectangle().fill(Color.black.opacity(0.001)).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+        }
+        .onHover { hovering in
+            withAnimation(MuesliMotion.animation(.easeInOut(duration: 0.15), reduceMotion: reduceMotion)) { isHovered = hovering }
+        }
+        .task(id: copyConfirmation) {
+            guard copyConfirmation != nil else { return }
+            do { try await Task.sleep(for: .seconds(1.6)) } catch { return }
+            copyConfirmation = nil
+        }
+        .alert("Couldn’t copy Vidshot", isPresented: $copyError) {
+            Button("OK", role: .cancel) {}
+        } message: { Text("The Vidshot context could not be copied.") }
+        .confirmationDialog("Delete this Vidshot and all its files?", isPresented: $confirmDelete) {
+            Button("Delete Vidshot", role: .destructive) {
+                player?.pause(); player = nil
+                if playingID == record.id { playingID = nil }
+                deleting = true
+                Task {
+                    do { try await onDelete() }
+                    catch { deleteError = error.localizedDescription }
+                    deleting = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("The video, narration, transcript, frames, and capture data will be deleted.") }
+        .alert("Couldn’t delete Vidshot", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) { deleteError = nil }
+        } message: { Text(deleteError ?? "") }
+        .onChange(of: playingID) { _, id in
+            if id != record.id { player?.pause(); player = nil }
+        }
+        .onDisappear {
+            player?.pause(); player = nil
+            if playingID == record.id { playingID = nil }
+        }
+        .task(id: "\(record.id):\(revision)") {
+            guard let store else { return }
+            let id = record.id
+            let result = await Task.detached(priority: .utility) { () -> (String, String, URL?, Data?) in
+                guard let manifest = try? store.manifest(id: id) else { return ("", "", nil, nil) }
+                let name = manifest.target.appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let nameLabel = ["screen region", "screen capture", "screen"].contains(name.lowercased()) ? "" : name
+                let text = manifest.transcript?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let video = manifest.video.flatMap { path -> URL? in
+                    guard let url = try? store.mediaURL(id: id, path: path),
+                          FileManager.default.fileExists(atPath: url.path) else { return nil }
+                    return url
+                }
+                if let video {
+                    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+                    generator.appliesPreferredTrackTransform = true
+                    generator.maximumSize = CGSize(width: 480, height: 270)
+                    if let image = try? generator.copyCGImage(at: .zero, actualTime: nil),
+                       let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                        return (text, nameLabel, video, data)
+                    }
+                }
+                if let frame = manifest.keyframes.first?.file, let url = try? store.mediaURL(id: id, path: frame),
+                   let data = try? Data(contentsOf: url) { return (text, nameLabel, video, data) }
+                return (text, nameLabel, video, nil)
+            }.value
+            guard !Task.isCancelled else { return }
+            transcript = result.0; appName = result.1; videoURL = result.2; preview = result.3.flatMap(NSImage.init(data:))
+        }
     }
 }
 
@@ -474,26 +790,14 @@ private struct TimelineCotypistRow: View {
             }
 
             HStack(spacing: 2) {
-                Button(action: onCopy) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MuesliTheme.textTertiary)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.muesli(.quiet))
-                .focused($focusedAction, equals: .copy)
-                .help("Copy the sentences with the accepted text")
-                .accessibilityLabel("Copy Cotypist sentences")
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundStyle(MuesliTheme.destructiveText)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.muesli(.quiet))
-                .focused($focusedAction, equals: .delete)
-                .help("Remove from timeline")
-                .accessibilityLabel("Remove from timeline")
+                TimelineRowActionButton(symbol: "doc.on.doc", label: "Copy Cotypist sentences",
+                                        help: "Copy the sentences with the accepted text", color: MuesliTheme.textTertiary,
+                                        action: onCopy)
+                    .focused($focusedAction, equals: .copy)
+                TimelineRowActionButton(symbol: "trash", label: "Remove from timeline",
+                                        help: "Remove from timeline", color: MuesliTheme.destructiveText,
+                                        action: onDelete)
+                    .focused($focusedAction, equals: .delete)
             }
             .opacity(isHovered || focusedAction != nil ? 1 : 0)
         }

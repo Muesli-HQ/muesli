@@ -3,6 +3,23 @@ import Testing
 
 @Suite("Interactive audio session ownership")
 struct InteractiveAudioSessionOwnershipTests {
+    @Test("Scrawl owns preparation, recording and microphone teardown")
+    func feedbackCaptureExcludesOtherOwners() {
+        let ownership = InteractiveAudioSessionOwnership(dictationIsActive: false, computerUseIsActive: false, feedbackCaptureIsActive: true)
+        for owner in [InteractiveAudioSessionOwner.dictation, .quil, .computerUse] {
+            #expect(!ownership.canStart(owner))
+            #expect(ownership.shouldIgnoreCleanup(for: owner))
+        }
+        #expect(ownership.hasActiveOwner)
+        #expect(!ownership.shouldIgnoreCleanup(for: .feedbackCapture))
+        for ownership in [InteractiveAudioSessionOwnership(dictationIsActive: true, computerUseIsActive: false),
+                          InteractiveAudioSessionOwnership(dictationIsActive: false, computerUseIsActive: true),
+                          InteractiveAudioSessionOwnership(dictationIsActive: false, computerUseIsActive: false, quilIsActive: true)] {
+            #expect(!ownership.canStart(.feedbackCapture))
+            #expect(ownership.shouldIgnoreCleanup(for: .feedbackCapture))
+        }
+    }
+
     @Test("idle ownership allows either feature to start")
     func idleAllowsEitherOwner() {
         let ownership = InteractiveAudioSessionOwnership(

@@ -362,6 +362,7 @@ public final class DictationStore {
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
+        try FeedbackCaptureStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
         try migrateQuillHistory(db: db)
@@ -1307,6 +1308,11 @@ public final class DictationStore {
         var quillFilter = historyFilterConditions(alias: "q", dateColumn: "timestamp",
             fromDate: fromDate, toDate: toDate, origin: origin)
         if targetApplication != nil { quillFilter.conditions.append("0 = 1") }
+        var captureConditions = ["1 = 1"]
+        var captureValues: [String] = []
+        if let fromDate { captureConditions.append("julianday(f.created_at, 'unixepoch') >= julianday(?)"); captureValues.append(fromDate) }
+        if let toDate { captureConditions.append("julianday(f.created_at, 'unixepoch') <= julianday(?)"); captureValues.append(toDate) }
+        if origin == .fromIPhone || targetApplication != nil { captureConditions.append("0 = 1") }
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -1323,6 +1329,9 @@ public final class DictationStore {
             UNION ALL
             SELECT 3, q.id, q.timestamp FROM quill_conversations q
             WHERE \(quillFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 4, f.id, strftime('%Y-%m-%dT%H:%M:%fZ', f.created_at, 'unixepoch')
+            FROM vidshots f WHERE \(captureConditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
@@ -1334,7 +1343,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues + captureValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
@@ -1342,11 +1351,13 @@ public final class DictationStore {
         var entries: [TimelineEntry] = []
         var remainingOffset = max(0, offset)
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var captureStore: FeedbackCaptureStore?
+        var captureRecords: [String: FeedbackCaptureRecord]?
         while sqlite3_step(statement) == SQLITE_ROW {
             try Task.checkCancellation()
             let kind = sqlite3_column_int(statement, 0)
             let id = sqlite3_column_int64(statement, 1)
-            let labels = ["Dictations", "Meetings", "Cotypist", "Quill"]
+            let labels = ["Dictations", "Meetings", "Cotypist", "Quill", "Vidshots"]
             guard activity == "All activity" || (kind >= 0 && Int(kind) < labels.count && labels[Int(kind)] == activity) else { continue }
             let entry: TimelineEntry?
             switch kind {
@@ -1354,6 +1365,15 @@ public final class DictationStore {
             case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
             case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
             case 3: entry = try quillConversation(id: id, db: db, previewOnly: query.isEmpty).map(TimelineEntry.quill)
+            case 4:
+                guard let rawID = sqlite3_column_text(statement, 1) else { continue }
+                let captureID = String(cString: rawID)
+                if captureStore == nil {
+                    let store = try FeedbackCaptureStore(databaseURL: databaseURL, support: databaseURL.deletingLastPathComponent())
+                    captureRecords = try Dictionary(uniqueKeysWithValues: store.list().map { ($0.id, $0) })
+                    captureStore = store
+                }
+                entry = captureRecords?[captureID].map(TimelineEntry.vidshot)
             default: entry = nil
             }
             guard let entry else { continue }
@@ -1364,6 +1384,9 @@ public final class DictationStore {
                 case .dictation(let record): text = record.rawText
                 case .quill(let record): text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
                 case .cotypist(let record): text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
+                case .vidshot(let record):
+                    let transcript = try? captureStore?.manifest(id: record.id).transcript?.text
+                    text = [record.title, transcript ?? ""].joined(separator: "\n")
                 }
                 guard text.localizedCaseInsensitiveContains(query) else { continue }
             }

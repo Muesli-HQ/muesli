@@ -4,16 +4,30 @@ import MuesliCore
 
 /// Native Swift transcription backend using WhisperKit (CoreML on ANE/GPU).
 actor WhisperKitTranscriber {
+    typealias ProducerFactory = @Sendable (WhisperKitConfig) async throws -> WhisperKit
+
     private var whisperKit: WhisperKit?
     private var loadedModel: String?
     typealias ModelLoader = (String, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?) async throws -> WhisperKit
     private let modelLoader: ModelLoader
 
     init(modelLoader: ModelLoader? = nil) {
-        self.modelLoader = modelLoader ?? Self.makeWhisperKit
+        self.modelLoader = modelLoader ?? { model, allowDownload, progress, snapshot in
+            try await Self.makeWhisperKit(modelName: model, allowDownload: allowDownload,
+                progress: progress, progressSnapshot: snapshot, downloadRoot: nil,
+                producerFactory: { try await WhisperKit($0) })
+        }
     }
     private var decodeBusy = false
     private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(downloadRoot: URL, producerFactory: @escaping ProducerFactory) {
+        self.modelLoader = { model, allowDownload, progress, snapshot in
+            try await Self.makeWhisperKit(modelName: model, allowDownload: allowDownload,
+                progress: progress, progressSnapshot: snapshot, downloadRoot: downloadRoot,
+                producerFactory: producerFactory)
+        }
+    }
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -57,11 +71,13 @@ actor WhisperKitTranscriber {
         modelName: String,
         allowDownload: Bool,
         progress: ((Double, String?) -> Void)?,
-        progressSnapshot: ModelDownloadProgressHandler?
+        progressSnapshot: ModelDownloadProgressHandler?,
+        downloadRoot: URL?,
+        producerFactory: @escaping ProducerFactory
     ) async throws -> WhisperKit {
 
         fputs("[whisperkit] loading model: \(modelName)...\n", stderr)
-        let plan = ManagedASRModelPlans.whisperKit(modelName: modelName)
+        let plan = ManagedASRModelPlans.whisperKit(modelName: modelName, downloadRoot: downloadRoot)
         let loadedWhisperKit = try await ManagedASRModelDownloader.loadValidated(
             plan,
             allowDownload: allowDownload,
@@ -82,7 +98,13 @@ actor WhisperKitTranscriber {
                     textDecoderCompute: .cpuAndNeuralEngine
                 )
             )
-            return try await WhisperKit(config)
+            if ManagedASRModelDownloader.localOnly {
+                config.load = false; config.download = false
+                let kit = try await producerFactory(config)
+                try await kit.loadModels(localFilesOnly: true)
+                return kit
+            }
+            return try await producerFactory(config)
         }
 
         fputs("[whisperkit] model loaded: \(modelName)\n", stderr)
@@ -95,23 +117,32 @@ actor WhisperKitTranscriber {
     func transcribe(
         wavURL: URL,
         language: WhisperKitLanguage = .defaultLanguage,
-        expectedModel: String? = nil
-    ) async throws -> (text: String, processingTime: Double) {
+        expectedModel: String? = nil,
+        wordTimestamps: Bool = false
+    ) async throws -> (text: String, processingTime: Double, segments: [SpeechSegment], words: [SpeechSegment]?) {
         await acquireDecode()
         defer { releaseDecode() }
         try Task.checkCancellation()
-        if let expectedModel { try await loadModelForDecode(modelName: expectedModel) }
+        if let expectedModel { try await loadModelForDecode(modelName: expectedModel, allowDownload: !ManagedASRModelDownloader.localOnly) }
         guard let whisperKit else { throw TranscriberError.notLoaded }
         guard let loadedModel else { throw TranscriberError.notLoaded }
 
         let start = CFAbsoluteTimeGetCurrent()
-        let decodeOptions = Self.makeDecodeOptions(language: language, modelName: loadedModel)
+        let decodeOptions = Self.makeDecodeOptions(language: language, modelName: loadedModel, wordTimestamps: wordTimestamps)
         let results = try await whisperKit.transcribe(audioPath: wavURL.path, decodeOptions: decodeOptions)
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let text = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text: text, processingTime: elapsed)
+        let timing = Self.captureTiming(results.flatMap(\.segments))
+        return (text: text, processingTime: elapsed, segments: timing.segments, words: wordTimestamps ? timing.words : nil)
+    }
+
+    static func captureTiming(_ segments: [TranscriptionSegment]) -> (segments: [SpeechSegment], words: [SpeechSegment]) {
+        (segments.map { SpeechSegment(start: Double($0.start), end: Double($0.end), text: $0.text) },
+         segments.flatMap { $0.words ?? [] }.map {
+             SpeechSegment(start: Double($0.start), end: Double($0.end), text: $0.word.trimmingCharacters(in: .whitespaces))
+         })
     }
 
     func transcribePreview(
@@ -212,18 +243,19 @@ actor WhisperKitTranscriber {
     /// English-only checkpoints ignore language preference and keep default English decoding.
     static func makeDecodeOptions(
         language: WhisperKitLanguage,
-        modelName: String
+        modelName: String,
+        wordTimestamps: Bool = false
     ) -> DecodingOptions {
         guard let effective = WhisperKitLanguage.preferenceForLoadedModel(language, modelName: modelName) else {
-            return DecodingOptions(skipSpecialTokens: true)
+            return DecodingOptions(skipSpecialTokens: true, wordTimestamps: wordTimestamps)
         }
         switch effective {
         case .auto:
             // Default DecodingOptions leaves detectLanguage false when usePrefillPrompt is true,
             // which silently forces English. Request detection explicitly for multilingual models.
-            return DecodingOptions(detectLanguage: true, skipSpecialTokens: true)
+            return DecodingOptions(detectLanguage: true, skipSpecialTokens: true, wordTimestamps: wordTimestamps)
         default:
-            return DecodingOptions(language: effective.rawValue, skipSpecialTokens: true)
+            return DecodingOptions(language: effective.rawValue, skipSpecialTokens: true, wordTimestamps: wordTimestamps)
         }
     }
 
