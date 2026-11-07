@@ -270,6 +270,8 @@ final class FeedbackCaptureController {
     private let prepareScreen: (@MainActor (FeedbackCaptureAttempt, AudioObjectID?) async throws -> Void)?
     private let startupTimeout: Duration
     private let waiterTimeout: Duration
+    private let waiterNow: @MainActor () -> ContinuousClock.Instant
+    private let waiterSleep: @MainActor () async -> Void
     private(set) var presentationID: UInt64 = 0
     private(set) var presentedCaptureID: String?
     private let dismissalDelay: Duration
@@ -287,6 +289,8 @@ final class FeedbackCaptureController {
          startupTimeout: Duration = .seconds(8), now: @escaping () -> Date = Date.init,
          observeSystem: Bool = true, dismissalDelay: Duration = .seconds(25),
          openCapture: (@MainActor (String?) -> Void)? = nil, waiterTimeout: Duration = .seconds(8),
+         waiterNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+         waiterSleep: @escaping @MainActor () async -> Void = { try? await Task.sleep(for: .milliseconds(10)) },
          repairAudio: @escaping @Sendable (URL) throws -> Int64? = { try WavWriter.repairIncrementalWAV(at: $0) },
          pickerFactory: (@MainActor () -> any FeedbackCaptureSelecting)? = nil,
          selectionPermissions: @escaping @MainActor () -> InteractionPermissionSnapshot = { .captureSystemSnapshot() }) {
@@ -296,6 +300,7 @@ final class FeedbackCaptureController {
         self.selectionPermissions = selectionPermissions
         self.repairAudio = repairAudio
         self.waiterTimeout = waiterTimeout
+        self.waiterNow = waiterNow; self.waiterSleep = waiterSleep
         self.dismissalDelay = dismissalDelay; self.openCapture = openCapture
         self.pointerTarget = pointerTarget; self.currentDisplayTarget = currentDisplayTarget
         self.prepareScreen = prepareScreen; self.startupTimeout = startupTimeout; self.now = now
@@ -578,10 +583,10 @@ final class FeedbackCaptureController {
         }
     }
     private func waitUntil(_ complete: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now.advanced(by: waiterTimeout)
+        let deadline = waiterNow().advanced(by: waiterTimeout)
         while !complete() {
-            if Task.isCancelled || ContinuousClock.now >= deadline { return false }
-            try? await Task.sleep(for: .milliseconds(10))
+            if Task.isCancelled || waiterNow() >= deadline { return false }
+            await waiterSleep()
         }
         return true
     }

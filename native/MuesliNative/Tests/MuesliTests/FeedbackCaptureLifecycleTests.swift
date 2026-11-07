@@ -52,6 +52,23 @@ private final class FeedbackPickerFixture: FeedbackCaptureSelecting {
     func cancel() { completion?(nil) }
 }
 
+@MainActor
+private final class FeedbackWaiterClock {
+    private(set) var now = ContinuousClock.now
+    private var sleepers: [CheckedContinuation<Void, Never>] = []
+    var hasSleeper: Bool { !sleepers.isEmpty }
+
+    func sleep() async {
+        await withCheckedContinuation { sleepers.append($0) }
+    }
+
+    func advance(by duration: Duration) {
+        now = now.advanced(by: duration)
+        let pending = sleepers; sleepers.removeAll()
+        pending.forEach { $0.resume() }
+    }
+}
+
 @Suite("Vidshot lifecycle", .serialized)
 @MainActor
 struct FeedbackCaptureLifecycleTests {
@@ -516,24 +533,41 @@ struct FeedbackCaptureLifecycleTests {
         try await withFeedbackStoreAsync { store, root in
             let mic = FeedbackMicrophoneFixture()
             let stopGate = DispatchSemaphore(value: 0)
+            let stopEntered = OSAllocatedUnfairLock(initialState: false)
+            let waiterClock = FeedbackWaiterClock()
             var resumeStartup: CheckedContinuation<Void, Never>?
             var installed: FeedbackCaptureAttempt?
-            if !suspendStartup { mic.stopAction = { stopGate.wait() } }
-            defer { stopGate.signal(); resumeStartup?.resume() }
+            if !suspendStartup { mic.stopAction = { stopEntered.withLock { $0 = true }; stopGate.wait() } }
+            defer { stopGate.signal(); resumeStartup?.resume(); waiterClock.advance(by: .seconds(1)) }
             let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
                 pointerTarget: feedbackTarget, currentDisplayTarget: { $0 }, prepareScreen: { attempt, device in
                     try attempt.install(device: device, microphone: mic)
                     installed = attempt
                     if suspendStartup { await withCheckedContinuation { resumeStartup = $0 } }
-                }, startupTimeout: .milliseconds(30), observeSystem: false, waiterTimeout: .milliseconds(40))
+                }, startupTimeout: .milliseconds(30), observeSystem: false, waiterTimeout: .milliseconds(40),
+                waiterNow: { waiterClock.now }, waiterSleep: { await waiterClock.sleep() })
             #expect(controller.start(permissions: granted, busyActivity: nil, device: { nil }))
             try await waitUntil { installed != nil && (suspendStartup || controller.state?.isRecording == true) }
             let id = try #require(installed?.snapshot()?.id)
             if suspendStartup { try await waitUntil { controller.errorMessage == "Startup timed out" } }
-            let began = ContinuousClock.now
-            #expect(!(await controller.finishAndReleaseMicrophone()))
-            #expect(!(await controller.shutdown()))
-            #expect(began.duration(to: .now) < .seconds(1))
+            var releaseResult: Bool?
+            let releaseTask = Task { releaseResult = await controller.finishAndReleaseMicrophone() }
+            try await waitUntil(description: "microphone-release waiter") { waiterClock.hasSleeper }
+            if !suspendStartup { try await waitUntil(description: "blocked microphone stop") { stopEntered.withLock { $0 } } }
+            #expect(releaseResult == nil && controller.ownsMicrophone)
+            waiterClock.advance(by: .milliseconds(40))
+            try await waitUntil(description: "microphone-release timeout") { releaseResult != nil }
+            #expect(releaseResult == false)
+            await releaseTask.value
+
+            var shutdownResult: Bool?
+            let shutdownTask = Task { shutdownResult = await controller.shutdown() }
+            try await waitUntil(description: "shutdown waiter") { waiterClock.hasSleeper }
+            #expect(shutdownResult == nil && controller.hasAttempt)
+            waiterClock.advance(by: .milliseconds(40))
+            try await waitUntil(description: "shutdown timeout") { shutdownResult != nil }
+            #expect(shutdownResult == false)
+            await shutdownTask.value
             #expect(controller.ownsMicrophone && controller.hasAttempt)
             #expect(!controller.start(permissions: granted, busyActivity: nil, device: { nil }))
             #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: id, path: "unfinished.json").path))
