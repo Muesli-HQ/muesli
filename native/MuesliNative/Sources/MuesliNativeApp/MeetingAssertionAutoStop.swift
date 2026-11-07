@@ -108,6 +108,23 @@ enum MeetingAssertionTarget: Equatable, Sendable {
 }
 
 enum MeetingAssertionReader {
+    /// Conservative calendar-start check. A failed snapshot is unknown, not idle.
+    static func hasAnySupportedMeetingAssertion() -> Bool? {
+        let targets: [MeetingAssertionTarget] = [.zoom, .teams, .webex]
+            + MeetingCandidateResolver.browserApps.keys.map { .browser(bundleID: $0) }
+        for target in targets {
+            let roots = target.bundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
+                .compactMap { app -> (pid_t, String)? in
+                    guard let path = app.bundleURL?.path else { return nil }
+                    return (app.processIdentifier, path)
+                }
+            guard !roots.isEmpty else { continue }
+            guard let present = hasAssertion(target: target, roots: roots) else { return nil }
+            if present { return true }
+        }
+        return false
+    }
+
     /// Public IOKit snapshot. Call off the main actor; nil means the query failed.
     static func hasAssertion(target: MeetingAssertionTarget, roots: [(pid_t, String)]) -> Bool? {
         var unmanaged: Unmanaged<CFDictionary>?

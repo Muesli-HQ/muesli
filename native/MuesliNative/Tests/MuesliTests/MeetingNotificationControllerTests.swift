@@ -5,6 +5,25 @@ import Testing
 
 @Suite("MeetingNotificationController")
 struct MeetingNotificationControllerTests {
+    @Test("calendar auto-record preserves recordings and asks when a call may already be active")
+    func autoRecordConflictDecision() {
+        let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision
+        #expect(decision(true, true, true) == .keepCurrentRecording)
+        #expect(decision(true, false, false) == .keepCurrentRecording)
+        #expect(decision(false, true, false) == .askBeforeRecording)
+        #expect(decision(false, false, true) == .askBeforeRecording)
+        #expect(decision(false, false, nil) == .askBeforeRecording)
+        #expect(decision(false, false, false) == .startRecording)
+        #expect(!ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: "meet.google.com/aaa-bbbb-ccc", scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
+        ))
+        #expect(ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: nil, scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
+        ))
+        #expect(ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: "zoom.us/j/123", scheduledRoom: "zoom.us/j/456"
+        ))
+    }
     @Test("A close callback can install the next notification callback")
     @MainActor
     func closePreservesNextCallback() {

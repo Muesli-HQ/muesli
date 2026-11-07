@@ -222,6 +222,7 @@ case "${shard}" in
       MeetingCaptureShutdownTests
       ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
+      MeetingNotificationControllerTests
       MeetingAutoStopPolicyTests
       MeetingCandidateResolverTests
       MeetingAudioRecoveryDeadlinesTests

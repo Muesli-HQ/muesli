@@ -954,6 +954,7 @@ public final class MuesliController: NSObject {
     private var activeMeetingCalendarEndDate: Date?
     private var latestMeetingActivityCandidate: MeetingCandidate?
     private var latestMeetingActivityCandidateObservedAt: Date?
+    private var pendingCalendarAutoRecordCheck: String?
     private var activeMeetingAutoStop = MeetingAutoStopTracker()
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
     private var meetingAutoStopObserver: MeetingAutoStopObserver?
@@ -1371,6 +1372,7 @@ public final class MuesliController: NSObject {
         meetingMonitor.detectionEnabledProvider = { [weak self] in
             guard let self else { return false }
             return self.config.showMeetingDetectionNotification
+                || self.config.autoRecordMeetings
                 || self.activeMeetingAutoStop.isArmed
         }
         meetingMonitor.mutedDetectionBundleIDsProvider = { [weak self] in
@@ -4812,7 +4814,7 @@ public final class MuesliController: NSObject {
 
     private func syncMeetingDetectionMonitor() {
         let shouldRun = meetingFeatureMonitorsAllowed
-            && (config.showMeetingDetectionNotification || activeMeetingAutoStop.isArmed)
+            && (config.showMeetingDetectionNotification || config.autoRecordMeetings || activeMeetingAutoStop.isArmed)
         if shouldRun && !meetingDetectionMonitorStarted {
             meetingMonitor.start()
             meetingDetectionMonitorStarted = true
@@ -4834,8 +4836,11 @@ public final class MuesliController: NSObject {
     }
 
     private func checkUpcomingCalendarNotifications() {
-        guard !isMeetingRecording(),
-              !isStartingMeetingRecording else { return }
+        if isMeetingRecording() {
+            notifyScheduledMeetingDuringRecordingIfNeeded()
+            return
+        }
+        guard !isStartingMeetingRecording else { return }
 
         let now = Date()
         let leadTime = config.scheduledMeetingNotificationLeadTime.seconds
@@ -4862,16 +4867,71 @@ public final class MuesliController: NSObject {
             for event in autoRecordCandidates {
                 let key = notificationKey(id: event.id, startDate: event.startDate)
                 guard !autoRecordedCalendarEventIDs.contains(key) else { continue }
-                autoRecordedCalendarEventIDs.insert(key)
-
-                startMeetingRecording(
-                    title: event.title,
-                    calendarOccurrence: event.resolvedCalendarOccurrence,
-                    openDocument: false,
-                    endDate: event.endDate,
-                    autoStopSource: event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
-                    startOrigin: .calendarAutoRecord
-                )
+                guard pendingCalendarAutoRecordCheck == nil else { return }
+                pendingCalendarAutoRecordCheck = key
+                Task { [weak self] in
+                    let hasCallAssertion = await Task.detached(priority: .utility) {
+                        MeetingAssertionReader.hasAnySupportedMeetingAssertion()
+                    }.value
+                    guard let self, self.pendingCalendarAutoRecordCheck == key else { return }
+                    self.pendingCalendarAutoRecordCheck = nil
+                    guard self.config.autoRecordMeetings,
+                          !self.isMeetingRecording(), !self.isStartingMeetingRecording,
+                          let currentEvent = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                            from: self.appState.upcomingCalendarEvents, eventID: event.id,
+                            startDate: event.startDate, hiddenEventIDs: self.appState.hiddenCalendarEventIDs
+                          ), ScheduledMeetingNotificationPolicy.shouldShowStartTimePrompt(
+                            for: currentEvent, now: Date(), hiddenEventIDs: self.appState.hiddenCalendarEventIDs
+                          ), !self.autoRecordedCalendarEventIDs.contains(key) else { return }
+                    let activeCandidate = self.recentMeetingActivityCandidate()
+                    switch ScheduledMeetingNotificationPolicy.autoRecordDecision(
+                        isRecording: self.isMeetingRecording() || self.isStartingMeetingRecording,
+                        hasDetectedCall: activeCandidate != nil, hasCallAssertion: hasCallAssertion
+                    ) {
+                    case .keepCurrentRecording:
+                        return
+                    case .askBeforeRecording:
+                        guard !self.meetingNotification.isVisible else { return }
+                        self.isShowingCalendarNotification = true
+                        let didShow = self.meetingNotification.show(
+                            promptID: "calendar-auto-record-confirm:\(key)",
+                            title: activeCandidate != nil || hasCallAssertion == true ? "Meeting already active" : "Confirm transcription",
+                            subtitle: currentEvent.title,
+                            actionLabel: "Start Transcribing",
+                            onStartRecording: { [weak self] in
+                                guard let self else { return }
+                                self.isShowingCalendarNotification = false
+                                let currentSource = self.recentMeetingActivityCandidate().map(MeetingAutoStopSource.init(candidate:))
+                                _ = self.startMeetingRecordingFromEntryPoint(
+                                    title: currentEvent.title,
+                                    calendarOccurrence: currentEvent.resolvedCalendarOccurrence,
+                                    endDate: currentEvent.endDate,
+                                    autoStopSource: currentSource,
+                                    presentation: .backgroundPill,
+                                    startOrigin: currentSource == nil ? .manual : .detectedPrompt
+                                )
+                            },
+                            onDismiss: { [weak self] in self?.isShowingCalendarNotification = false },
+                            onAutoDismiss: { [weak self] in self?.isShowingCalendarNotification = false },
+                            onClose: { [weak self] in
+                                self?.isShowingCalendarNotification = false
+                                self?.showPendingMeetingCompletionNotificationIfPossible()
+                            }
+                        )
+                        if didShow { self.autoRecordedCalendarEventIDs.insert(key) }
+                        else { self.isShowingCalendarNotification = false }
+                    case .startRecording:
+                        self.autoRecordedCalendarEventIDs.insert(key)
+                        _ = self.startMeetingRecording(
+                            title: currentEvent.title,
+                            calendarOccurrence: currentEvent.resolvedCalendarOccurrence,
+                            openDocument: false,
+                            endDate: currentEvent.endDate,
+                            autoStopSource: currentEvent.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
+                            startOrigin: .calendarAutoRecord
+                        )
+                    }
+                }
                 return
             }
         }
@@ -4929,6 +4989,41 @@ public final class MuesliController: NSObject {
             }
 
             return // Show one notification at a time
+        }
+    }
+
+    private func notifyScheduledMeetingDuringRecordingIfNeeded() {
+        guard config.autoRecordMeetings,
+              let recordingID = activeMeetingID,
+              activeMeetingSession?.isRecording == true,
+              !isStoppingMeetingRecording,
+              !meetingNotification.isVisible else { return }
+        let events = ScheduledMeetingNotificationPolicy.autoRecordCandidates(
+            from: appState.upcomingCalendarEvents, now: Date(), hiddenEventIDs: appState.hiddenCalendarEventIDs
+        )
+        for event in events {
+            let key = notificationKey(id: event.id, startDate: event.startDate)
+            guard !autoRecordedCalendarEventIDs.contains(key) else { continue }
+            let scheduledRoom = event.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0)?.normalizedURL }
+            guard ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+                recordingRoom: activeMeetingAutoStop.source?.normalizedURL, scheduledRoom: scheduledRoom
+            ) else {
+                autoRecordedCalendarEventIDs.insert(key)
+                continue
+            }
+            let didShow = meetingNotification.show(
+                promptID: "calendar-recording-conflict:\(key)",
+                title: "Recording in progress",
+                subtitle: event.title,
+                actionLabel: "View recording",
+                onStartRecording: { [weak self] in
+                    guard let self, self.activeMeetingID == recordingID,
+                          self.activeMeetingSession?.isRecording == true else { return }
+                    self.showActiveMeetingDocumentIfNeeded()
+                }
+            )
+            if didShow { autoRecordedCalendarEventIDs.insert(key) }
+            return
         }
     }
 
@@ -10913,17 +11008,20 @@ public final class MuesliController: NSObject {
     }
 
     private func recentMeetingAutoStopSource() -> MeetingAutoStopSource? {
-        guard let candidate = latestMeetingActivityCandidate,
-              let observedAt = latestMeetingActivityCandidateObservedAt,
-              Date().timeIntervalSince(observedAt) <= 15 else {
-            return nil
-        }
+        guard let candidate = recentMeetingActivityCandidate() else { return nil }
         guard !isMutedMeetingDetectionCandidate(candidate) else {
             latestMeetingActivityCandidate = nil
             latestMeetingActivityCandidateObservedAt = nil
             return nil
         }
         return MeetingAutoStopSource(candidate: candidate)
+    }
+
+    private func recentMeetingActivityCandidate() -> MeetingCandidate? {
+        guard let candidate = latestMeetingActivityCandidate,
+              let observedAt = latestMeetingActivityCandidateObservedAt,
+              Date().timeIntervalSince(observedAt) <= 15 else { return nil }
+        return candidate
     }
 
     private func isMutedMeetingDetectionCandidate(_ candidate: MeetingCandidate) -> Bool {
