@@ -956,6 +956,9 @@ public final class MuesliController: NSObject {
     private var latestMeetingActivityCandidateObservedAt: Date?
     private var activeMeetingAutoStop = MeetingAutoStopTracker()
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
+    private var zoomAutoStopObserver: ZoomMeetingAutoStopObserver?
+    private var zoomAutoStopMeetingID: Int64?
+    private var meetingAssertionTarget: MeetingAssertionTarget?
     private var meetingSignalLossPromptState = MeetingSignalLossPromptState()
     private let meetingAutoStopGracePeriod: TimeInterval = 20
     private var meetingInactivityReminder: Timer?
@@ -9013,6 +9016,7 @@ public final class MuesliController: NSObject {
                 guard meetingSession.capturePhase.isRecording else { throw CancellationError() }
                 checkMeetingClamshellMicrophone(owner: owner)
                 activeMeetingAutoStop.markRecordingStarted(now: Date())
+                syncZoomMeetingAutoStop()
                 if activeMeetingSignalLossResponse == .transcriptInactivity {
                     noteMeetingTranscriptActivity()
                 }
@@ -10931,6 +10935,10 @@ public final class MuesliController: NSObject {
     }
 
     private func disarmMeetingAutoStop() {
+        zoomAutoStopObserver?.stop()
+        zoomAutoStopObserver = nil
+        zoomAutoStopMeetingID = nil
+        meetingAssertionTarget = nil
         meetingInactivityReminder?.invalidate()
         meetingInactivityReminder = nil
         activeMeetingAutoStop.disarm()
@@ -10986,8 +10994,58 @@ public final class MuesliController: NSObject {
             now: now,
             gracePeriod: meetingAutoStopGracePeriod
         ) {
-            presentMeetingSignalLossPromptIfNeeded()
+            if zoomAutoStopObserver?.hasObservedAssertion != true {
+                presentMeetingSignalLossPromptIfNeeded()
+            }
         }
+        syncZoomMeetingAutoStop()
+    }
+
+    func setZoomMeetingAutoStopEnabled(_ enabled: Bool) {
+        updateConfig { $0.zoomMeetingAutoStopEnabled = enabled }
+        syncZoomMeetingAutoStop()
+    }
+
+    private func syncZoomMeetingAutoStop() {
+        guard config.zoomMeetingAutoStopEnabled,
+              let meetingID = activeMeetingID,
+              activeMeetingSession?.isRecording == true,
+              let target = activeMeetingAutoStop.source?.assertionTarget else {
+            zoomAutoStopObserver?.stop()
+            zoomAutoStopObserver = nil
+            zoomAutoStopMeetingID = nil
+            meetingAssertionTarget = nil
+            return
+        }
+        guard zoomAutoStopMeetingID != meetingID || meetingAssertionTarget != target else { return }
+        zoomAutoStopObserver?.stop()
+        let observer = ZoomMeetingAutoStopObserver()
+        zoomAutoStopObserver = observer
+        zoomAutoStopMeetingID = meetingID
+        meetingAssertionTarget = target
+        observer.start(target: target, isEligible: { [weak self, weak observer] in
+            guard let self, let observer else { return false }
+            return self.zoomAutoStopObserver === observer
+                && self.zoomAutoStopMeetingID == meetingID
+                && self.activeMeetingID == meetingID
+                && self.config.zoomMeetingAutoStopEnabled
+                && self.activeMeetingAutoStop.source?.assertionTarget == target
+                && self.activeMeetingSession?.isRecording == true
+                && self.activeMeetingSession?.isPaused == false
+                && !self.isStoppingMeetingRecording
+        }, onStop: { [weak self, weak observer] in
+            guard let self, let observer,
+                  self.zoomAutoStopObserver === observer,
+                  self.zoomAutoStopMeetingID == meetingID,
+                  self.activeMeetingID == meetingID,
+                  self.config.zoomMeetingAutoStopEnabled,
+                  self.activeMeetingAutoStop.source?.assertionTarget == target,
+                  self.activeMeetingSession?.isRecording == true,
+                  self.activeMeetingSession?.isPaused == false,
+                  !self.isStoppingMeetingRecording else { return false }
+            self.stopMeetingRecording()
+            return true
+        })
     }
 
     private func meetingSignalLossPromptID(for meetingID: Int64?) -> String {

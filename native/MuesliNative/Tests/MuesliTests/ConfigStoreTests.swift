@@ -31,6 +31,7 @@ struct ConfigStoreTests {
         config.whisperLanguage = WhisperKitLanguage.german.rawValue
         config.appleSpeechLanguage = "en-US"
         config.meetingSummaryBackend = "openrouter"
+        config.zoomMeetingAutoStopEnabled = true
         store.save(config)
 
         let loaded = store.load()
@@ -46,6 +47,13 @@ struct ConfigStoreTests {
         #expect(loaded.whisperLanguage == WhisperKitLanguage.german.rawValue)
         #expect(loaded.appleSpeechLanguage == "en-US")
         #expect(loaded.meetingSummaryBackend == "openrouter")
+        #expect(loaded.zoomMeetingAutoStopEnabled)
+    }
+
+    @Test("Zoom auto-stop is off for existing configurations")
+    func zoomAutoStopDefaultsOff() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(!config.zoomMeetingAutoStopEnabled)
     }
 
     @Test("config path honors the isolated support directory")

@@ -42,6 +42,99 @@ struct MeetingAutoStopPolicyTests {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let room = "meet.google.com/aaa-bbbb-ccc"
 
+    @Test("Zoom assertion absence requires a prior positive observation and healthy network knowledge")
+    func zoomNeedsObservedAssertion() {
+        var facts = ZoomAutoStopFacts()
+        facts.observeNetwork(.available, now: now)
+        facts.observeAssertion(.absent, now: now)
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(600)))
+        facts.observeAssertion(.present, now: now)
+        facts.observeAssertion(.absent, now: now)
+        facts.observeProbe(.reachable, now: now)
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(29)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(30)))
+        facts.observeNetwork(.unknown, now: now)
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(600)))
+    }
+
+    @Test("network interruption preserves a recording and assertion recovery cancels loss")
+    func zoomReconnect() {
+        var facts = ZoomAutoStopFacts()
+        facts.observeNetwork(.available, now: now)
+        facts.observeAssertion(.present, now: now)
+        facts.observeNetwork(.unavailable, now: now)
+        facts.observeAssertion(.absent, now: now)
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(479)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(480)))
+        facts.observeNetwork(.available, now: now.addingTimeInterval(55))
+        facts.observeProbe(.reachable, now: now.addingTimeInterval(55))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(114)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(115)))
+        facts.observeAssertion(.present, now: now.addingTimeInterval(56))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(600)))
+    }
+
+    @Test("recent reconnect is correlated even if loss is observed later")
+    func zoomLateLossAndUnknown() {
+        var facts = ZoomAutoStopFacts()
+        facts.observeNetwork(.available, now: now)
+        facts.observeAssertion(.present, now: now)
+        facts.observeNetwork(.unavailable, now: now)
+        facts.observeNetwork(.unknown, now: now.addingTimeInterval(5))
+        facts.observeNetwork(.available, now: now.addingTimeInterval(10))
+        facts.observeAssertion(.absent, now: now.addingTimeInterval(20))
+        facts.observeProbe(.reachable, now: now.addingTimeInterval(20))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(69)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(70)))
+        facts.observeAssertion(.unknown, now: now.addingTimeInterval(71))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(600)))
+    }
+
+    @Test("failed connectivity checks extend recovery and successful checks restart grace")
+    func zoomCanaryRecovery() {
+        var facts = ZoomAutoStopFacts()
+        facts.observeNetwork(.available, now: now)
+        facts.observeAssertion(.present, now: now)
+        facts.observeAssertion(.absent, now: now)
+        facts.observeProbe(.unavailable, now: now.addingTimeInterval(5))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(479)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(480)))
+        facts.observeProbe(.reachable, now: now.addingTimeInterval(100))
+        #expect(!facts.shouldStop(now: now.addingTimeInterval(159)))
+        #expect(facts.shouldStop(now: now.addingTimeInterval(160)))
+    }
+
+    @Test("assertion monitoring requires attributed meeting sources")
+    func zoomSourceEligibility() throws {
+        let url = try #require(URL(string: "https://zoom.us/j/123456789"))
+        let source = try #require(MeetingAutoStopSource(meetingURL: url))
+        #expect(source.assertionTarget == nil)
+        let native = candidate(id: "native", url: nil, bundle: "us.zoom.xos")
+        #expect(MeetingAutoStopPolicy.matches(candidate: native, source: source))
+        #expect(source.refined(with: native).assertionTarget == .zoom)
+        #expect(!MeetingAutoStopPolicy.matches(candidate: candidate(id: "native", url: nil, bundle: "us.zoom.xos", media: false), source: source))
+        #expect(MeetingAutoStopSource(candidate: candidate(id: "zoom", url: nil, bundle: "us.zoom.xos")).assertionTarget == .zoom)
+        #expect(MeetingAutoStopSource(candidate: candidate(id: "zoom", url: "zoom.us/j/123456789", bundle: "com.google.Chrome")).assertionTarget == .browser(bundleID: "com.google.Chrome"))
+        #expect(MeetingAutoStopSource(candidate: candidate(url: nil)).assertionTarget == nil)
+        #expect(MeetingAutoStopSource(candidate: candidate(bundle: "com.microsoft.teams2.helper")).assertionTarget == .teams)
+        #expect(MeetingAutoStopSource(candidate: candidate(bundle: "com.cisco.webexmeetingsapp")).assertionTarget == .webex)
+        #expect(MeetingRecordingStartOrigin.manual.signalLossSource(explicitSource: nil, recentSource: nil) == nil)
+    }
+
+    @Test("assertion signatures are specific to each platform")
+    func assertionPatterns() {
+        let on = 255
+        #expect(MeetingAssertionTarget.zoom.matches(name: "Describe Activity Type", type: "NoDisplaySleepAssertion", level: on))
+        #expect(MeetingAssertionTarget.teams.matches(name: "Call in progress", type: "PreventUserIdleDisplaySleep", level: on))
+        #expect(!MeetingAssertionTarget.teams.matches(name: "Video Wake Lock", type: "PreventUserIdleDisplaySleep", level: on))
+        #expect(MeetingAssertionTarget.webex.matches(name: "On a call", type: "PreventUserIdleDisplaySleep", level: on))
+        #expect(!MeetingAssertionTarget.webex.matches(name: "Video Wake Lock", type: "PreventUserIdleDisplaySleep", level: on))
+        let browser = MeetingAssertionTarget.browser(bundleID: "com.google.Chrome")
+        #expect(browser.matches(name: "WebRTC has active PeerConnections", type: "NoIdleSleepAssertion", level: on))
+        #expect(!browser.matches(name: "Video Wake Lock", type: "NoIdleSleepAssertion", level: on))
+        #expect(!browser.matches(name: "WebRTC has active PeerConnections", type: "NoIdleSleepAssertion", level: 0))
+    }
+
     private func candidate(
         id: String = "room-a", url: String? = "meet.google.com/aaa-bbbb-ccc",
         bundle: String? = "com.google.Chrome", media: Bool = true,

@@ -2301,6 +2301,7 @@ struct AppConfig: Codable, Equatable {
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
+    var zoomMeetingAutoStopEnabled: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -2515,6 +2516,7 @@ struct AppConfig: Codable, Equatable {
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case zoomMeetingAutoStopEnabled = "zoom_meeting_auto_stop_enabled"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -2739,6 +2741,7 @@ struct AppConfig: Codable, Equatable {
             (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
             ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        zoomMeetingAutoStopEnabled = (try? c.decode(Bool.self, forKey: .zoomMeetingAutoStopEnabled)) ?? defaults.zoomMeetingAutoStopEnabled
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))

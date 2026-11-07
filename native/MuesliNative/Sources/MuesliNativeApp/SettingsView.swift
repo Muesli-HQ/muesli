@@ -2529,6 +2529,11 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow("Automatically stop supported meetings", description: "Supports Zoom, Teams, Webex and attributed browser meetings. Checks connectivity with Google when a meeting signal disappears; network interruptions receive extra recovery time.") {
+                    settingsControl("zoom_auto_stop")
+                }
             }
 
             settingsSection("Calendars") {

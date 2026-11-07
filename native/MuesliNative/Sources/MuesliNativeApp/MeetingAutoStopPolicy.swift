@@ -146,6 +146,19 @@ struct MeetingAutoStopSource: Equatable {
     let sourceBundleID: String?
     let hasObservedCandidate: Bool
 
+    var assertionTarget: MeetingAssertionTarget? {
+        guard hasObservedCandidate, let bundle = sourceBundleID else { return nil }
+        let same = MeetingAutoStopPolicy.bundleIDsReferToSameApp
+        if same(bundle, "us.zoom.xos") { return .zoom }
+        if ["com.microsoft.teams2", "com.microsoft.teams"].contains(where: { same(bundle, $0) }) { return .teams }
+        if ["com.webex.meetingmanager", "com.cisco.webexmeetingsapp"].contains(where: { same(bundle, $0) }) { return .webex }
+        // A generic browser audio session is not evidence of a meeting. The
+        // room and browser must both have been attributed to this recording.
+        guard normalizedURL != nil,
+              let root = MeetingCandidateResolver.browserApps.keys.first(where: { same(bundle, $0) }) else { return nil }
+        return .browser(bundleID: root)
+    }
+
     private init(
         candidateID: String?,
         suppressionID: String?,
@@ -263,6 +276,21 @@ enum MeetingAutoStopPolicy {
         if candidate.id == source.candidateID
             || candidate.suppressionID == source.suppressionID
             || (source.normalizedURL != nil && candidate.url == source.normalizedURL) {
+            return true
+        }
+        // Calendar and join-link sources start with a room URL but no desktop
+        // bundle. Allow actual Zoom input attribution to refine that source;
+        // a running Zoom process or a browser URL alone cannot bind it.
+        if source.sourceBundleID == nil,
+           candidate.url == nil,
+           let bundle = candidate.sourceBundleID,
+           let prefix = source.candidateID?.split(separator: ":").first,
+           [("zoom", "us.zoom.xos"), ("teams", "com.microsoft.teams2"),
+            ("teams", "com.microsoft.teams"), ("webex", "com.webex.meetingmanager"),
+            ("webex", "com.cisco.webexmeetingsapp")].contains(where: {
+                $0.0 == String(prefix) && bundleIDsReferToSameApp(bundle, $0.1)
+           }),
+           candidate.evidence.contains(.audioInputProcess) {
             return true
         }
         guard let sourceBundle = source.sourceBundleID,
