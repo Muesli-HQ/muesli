@@ -1179,6 +1179,15 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: id)?.savedRecordingPath == "/saved/recovery.wav")
     }
 
+    @Test("Recording recovery references decode legacy and pending decisions")
+    func recordingRecoveryDecisionCompatibility() throws {
+        let legacy = Data(#"{"meetingID":1,"startTime":"date","databasePath":"/local"}"#.utf8)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: legacy).pendingRetentionDecision == nil)
+        let pending = MeetingRecordingRecoveryReference(meetingID: 1, startTime: "date", databasePath: "/local", pendingRetentionDecision: true)
+        let encoded = try JSONEncoder().encode(pending)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: encoded).pendingRetentionDecision == true)
+    }
+
     @Test("retained recording reference survives restart and repeated database failure")
     func retainedRecordingReferenceSurvivesRestart() throws {
         let store = try makeStore()
@@ -1431,6 +1440,15 @@ struct MeetingsNavigationTests {
         #expect(!fallbackLog.contains(privateTitle))
         #expect(!fallbackLog.contains(privatePath))
         #expect(!fallbackLog.contains(message))
+    }
+
+    @Test("System suspension retains audio without waiting for its prompt")
+    func systemSuspensionDefersRetentionPrompt() async {
+        let retained = await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false, deferPrompt: true,
+            prompt: { Issue.record("The retention prompt must not block finalization"); return false }
+        )
+        #expect(retained)
     }
 
     @Test("explicit screen recording retains audio without another save prompt")

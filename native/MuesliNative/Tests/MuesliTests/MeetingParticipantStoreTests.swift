@@ -271,6 +271,17 @@ struct MeetingParticipantStoreTests {
         #expect(try store.searchMeetingPeople(query: "Legacy").first?.personID == id)
     }
 
+    @Test("Calendar attendee renames update the People search index")
+    func calendarRenameUpdatesPeopleSearch() throws {
+        let store = try makeStore()
+        let meetingID = try makeMeeting(in: store)
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant("calendar:alice", name: "Alice Old")])
+        let original = try #require(store.searchMeetingPeople(query: "Alice Old").first?.personID)
+        try store.attachCalendarMeetingParticipants(meetingID: meetingID, participants: [participant("calendar:alice", name: "Alice New")])
+        #expect(try store.searchMeetingPeople(query: "Alice New").first?.personID == original)
+        #expect(try store.searchMeetingPeople(query: "Alice Old").isEmpty)
+    }
+
     @Test("calendar attendee snapshots retain their names and emails")
     func calendarAttendeeReadback() throws {
         let store = try makeStore()

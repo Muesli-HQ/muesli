@@ -13,6 +13,7 @@ struct RouteAwareMeetingMicRecorderTests {
         let lifecycle = DispatchQueue(label: "test.start-gate.lifecycle")
         let worker = DispatchQueue(label: "test.start-gate.worker")
         let cleanup = DispatchQueue(label: "test.start-gate.cleanup")
+        let route = DefaultInputRoute(defaultInputDeviceID: 82)
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
         candidate.onStart = {
             if audioFirst { candidate.emit([2, 3], at: 100) }
@@ -22,6 +23,7 @@ struct RouteAwareMeetingMicRecorderTests {
         defer { release.signal(); candidate.onStart = nil }
         let recorder = RouteAwareMeetingMicRecorder(
             systemDefaultRecorder: old, appScopedRecorder: candidate,
+            routeSnapshotProvider: { route.snapshot() },
             lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
@@ -35,6 +37,7 @@ struct RouteAwareMeetingMicRecorderTests {
         lifecycle.sync {}
         old.emit([1], at: 99)
         #expect(recorder.activeRecorderKindForDebug() == .systemDefault)
+        #expect(recorder.activeInputDeviceID == 82)
         #expect(delivered.withLock { $0 } == [1])
         #expect(outcomes.withLock { $0 }.isEmpty)
         #expect(!old.invalidatedForTeardown)
@@ -53,6 +56,7 @@ struct RouteAwareMeetingMicRecorderTests {
         #expect(outcomes.withLock { $0 } == [.promoted])
         #expect(old.stopCalls == 1)
         #expect(recorder.activeRecorderKindForDebug() == .appScoped)
+        #expect(recorder.activeInputDeviceID == 91)
         _ = recorder.stop()
         recorder.waitForQuiescence()
     }
@@ -64,6 +68,7 @@ struct RouteAwareMeetingMicRecorderTests {
         let lifecycle = DispatchQueue(label: "test.start-failure.lifecycle")
         let worker = DispatchQueue(label: "test.start-failure.worker")
         let cleanup = DispatchQueue(label: "test.start-failure.cleanup")
+        let route = DefaultInputRoute(defaultInputDeviceID: 82)
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
         candidate.startError = NSError(domain: "test.startup", code: 1)
         candidate.onStart = {
@@ -74,6 +79,7 @@ struct RouteAwareMeetingMicRecorderTests {
         defer { release.signal(); candidate.onStart = nil }
         let recorder = RouteAwareMeetingMicRecorder(
             systemDefaultRecorder: old, appScopedRecorder: candidate,
+            routeSnapshotProvider: { route.snapshot() },
             lifecycleQueue: lifecycle, handoffWorkerQueue: worker, cleanupQueue: cleanup,
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
@@ -95,6 +101,7 @@ struct RouteAwareMeetingMicRecorderTests {
         old.emit([7], at: 102)
         #expect(delivered.withLock { $0 } == [7])
         #expect(outcomes.withLock { $0 } == [.failed])
+        #expect(recorder.activeInputDeviceID == 82)
         #expect(old.stopCalls == 0)
         #expect(!old.invalidatedForTeardown)
         #expect(candidate.cancelCalls == 1)

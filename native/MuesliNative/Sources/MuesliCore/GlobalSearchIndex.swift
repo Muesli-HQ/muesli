@@ -174,6 +174,21 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 }
                 guard try source.tables.allSatisfy({ try exists($0) }) else { continue }
                 let complete = try exists(source.view) && source.triggerNames.allSatisfy { try exists($0) }
+                if complete && source.prefix == "meeting" {
+                    // Upgrade the participant UPDATE trigger in place. Identity-only
+                    // merges do not change indexed text, so they must not rewrite
+                    // every transcript in the FTS index.
+                    let name = "\(source.view)_meeting_participants_UPDATE"
+                    let statement = try prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?")
+                    bind(name, statement, 1)
+                    let sql = sqlite3_step(statement) == SQLITE_ROW
+                        ? sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? "" : ""
+                    sqlite3_finalize(statement)
+                    if !sql.contains("UPDATE OF display_name") {
+                        try execute("DROP TRIGGER IF EXISTS \(name)")
+                        try execute(Self.sourceTrigger(source, table: "meeting_participants", key: "meeting_id", event: "UPDATE"))
+                    }
+                }
                 guard !complete else { continue }
                 // Dropping a source table removes its triggers, but leaves its view and indexed text.
                 // Repair the entire source atomically so deleted/changed rows cannot survive a migration.
@@ -182,16 +197,7 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 try execute("INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id) SELECT * FROM \(source.view)")
                 for (table, key) in source.watches {
                     for event in ["INSERT", "UPDATE", "DELETE"] {
-                        let rows = event == "INSERT" ? ["NEW"] : event == "DELETE" ? ["OLD"] : ["OLD", "NEW"]
-                        let refresh = rows.map { row in
-                            let identity = "'\(source.prefix):' || \(row).\(key)"
-                            return """
-                                DELETE FROM global_search_documents WHERE identity=\(identity);
-                                INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id)
-                                    \(source.select) AND \(source.primaryKey)=\(row).\(key);
-                                """
-                        }.joined(separator: "\n")
-                        try execute("CREATE TRIGGER IF NOT EXISTS \(source.view)_\(table)_\(event) AFTER \(event) ON \(table) BEGIN \(refresh) END")
+                        try execute(Self.sourceTrigger(source, table: table, key: key, event: event))
                     }
                 }
             }
@@ -333,6 +339,20 @@ public final class GlobalSearchIndex: @unchecked Sendable {
             watches.flatMap { table, _ in ["INSERT", "UPDATE", "DELETE"].map { "\(view)_\(table)_\($0)" } }
         }
         var primaryKey: String { prefix == "recap" ? "day_key" : prefix == "meeting" ? "m.id" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
+    }
+    private static func sourceTrigger(_ source: Source, table: String, key: String, event: String) -> String {
+        let rows = event == "INSERT" ? ["NEW"] : event == "DELETE" ? ["OLD"] : ["OLD", "NEW"]
+        let refresh = rows.map { row in
+            let identity = "'\(source.prefix):' || \(row).\(key)"
+            return """
+                DELETE FROM global_search_documents WHERE identity=\(identity);
+                INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id)
+                    \(source.select) AND \(source.primaryKey)=\(row).\(key);
+                """
+        }.joined(separator: "\n")
+        let clause = source.prefix == "meeting" && table == "meeting_participants" && event == "UPDATE"
+            ? "UPDATE OF display_name, email_address, is_suppressed, meeting_id" : event
+        return "CREATE TRIGGER IF NOT EXISTS \(source.view)_\(table)_\(event) AFTER \(clause) ON \(table) BEGIN \(refresh) END"
     }
     private static func unix(_ expression: String) -> String { "coalesce((julianday(\(expression))-2440587.5)*86400.0,0)" }
     private static let sources: [Source] = [

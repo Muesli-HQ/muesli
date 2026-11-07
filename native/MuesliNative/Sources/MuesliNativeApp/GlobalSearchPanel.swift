@@ -78,6 +78,7 @@ final class GlobalSearchPresentation {
         return "Some results unavailable: " + names
     }
     private var generation = UUID()
+    private var displayedRevision: [Int64]?
 
     func refresh(_ request: GlobalSearchRequest, using worker: GlobalSearchWorker, debounce: Bool) async {
         if request.showsPeople && request.person == nil {
@@ -85,7 +86,10 @@ final class GlobalSearchPresentation {
             await refreshPeople(debounce: debounce) { try await worker.people(matching: text) }
             return
         }
-        await refreshResponse(request, debounce: debounce) { try await worker.searchResponse($0) }
+        let revision: (@Sendable () async throws -> [Int64])?
+        if request.person != nil { revision = { try await worker.changeToken() } }
+        else { revision = nil }
+        await refreshResponse(request, debounce: debounce, revision: revision) { try await worker.searchResponse($0) }
     }
 
     func refreshPeople(debounce: Bool, search: @Sendable () async throws -> [MeetingParticipantDraft]) async {
@@ -113,10 +117,11 @@ final class GlobalSearchPresentation {
     }
 
     func refreshResponse(_ request: GlobalSearchRequest, debounce: Bool,
+                         revision: (@Sendable () async throws -> [Int64])? = nil,
                          search: @Sendable (GlobalSearchQuery) async throws -> GlobalSearchResponse) async {
         let token = UUID()
         generation = token
-        showingPeople = false; people = []; hasMore = false
+        showingPeople = false; people = []; hasMore = false; displayedRevision = nil
         error = nil
         if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && request.person == nil {
             results = []; selection = nil; unavailableKinds = []; isLoading = false; return
@@ -127,11 +132,24 @@ final class GlobalSearchPresentation {
         do {
             if debounce { try await Task.sleep(for: .milliseconds(200)) }
             try Task.checkCancellation()
-            let response = try await search(request.query())
+            var before = try await revision?()
+            var response = try await search(request.query())
+            var after = try await revision?()
+            // Index installation or a concurrent write can change the revision
+            // during the initial read. Retry once before publishing a page.
+            if before != after {
+                try Task.checkCancellation()
+                guard generation == token else { return }
+                before = after
+                response = try await search(request.query())
+                after = try await revision?()
+            }
             let found = request.person == nil ? response.results : Array(response.results.prefix(100))
             try Task.checkCancellation()
             guard generation == token else { return }
+            guard before == after else { throw GlobalSearchError.changedSources }
             results = found
+            displayedRevision = after
             hasMore = request.person != nil && response.results.count > 100
             unavailableKinds = response.unavailableKinds
             if !found.contains(where: { $0.id == selection }) { selection = found.first?.id }
@@ -150,6 +168,10 @@ final class GlobalSearchPresentation {
         do {
             let revision = try await worker.changeToken()
             guard !Task.isCancelled, generation == token else { return }
+            guard displayedRevision == revision else {
+                await refresh(request, using: worker, debounce: false)
+                return
+            }
             var query = request.query(); query.offset = results.count
             let response = try await worker.searchResponse(query)
             guard !Task.isCancelled, generation == token else { return }

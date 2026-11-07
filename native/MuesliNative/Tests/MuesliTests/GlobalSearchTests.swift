@@ -65,6 +65,39 @@ struct GlobalSearchTests {
         #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).isEmpty)
     }
 
+    @Test("Identity-only participant updates do not rewrite meeting transcripts")
+    func participantIdentityUpdatesDoNotReindex() throws {
+        let f = try Fixture()
+        try f.sql("""
+            ALTER TABLE meeting_participants ADD COLUMN person_id TEXT;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<250)
+              INSERT INTO meetings SELECT i,'2026-11-01T10:00:00Z','Meeting',hex(zeroblob(10000)),'','',NULL FROM n;
+            INSERT INTO meeting_participants SELECT id,'contact:alice','Alice',NULL,0,'before' FROM meetings;
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        // Simulate an installation with the older unrestricted v2 trigger.
+        try f.sql("""
+            DROP TRIGGER global_search_meeting_v2_meeting_participants_UPDATE;
+            CREATE TRIGGER global_search_meeting_v2_meeting_participants_UPDATE AFTER UPDATE ON meeting_participants
+              BEGIN DELETE FROM global_search_documents WHERE identity='meeting:' || OLD.meeting_id; END;
+            """)
+        let upgraded = try GlobalSearchIndex(databaseURL: f.url)
+        _ = upgraded
+        try f.sql("""
+            CREATE TABLE search_rewrites(n INTEGER);
+            CREATE TRIGGER count_search_deletes AFTER DELETE ON global_search_documents BEGIN INSERT INTO search_rewrites VALUES(1); END;
+            UPDATE meeting_participants SET person_id='after';
+            """)
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(f.db, "SELECT count(*) FROM search_rewrites", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_int(statement, 0) == 0)
+        sqlite3_reset(statement)
+        try f.sql("UPDATE meeting_participants SET display_name='Bianca' WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).map(\.sourceID) == ["1"])
+    }
+
     @Test("Person meeting results can page through more than 100 meetings")
     func personMeetingPages() throws {
         let f = try Fixture()

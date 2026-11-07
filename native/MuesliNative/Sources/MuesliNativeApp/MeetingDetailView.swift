@@ -2452,7 +2452,7 @@ private struct RelatedMeetingsSection: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(meeting.title).font(MuesliTheme.body())
-                                Text(meeting.sharedNames.joined(separator: ", ") + " · " + meeting.startTime)
+                                Text(meeting.sharedNames.joined(separator: ", ") + " · " + MeetingBrowserLogic.formatStartTime(meeting.startTime))
                                     .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)

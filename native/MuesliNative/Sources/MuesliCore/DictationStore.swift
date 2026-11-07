@@ -170,6 +170,7 @@ public final class DictationStore {
             insertion_order INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT 'manual',
             is_suppressed INTEGER NOT NULL DEFAULT 0,
+            person_id TEXT,
             PRIMARY KEY (meeting_id, participant_identifier)
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_participants_order
@@ -2465,6 +2466,16 @@ public final class DictationStore {
                 SELECT m.source_id FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
                 WHERE m.undone=0 AND i.identifier=? ORDER BY m.rowid LIMIT 1)
               """, [.text(participant.displayName), .text(identifier)], db: db)
+        } else if identifier.hasPrefix("calendar:") {
+            // Calendar-only identities can follow attendee edits. A contact or
+            // a confirmed merge owns the canonical name and must not be overwritten.
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=?
+                AND NOT EXISTS (SELECT 1 FROM meeting_person_identifiers i
+                                WHERE i.person_id=? AND i.identifier NOT LIKE 'calendar:%')
+                AND NOT EXISTS (SELECT 1 FROM meeting_people_merges m
+                                WHERE m.undone=0 AND m.target_id=?)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(id)], db: db)
         }
         for email in emails {
             try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier) VALUES(?,?,?)", [.text(id), .text(email), .text(identifier)], db: db)

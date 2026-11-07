@@ -22,6 +22,7 @@ struct MeetingParticipantsView: View {
     @State private var suggestionTask: Task<Void, Never>?
     @State private var findingPeople = false
     @State private var suggestionMessage: String?
+    @State private var evidenceSuggestionID: String?
     @State private var matchingPeople: [String: [MeetingParticipantDraft]] = [:]
     @State private var errorMessage: String?
 
@@ -74,7 +75,7 @@ struct MeetingParticipantsView: View {
         }
         .onChange(of: meetingID) { _, _ in
             suggestionTask?.cancel(); suggestionTask = nil
-            suggestions = []; matchingPeople = [:]; suggestionMessage = nil; findingPeople = false
+            suggestions = []; matchingPeople = [:]; suggestionMessage = nil; evidenceSuggestionID = nil; findingPeople = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { notification in
             guard notification.object as? Int64 == meetingID else { return }
@@ -231,6 +232,22 @@ struct MeetingParticipantsView: View {
                                         .foregroundStyle(MuesliTheme.textTertiary)
                                     Text(suggestion.name).font(MuesliTheme.callout()).lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                    Button { evidenceSuggestionID = suggestion.id } label: {
+                                        Image(systemName: "info.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Show supporting excerpt")
+                                    .accessibilityLabel("Show evidence for \(suggestion.name)")
+                                    .popover(isPresented: Binding(
+                                        get: { evidenceSuggestionID == suggestion.id },
+                                        set: { if !$0 { evidenceSuggestionID = nil } }
+                                    )) {
+                                        ScrollView {
+                                            Text(suggestion.excerpt).font(MuesliTheme.callout())
+                                                .textSelection(.enabled)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }.frame(width: 260, height: 110).padding(MuesliTheme.spacing12)
+                                    }
                                     Menu("Add") {
                                         Button("Add as new person") { resolve(suggestion, add: true) }
                                         ForEach(matchingPeople[suggestion.id] ?? [], id: \.participantIdentifier) { person in
@@ -396,7 +413,10 @@ struct MeetingParticipantsView: View {
             }
             guard !Task.isCancelled else { return }
             matchingPeople = matches
-        } catch { suggestionMessage = error.localizedDescription }
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled else { return }
+            suggestionMessage = error.localizedDescription
+        }
     }
 
     private func findParticipants() {

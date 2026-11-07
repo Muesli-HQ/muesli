@@ -1090,6 +1090,8 @@ private struct MeetingPeopleDirectory: View {
     @State private var selected: MeetingParticipantDraft?
     @State private var meetings: [GlobalSearchResult] = []
     @State private var moreMeetings = false
+    @State private var displayedMeetingsRevision: [Int64]?
+    @State private var meetingPageGeneration = UUID()
     @State private var duplicates: [DuplicateMeetingPeople] = []
     @State private var history: [MeetingPeopleMerge] = []
     @State private var candidate: DuplicateMeetingPeople?
@@ -1216,9 +1218,12 @@ private struct MeetingPeopleDirectory: View {
                 let result = try await controller.globalSearchWorker.people(matching: query)
                 guard !Task.isCancelled else { return }
                 people = result
+                error = nil
             } catch is CancellationError {} catch { self.error = "People couldn’t load. Try again." }
         }
         .task(id: selected?.personID) {
+            meetingPageGeneration = UUID()
+            meetings = []; moreMeetings = false; displayedMeetingsRevision = nil
             if let selected { await loadMeetings(selected, append: false) }
         }
         .task(id: revision) { await refreshReview() }
@@ -1260,24 +1265,42 @@ private struct MeetingPeopleDirectory: View {
 
     private func loadMeetings(_ person: MeetingParticipantDraft, append: Bool) async {
         guard !append || !busy else { return }
+        if !append { meetingPageGeneration = UUID() }
+        let generation = meetingPageGeneration
         if append { busy = true }
         defer { if append { busy = false } }
         do {
-            let token = try await controller.globalSearchWorker.changeToken()
+            var token = try await controller.globalSearchWorker.changeToken()
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            if append, displayedMeetingsRevision != token {
+                await loadMeetings(person, append: false)
+                return
+            }
             var request = GlobalSearchQuery(text: "", kinds: [.meeting], person: person, limit: 101)
             if append { request.offset = meetings.count }
-            let found = try await controller.globalSearchWorker.search(request)
-            guard !Task.isCancelled, selected?.personID == person.personID else { return }
-            if append {
-                let latest = try await controller.globalSearchWorker.changeToken()
-                if latest != token {
-                    await loadMeetings(person, append: false)
-                    return
-                }
+            var found = try await controller.globalSearchWorker.search(request)
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            var latest = try await controller.globalSearchWorker.changeToken()
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            if !append && latest != token {
+                token = latest
+                found = try await controller.globalSearchWorker.search(request)
+                latest = try await controller.globalSearchWorker.changeToken()
+                guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            }
+            if latest != token {
+                if append { await loadMeetings(person, append: false) }
+                else { self.error = "Meetings changed. Try again." }
+                return
             }
             if append { meetings.append(contentsOf: found.prefix(100)) }
             else { meetings = Array(found.prefix(100)) }
             moreMeetings = found.count > 100
-        } catch { self.error = "Meetings couldn’t load." }
+            displayedMeetingsRevision = latest
+            error = nil
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            self.error = "Meetings couldn’t load."
+        }
     }
 }

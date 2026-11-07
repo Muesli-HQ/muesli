@@ -4,25 +4,6 @@ import Testing
 
 @Suite("Meeting auto-stop policy")
 struct MeetingAutoStopPolicyTests {
-    @Test("Clamshell warning checks the effective meeting microphone")
-    func clamshellMicRoute() {
-        let devices = [
-            AudioInputDeviceInfo(uid: "mac", name: "Mac", deviceID: 1, isBuiltIn: true),
-            AudioInputDeviceInfo(uid: "headset", name: "Headset", deviceID: 2, isBuiltIn: false)
-        ]
-        func route(_ preferred: UInt32?, _ systemDefault: UInt32?) -> MeetingMicRouteDiagnosticsSnapshot {
-            .init(outputRouteKind: "unknown", outputIsAmbiguousBluetooth: false,
-                  selectedInputDeviceUID: nil, selectedInputDeviceResolved: true,
-                  preferredInputDeviceID: preferred, preferredInputDeviceName: nil,
-                  defaultInputDeviceID: systemDefault, defaultInputDeviceName: nil,
-                  builtInInputDeviceID: nil, systemDefaultInputIsBuiltIn: false)
-        }
-        #expect(route(nil, 1).effectiveInputIsBuiltIn(devices: devices) == true)
-        #expect(route(nil, 2).effectiveInputIsBuiltIn(devices: devices) == false)
-        #expect(route(2, 1).effectiveInputIsBuiltIn(devices: devices) == false)
-        #expect(route(1, 2).effectiveInputIsBuiltIn(devices: devices) == true)
-        #expect(route(nil, nil).effectiveInputIsBuiltIn(devices: devices) == nil)
-    }
     @Test("Clamshell microphone warning appears once per built-in input episode")
     func clamshellMicWarning() {
         var state = MeetingClamshellMicWarningState()

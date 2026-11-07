@@ -382,6 +382,11 @@ a calendar attendee sets `is_suppressed` so a later EventKit refresh does not ma
 that row visible again; removing a manually added Contact deletes its row. Only
 unsuppressed associations on undeleted meetings are shown in People or related
 meetings. Clearing meetings also clears local people, identifiers and emails.
+Deleting an individual meeting removes its participant snapshots and suggestions,
+but retains canonical people, source identifiers, email provenance and merge
+journals, including for people with no remaining visible meetings. This preserves
+identity and undo history if the person appears again; clearing meetings removes
+these local records. People with no visible meetings are omitted from the directory.
 Use the store APIs to update these records so identities, provenance, search indexes,
 and meeting-level invalidation stay consistent. People data, Contacts identifiers,
 and suggestion evidence are local-only; do not add them to CloudKit, telemetry,
@@ -390,6 +395,11 @@ Suggestion generation is explicit and uses the configured meeting AI provider.
 Candidates remain separate from participants until confirmed. Source text changes
 and meeting deletion remove suggestions; a transaction checks the source fingerprint
 again when the user acts. Dismissed candidates remain dismissed for unchanged source.
+
+Recording recovery sidecars may also carry an optional pending retention decision.
+System-suspension stops preserve the audio and finalize the meeting before asking;
+the sidecar survives until the user decides and reopens that decision after restart.
+Older sidecars without the field retain their existing recovery behavior.
 
 Before an EventKit meeting begins, an initial launch refresh and subsequent
 `EKEventStoreChanged` notifications reconcile the calendar-owned participant

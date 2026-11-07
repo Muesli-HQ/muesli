@@ -8,6 +8,8 @@ struct MeetingRecordingRecoveryReference: Codable {
     let meetingID: Int64
     let startTime: String
     let databasePath: String
+    /// Older references omit this field and retain their original behavior.
+    var pendingRetentionDecision: Bool? = nil
 
     static let suffix = ".recovery.json"
 
