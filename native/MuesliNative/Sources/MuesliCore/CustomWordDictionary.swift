@@ -26,7 +26,7 @@ public enum CustomWordDictionaryCodec {
         case invalidFormat
 
         public var errorDescription: String? {
-            "The file is not a valid Muesli dictionary."
+            "The file is not a valid muesli dictionary."
         }
     }
 

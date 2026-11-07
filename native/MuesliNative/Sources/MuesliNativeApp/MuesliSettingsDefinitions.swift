@@ -5,6 +5,43 @@ import MuesliCore
 /// once; MuesliSettingControl renders it and CUA discovers it automatically.
 @MainActor
 extension MuesliController {
+    func setPrivateMode(_ enabled: Bool) {
+        guard ContentPrivacy.shared.isEnabled != enabled else { return }
+        ContentPrivacy.shared.setEnabled(enabled)
+        UserDefaults.standard.set(enabled, forKey: ContentPrivacy.preferenceKey)
+        resetChatForPrivacyTransition()
+        appState.privateMode = enabled
+        configureRecapClock()
+        visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
+        CotypistService.shared.privacyChanged()
+    }
+
+    func privateModeDefinition() -> MuesliSetting {
+        MuesliSetting(id: "private_mode", label: "Privacy mode",
+            choices: [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in self.appState.privateMode ? "on" : "off" },
+            unavailable: { _ in nil },
+            apply: { self.setPrivateMode($0 == "on") })
+    }
+
+    func setAnonymousAnalyticsDisabled(_ disabled: Bool) {
+        MuesliTelemetry.setDisabled(disabled)
+        appState.anonymousAnalyticsDisabled = UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey)
+    }
+
+    /// About and voice share one definition without constructing the model catalog.
+    func anonymousAnalyticsDefinition() -> MuesliSetting {
+        MuesliSetting(
+            id: "disable_anonymous_analytics", label: "Disable anonymous analytics",
+            choices: [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { _ in
+                _ = self.appState.anonymousAnalyticsDisabled // Observe local preference changes.
+                return UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey) ? "on" : "off"
+            },
+            unavailable: { _ in nil },
+            apply: { self.setAnonymousAnalyticsDisabled($0 == "on") })
+    }
+
     /// Static appearance choices shared by the sidebar and full settings catalog.
     /// Does not enumerate models, calendars, or their availability on disk.
     func appearanceDefinition() -> MuesliSetting {
@@ -16,6 +53,9 @@ extension MuesliController {
             apply: { value in
                 guard let mode = AppAppearanceMode(rawValue: value) else { return }
                 self.updateConfig { $0.appearanceMode = mode }
+            }, voiceUnavailable: { value in
+                value == AppAppearanceMode.ultraDark.rawValue
+                    ? "Choose Ultra Dark in Settings → Appearance." : nil
             })
     }
 
@@ -75,7 +115,7 @@ extension MuesliController {
     }
 
     /// Shared cleanup-model definitions without constructing unrelated dynamic settings.
-    func cleanupModelDefinitions() -> [MuesliSetting] {
+    func cleanupModelDefinitions(availability: SettingsModelAvailability? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -122,12 +162,12 @@ extension MuesliController {
             unavailable: { value in
                 guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return "Unknown model." }
                 switch model {
-                case .gguf(let option): return option.isDownloaded && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
+                case .gguf(let option): return (availability.map { $0.postProcessorIDs.contains(option.id) } ?? option.isDownloaded) && option.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible cleanup model first."
                 case .gemma4(let model):
                     guard BackendOption.gemma4LiteRT(model).isCompatible() else {
                         return "Gemma cleanup requires macOS 15 or later."
                     }
-                    return Gemma4LiteRTModelStore.isAvailableLocally(model: model) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
+                    return (availability.map { $0.gemmaIDs.contains(model.rawValue) } ?? Gemma4LiteRTModelStore.isAvailableLocally(model: model)) && TranscriptCleanupBackendOption.gemma4LiteRT.isCompatible(with: self.selectedBackend) ? nil : "Download a compatible Gemma cleanup model first."
                 }
             }) { value in
             guard let model = allLocalCleanup.first(where: { $0.quilModelID == value }) else { return }
@@ -139,7 +179,7 @@ extension MuesliController {
         return settings
     }
 
-    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil) -> [MuesliSetting] {
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -176,9 +216,19 @@ extension MuesliController {
                 self.updateConfig { $0[keyPath: key] = option }
             }
         }
-        func textMenu(_ id: String, _ label: String, _ choices: [Choice], _ key: WritableKeyPath<AppConfig, String>) {
+        func textMenu(_ id: String, _ label: String, _ choices: [Choice], _ key: WritableKeyPath<AppConfig, String>,
+                      deletionWarning: String? = nil) {
             add(id, label, choices, read: { $0[keyPath: key] }) { value in
                 self.updateConfig { $0[keyPath: key] = value }
+            }
+            if let deletionWarning {
+                settings[settings.count - 1].deletionConfirmation = { config, value in
+                    let current = config[keyPath: key]
+                    guard current != value, value != "forever", let next = Int(value),
+                          current == "forever" || Int(current) == nil || next < (Int(current) ?? 0) else { return nil }
+                    let choice = choices.first { $0.id == value }?.label ?? value
+                    return "Set “\(label)” to \(choice)? \(deletionWarning) This cannot be undone."
+                }
             }
         }
         func presets(_ id: String, _ label: String, _ options: [SummaryModelPreset], _ key: WritableKeyPath<AppConfig, String>,
@@ -231,6 +281,78 @@ extension MuesliController {
                 }
         }
 
+        add("time_turner_enabled", "Time Turner", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+            read: { $0.timeTurnerEnabled ? "on" : "off" },
+            voiceRestriction: "Enable continuous screen history manually in Timeline.") { value in
+                if value == "on" {
+                    guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
+                        throw MuesliSettings.Failure.rejected("Complete Time Turner setup: Screen Recording and Accessibility are required.")
+                    }
+                }
+                self.updateConfig { $0.timeTurnerEnabled = value == "on" }
+            }
+        toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
+        let recapConfig = config.timeTurnerGenerationConfig
+        let recapProvider = MeetingSummaryBackendOption.resolved(recapConfig.meetingSummaryBackend)
+        let recapProviders = MeetingSummaryBackendOption.selectable(config: config, selected: recapProvider,
+            claudeCodeAvailable: (availability ?? appState.settingsModelAvailability).claudeCodeAvailable)
+        add("recap_provider", "Time Turner backend",
+            [Choice(id: "inherit", label: "Use meeting settings")] + recapProviders.map { Choice(id: $0.backend, label: $0.label) },
+            read: { $0.recapModelSelection?.backend ?? "inherit" }, unavailable: { value in
+                if value == MeetingSummaryBackendOption.gemmaMLX.backend {
+                    if #available(macOS 15, *) { return nil }
+                    return "On-device Gemma requires macOS 15 or later."
+                }
+                return nil
+            }) { value in
+                self.updateConfig { config in
+                    config.recapModelSelection = value == "inherit" ? nil : FeatureTextModelSelection(
+                        backend: value, model: config[keyPath: MeetingSummaryBackendOption.resolved(value).modelKeyPath])
+                }
+            }
+        add("recap_model", "Time Turner model",
+            recapProvider.summaryModels(config: recapConfig, openRouterModels: appState.openRouterSummaryModels).map { Choice(id: $0.id, label: $0.label) },
+            read: { MeetingTextGenerationClient.model($0.timeTurnerGenerationConfig) }, unavailable: { value in
+                guard self.config.recapModelSelection != nil else { return "Choose a Time Turner backend first." }
+                if self.config.recapModelSelection?.backend == MeetingSummaryBackendOption.gemmaMLX.backend {
+                    let ids = (availability ?? self.appState.settingsModelAvailability).gemmaIDs
+                    return Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == value }.map { ids.contains($0.repoID) } == true
+                        ? nil : "Download this Gemma model from Models first."
+                }
+                return nil
+            }) { value in self.updateConfig { $0.recapModelSelection?.model = value } }
+        add("recap_schedule", "Automatic recap", [.init(id: "off", label: "Off"),
+            .init(id: "previous", label: "Previous day"), .init(id: "today", label: "Current day")],
+            read: { $0.recapSchedule }, voiceRestriction: "Configure scheduled generation manually in Time Turner.") { value in
+                self.updateConfig {
+                    if $0.recapSchedule == "off" { $0.recapScheduleHour = value == "today" ? "18" : "8" }
+                    $0.recapSchedule = value
+                }
+            }
+        textMenu("recap_schedule_hour", "Generate at", (0..<24).map {
+            Choice(id: String($0), label: String(format: "%02d:00", $0))
+        }, \.recapScheduleHour)
+        for source in TimeTurnerRecapInput.allCases {
+            toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
+        }
+
+        textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
+            Choice(id: $0, label: "\($0) seconds")
+        }, \.timeTurnerInterval)
+        textMenu("time_turner_budget", "Screen history storage", ["2", "5", "10", "20"].map {
+            Choice(id: $0, label: "\($0) GB")
+        }, \.timeTurnerBudget, deletionWarning: "A smaller budget may delete older screenshots. Searchable history is kept separately.")
+
+        textMenu("time_turner_screenshot_retention", "Keep screenshots for", ["1", "7", "14", "30", "90", "forever"].map {
+            Choice(id: $0, label: $0 == "forever" ? "Until storage budget fills" : ($0 == "1" ? "1 day" : "\($0) days"))
+        }, \.timeTurnerScreenshotRetention, deletionWarning: "Screenshots older than this limit will be deleted. Searchable history is kept separately.")
+        textMenu("time_turner_history_retention", "Keep searchable history for", ["7", "30", "90", "365", "forever"].map {
+            Choice(id: $0, label: $0 == "forever" ? "Until I delete it" : "\($0) days")
+        }, \.timeTurnerHistoryRetention, deletionWarning: "Older OCR and app history, associated screenshots and recaps will be deleted.")
+
+        settings.append(anonymousAnalyticsDefinition())
+        settings.append(privateModeDefinition())
+
         toggle("launch_at_login", "Launch at login", \.launchAtLogin, apply: setLaunchAtLogin)
         toggle("open_dashboard", "Open dashboard on launch", \.openDashboardOnLaunch)
         settings.append(appearanceDefinition())
@@ -247,7 +369,9 @@ extension MuesliController {
         toggle("show_hotkey_hover", "Show shortcut on floating indicator hover", \.showHotkeyOnFloatingIndicator)
         add("indicator_style", "Recording indicator style", RecordingIndicatorStyle.allCases.map {
             Choice(id: $0.rawValue, label: $0 == .classic ? "Classic floating pill" : $0.title)
-        }, read: { $0.recordingIndicatorStyle.rawValue }) { value in
+        }, read: { $0.recordingIndicatorStyle.rawValue }, unavailable: { _ in
+            self.feedbackCaptureOwnsMicrophone ? "Finish the capture before changing the recording indicator." : nil
+        }) { value in
             guard let style = RecordingIndicatorStyle(rawValue: value) else { return }
             self.updateConfig { $0.selectRecordingIndicatorStyle(style) }
             self.refreshIndicatorVisibility()
@@ -287,7 +411,7 @@ extension MuesliController {
         }
         for target in ShortcutAssignment.allCases {
             settings.append(MuesliSetting(id: target.settingID, label: target.label,
-                choices: ShortcutAssignment.singleKeys.map {
+                choices: target.assignableSingleKeys.map {
                     Choice(id: ShortcutAssignment.value(for: $0), label: $0.label)
                 }, read: { ShortcutAssignment.value(for: $0[keyPath: target.keyPath]) },
                 unavailable: { _ in nil }, apply: { value in
@@ -316,16 +440,16 @@ extension MuesliController {
                       self.selectedBackend.supportsBufferedLiveTranscription else {
                     return "Select a local Parakeet, Whisper, or Bodhan model first."
                 }
-                return self.selectedBackend.isDownloaded ? nil : "Download the selected dictation model first."
+                return (availability?.contains(self.selectedBackend) ?? self.selectedBackend.isDownloaded) ? nil : "Download the selected dictation model first."
             })
-        let localPlanners = ComputerUseLocalPlanner.models.filter(\.available)
+        let localPlanners = ComputerUseLocalPlanner.models.filter { model in availability.map { $0.localPlannerIDs.contains(model.id) } ?? model.available }
         // Backend is derived from the selected model, so existing configurations
         // and direct voice model selections remain consistent without migration.
         add("cua_backend", "Computer use planner backend",
             [Choice(id: "chatgpt", label: "ChatGPT"), Choice(id: "local", label: "On-device")],
             read: { ComputerUseLocalPlanner.isLocal(ComputerUsePlannerClient.plannerModel(for: $0)) ? "local" : "chatgpt" },
             unavailable: { value in
-                value == "local" && !ComputerUseLocalPlanner.models.contains(where: \.available)
+                value == "local" && !(availability.map { !$0.localPlannerIDs.isEmpty } ?? ComputerUseLocalPlanner.models.contains(where: \.available))
                     ? "Download Gemma in Models to use an on-device planner." : nil
             }) { value in
                 let current = ComputerUsePlannerClient.plannerModel(for: self.config)
@@ -344,7 +468,7 @@ extension MuesliController {
                 + localPlanners.map { Choice(id: $0.id, label: $0.label) },
             read: { ComputerUsePlannerClient.plannerModel(for: $0) }, unavailable: { value in
                 if ComputerUseLocalPlanner.isLocal(value),
-                   !ComputerUseLocalPlanner.models.contains(where: { $0.id == value && $0.available }) {
+                   !(availability.map { $0.localPlannerIDs.contains(value) } ?? ComputerUseLocalPlanner.models.contains(where: { $0.id == value && $0.available })) {
                     return "Download this on-device planner in Models first."
                 }
                 return nil
@@ -352,17 +476,18 @@ extension MuesliController {
                 self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
             }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
-               requestPermission: { _ = self.requestDictionaryCorrectionAccessibilityEnable() },
+               requestPermission: self.showPermissionsSettings,
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable dictionary suggestions." : nil }) {
             _ = self.setDictionaryCorrectionPromptsFromToggle($0)
         }
         toggle("app_context", "App context", \.enableScreenContext,
-               requestPermission: { _ = self.requestScreenContextEnable() },
+               requestPermission: self.showPermissionsSettings,
                unavailable: { $0 && !AXIsProcessTrusted() ? "Grant Accessibility in System Settings to enable app context." : nil }) { enabled in
             if enabled { _ = self.requestScreenContextEnable() }
             else { self.updateConfig { $0.enableScreenContext = false; $0.enableDictationOCRContext = false } }
         }
         toggle("ocr_context", "Screen OCR context for dictation", \.enableDictationOCRContext,
+               requestPermission: self.showPermissionsSettings,
                unavailable: { enabled in
             guard enabled else { return nil }
             if !self.config.enableScreenContext { return "Enable app context first." }
@@ -370,7 +495,7 @@ extension MuesliController {
         })
         // Cotypist (experimental): its Settings section and input method exist only in builds that bundle it.
         // Builds without it refuse every Cotypist change, so nothing (a model download included) runs there.
-        let cotypistMissing: String? = CotypistSetup.isAvailable ? nil : "Cotypist isn't included in this build."
+        let cotypistMissing: String? = (availability?.cotypistAvailable ?? CotypistSetup.isAvailable) ? nil : "Cotypist isn't included in this build."
         // On only once the Cotypist input source is selected. Turning it on before the user has added
         // the input source opens Keyboard settings with a guide, and says so instead of claiming "On".
         add("cotypist_enabled", "Cotypist typeahead suggestions", [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
@@ -421,6 +546,7 @@ extension MuesliController {
         menu("cotypist_word_pause", "Cotypist pause before completing a word", CotypistWordPause.allCases,
              \.cotypistWordPause, title: \.label, unavailable: { _ in cotypistMissing })
         toggle("cotypist_screen_context", "Cotypist uses on-screen text", \.cotypistUseScreenContext,
+               requestPermission: self.showPermissionsSettings,
                unavailable: { cotypistMissing ?? ($0 && !CGPreflightScreenCaptureAccess() ? "Grant Screen Recording in System Settings so Cotypist can read on-screen text." : nil) })
 
         add("dictation_provider", "Dictation provider", DictationProvider.allCases.map { .init(id: $0.rawValue, label: $0.label) },
@@ -438,7 +564,7 @@ extension MuesliController {
                 if option == .medASR, !self.medASRTerms.isAccepted {
                     return "Review and accept MedASR's terms in Models first."
                 }
-                guard option.isDownloaded else { return "Download this dictation model from Models first." }
+                guard (availability?.contains(option) ?? option.isDownloaded) else { return "Download this dictation model from Models first." }
                 if !TranscriptCleanupBackendOption.resolved(self.config.postProcessorBackend).isCompatible(with: option) {
                     return "This model conflicts with the selected cleanup backend. Change cleanup first."
                 }
@@ -502,6 +628,11 @@ extension MuesliController {
         }
 
         toggle("transcript_cleanup", "AI transcript cleanup", \.enablePostProcessor, apply: setPostProcessorEnabled)
+        toggle("feedback_capture", "Vidshot", \.enableFeedbackCapture) { try checkShortcut(self.updateFeedbackCaptureEnabled($0)) }
+        add("feedback_capture_draw_modifier", "Draw modifier", FeedbackCaptureDrawModifier.allCases.map { .init(id: $0.rawValue, label: $0.label) },
+            read: { $0.feedbackCaptureDrawModifier.rawValue }) { value in
+                if let modifier = FeedbackCaptureDrawModifier(rawValue: value) { self.setFeedbackCaptureDrawModifier(modifier) }
+            }
         toggle("quill", "Quill rewrite selected text", \.enableQuilMode, requestPermission: self.requestSettingsPermissions, unavailable: shortcutPermission) { try checkShortcut(self.updateQuilModeEnabled($0)) }
         add("cleanup_source", "Cleanup source", TranscriptCleanupBackendOption.all.filter { !$0.isGemma4LiteRT }.map { .init(id: $0.backend, label: $0.label) },
             read: { TranscriptCleanupBackendOption.resolved($0.postProcessorBackend).isOnDevice ? TranscriptCleanupBackendOption.local.backend : $0.postProcessorBackend }) { value in
@@ -510,7 +641,7 @@ extension MuesliController {
         add("cleanup_preset", "Cleanup prompt preset", TranscriptCleanupPrompts.presets(custom: config.customTranscriptCleanupPrompts).map { .init(id: $0.id, label: $0.name) },
             read: { $0.activeTranscriptCleanupPromptId },
             voiceRestriction: "Prompt settings can only be changed manually in Settings.") { self.selectTranscriptCleanupPrompt(id: $0) }
-        settings.append(contentsOf: cleanupModelDefinitions())
+        settings.append(contentsOf: cleanupModelDefinitions(availability: availability))
 
         toggle("meeting_hover_transcript", "Show meeting transcript on hover", \.showMeetingTranscriptOnIndicatorHover)
         toggle("auto_record_meetings", "Auto-record calendar meetings", \.autoRecordMeetings)
@@ -539,7 +670,7 @@ extension MuesliController {
                 if option == .medASR, !self.medASRTerms.isAccepted {
                     return "Review and accept MedASR's terms in Models first."
                 }
-                return option.isDownloaded ? nil : "Download this model first."
+                return (availability?.contains(option) ?? option.isDownloaded) ? nil : "Download this model first."
             }) { value in
             if let option = backends.first(where: { backendID($0) == value }) { self.selectBackend(option) }
         }
@@ -551,7 +682,7 @@ extension MuesliController {
                 }
                 guard let option = meetingModels.first(where: { backendID($0) == value }) else { return "Unknown meeting model." }
                 if let reason = option.incompatibilityReason() { return reason }
-                return option.isDownloaded ? nil : "Download this meeting model from Models first."
+                return (availability?.contains(option) ?? option.isDownloaded) ? nil : "Download this meeting model from Models first."
             }) { value in
             if let option = meetingModels.first(where: { backendID($0) == value }) { self.selectMeetingTranscriptionBackend(option) }
         }
@@ -559,20 +690,36 @@ extension MuesliController {
             read: { $0.enableLiveStreamingPartials ? $0.resolvedMeetingLiveCaptionBackend.rawValue : "off" }, unavailable: { value in
                 if value == MeetingLiveCaptionBackend.selectedModelBuffered.rawValue {
                     let selected = self.appState.selectedMeetingTranscriptionBackend
-                    return selected.supportsBufferedLiveTranscription && selected.isDownloaded
+                    return selected.supportsBufferedLiveTranscription && (availability?.contains(selected) ?? selected.isDownloaded)
                         ? nil : "Select a downloaded Parakeet, Whisper, or Bodhan final meeting model first."
                 }
-                return value == "off" || MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true ? nil : "Download this live transcript model from Models first."
+                return value == "off" || (availability.map { $0.liveCaptionIDs.contains(value) } ?? (MeetingLiveCaptionBackend(rawValue: value)?.isDownloaded == true)) ? nil : "Download this live transcript model from Models first."
             }) { value in
             self.updateConfig {
                 $0.enableLiveStreamingPartials = value != "off"
                 if value != "off" { $0.meetingLiveCaptionBackend = value }
             }
         }
-        add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.selectable(config: config, selected: appState.selectedMeetingSummaryBackend).map { .init(id: $0.backend, label: $0.label) },
-            read: { $0.meetingSummaryBackend }) { value in
+        add("summary_source", "Meeting summary backend", MeetingSummaryBackendOption.selectable(config: config, selected: appState.selectedMeetingSummaryBackend, claudeCodeAvailable: availability?.claudeCodeAvailable).map { .init(id: $0.backend, label: $0.label) },
+            read: { $0.meetingSummaryBackend }, voiceUnavailable: { value in
+                guard value == MeetingSummaryBackendOption.gemmaMLX.backend else { return nil }
+                let ids = availability?.gemmaIDs ?? self.appState.settingsModelAvailability.gemmaIDs
+                let model = Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == self.config.gemmaChatModel }
+                return model.map { ids.contains($0.repoID) } == true ? nil : "Select a downloaded Gemma chat model in Settings first."
+            }, unavailable: { value in
+                guard value == MeetingSummaryBackendOption.gemmaMLX.backend else { return nil }
+                if #available(macOS 15, *) { return nil }
+                return "On-device Gemma chat requires macOS 15 or later."
+            }) { value in
             if let option = MeetingSummaryBackendOption.all.first(where: { $0.backend == value }) { self.selectMeetingSummaryBackend(option) }
         }
+        add("summary_gemma_model", "On-device Gemma chat and summary model",
+            Gemma4LiteRTModel.generalPurpose.map { Choice(id: $0.nativeChatModelID, label: $0.label) },
+            read: { $0.gemmaChatModel }, unavailable: { value in
+                let ids = availability?.gemmaIDs ?? self.appState.settingsModelAvailability.gemmaIDs
+                let model = Gemma4LiteRTModel.generalPurpose.first { $0.nativeChatModelID == value }
+                return model.map { ids.contains($0.repoID) } == true ? nil : "Download this Gemma model from Models first."
+            }) { value in self.updateConfig { $0.gemmaChatModel = value } }
         presets("summary_chatgpt_model", "ChatGPT meeting summary model", SummaryModelPreset.chatGPTModels, \.chatGPTModel)
         presets("summary_openai_model", "OpenAI meeting summary model", SummaryModelPreset.openAIModels, \.openAIModel)
         presets("summary_anthropic_model", "Anthropic meeting summary model", SummaryModelPreset.anthropicModels, \.anthropicModel)
@@ -601,8 +748,8 @@ extension MuesliController {
             + Gemma4LiteRTModel.allCases.map(OnDeviceCleanupModel.gemma4)
         let localQuill = allLocalCleanup.filter {
             switch $0 {
-            case .gguf(let option): return option.supportsQuil && option.isDownloaded
-            case .gemma4(let model): return !model.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: model)
+            case .gguf: return false
+            case .gemma4(let model): return !model.isCleanupOnly && (availability.map { $0.gemmaIDs.contains(model.rawValue) } ?? Gemma4LiteRTModelStore.isAvailableLocally(model: model))
             }
         }
         add("quill_source", "Quill writing model source", QuilModelSourceOption.all.map { .init(id: $0.id, label: $0.label) },
@@ -611,13 +758,20 @@ extension MuesliController {
                 value == QuilModelSourceOption.localModels.id && localQuill.isEmpty ? "Download a Quill model from Models first." : nil
             }) { value in
             guard let source = QuilModelSourceOption.all.first(where: { $0.id == value }) else { return }
-            self.updateConfig {
+            self.updateConfig { config in
                 if let backend = source.hostedBackend {
-                    $0.quilBackend = backend.backend
-                    $0.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
-                } else if let model = localQuill.first(where: { $0.quilModelID == self.config.quilModel && $0.quilBackend.backend == self.config.quilBackend }) ?? localQuill.first {
-                    $0.quilBackend = model.quilBackend.backend
-                    $0.quilModel = model.quilModelID
+                    config.quilBackend = backend.backend
+                    config.quilModel = TranscriptCleanupClient.defaultModel(for: backend)
+                } else {
+                    // Read the current selection from the inout `config`, not the controller's
+                    // stored property: updateConfig holds exclusive access to it while this
+                    // closure runs, so touching it here traps with an exclusivity violation.
+                    let currentModel = config.quilModel
+                    let currentBackend = config.quilBackend
+                    if let model = localQuill.first(where: { $0.quilModelID == currentModel && $0.quilBackend.backend == currentBackend }) ?? localQuill.first {
+                        config.quilBackend = model.quilBackend.backend
+                        config.quilModel = model.quilModelID
+                    }
                 }
             }
             if self.config.enableQuilMode { _ = self.ensureQuilModelIsAvailable() }

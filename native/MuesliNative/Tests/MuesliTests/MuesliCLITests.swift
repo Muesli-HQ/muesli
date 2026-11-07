@@ -35,6 +35,10 @@ struct MuesliCLITests {
         #expect(names.contains("meetings update-notes"))
         #expect(names.contains("dictations list"))
         #expect(names.contains("dictations get"))
+        #expect(names.contains("captures list"))
+        #expect(names.contains("captures get"))
+        #expect(names.contains("captures frames"))
+        #expect(names.contains("captures zoom"))
 
         let transcribeSpec = payload.commands.first { $0.name == "transcribe" }
         #expect(transcribeSpec?.usage.contains("nemotron35") == true)
@@ -307,8 +311,8 @@ struct MuesliCLITests {
         #expect(context.databaseURL.path == "/tmp/muesli-support/muesli.db")
     }
 
-    @Test("summary config reads the app's persisted OpenRouter selection and protected credential")
-    func summaryConfigReadsAppOpenRouterSettings() throws {
+    @Test("only the bundled CLI migrates OpenRouter credentials", arguments: [false, true])
+    func summaryConfigReadsAppOpenRouterSettings(bundled: Bool) throws {
         let supportDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("muesli-cli-openrouter-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
@@ -321,10 +325,30 @@ struct MuesliCLITests {
         try Data(#"{"api_key":"sk-or-cli-test","user_id":"user_test"}"#.utf8)
             .write(to: supportDirectory.appendingPathComponent("openrouter-auth.json"))
 
-        let config = CLISummaryConfig.load(from: supportDirectory)
+        let vault = TestCredentialVault()
+        let config = CLISummaryConfig.load(from: supportDirectory, vault: vault,
+                                           appBundleURL: bundled ? URL(fileURLWithPath: "/synthetic/muesli.app") : nil)
         #expect(config.meetingSummaryBackend == "openrouter")
         #expect(config.openRouterModel == "openai/gpt-oss-120b:free")
         #expect(config.openRouterAPIKey == "sk-or-cli-test")
+        #expect((try vault.read("openrouter-auth") != nil) == bundled)
+        #expect(FileManager.default.fileExists(atPath: supportDirectory.appendingPathComponent("openrouter-auth.json").path) == !bundled)
+    }
+
+    @Test("standalone CLI validates vault precedence without modifying either source", arguments: [false, true])
+    func standaloneCLIOpenRouterReadsWithoutMigration(malformedVault: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cli-readonly-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = TestCredentialVault()
+        let record = malformedVault ? Data("invalid".utf8) : Data(#"{"api_key":"synthetic-newer"}"#.utf8)
+        try vault.write(record, account: "openrouter-auth")
+        let legacy = Data(#"{"api_key":"synthetic-legacy"}"#.utf8)
+        let path = root.appendingPathComponent("openrouter-auth.json"); try legacy.write(to: path)
+        let loaded = CLISummaryConfig.load(from: root, vault: vault, appBundleURL: nil)
+        #expect(loaded.openRouterAPIKey == (malformedVault ? "synthetic-legacy" : "synthetic-newer"))
+        #expect(try Data(contentsOf: path) == legacy)
+        #expect(try vault.read("openrouter-auth") == record)
     }
 
     @Test("CLI OpenRouter summaries use the free router when no model is configured")
@@ -332,6 +356,26 @@ struct MuesliCLITests {
         #expect(CLISummaryClient.resolvedOpenRouterModel("") == "openrouter/free")
         #expect(CLISummaryClient.resolvedOpenRouterModel("  \n") == "openrouter/free")
         #expect(CLISummaryClient.resolvedOpenRouterModel("custom/model") == "custom/model")
+    }
+
+    @Test("CLI reads provider keys after the app sanitizes its config")
+    func cliReadsMigratedProviderCredentials() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-cli-credentials-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let vault = TestCredentialVault()
+        let store = ConfigStore(supportDirectory: directory, vault: vault)
+        var app = AppConfig()
+        app.openAIAPIKey = "synthetic-openai"; app.anthropicAPIKey = "synthetic-anthropic"
+        app.customLLMAPIKey = "synthetic-custom"
+        app.customLLMHeaders = [.init(name: "X-Synthetic-Auth", value: "synthetic-header")]
+        #expect(store.save(app))
+        let file = try Data(contentsOf: store.configPath())
+        #expect(!String(decoding: file, as: UTF8.self).contains("synthetic-openai"))
+        let loaded = CLISummaryConfig.load(from: directory, vault: vault)
+        #expect(loaded.openAIAPIKey == app.openAIAPIKey)
+        #expect(loaded.anthropicAPIKey == app.anthropicAPIKey)
+        #expect(loaded.customLLMAPIKey == app.customLLMAPIKey)
+        #expect(loaded.customLLMHeaders.map(\.value) == app.customLLMHeaders.map(\.value))
     }
 
     @Test("CLI reads the app's dedicated Anthropic settings")
@@ -365,7 +409,7 @@ struct MuesliCLITests {
         let data = try JSONEncoder().encode(appConfig)
         try data.write(to: directory.appendingPathComponent("config.json"))
 
-        let cliConfig = CLISummaryConfig.load(from: directory)
+        let cliConfig = CLISummaryConfig.load(from: directory, vault: TestCredentialVault())
         #expect(cliConfig.meetingSummaryBackend == "custom_llm")
         #expect(cliConfig.customLLMURL == "https://gateway.example.com/v1")
         #expect(cliConfig.customLLMAPIKey == "static-key")

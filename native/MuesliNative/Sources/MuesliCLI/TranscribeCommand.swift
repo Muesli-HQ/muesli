@@ -123,7 +123,7 @@ struct TranscribeJSONPayload: Encodable {
 struct TranscribeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "transcribe",
-        abstract: "Transcribe a local audio file with Muesli's bundled local ASR models."
+        abstract: "Transcribe a local audio file with muesli's bundled local ASR models."
     )
 
     @OptionGroup var global: GlobalOptions
@@ -133,9 +133,9 @@ struct TranscribeCommand: AsyncParsableCommand {
     var format: TranscribeOutputFormat = .text
     @Option(name: .long, help: ArgumentHelp(TranscribeModel.modelHelp))
     var model: TranscribeModel = .parakeetUnified
-    @Flag(name: .long, help: "Generate meeting notes using the configured Muesli summary backend when available.")
+    @Flag(name: .long, help: "Generate meeting notes using the configured muesli summary backend when available.")
     var summarize = false
-    @Flag(name: .long, help: "Save the transcript as an imported Muesli meeting.")
+    @Flag(name: .long, help: "Save the transcript as an imported muesli meeting.")
     var saveMeeting = false
     @Option(name: .long, help: "Optional title override for saved meetings and markdown output.")
     var title: String?
@@ -418,7 +418,7 @@ struct MuesliAudioTranscriptionPipeline {
         if summaryRequested {
             sections.append("## Summary unavailable")
             if warnings.isEmpty {
-                sections.append("Muesli could not generate structured notes from the configured summary backend.")
+                sections.append("muesli could not generate structured notes from the configured summary backend.")
             } else {
                 sections.append(warnings.joined(separator: "\n"))
             }
@@ -1230,11 +1230,15 @@ struct CLISummaryConfig: Decodable {
         claudeCodeExecutablePath = try container.decodeIfPresent(String.self, forKey: .claudeCodeExecutablePath) ?? claudeCodeExecutablePath
     }
 
-    static func load(from supportDirectory: URL) -> CLISummaryConfig {
+    static func load(from supportDirectory: URL, vault: (any CredentialVault)? = nil,
+                     appBundleURL: URL? = KeychainCredentialVault.enclosingAppBundle()) -> CLISummaryConfig {
         let url = supportDirectory.appendingPathComponent("config.json")
-        guard let data = try? Data(contentsOf: url),
-              var config = try? JSONDecoder().decode(CLISummaryConfig.self, from: data) else {
-            return CLISummaryConfig()
+        var config = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(CLISummaryConfig.self, from: $0) } ?? CLISummaryConfig()
+        let vault = vault ?? KeychainCredentialVault(supportDirectory: supportDirectory)
+        if let data = try? vault.read(ConfigCredentials.account),
+           let secrets = try? JSONDecoder().decode(ConfigCredentials.self, from: data) {
+            config.openAIAPIKey = secrets.openAI; config.anthropicAPIKey = secrets.anthropic
+            config.customLLMAPIKey = secrets.custom; config.customLLMHeaders = secrets.customHeaders
         }
         if config.openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             struct StoredOpenRouterCredential: Decodable {
@@ -1245,8 +1249,20 @@ struct CLISummaryConfig: Decodable {
                 }
             }
             let credentialURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
-            if let credentialData = try? Data(contentsOf: credentialURL),
-               let credential = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: credentialData) {
+            let credential: StoredOpenRouterCredential? = {
+                if appBundleURL != nil {
+                    let migration = CredentialFileMigration(legacyURL: credentialURL, account: "openrouter-auth", vault: vault)
+                    guard let data = try? migration.load(validating: { _ = try JSONDecoder().decode(StoredOpenRouterCredential.self, from: $0) }) else { return nil }
+                    return try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data)
+                }
+                // A standalone CLI cannot create an item with the app/CLI ACL.
+                // Read without migrating or deleting the app's working copy.
+                if let data = try? vault.read("openrouter-auth"),
+                   let stored = try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data) { return stored }
+                guard let data = try? Data(contentsOf: credentialURL) else { return nil }
+                return try? JSONDecoder().decode(StoredOpenRouterCredential.self, from: data)
+            }()
+            if let credential {
                 config.openRouterAPIKey = credential.apiKey
             }
         }
@@ -1411,7 +1427,7 @@ enum CLISummaryClient {
                 extraHeaders: extraHeaders
             )
         default:
-            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in Muesli settings for `muesli-cli transcribe --summarize`.")
+            throw CLISummaryError.unavailable("The configured ChatGPT session summary backend is app-only in headless CLI mode. Select Claude Code, OpenAI, Anthropic, OpenRouter, Ollama, LM Studio, or Custom LLM in muesli settings for `muesli-cli transcribe --summarize`.")
         }
     }
 

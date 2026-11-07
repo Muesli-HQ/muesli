@@ -29,7 +29,7 @@ final class MeetingNotificationController {
     /// Fixed geometry for the split button, so swapping which action is armed never
     /// reflows the card. `splitButtonLabelFits` guards the assumption in tests.
     static let splitButtonWidth: CGFloat = 126
-    static let splitButtonFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    static let splitButtonFont = AppFonts.font(size: 11, weight: .medium)
 
     static func splitButtonLabelFits(_ label: String, horizontalPadding: CGFloat = 12) -> Bool {
         let labelWidth = (label as NSString).size(withAttributes: [.font: splitButtonFont]).width
@@ -65,9 +65,11 @@ final class MeetingNotificationController {
         title: String,
         subtitle: String,
         actionLabel: String = "Start Transcribing",
+        opensFromBody: Bool = false,
         meetingURL: URL? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
+        icon explicitIcon: NSImage? = nil,
         dismissAfter: TimeInterval? = nil,
         defaultAction: MeetingJoinDefaultAction = .fallback,
         onStartRecording: @escaping () -> Void,
@@ -100,11 +102,11 @@ final class MeetingNotificationController {
         // keeps the plain single-action button.
         let hasJoinButton = !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
-        let platformIcon = platform?.loadIcon()
+        let platformIcon = explicitIcon ?? platform?.loadIcon()
         let iconSize: CGFloat = 26
         let textX: CGFloat = platformIcon == nil ? 14 : 14 + iconSize + 9
-        let titleFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        let subtitleFont = NSFont.systemFont(ofSize: 11)
+        let titleFont = AppFonts.font(size: 13, weight: .semibold)
+        let subtitleFont = AppFonts.font(size: 11)
 
         let minimumCardWidth: CGFloat = 344
         let cardWidth: CGFloat
@@ -189,6 +191,7 @@ final class MeetingNotificationController {
         // Platform icon + text layout
         if let icon = platformIcon {
             let iconView = NSImageView(image: icon)
+            if explicitIcon != nil { iconView.contentTintColor = .white }
             iconView.imageScaling = .scaleProportionallyUpOrDown
             iconView.frame = NSRect(x: 14, y: (cardHeight - iconSize) / 2 + 1, width: iconSize, height: iconSize)
             cardView.addSubview(iconView)
@@ -215,8 +218,9 @@ final class MeetingNotificationController {
             let totalWidth = buttonWidth + chevronWidth
             let buttonX = cardWidth - totalWidth - 12
             let textMaxX = buttonX - 8
-            let greenColor = NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0)
-            let greenDarker = NSColor(red: 0.15, green: 0.58, blue: 0.42, alpha: 1.0)
+            let greenColor = NSColor.muesliHex(MuesliTheme.joinActionHex)
+            let greenDarker = NSColor.muesliHex(MuesliTheme.joinActionSecondaryHex)
+            let joinInk = NSColor.muesliHex(MuesliTheme.darkInkHex)
 
             // Clamp text labels so they don't overlap the button
             titleLabel.frame.size.width = textMaxX - textX
@@ -235,7 +239,7 @@ final class MeetingNotificationController {
             joinButton.layer?.cornerRadius = 6
             joinButton.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
             joinButton.isBordered = false
-            joinButton.contentTintColor = .white
+            Self.applyTitleColor(joinInk, to: joinButton)
             cardView.addSubview(joinButton)
 
             // Chevron dropdown button
@@ -247,8 +251,9 @@ final class MeetingNotificationController {
             chevronButton.layer?.cornerRadius = 6
             chevronButton.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
             chevronButton.isBordered = false
-            chevronButton.contentTintColor = NSColor.white.withAlphaComponent(0.8)
+            Self.applyTitleColor(joinInk, to: chevronButton)
             chevronButton.toolTip = splitButtonAlternatives.map(\.buttonLabel).joined(separator: " · ")
+            chevronButton.setAccessibilityLabel("More join options")
             cardView.addSubview(chevronButton)
         } else {
             // Single "Start Transcribing" button
@@ -258,14 +263,25 @@ final class MeetingNotificationController {
             titleLabel.frame.size.width = textWidth
             subtitleLabel.frame.size.width = textWidth
 
+            if opensFromBody {
+                let bodyAction = NSButton(frame: NSRect(x: 0, y: 0, width: buttonX, height: cardHeight))
+                bodyAction.isBordered = false
+                bodyAction.isTransparent = true
+                bodyAction.title = ""
+                bodyAction.target = self
+                bodyAction.action = #selector(handleStartRecording)
+                bodyAction.setAccessibilityElement(false)
+                cardView.addSubview(bodyAction)
+            }
             let startButton = NSButton(title: actionLabel, target: self, action: #selector(handleStartRecording))
-            startButton.font = .systemFont(ofSize: 12, weight: .medium)
+            startButton.font = AppFonts.font(size: 12, weight: .medium)
             startButton.frame = NSRect(x: buttonX, y: 15, width: buttonWidth, height: 30)
             startButton.wantsLayer = true
-            startButton.layer?.backgroundColor = NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor
+            // The default Light accent blue carries white text at 5.2:1 on this dark card.
+            startButton.layer?.backgroundColor = NSColor.muesliHex(MuesliTheme.defaultAccentLightHex).cgColor
             startButton.layer?.cornerRadius = 6
             startButton.isBordered = false
-            startButton.contentTintColor = .white
+            Self.applyTitleColor(.white, to: startButton)
             cardView.addSubview(startButton)
         }
 
@@ -317,8 +333,9 @@ final class MeetingNotificationController {
         isVisible = false
         currentPromptID = nil
         shownAt = nil
-        onClose?()
+        let closed = onClose
         onClose = nil
+        closed?()
     }
 
     private func startDismissCountdown(duration: TimeInterval) {
@@ -427,6 +444,19 @@ final class MeetingNotificationController {
             self?.close()
             action?()
         }
+    }
+
+    /// Sets a filled button's title color explicitly. `contentTintColor` alone is not
+    /// guaranteed to recolor a title-only borderless button.
+    private static func applyTitleColor(_ color: NSColor, to button: NSButton) {
+        button.contentTintColor = color
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        button.attributedTitle = NSAttributedString(string: button.title, attributes: [
+            .font: button.font ?? splitButtonFont,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph,
+        ])
     }
 
     /// Maps a join action to the handler that performs it. The transcribe-only handler is

@@ -1484,7 +1484,7 @@ struct ComputerUseRunDiagnosticsTests {
     @Test @MainActor
     func stopClickTakesPrecedenceOverDictation() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         var stops = 0
         var dictationStops = 0
         indicator.onCancelComputerUse = { stops += 1 }

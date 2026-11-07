@@ -73,7 +73,7 @@ enum MedASRTermsPresentation {
         content.isEditable = false
         content.isRichText = false
         content.isSelectable = true
-        content.font = .systemFont(ofSize: 12)
+        content.font = AppFonts.font(size: 12)
         content.textContainerInset = NSSize(width: 8, height: 8)
         content.isVerticallyResizable = true
         content.isHorizontallyResizable = false

@@ -4,7 +4,9 @@ import MuesliCore
 
 enum DashboardTab: String, CaseIterable {
     case timeline
+    case timeTurner
     case dictations
+    case vidshots
     case insights
     case meetings
     case meetingChat
@@ -13,6 +15,10 @@ enum DashboardTab: String, CaseIterable {
     case shortcuts
     case settings
     case about
+}
+
+enum ModelFileOperation: Equatable, Sendable {
+    case deleting, updating
 }
 
 enum InsightsSection: String, CaseIterable, Sendable {
@@ -24,22 +30,20 @@ enum InsightsSection: String, CaseIterable, Sendable {
 
 enum SettingsPane: String, CaseIterable, Identifiable {
     case general
-    case sync
     case dictation
-    case computerUse
     case meetings
     case appearance
+    case experimental
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "General"
-        case .sync: return "Sync"
-        case .dictation: return "Dictation"
-        case .computerUse: return "Computer Use"
+        case .dictation: return "Dictations"
         case .meetings: return "Meetings"
         case .appearance: return "Appearance"
+        case .experimental: return "Experimental"
         }
     }
 }
@@ -162,9 +166,17 @@ enum OpenRouterModelCatalogLoadState: Equatable {
 @MainActor
 @Observable
 final class AppState {
+    var privateMode = ContentPrivacy.shared.isEnabled
+    var anonymousAnalyticsDisabled = UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey)
     // Dashboard data
-    var timelineRows: [TimelineEntry] = []
+    // Also changes when a mutation affects a row outside the first visible page.
+    var timelineHistoryRevision: UInt64 = 0
+    var timelineRows: [TimelineEntry] = [] {
+        didSet { timelineHistoryRevision &+= 1 }
+    }
     var dictationRows: [DictationRecord] = []
+    var failedDictations: [FailedDictation] = []
+    var recoveringDictationID: UUID?
     var meetingRows: [MeetingRecord] = []
     var totalMeetingCount: Int = 0
     var meetingCountsByFolder: [Int64: Int] = [:]
@@ -194,6 +206,10 @@ final class AppState {
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .chatGPT
     var selectedPostProcessorBackend: TranscriptCleanupBackendOption = .local
     var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
+    let modelLibrary = ModelLibraryState()
+    var settingsModelAvailability = SettingsModelAvailability()
+    // Successful scans also reconcile newly mounted Models views when facts are unchanged.
+    var settingsModelAvailabilityRevision = 0
     var config: AppConfig = AppConfig()
     var launchAtLoginRegistrationState: LaunchAtLoginRegistrationState = .disabled
     var interactionPermissionSnapshot: InteractionPermissionSnapshot?
@@ -206,6 +222,11 @@ final class AppState {
     var liveMeetingTranscript: String = ""
     var meetingRetranscriptions: [Int64: MeetingRetranscriptionProgress] = [:]
     var modelFileMutationCount = 0
+    /// Model IDs with a delete or update in flight. Their cards stay inert until it settles;
+    /// this outlives the Models view so returning to it cannot start a conflicting action.
+    var pendingModelFileOperations: [String: ModelFileOperation] = [:]
+    /// The last visible failure per model ID, cleared when a new operation starts.
+    var modelFileOperationErrors: [String: String] = [:]
     var activeAudioImportCount = 0
     var liveMeetingTranscriptOwnerID: Int64? = nil
     /// Provisional streaming tails for the live transcript view, one per
@@ -233,6 +254,8 @@ final class AppState {
                 && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
         }
     }
+    var dictionaryFileOperation: DictionaryFileOperation?
+    var dictionaryFileMessage: String?
     var settingsAppleSpeechLanguages: [AppleSpeechLanguageOption] = [.system]
     var availableEventKitCalendars: [AvailableCalendar] = []
     var sparkleUpdateStatus: SparkleUpdateStatus = .idle
@@ -291,6 +314,7 @@ final class AppState {
     var timelineScrollAnchor: String?
 
     // Search
+    var globalSearchPresented = false
     var searchQuery: String = ""
     var searchResultDictations: [DictationRecord] = []
     var searchResultMeetings: [MeetingRecord] = []
@@ -298,7 +322,52 @@ final class AppState {
     var isSearchActive: Bool { !searchQuery.isEmpty }
 
     // Navigation
+    var timeTurnerDay = Date() {
+        didSet {
+            if timeTurnerDay != oldValue { timeTurnerSelectedRecap = nil }
+        }
+    }
+    var timeTurnerSelectedRecap: TimeTurnerRecapSelection?
+    enum TimeTurnerSection { case history, recap, todos }
+    var timeTurnerSection: TimeTurnerSection = .history
+    var timeTurnerShowsRecap: Bool {
+        get { timeTurnerSection == .recap }
+        set { timeTurnerSection = newValue ? .recap : .history }
+    }
+    var timeTurnerFocusedTodo: String?
+    func openTimeTurnerTodo(_ id: String) {
+        timeTurnerFocusedTodo = id
+        timeTurnerSection = .todos
+        selectedTab = .timeTurner
+        timeTurnerNavigationID = UUID()
+    }
+    var timeTurnerSelectedCapture: VisualMemoryItem?
+    // Explicit source navigation must reset the explorer's local scrub position,
+    // even when it is already mounted or the same result is opened again.
+    var timeTurnerNavigationID = UUID()
+
+    func openTimeTurnerCapture(_ capture: VisualMemoryItem) {
+        timeTurnerDay = capture.capturedAt
+        timeTurnerSelectedCapture = capture
+        timeTurnerSelectedRecap = nil
+        timeTurnerShowsRecap = false
+        timeTurnerNavigationID = UUID()
+        selectedTab = .timeTurner
+    }
+
+    func openTimeTurnerRecap(_ recap: SavedTimeTurnerRecap, calendar: Calendar = .current) {
+        let selection = TimeTurnerRecapSelection(recap)
+        timeTurnerDay = selection.browsingDay(in: calendar)
+        timeTurnerSelectedRecap = selection
+        timeTurnerShowsRecap = true
+        timeTurnerNavigationID = UUID()
+        selectedTab = .timeTurner
+    }
+
     var selectedTab: DashboardTab = .timeline
+    var selectedVidshotID: String?
+    var vidshotDetailReturnsToTimeline = false
+    var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
     var insightsBackLabel: String {
@@ -306,7 +375,11 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsPermissionsSettings = false
+    var requestsTimeTurnerSetup = false
+    var requestsTimeTurnerPermissionSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
+    var credentialStorageError: String?
     var pendingFeatureTourInvitation: FeatureTour?
     var activeFeatureTour: FeatureTour?
     var featureTourStepIndex: Int = 0

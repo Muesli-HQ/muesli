@@ -8,30 +8,57 @@ import MuesliCore
 /// are not claims about a model's actual capacity.
 struct MeetingChatContextBudget {
     let modelID: String
-    let maximumInputTokens: Int
+    private(set) var maximumInputTokens: Int
     let maximumOutputTokens: Int
+    let documentRequestInputTokens: Int
     let historyTokens: Int
     let summaryTokens: Int
     private let summaryBatchTokens: Int
     private let summaryOutputTokens: Int
 
     init(config: AppConfig, contextWindowTokens: Int? = nil) {
-        modelID = MeetingTextGenerationClient.model(config)
+        let selectedModelID = MeetingTextGenerationClient.model(config)
+        modelID = selectedModelID
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
-        // OpenRouter's live catalog exposes contextLength; other current catalogs
-        // don't. A host with verified metadata can supply it for the selected model.
+        // Live host metadata (OpenRouter) takes precedence over verified presets.
+        // Unknown models retain conservative operational transport defaults.
         let native = MeetingTextGenerationClient().supportsNativeTools(config: config)
         // Native tool turns reserve 32K for output/reasoning. 64K is an
         // operational default, not catalog metadata; explicit metadata wins.
         let fallback = native ? 65_536 : (provider == .customLLM || provider == .ollama || provider == .lmStudio ? 8_192 : 32_768)
-        let context = max(1, contextWindowTokens ?? fallback)
+        let preset = provider.summaryModels(config: config, openRouterModels: []).first { $0.id == selectedModelID }
+        let context = max(1, contextWindowTokens ?? preset?.contextWindowTokens ?? fallback)
         let outputReserve = min(native ? 32_768 : 4_096, max(1, context / 2))
         maximumOutputTokens = outputReserve
         summaryOutputTokens = min(4_096, outputReserve)
-        maximumInputTokens = min(32_768, max(1, context - outputReserve))
+        let remaining = max(1, context - outputReserve)
+        documentRequestInputTokens = min(remaining, preset?.maximumInputTokens ?? remaining)
+        // Final answers and document preparation share the actual selected-model
+        // input allowance, including any separate provider input ceiling.
+        maximumInputTokens = documentRequestInputTokens
         historyTokens = max(1, min(8_192, maximumInputTokens / 4))
         summaryTokens = max(1, min(2_048, maximumInputTokens / 8))
-        summaryBatchTokens = max(1, maximumInputTokens - summaryTokens - 1_024)
+        summaryBatchTokens = max(1, min(32_768, maximumInputTokens) - summaryTokens - 1_024)
+    }
+
+    func reservingImageTokens(_ count: Int) -> Self {
+        var copy = self
+        copy.maximumInputTokens = max(1, maximumInputTokens - count * 4_096)
+        return copy
+    }
+
+    func documentContextTokens(question: String, baseContext: String, imageCount: Int, historyReserve: Int) throws -> Int {
+        let evidence = MeetingChatEvidence(scope: .init(selection: .meetings([])), passages: [], dependencies: [],
+            coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
+        let base = try MeetingChatClient.makePrompt(question: question, evidence: evidence, history: [],
+            budget: self, validateBudget: false, attachmentContext: baseContext)
+        let remaining = maximumInputTokens - Self.estimateJSONTextTokens(base.system + base.user)
+            - 2_048 - historyReserve - imageCount * 4_096
+        // Reserve explicit protocol/repair space above; no percentage or fixed
+        // final-chat cap may force an otherwise fitting document into notes.
+        let result = max(0, remaining)
+        guard result >= 256 else { throw ChatPDFProcessingError.contextTooSmall }
+        return result
     }
 
     static func estimateTokens(_ text: String) -> Int {
@@ -39,6 +66,20 @@ struct MeetingChatContextBudget {
         var nonASCII = 0
         for byte in text.utf8 {
             if byte < 128 { ascii += 1 } else { nonASCII += 1 }
+        }
+        return (ascii + 2) / 3 + nonASCII + 32
+    }
+
+    /// Count JSON string escaping as it will appear in native request input.
+    static func estimateJSONTextTokens(_ text: String) -> Int {
+        var ascii = 0; var nonASCII = 0
+        for byte in text.utf8 {
+            if byte >= 128 { nonASCII += 1; continue }
+            switch byte {
+            case 8, 9, 10, 12, 13, 34, 47, 92: ascii += 2
+            case 0..<32: ascii += 6
+            default: ascii += 1
+            }
         }
         return (ascii + 2) / 3 + nonASCII + 32
     }

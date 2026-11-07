@@ -1,14 +1,273 @@
-# Muesli design reference
+# muesli design reference
 
-Open `muesli-design-system.html` in a browser. It is a self-contained visual reference with dark/light previews and no external font dependency. The **Dashboard & Notch Patterns** section records the UI work in PR #584, updated October 8, 2026.
+Open `muesli-design-system.html` in a browser. It is a visual reference with Light, Dark and Ultra Dark previews. It loads the repository’s bundled Nunito Sans fonts locally; no remote font service is used. The **Dashboard & Notch Patterns** section records the UI work in PR #584, updated October 8, 2026.
 
 For a local preview:
 
 ```sh
-python3 -m http.server 8767 --bind 127.0.0.1 --directory design-system
+python3 -m http.server 8767 --bind 127.0.0.1
 ```
 
-Then open http://127.0.0.1:8767/muesli-design-system.html#ui-polish.
+Then open http://127.0.0.1:8767/design-system/muesli-design-system.html#typography.
+
+## Current visual language
+
+Nunito Sans is the app-wide text family, matching the website’s Nunito family.
+Use `MuesliTheme.font` and semantic typography helpers in SwiftUI; use
+`AppFonts` in AppKit. This includes onboarding, chat, settings and auxiliary
+surfaces. SF Symbols retain the system symbol font; code retains a system
+monospaced font. The bundled regular, medium, semibold, bold, extra-bold, italic
+and bold-italic faces use shared registration and caching, never per-render I/O.
+
+| Role | Size / weight |
+| --- | --- |
+| Page title | 26 bold |
+| Section title / smaller title | 20 / 18 semibold |
+| Headline | 15 semibold |
+| Reading | 15 regular; maximum column 720pt |
+| Body / settings label | 14 regular |
+| Callout | 13 regular |
+| Helper / warning | 12 regular / medium |
+| Settings group heading | 12 semibold |
+| Metadata / keyboard hint | 11 medium |
+
+Keep the feel quiet and tactile: layered surfaces, restrained borders, rounded
+controls, readable hierarchy and clear pressed/selected states. Depth must
+serve interaction, without expensive decorative blur, animation or shadows.
+Keep native keyboard navigation, focus, IME, selection and undo intact. Honor
+Reduce Motion. Font and palette changes must not rebuild view identity or
+introduce background work.
+
+### Settings and copy
+
+Use `SettingsSectionHeading`, `SettingsRow` and `SettingsNote`. Standard
+controls occupy a 275pt trailing column with 20pt separation; compact switches
+keep intrinsic width. Below 540pt of content width, standard controls stack
+below labels. The section selector falls back to a menu when needed.
+Avoid repeating headings in subtitles; retain short explanations of consequences,
+privacy and prerequisites. Put optional setup instructions in disclosures.
+Never reduce body/helper sizes to conceal overflow.
+
+Order tabs General, Dictations, Meetings, Appearance, Experimental. iCloud Sync
+lives in General; Computer Use, Quill and Cotypist live in Experimental. The
+meeting-chat destination is labeled Chat.
+
+### Progressive Settings detail
+
+Within App Formatting, use sentence-case callout text for “Most-used apps”,
+body text for app names and caption text for usage. Each suggestion has a small
+accessible dismiss action beside Customize. Dismissal persists locally; Add App
+can still select any app. Omit repeated explanations from individual rows.
+
+Time Turner shows only its Screen history description and Set up action while
+disabled. Capture, exclusions, storage/retention controls and their status details
+appear once enabled. Hiding these controls does not change saved options or the
+retention lifecycle. The explicit setup flow still explains capture before enablement.
+
+### Permission recovery
+
+Permission setup offers Set up later and finishes on Timeline. Completed onboarding
+never makes dashboard navigation depend on recording permissions. Block only the
+requested capture or paste action, with Open permissions and Not now actions.
+Post-onboarding recovery defaults to Settings → General → Permissions. A restart
+requested from Time Turner setup returns to Time Turner with its permission step
+(2 of 3) open and freshly checked. This one-shot return also handles macOS Quit &
+Reopen; it never enables capture or skips the final setup step.
+Feature controls show the missing prerequisite beside Review access, including when
+a previously enabled feature loses permission. Guided setup retains a visible exit
+and a Manage permissions action; returning refreshes permission state.
+
+Accessibility, Input Monitoring and Screen Recording requests share the compact
+System Settings arrow and draggable app-row guide across onboarding, feature
+setup and General Permissions. Screen Recording first directs users to turn on
+the existing app row, with dragging as a fallback when it is missing. Microphone
+uses its native consent prompt rather than an unsupported drag instruction.
+The Screen Recording guide ends when the user returns to muesli, handing off to
+the shared restart notice even if the running process still reports old access.
+
+Requests for Accessibility, Input Monitoring and Screen Recording offer a single
+restart notice on returning from System Settings, with Restart muesli and Later.
+Require an observed System Settings visit after the request; dismissing a native
+prompt or switching to another app is not enough. Pending notices and saved setup
+destinations expire after 15 minutes, so abandoned setup cannot reappear later.
+Do not infer a grant from the request: use conditional copy when macOS still
+reports access unavailable. Settings → General → Permissions keeps a Restart
+action for already-enabled access that needs a fresh process. Restart uses normal
+shutdown, restores the originating permission step or Permissions, and refuses to interrupt recordings,
+transcription, imports, AI requests or an unsent chat draft. Never reset permissions
+or restart automatically on a background permission poll.
+Present restart notices and blocking errors above any open setup sheet, never
+queued behind it. Keep the manual restart action only in Settings → General →
+Permissions. Feature setup screens use their existing Manage permissions action
+for recovery after choosing Later; do not add feature-specific restart controls.
+Permission dialogs must allow AppKit termination so System Settings' Quit &
+Reopen and the shared restart notice reach normal shutdown safeguards. If a quit
+is rejected before shutdown starts, clear the pending restart and allow retry.
+
+Time Turner empty states use the shared Nunito Sans hierarchy: a 20pt semibold
+title, 14pt body detail and semantic primary/secondary text colors. SF Symbols
+retain their system symbol font. Do not use the platform's default empty-state
+text styling, which differs from the dashboard typography.
+
+### Recording interactions
+
+While dictating during a meeting, the floating indicator is a 28pt-high single
+row, sized to its content: “Dictating”, a red dot for meeting recording (or a
+pause symbol for a paused meeting), a live waveform, and distinct Finish
+dictation and Cancel dictation controls. The meeting status has an accessible
+label and tooltip. Preparing and transcribing retain the meeting status; a
+stopped live-insertion warning takes precedence over the dictation label. The
+notch retains its two-wing layout, with meeting status on the left and waveform
+and dictation controls on the right.
+
+Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
+meeting headers move the status above the controls rather than compressing them.
+
+The meeting Live tab shows in-progress speech and newest captions at the top.
+While reading older captions, hold the displayed snapshot steady; show a small
+“New messages” action and apply queued updates when returning to the top.
+Copy includes the current full transcript. Shortcut activation-delay fields keep
+an editable draft and validate on Return or focus loss, never per keystroke.
+
+Manual recordings show a reminder after 45 seconds without new transcript text.
+It stays for 30 seconds, pauses its countdown on hover, and never stops recording
+automatically. Paused recordings do not prompt; resume starts a fresh quiet period.
+
+### Ultra Dark and color roles
+
+Ultra Dark is an explicit local preference available only in Settings →
+Appearance, not in the sidebar quick choices or voice settings actions.
+Deep/base backgrounds are #000000; raised #0A0A0A; hover #181818; primary
+surface #121212; selected surface #222222. Text uses white at 100%, 80%, 65%;
+borders use white at 28%. Primary accent is white and `onAccent` is black.
+Use `MuesliTheme.toggleAccent` on switches: their on state keeps the user’s
+saved accent (adaptive blue by default), including in Ultra Dark. Accent
+selection remains available there; its swatches preview the switch color, not
+the white action fill. Preserve semantic recording, warning, error and success
+colors.
+
+Fills keep the raw saved accent and semantic hues; foregrounds use a role
+matched to the surface beneath them (6:1 for accent text on neutral/tinted
+surfaces, at least 4.5:1 for filled-button labels, 3:1 for state glyphs):
+
+| Role | Use |
+| --- | --- |
+| `onAccent` | Text and glyphs on `accent` fills. Black or white, whichever contrasts more with the resolved fill, so Dark Default and light presets get dark ink. |
+| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark to reach 6:1 on neutral surfaces and all accent-tint states. Never a fill. White in Ultra Dark. |
+| `accentStateShade` | Hover/pressed overlay on accent fills (8%/16%), always moving away from `onAccent`. |
+| `onSuccess` | Dark ink on `success` fills (Donate, onboarding confirmations). Never `onAccent`. |
+| `recordingFill` | #DC2626 with white labels for labelled Stop/Record. `recording` (#EF4444) remains for dots, waveforms and badges. |
+| `destructiveText` | Destructive labels, trash glyphs and error text, on cards and red tints up to 16%. |
+| `successText`, `warningText` | Status labels; deeper shades in Light. |
+| `joinAction` | Join split buttons (dashboard and notification) with dark ink. |
+
+`MuesliAccentPalette` derives these once when the accent changes and caches
+them per swatch; views never parse hex or compute contrast while rendering.
+`MuesliColorRolesTests` checks every preset and a spread of arbitrary saved
+hex values in Light, Dark and Ultra Dark. Native controls keep system rendering.
+
+### Control feedback
+
+Custom buttons use `MuesliButtonStyle` (`.muesli(.primary | .secondary |
+.raised | .tinted | .destructive | .destructiveTinted | .success | .recording |
+.quiet)`). The label keeps its existing padding, height, width and typography;
+the style owns fill, border, foreground and a full-shape hit area, so visible
+padding is clickable. Hover and keyboard focus raise one flat color step and
+press a second. Quiet controls show hover and press as neutral fills, never
+outlines; only keyboard focus draws a ring. `.raised` is the field-like
+launcher surface (`backgroundRaised` with a border), also used as the solid
+fallback for glass controls. Disabled controls render once, flat, as `surfacePrimary` with
+`textTertiary`; do not add opacity on top.
+
+Resting depth is restrained and physical, built from solid 1pt shape edges
+(`MuesliControlDepth`), never gradients, blur, shadow filters or offscreen
+compositing:
+
+| Depth | Kinds | Treatment |
+| --- | --- | --- |
+| Lifted | `.primary`, `.success`, `.recording` | Black lower lip (Light 14%, Dark 26%; Increase Contrast 24%/40%) plus a 1pt inset rim (10%, 20% with Increase Contrast) in the same shade the hover overlay uses, so it moves away from the label. |
+| Edge | `.secondary`, `.raised` | Neutral lip beneath the bottom border (Light 6%, Dark 20%; 12%/32%). None in Ultra Dark, whose 28% white border already carries the edge. |
+| Rim | `.tinted` | Quieter accent rim (14%, 26% with Increase Contrast); no lip. |
+| Flat | `.quiet`, `.destructive`, `.destructiveTinted`, `compresses: false`, pressed, disabled | Existing fills/borders; quiet controls reserve their ring for keyboard focus. |
+
+The lip is the face's lower 1pt edge, exposed by drawing a second copy of the
+opaque face 1pt shorter; the face under the label keeps its exact color, so
+label/fill contrast is unchanged. Edges sit at the shape border inside the
+label's own padding, never behind text, and do not hit-test. The layer
+structure is fixed per button; only edge opacities change with state, color
+scheme and Increase Contrast, with no per-render contrast math.
+
+Press feedback is tactile but small. Mouse-down removes the lip and rim and
+shows the pressed color on the same frame; release restores them with the
+same 0.12s color fade. The drawn control
+compresses to `MuesliMotion.pressedScale` (0.98) in 0.06s and releases in
+0.14s, via `MuesliPressCompression`. The scale is visual only: it is applied
+before `contentShape`, so layout and the full unscaled hit region do not move,
+and the action never waits for the animation. Reduce Motion removes the scale
+and the fades but keeps the instant color and depth change. No blur shadows,
+springs or offsets.
+Full-width list rows (`compresses: false`) and sidebar navigation stay flat and
+acknowledge a press with an immediate fill. The 0.12s color fade, navigation
+and row-hover animations go through `MuesliMotion`; repeating motion (sync
+spinner, onboarding preparation bar, title marquee) becomes static under
+Reduce Motion. Native focus rings, keyboard shortcuts and button semantics are
+unchanged.
+
+Targets: icon and text actions use at least a 28pt hit region, 32pt where a row
+or footer allows (chat footer, Insights refresh, Meetings header actions). Put
+the padding inside the Button label, so the label's actual bounds are the
+drawn control and its hit region. Align a padded text action by those actual
+bounds, adjusting the column's spacing or alignment; do not pull it outward
+with negative outer padding, which makes targets overlap their neighbors.
+`MuesliTextButton` is the shared text-only action. Adjacent targets' actual
+bounds must not overlap: a row's primary target and its trailing actions are separate
+buttons, and margins inside a row belong to one of them rather than being dead.
+Native switches, pickers and menus keep system rendering; enlarge a `Menu`
+label's frame and content shape instead of replacing it with gestures.
+
+Rows that host drag and drop or context menus remain gestures and show hover
+and selected fills, but no mouse-down fill: that would require a zero-distance
+gesture that competes with drag sources and scrolling. Rows with neither (for
+example All Meetings) are buttons. A primary button that shares a row with
+other actions reports its press so the row draws one shared fill.
+
+Asynchronous actions show their state at click time and refuse repeats:
+copy actions show a short visible confirmation; renames, deletes, model
+updates, imports/exports and Insights refresh show local progress and disable
+the conflicting controls; refreshing the same range keeps the previous content
+visible. Failures stay next to the control that caused them.
+
+Hover-revealed row actions also appear while one of them has keyboard focus,
+and carry labels. Rows that host drag and drop, context menus or nested buttons
+stay gestures and use `muesliRowActivation` for button/selected traits and
+Space/Return activation under full keyboard navigation. Send and Stop share
+one 32pt slot in the chat composer; sign-in progress occupies the button's frame.
+
+Use adaptive foreground attributes for native text inputs, including preset
+insertion and restored drafts. A replacement into empty NSTextStorage must
+carry font and foreground color explicitly; keep undo/redo behavior.
+
+### Limited Liquid Glass prototype
+
+On macOS 26+, `MuesliFloatingGlassButtonStyle` applies native regular glass to
+the sidebar collapse/expand button. The former collapsed meeting-chat launcher
+has been replaced by a persistent editable composer with a solid input surface.
+These isolated navigation affordances keep their existing dimensions, label
+bounds, actions and keyboard-focus ring. There is no glass on reading surfaces,
+list rows or the expanded native chat editor. Do not layer the solid button
+bevel or a custom blur behind native glass.
+
+Ultra Dark, Reduce Transparency, Increase Contrast, disabled controls and
+macOS versions before 26 use the solid raised style. Reduce Motion disables
+interactive glass reactions while retaining an immediate pressed fill. The sidebar control does not morph into other surfaces; nearby future glass controls
+must share a `GlassEffectContainer`. Keep this prototype limited until native
+visual, accessibility and performance validation supports broader adoption.
+
+### Brand and identity
+
+Write the visible brand as **muesli**. Display-name changes do not change bundle
+IDs, executables, support folders, database paths, keychain identifiers or sync
+identity. Older configurations continue to use their existing local data.
 
 ## Source of truth
 
@@ -17,6 +276,8 @@ The native implementation owns behavior and token values. Browser specimens illu
 | Pattern | Native source under `native/MuesliNative/Sources/MuesliNativeApp/` |
 | --- | --- |
 | Adaptive colors, typography, spacing, reading width | `MuesliTheme.swift` |
+| Accent-derived foreground roles and contrast math | `MuesliAccentPalette.swift` |
+| Shared button feedback, resting depth, motion policy, gesture-row activation | `MuesliControlStyles.swift` |
 | Sidebar width, compact layout, global tint | `DashboardRootView.swift`, `SidebarView.swift` |
 | Outlined statistics with centered icon/value/caption stacks | `StatsHeaderView.swift` |
 | Prominent, labeled Insights Share action and adaptive range controls | `InsightsView.swift` |
@@ -35,7 +296,7 @@ When changing these patterns, update the corresponding specimen and token descri
 - The native stats header still uses four columns at narrow widths. Its compact-window behavior is an open review finding, not resolved by the reference's scrollable desktop specimen.
 - The notch's 78pt right wing leaves 32pt more space than the previous usual 110pt wing. It does not discover the macOS microphone indicator's bounds. Validate other display scales and crowded menu bars before claiming universal clearance.
 - The close mark is an image-only system xmark centered in a 22pt circular button. Its native rendering has already been verified at 1×/2×; browser text glyphs are not an equivalent implementation.
-- Real UI verification must include narrow windows, both appearances, keyboard focus, and selected/hover states. The HTML theme toggle changes only this reference, never app preferences.
+- Real UI verification must include narrow windows, Light, Dark and Ultra Dark, keyboard focus, and selected/hover states. The HTML theme toggle changes only this reference, never app preferences.
 
 ## What Insights means by a session
 
@@ -52,3 +313,192 @@ Center the expanded instruction and question panels beneath the visible bar (its
 Show the latest three tool summaries under the working status, using 10pt text and at most two lines per summary. Generate display copy from the operation and outcome (for example, “Read page text” or “Open app — failed”), never from raw response bodies. Full responses, observations, errors, and tool arguments remain in Timeline. Older trace events without a summary remain readable there and do not fall back to raw text in the notch. Use 13pt instruction text in a scrollable area. The normal panel starts at 100pt high and adds 30pt per result, capped at 190pt; review and question surfaces retain their dedicated layouts. Clear summaries when a new command starts or the session ends.
 
 Active dictation, processing, and computer-use sessions own the indicator until they finish. Background loading callbacks and cursor feedback must not hide or replace their presentation or cancellation controls. Loading may use the shared floating surface while idle; starting an activity retires that loading presentation so its later completion cannot reset the session.
+
+Custom button focus uses a non-hit-testing 2pt readable-accent outline; sidebar navigation uses subtle selected/hover fills without outlines; appearance choices retain their neutral selection outline. Sidebar rings are reserved for keyboard focus. Composer focus has its own host-supplied color through AIElementsTheme. Native text-editing and recording behavior remain unchanged.
+
+### Persistent chat composer
+
+Timeline, Dictations and Meetings share a real bottom-aligned input with the
+empty placeholder “What’s on your mind?”. Keep its native editor mounted across
+those destinations; navigation must preserve draft text, selection, undo and
+explicit meeting scope. Context remains visible and meeting-only. Sidebar Chat
+shows history above the same slim input; New chat opens a fresh draft in place.
+Answers can expand above the persistent input without replacing it.
+
+The composer, including on the Chat index, spans the available content width with 24pt side margins.
+At rest it is a single slim input: 4pt vertical inset around the native editor.
+Focus, a nonempty draft, a running response or an open context/model picker
+reveals its controls and normal padding. Empty, unfocused input contracts again.
+The same editor stays mounted in both densities; never replace it with a button.
+
+## Official brand assets
+
+The cover and brand specimens use approved artwork from [muesli.works/brand](https://muesli.works/brand), copied from `Muesli-HQ/muesli-landing` commit `7b6b434e5fc54e51d05a002440355fd5b90a416f` (brand library PR #5). Files live in `assets/brand/`; `assets/brand/assets.json` maps local files to their published URLs and descriptions. Keep this directory beside the HTML when sharing the offline reference.
+
+Use the supplied icon, waveform lockups, and outlined wordmarks directly. Do not recreate the brand with CSS bars, a guessed bar count, or separately typeset letters. Outlined wordmarks preserve Nunito Sans lettering and spacing without a font download. The animated recording-indicator specimens remain UI behavior examples.
+
+The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary transparent lockup uses `#12365B`. These brand values do not replace the native app's adaptive UI accent. Copy updated official files and their metadata together when refreshing this reference.
+
+## Iconography and indicator audit (October 31, 2026)
+
+Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
+
+Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+
+### Reorderable sidebar
+
+Only the top six navigation destinations can be reordered in expanded and icon-only
+layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
+to the upper or lower half of another row; an accent-colored insertion line marks
+the exact boundary before or after it. Meetings moves with its entire folder tree,
+and the line stays outside that group. Folder drags remain a separate interaction.
+Only a completed drop changes the locally saved order. Right-click Move up / Move
+down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults.
+Reordering does not select a destination or reset the composer draft.
+
+The custom sidebar drag type (`com.muesli.sidebar-tab`) must be declared in the
+packaged app’s `UTExportedTypeDeclarations`, not just constructed in Swift.
+Without that declaration macOS can start a drag but fail to recognize its drop targets.
+Verify registration and actual pointer drops in the installed app, not only order logic.
+
+### What's New tour
+
+The 0.8.6 tour introduces Chat, Time Turner, live dictation, Quill, Cotypist,
+app formatting, meeting screen recording, global search, new ASR models, and
+cleanup model updates. Failure recovery stays out of the promotional tour.
+Use Quill's bundled feather and Time Turner's orbital hourglass; other cards use
+the corresponding feature's system symbol. Resolve custom artwork once rather
+than loading it during geometry updates. Both sidebar layouts expose the same
+Chat, Time Turner and Search spotlight targets.
+
+Tour navigation changes destinations only; it does not enable recording,
+download models, accept model terms, or alter settings. Missing controls retain
+a centered, navigable card. Activate after the dashboard's first ordered layout,
+retain subpixel geometry guards, and cancel Settings/Models scrolls when the
+target or destination changes. Scrolling is nonanimated, including with Reduce
+Motion. Verify cold presentation, rapid Next/Back, empty libraries, narrow
+windows, and all themes in the installed app.
+
+## Quill conversation answers
+
+The Dashboard & Notch specimen includes Quill's content-sized answer state using
+the existing feather asset. The panel width and origin match the visible notch
+bar, with 16pt padding, a 10pt question/answer gap, and a 26pt footer separated by
+12pt. Height is bounded to 96–420pt; longer answers scroll. Question text uses
+12pt helper typography and answers use 14pt body with the shared Markdown renderer.
+Copy confirms success; Follow up starts hands-free capture; the shortcut retains
+hold/release semantics. Dismiss clears active context and New conversation starts
+fresh. Background recognition does not display partial text while recording.
+
+## Time Turner workspace (experimental)
+
+Time Turner has a dedicated sidebar destination after Timeline. Its History and
+Recap tabs share a date selector; capture status, pause/resume and settings remain
+available in both. History prioritizes the screenshot and compact app scrubber. Center the day
+control in wide headers and place it on its own centered row at narrow widths;
+its formatted date opens a calendar. Meetings and Time Turner share the same
+pause/resume control. Recap screenshot citations show small image previews with
+timestamps, resolving current media locations after compaction.
+Recap uses a bounded reading column with evidence buttons, generation time and
+original model attribution. It has no permanent screenshot sidebar; a source
+opens the corresponding History moment or meeting passage. The title, date and compact capture controls share one header row, stacking at
+narrow widths. Left-aligned underline tabs sit directly above the content;
+Recap does not repeat the selected date. Timeline retains its stats and dictation/meeting activity without
+embedding the Time Turner workspace. Use the shared typography and semantic
+surfaces in `TimeTurnerPage` and `TimeTurnerRecapView`.
+
+Time Turner settings use the standard section headings, bordered cards and
+`SettingsRow` control columns. All controls live in one Time Turner card, with inset Capture, Excluded apps
+and Storage & retention subsections separated by dividers. Capture switches
+have visible labels; storage budget and usage stay within that card. Permission setup
+stays in onboarding, with a recovery action only when required access is missing.
+
+Time Turner Storage & retention uses shared SettingsRow menus for screenshot
+retention and searchable-history retention. The screenshot budget does not remove
+OCR. Setup uses the same fixed-width SettingsRow menu column. A collapsed
+“How retention works” disclosure holds capture-time aging, cleanup while paused/off,
+and deletion details; the storage estimate remains visible. OCR-only history displays “Screenshot expired” with readable,
+selectable captured text rather than implying a corrupt screenshot.
+
+Time Turner retention and budget reductions show a confirmation before applying
+the policy. Manual Settings uses a sheet; voice uses the shared question UI. Keep
+current settings is the default action. Increasing limits needs no confirmation.
+
+## Global search
+
+Sidebar Search and the app's ⌘F command open a single search panel above the
+current dashboard. Keep the underlying page and chat draft mounted. Use a native
+text field for composition, paste, dictation and undo; Up/Down selects a result,
+Return opens it and Escape closes the panel. Type chips, date range and app
+filters narrow the same shared search service. Rows show their content class,
+source app, timestamp and excerpt. A bounded result list explicitly labels its
+100-match cap. Screen-history results whose media expired remain readable as text.
+Opening re-resolves the source: meetings and chats use their existing destinations,
+screen history and recaps use Time Turner, and short writing records have a
+selectable text preview with a Copy action. The panel refreshes its bounded query
+while visible and retains selection across incoming captures.
+
+### Search availability
+
+Global search keeps verified matches usable when another source cannot be read.
+A compact helper-text row names unavailable content types with a quiet Retry
+button; it does not replace the results list. Empty partial responses say no
+verified matches are available rather than claiming the history has no matches.
+Opening an unavailable or deleted item reports that state in the same row while
+preserving the other results. Use existing semantic text colors and 12pt helper
+typography for this row.
+
+## About privacy control
+
+About includes a Privacy card with the canonical “Disable anonymous analytics”
+switch, off by default. Use the compact SettingsRow switch and wrapping helper
+text explaining immediate local opt-out and the limit for already-sent requests.
+Keep the shared toggle accent in all themes; do not conflate this control with
+automatic issue-reporting prompts or optional hosted AI features.
+
+## Timeline privacy mode
+
+Place a compact, labelled Privacy switch with an eye-slash symbol at the trailing
+edge of the filter row below Timeline search. Use the canonical `private_mode`
+setting and shared switch accent; narrow layouts move trailing controls below the
+origin/app filters. When on, show a wrapping 12pt note: only meetings and their recordings are retained from new activity on this Mac, while Time Turner and Cotypist are paused. The help text
+explains that history from other devices still syncs and
+anonymous events use the separate analytics preference. Default off; local only.
+
+### Chat meeting context
+
+The composer uses “Choose meetings” when no meeting is selected. The scope picker
+keeps All saved meetings, Folder and Specific meetings; general new drafts open
+on Specific meetings with no checked rows. Individual selections can be cleared
+without broadening to the archive. Optional date fields stay within saved history
+through today. An unused draft in a meeting document/folder shows that local
+context; explicit choices, typed drafts and existing chats remain stable.
+
+Attachment originals stay in place. The selected provider receives images and
+only the document pages requested through tools; on-device Gemma reads document
+text locally. Keep this disclosure at the shared 12pt helper-text size.
+
+### New-feature discovery badges
+
+Use one compact, static `New` capsule beside a major feature entry or setting,
+not every new control. Use Nunito Sans 11 semibold, white text, 5pt horizontal
+and 1pt vertical padding. The fill derives from the saved accent, deepened only
+as needed for 4.5:1 white-text contrast, including Ultra Dark. It has no shadow,
+animation or hit target; the parent control retains its normal click behavior.
+Badges disappear independently after feature interaction and stay dismissed across
+relaunches. Scrolling, rendering and the guided tour do not dismiss them. The
+0.8.6 introductions are Chat, Time Turner, Granola import, Cotypist, live dictation
+and App Formatting. Quill predates this release and does not receive a New badge.
+
+### Timeline presentation
+
+The activity filter shows its selected value without a separate visible label;
+retain its accessible name. Insights is reached through the Timeline and
+Dictations statistics tiles, not a sidebar destination. Saved sidebar orders
+ignore the retired Insights entry while preserving the other positions.
+
+Timeline does not display the inline iCloud companion/setup/status card. Keep
+the compact header sync control and Settings → General sync setup, status and
+recovery actions available. Background sync behavior and saved preferences are
+unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
+never use the raw saved accent as a label color on a neutral surface.

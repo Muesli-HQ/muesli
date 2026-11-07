@@ -5,6 +5,18 @@ import Testing
 
 @Suite("MeetingNotificationController")
 struct MeetingNotificationControllerTests {
+    @Test("A close callback can install the next notification callback")
+    @MainActor
+    func closePreservesNextCallback() {
+        let controller = MeetingNotificationController()
+        var nextClosed = false
+        controller.onClose = { controller.onClose = { nextClosed = true } }
+        controller.close()
+        #expect(controller.onClose != nil)
+        controller.close()
+        #expect(nextClosed)
+    }
+
     @Test("Slack candidates map to the Slack notification platform")
     func slackCandidateMapsToSlackNotificationPlatform() {
         #expect(MeetingPlatform(.slack) == .slack)
@@ -39,7 +51,7 @@ struct MeetingNotificationControllerTests {
     @MainActor
     func singleActionPromptsUseAvailableTextWidth() {
         let subtitle = "Still transcribing. Stop if the meeting ended." as NSString
-        let subtitleWidth = subtitle.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width
+        let subtitleWidth = subtitle.size(withAttributes: [.font: AppFonts.regular(11)]).width
         let cardWidth = MeetingNotificationController.singleActionCardWidth(
             requiredTextWidth: subtitleWidth,
             textX: 14

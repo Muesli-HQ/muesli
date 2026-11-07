@@ -180,7 +180,9 @@ enum PasteController {
         let didStageText = transaction.stage(pastedText, write: stageText)
         onLifecycleEvent(didStageText ? .clipboardStaged : .clipboardStageFailed)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        // The clipboard write above is synchronous, so Paste only waits for the next turn of the
+        // main queue (callers finish their own setup first).
+        DispatchQueue.main.async {
             // Snapshot immediately before Paste dispatch so attribution and the command
             // refer to the same frontmost application.
             let targetApplication = targetApplicationProvider()

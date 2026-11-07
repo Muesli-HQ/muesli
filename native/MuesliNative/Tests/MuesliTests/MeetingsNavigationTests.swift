@@ -113,14 +113,24 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+    @Test func timelinePaginationKeepsRowsButChangedSearchInvalidatesThem() {
+        let completed = TimelineSearchRequest(scope: "release|revision1", limit: 50)
+        #expect(completed.canDisplay(completed))
+        #expect(TimelineSearchRequest(scope: completed.scope, limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "different query|revision1", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: "release|revision2", limit: 100).canDisplay(completed))
+        #expect(!TimelineSearchRequest(scope: completed.scope, limit: 25).canDisplay(completed))
+        #expect(!completed.canDisplay(nil))
+    }
+
 
     @Test("UI refresh publishes history once regardless of windows", arguments: [false, true], [false, true])
-    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) throws {
+    func refreshUIPublishesHistoryOnce(hasHistoryWindow: Bool, hasPreferencesWindow: Bool) async throws {
         let directory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.showFloatingIndicator = false
         configStore.save(config)
@@ -138,6 +148,7 @@ struct MeetingsNavigationTests {
                 startedAt: Date(), endedAt: Date()
             )
             controller.refreshUI()
+            await controller.historyStatsTask?.value
             #expect(counter.count == expectedCount)
             #expect(controller.appState.dictationRows.contains { $0.id == id })
             #expect(controller.appState.dictationStats.totalSessions == expectedCount)
@@ -146,6 +157,7 @@ struct MeetingsNavigationTests {
         // Standalone reload callers must still refresh history themselves.
         if let history {
             history.reload()
+            await controller.historyStatsTask?.value
             #expect(counter.count == 3)
         }
     }
@@ -162,7 +174,7 @@ struct MeetingsNavigationTests {
                 bundlePath: nil
             ),
             dictationStore: dictationStore,
-            configStore: configStore ?? ConfigStore(supportDirectory: makeSupportDirectory())
+            configStore: configStore ?? makeTestConfigStore(supportDirectory: makeSupportDirectory())
         )
     }
 
@@ -526,8 +538,28 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.timelineScrollAnchor == "dictation:77")
     }
 
+    @Test("timeline search invalidates after deleting a match outside the visible page")
+    func timelineSearchInvalidatesHiddenDeletion() async throws {
+        let store = try makeStore()
+        let base = Date(timeIntervalSince1970: 1_776_000_000)
+        let oldID = try store.insertDictation(text: "older needle", durationSeconds: 1,
+            startedAt: base, endedAt: base.addingTimeInterval(1))
+        _ = try store.insertDictation(text: "newest unrelated", durationSeconds: 1,
+            startedAt: base.addingTimeInterval(2), endedAt: base.addingTimeInterval(3))
+        let controller = makeController(dictationStore: store)
+        controller.appState.timelinePageSize = 1
+        controller.syncAppState()
+        let firstID = controller.appState.timelineRows.first?.id
+        let revision = controller.appState.timelineHistoryRevision
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).count == 1)
+        controller.deleteDictation(id: oldID)
+        #expect(controller.appState.timelineRows.first?.id == firstID)
+        #expect(controller.appState.timelineHistoryRevision != revision)
+        #expect(try await controller.searchTimeline(text: "needle", activity: "All activity", limit: 50).isEmpty)
+    }
+
     @Test("timeline pagination and filter changes reset to the newest composite anchor")
-    func timelinePaginationAndFilterReset() throws {
+    func timelinePaginationAndFilterReset() async throws {
         let store = try makeStore()
         let base = Date(timeIntervalSince1970: 1_776_000_000)
         let notes = DictationTargetApplication(name: "Notes", bundleID: "com.apple.Notes")
@@ -568,6 +600,7 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
 
         controller.filterDictations(application: notes)
+        await controller.historyStatsTask?.value
         #expect(controller.appState.dictationApplicationFilter == notes)
         #expect(controller.appState.dictationRows.count == 1)
         #expect(controller.appState.filteredDictationStats.totalSessions == 1)
@@ -641,7 +674,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -670,7 +703,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.wav")
@@ -702,7 +735,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -737,7 +770,7 @@ struct MeetingsNavigationTests {
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cacheDirectory.path)
             try? FileManager.default.removeItem(at: supportDirectory)
         }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let recordingsDirectory = supportDirectory.appendingPathComponent("meeting-recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = recordingsDirectory.appendingPathComponent("meeting.m4a")
@@ -764,7 +797,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         let savedRecordingURL = supportDirectory.appendingPathComponent("shared.m4a")
         try Data("recording".utf8).write(to: savedRecordingURL)
@@ -823,7 +856,7 @@ struct MeetingsNavigationTests {
         let supportDirectory = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
         try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
         let firstMissingRecordingURL = supportDirectory.appendingPathComponent("first-missing.m4a")
         try Data("first".utf8).write(to: firstMissingRecordingURL)
         let firstCacheURL = try RecordingWaveformCacheFiles.cacheURL(
@@ -875,7 +908,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         let liveMeeting = try #require(try store.meeting(id: meetingID))
@@ -910,7 +944,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let meeting = try #require(try store.meeting(id: meetingID))
 
@@ -1019,23 +1054,58 @@ struct MeetingsNavigationTests {
         await controller.cancelMeetingRetranscriptionsForShutdown() // idempotent drain
     }
 
-    @Test("a corrupt legacy catalog cannot disable meeting video storage")
-    func corruptLegacyCatalogKeepsPrimaryVideoStorage() throws {
+    @Test("meeting video lookup and deletion stay within meeting storage", arguments: [false, true])
+    func meetingVideoStorageIsIndependentOfTimeTurner(deleteAll: Bool) async throws {
         let database = try makeStore()
         let support = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: support) }
-        let legacy = support.appendingPathComponent("visual-memory")
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
-        try Data("not a SQLite database".utf8).write(to: legacy.appendingPathComponent("catalog.sqlite"))
         let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
         let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        await controller.refreshCatalog()
+        let history = try #require(controller.store)
+        let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
+            root: support.appendingPathComponent("meeting-recordings/videos"))
+        let clip = VisualMemoryItem(id: "shared-id", kind: .meetingVideo, meetingID: id, source: "Display", path: "clip.mp4")
+        let moment = VisualMemoryItem(id: clip.id, kind: .moment, source: "Editor", path: clip.path)
+        let historyURL = try history.url(for: moment.path)
+        try Data([1]).write(to: historyURL)
+        try history.save([moment])
+        let videoURL = try videos.url(for: clip.path)
+        // A missing meeting file must never resolve to a file in Time Turner.
+        #expect(controller.mediaURL(clip) == videoURL)
+        #expect(controller.mediaURL(moment) == historyURL)
+        try FileManager.default.createDirectory(at: videos.root, withIntermediateDirectories: true)
+        try Data([2]).write(to: videoURL)
+        try videos.save([clip])
+        await controller.refreshCatalog()
+        #expect(controller.items == [clip])
+        if deleteAll { try controller.deleteAllMeetings() }
+        else { try controller.deleteMeeting(id) }
+        await controller.refreshCatalog()
+        #expect(controller.items.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: videoURL.path))
+        #expect(try history.items() == [moment])
+        #expect(try Data(contentsOf: historyURL) == Data([1]))
+    }
+
+    @Test("a corrupt Time Turner catalog cannot disable meeting video storage")
+    func corruptTimeTurnerCatalogKeepsPrimaryVideoStorage() async throws {
+        let database = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let history = support.appendingPathComponent("visual-memory")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        try Data("not a SQLite database".utf8).write(to: history.appendingPathComponent("catalog.sqlite"))
+        let id = try database.createLiveMeeting(title: "Video", calendarEventID: nil, startTime: Date())
+        let controller = VisualMemoryController(databaseURL: database.resolvedDatabaseURL, supportDirectory: support)
+        await controller.refreshCatalog()
         #expect(controller.store == nil)
         #expect(!controller.hasMedia(meetingID: id))
         let videos = try MeetingVideoStore(databaseURL: database.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
         try videos.save([clip])
-        controller.reload()
+        await controller.refreshCatalog()
         #expect(controller.items == [clip])
     }
 
@@ -1044,11 +1114,12 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let support = makeSupportDirectory()
         defer { try? FileManager.default.removeItem(at: support) }
-        let config = ConfigStore(supportDirectory: support)
+        let config = makeTestConfigStore(supportDirectory: support)
         let id = try store.createLiveMeeting(title: "Video recovery", calendarEventID: nil, startTime: Date())
         let videos = try MeetingVideoStore(databaseURL: store.resolvedDatabaseURL,
             root: support.appendingPathComponent("meeting-recordings/videos"))
         let clip = VisualMemoryItem(kind: .meetingVideo, meetingID: id, source: "Display", path: "saved.mp4")
+        try FileManager.default.createDirectory(at: videos.root, withIntermediateDirectories: true)
         try Data([1]).write(to: videos.url(for: clip.path))
         try videos.save([clip])
         let controller = makeController(dictationStore: store, configStore: config)
@@ -1123,7 +1194,7 @@ struct MeetingsNavigationTests {
         defer { sqlite3_close(db) }
         #expect(sqlite3_exec(db, "CREATE TRIGGER fail_path BEFORE UPDATE OF saved_recording_path ON meetings BEGIN SELECT RAISE(FAIL, 'injected'); END;", nil, nil, nil) == SQLITE_OK)
         do {
-            let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
             try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
             #expect(!controller.attachEarlyMeetingRecording(id: id, path: audio.path))
             let result = MeetingSessionResult(
@@ -1142,13 +1213,13 @@ struct MeetingsNavigationTests {
         }
         // A fresh controller has no in-memory path; failed recovery keeps the file.
         do {
-            let restarted = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+            let restarted = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
             restarted.recoverRetainedMeetingRecordings()
             #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
             #expect(FileManager.default.fileExists(atPath: reference.path))
         }
         #expect(sqlite3_exec(db, "DROP TRIGGER fail_path", nil, nil, nil) == SQLITE_OK)
-        let recovered = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let recovered = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         recovered.recoverRetainedMeetingRecordings()
         let recoveredPath = try #require(try store.meeting(id: id)?.savedRecordingPath)
         #expect(URL(fileURLWithPath: recoveredPath).resolvingSymlinksInPath() == audio.resolvingSymlinksInPath())
@@ -1171,7 +1242,7 @@ struct MeetingsNavigationTests {
         try Data([0]).write(to: audio)
         let id = try store.createLiveMeeting(title: "Identity", calendarEventID: nil, startTime: Date())
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         try MeetingRecordingRecoveryReference(meetingID: id, startTime: "wrong", databasePath: store.resolvedDatabaseURL.path).write(beside: audio)
         controller.recoverRetainedMeetingRecordings()
         #expect(try store.meeting(id: id)?.savedRecordingPath == nil)
@@ -1207,7 +1278,7 @@ struct MeetingsNavigationTests {
         let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
         try store.updateMeetingSavedRecordingPath(id: id, path: missing)
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: audio.path)
         let reference = MeetingRecordingRecoveryReference.url(for: audio)
         var db: OpaquePointer?
@@ -1234,7 +1305,7 @@ struct MeetingsNavigationTests {
         defer { try? FileManager.default.removeItem(at: support) }
         let id = try store.createLiveMeeting(title: "Recovery", calendarEventID: nil, startTime: Date())
         let meeting = try #require(try store.meeting(id: id))
-        let controller = makeController(dictationStore: store, configStore: ConfigStore(supportDirectory: support))
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
         let missingAudio = recordings.appendingPathComponent("missing.wav")
         try controller.preserveMeetingRecordingReference(meeting: meeting, path: missingAudio.path)
         let foreignAudio = recordings.appendingPathComponent("foreign.wav")
@@ -1274,6 +1345,40 @@ struct MeetingsNavigationTests {
         #expect(controller.canModifyModelFiles)
     }
 
+    @Test("per-model operations refuse a repeat on the same model without blocking other leases")
+    func modelOperationExcludesSameModelOnly() throws {
+        let controller = makeController(dictationStore: try makeStore())
+        let delete = try #require(controller.beginModelFileOperation(.deleting, modelID: "model-a"))
+        #expect(controller.appState.pendingModelFileOperations["model-a"] == .deleting)
+        // A repeat click or a conflicting update of the same files is refused synchronously.
+        #expect(controller.beginModelFileOperation(.deleting, modelID: "model-a") == nil)
+        #expect(controller.beginModelFileOperation(.updating, modelID: "model-a") == nil)
+        // Leases still overlap across models and for plain lease holders.
+        let other = try #require(controller.beginModelFileOperation(.updating, modelID: "model-b"))
+        let lease = try #require(controller.beginModelFileMutation())
+        #expect(controller.appState.modelFileMutationCount == 3)
+
+        controller.endModelFileOperation(delete, modelID: "model-a", failure: "Couldn’t delete model A")
+        #expect(controller.appState.pendingModelFileOperations["model-a"] == nil)
+        #expect(controller.appState.modelFileOperationErrors["model-a"] == "Couldn’t delete model A")
+        #expect(controller.appState.modelFileMutationCount == 2)
+
+        // Starting again clears the previous failure; the reservation is per model.
+        let retry = try #require(controller.beginModelFileOperation(.deleting, modelID: "model-a"))
+        #expect(controller.appState.modelFileOperationErrors["model-a"] == nil)
+        controller.endModelFileOperation(retry, modelID: "model-a")
+        controller.endModelFileOperation(other, modelID: "model-b")
+        controller.endModelFileMutation(lease)
+        #expect(controller.appState.pendingModelFileOperations.isEmpty)
+        #expect(controller.appState.modelFileOperationErrors.isEmpty)
+        #expect(controller.appState.modelFileMutationCount == 0)
+
+        // Global prerequisites still apply before any per-model reservation is recorded.
+        controller.appState.activeAudioImportCount = 1
+        #expect(controller.beginModelFileOperation(.deleting, modelID: "model-a") == nil)
+        #expect(controller.appState.pendingModelFileOperations.isEmpty)
+    }
+
     @Test("prompt policy surfaces writer errors without asking to save a nonexistent file")
     func retentionPolicyPreservesWriterFailure() async {
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: false, writerFailed: true, prompt: {
@@ -1283,6 +1388,47 @@ struct MeetingsNavigationTests {
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("prompt policy asks before retaining a recording with a finalization error")
+    func promptPolicyAsksBeforeRetainingRecordingWithWriterFailure() async {
+        var didPrompt = false
+        let shouldRetain = await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: true,
+            prompt: {
+                didPrompt = true
+                return false
+            }
+        )
+        #expect(didPrompt)
+        #expect(!shouldRetain)
+
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: true,
+            prompt: {
+                Issue.record("Never policy must not ask to retain audio")
+                return true
+            }
+        )))
+    }
+
+    @Test("alert fallback logging omits private content")
+    func alertFallbackLogOmitsPrivateContent() {
+        let privateContext = "Customer roadmap review"
+        let privateTitle = "Acme renewal planning"
+        let privatePath = "/tmp/acme-renewal-planning.wav"
+        let message = "The recording was saved at \(privatePath)."
+        let fallbackLog = MuesliController.alertFallbackLogMessage(
+            context: privateContext,
+            title: privateTitle,
+            informativeText: message
+        )
+
+        #expect(fallbackLog.contains("[muesli-native] unable to present"))
+        #expect(!fallbackLog.contains(privateContext))
+        #expect(!fallbackLog.contains(privateTitle))
+        #expect(!fallbackLog.contains(privatePath))
+        #expect(!fallbackLog.contains(message))
     }
 
     @Test("explicit screen recording retains audio without another save prompt")
@@ -1360,7 +1506,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: meetingID, notes: "Decision before crash")
@@ -1379,7 +1526,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: 1, notes: "Draft survives retry")
@@ -1411,7 +1559,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.cacheMeetingManualNotes(id: meetingID, notes: "First durable note")
@@ -1439,7 +1588,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .always }
 
@@ -1484,7 +1634,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1530,7 +1681,7 @@ struct MeetingsNavigationTests {
         defer { try? FileManager.default.removeItem(at: supportDirectory) }
         let controller = makeController(
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
         controller.updateConfig {
             $0.meetingRecordingSavePolicy = .never
@@ -1540,7 +1691,10 @@ struct MeetingsNavigationTests {
         let retainedRecordingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("retained-policy-drift-\(UUID().uuidString)")
             .appendingPathExtension("wav")
-        try Data("recording".utf8).write(to: retainedRecordingURL)
+        try WavWriter.writeWAV(
+            samples: [Float](repeating: 0.25, count: 1_600),
+            to: retainedRecordingURL
+        )
 
         let result = MeetingSessionResult(
             title: "Policy Drift",
@@ -1583,7 +1737,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1623,7 +1778,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         controller.updateConfig { $0.meetingRecordingSavePolicy = .prompt }
 
@@ -1666,7 +1822,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1708,7 +1865,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1747,7 +1905,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let start = Date()
         let liveID = try store.createLiveMeeting(title: "Meeting", calendarEventID: nil, startTime: start)
@@ -1806,7 +1965,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
@@ -1827,7 +1987,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
@@ -1850,7 +2011,8 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
 
         controller.recoverStaleLiveMeetings()
@@ -1962,8 +2124,8 @@ struct MeetingsNavigationTests {
     @Test("disconnecting OpenRouter updates future providers without interrupting active dictation")
     func disconnectingOpenRouterFallsBackSafely() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
             loadData: { _ in throw URLError(.unsupportedURL) },
@@ -2011,13 +2173,20 @@ struct MeetingsNavigationTests {
         #expect(controller.config.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(controller.selectedPostProcessorBackend == .local)
         #expect(controller.config.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(controller.config.quilModel == PostProcessorOption.defaultQuilOption.id)
+        let availableQuillModel = Gemma4LiteRTModel.allCases.first {
+            !$0.isCleanupOnly && Gemma4LiteRTModelStore.isAvailableLocally(model: $0)
+        }
+        #expect(controller.config.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(controller.config.quilModel == (availableQuillModel ?? .e2b).repoID)
+        if availableQuillModel == nil {
+            #expect(!controller.config.enableQuilMode)
+        }
 
         let persisted = configStore.load()
         #expect(persisted.meetingSummaryBackend == MeetingSummaryBackendOption.openAI.backend)
         #expect(persisted.postProcessorBackend == TranscriptCleanupBackendOption.local.backend)
-        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.local.backend)
+        #expect(persisted.quilBackend == TranscriptCleanupBackendOption.gemma4LiteRT.backend)
+        #expect(persisted.quilModel == controller.config.quilModel)
         #expect(persisted.resolvedDictationProvider == .local)
         #expect(persisted.openRouterDictationModel == "provider/transcribe")
     }
@@ -2026,7 +2195,7 @@ struct MeetingsNavigationTests {
     func openRouterCatalogRequiresAuthentication() async throws {
         let supportDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2051,7 +2220,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: supportDirectory),
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory),
             openRouterAuth: openRouterAuth,
             openRouterModelCatalogClient: catalogClient
         )
@@ -2089,7 +2258,7 @@ struct MeetingsNavigationTests {
         let configDirectory = makeSupportDirectory()
         let authDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: authDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: authDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2101,7 +2270,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: configDirectory),
+            configStore: makeTestConfigStore(supportDirectory: configDirectory),
             openRouterAuth: openRouterAuth
         )
         controller.updateConfig { $0.openRouterAPIKey = " sk-or-v1-legacy " }
@@ -2115,7 +2284,7 @@ struct MeetingsNavigationTests {
     func staleOpenRouterCatalogLoadCannotReplaceNewerModels() async throws {
         let supportDirectory = makeSupportDirectory()
         let openRouterAuth = OpenRouterAuthManager(
-            credentialStore: OpenRouterCredentialStore(supportDirectory: supportDirectory),
+            credentialStore: makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory),
             loadData: { _ in throw URLError(.unsupportedURL) },
             openURL: { _ in false },
             environment: { [:] }
@@ -2133,7 +2302,7 @@ struct MeetingsNavigationTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            configStore: ConfigStore(supportDirectory: supportDirectory),
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory),
             openRouterAuth: openRouterAuth,
             openRouterModelCatalogClient: catalogClient
         )
@@ -2162,8 +2331,8 @@ struct MeetingsNavigationTests {
     @Test("failed OpenRouter credential deletion preserves provider selections")
     func failedOpenRouterDisconnectPreservesSelections() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         try credentialStore.save(OpenRouterCredential(apiKey: "sk-or-v1-retained", userID: nil))
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
@@ -2200,8 +2369,8 @@ struct MeetingsNavigationTests {
     @Test("environment OpenRouter credential survives local disconnect without resetting providers")
     func environmentOpenRouterCredentialPreservesSelections() throws {
         let supportDirectory = makeSupportDirectory()
-        let configStore = ConfigStore(supportDirectory: supportDirectory)
-        let credentialStore = OpenRouterCredentialStore(supportDirectory: supportDirectory)
+        let configStore = makeTestConfigStore(supportDirectory: supportDirectory)
+        let credentialStore = makeTestOpenRouterCredentialStore(supportDirectory: supportDirectory)
         let openRouterAuth = OpenRouterAuthManager(
             credentialStore: credentialStore,
             loadData: { _ in throw URLError(.unsupportedURL) },
@@ -2238,7 +2407,7 @@ struct MeetingsNavigationTests {
 
     @Test("startup repairs a persisted Gemma dictation and cleanup conflict")
     func startupRepairsPersistedGemmaConflict() {
-        let configStore = ConfigStore(supportDirectory: makeSupportDirectory())
+        let configStore = makeTestConfigStore(supportDirectory: makeSupportDirectory())
         var config = AppConfig()
         config.sttBackend = BackendOption.gemma4E2BLiteRT.backend
         config.sttModel = BackendOption.gemma4E2BLiteRT.model
