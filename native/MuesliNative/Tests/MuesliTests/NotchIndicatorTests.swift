@@ -212,6 +212,15 @@ struct NotchIndicatorTests {
         compactWrites.forEach { $0() }
         completions.forEach { $0() }
         #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+        compactWrites.removeAll()
+        completions.removeAll()
+        var reconciledGeometry: String?
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry,
+            restore: restore, onCompletion: { reconciledGeometry = geometry })
+        #expect(reconciledGeometry == nil, "Reconciliation must wait for geometry completion")
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(reconciledGeometry == "compact")
     }
 
     @Test("meeting status draws an unclipped recording dot")

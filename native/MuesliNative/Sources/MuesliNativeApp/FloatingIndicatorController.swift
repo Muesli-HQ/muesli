@@ -279,6 +279,7 @@ final class FloatingIndicatorController: NSObject {
     private(set) var meetingFeedbackMessage: String?
     private var meetingFeedbackGeneration = 0
     private(set) var activityRevision = 0
+    private var geometryRevision: UInt64 = 0
     var presentsWindows = true
     private(set) var state: DictationState = .idle
     private var dictationPresentation: DictationState = .idle
@@ -966,9 +967,10 @@ final class FloatingIndicatorController: NSObject {
     static func applyTransitionGeometry(
         restoresTranscript: Bool,
         geometry: (Bool, @escaping () -> Void) -> Void,
-        restore: @escaping () -> Void
+        restore: @escaping () -> Void,
+        onCompletion: @escaping () -> Void = {}
     ) {
-        geometry(!restoresTranscript) {}
+        geometry(!restoresTranscript, onCompletion)
         if restoresTranscript { restore() }
     }
 
@@ -1006,6 +1008,8 @@ final class FloatingIndicatorController: NSObject {
             ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
         if state != .recording || (isMeetingRecording && !hasDictationOverlap) { insertionStopReason = nil }
         guard presentsWindows else { self.state = state; return }
+        geometryRevision &+= 1
+        let geometryOwner = geometryRevision
         let restoresMeetingTranscript = isMeetingRecording && !hasDictationOverlap && state == .recording
             && meetingTranscriptPanel.isVisible && config.showMeetingTranscriptOnIndicatorHover
             && config.indicatorAnchor != .notch
@@ -1226,14 +1230,6 @@ final class FloatingIndicatorController: NSObject {
             // Apply glass state last so it can override iconLabel visibility set above.
             applyGlassState(state, frameSize: targetFrame.size)
             layoutDictationOverlap(in: targetFrame.size)
-        } completionHandler: { [weak self] in
-            guard let self, self.panel === panel else { return }
-            // Geometry may change under a stationary pointer. Reconcile once
-            // at completion; subsequent movement belongs to the tracking area.
-            if self.state == .idle, self.isHovered {
-                self.contentView?.updateTrackingAreas()
-                self.reconcileIdleHover()
-            }
         }
 
         // Manage SF Symbol effects — stop everything first, then start for the new state.
@@ -1281,6 +1277,14 @@ final class FloatingIndicatorController: NSObject {
                   self.lastLoadedConfig?.showMeetingTranscriptOnIndicatorHover == true,
                   !self.notchIndicator.isVisible else { return }
             self.showMeetingTranscript()
+        }, onCompletion: { [weak self, weak panel] in
+            guard let self, let panel, self.panel === panel,
+                  self.geometryRevision == geometryOwner,
+                  self.state == .idle, self.isHovered else { return }
+            // The panel may have moved beneath a stationary pointer. Wait for
+            // its actual frame animation, not the separate appearance animation.
+            self.contentView?.updateTrackingAreas()
+            self.reconcileIdleHover()
         })
         if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
         panel.orderFrontRegardless()
