@@ -955,6 +955,15 @@ public final class MuesliController: NSObject {
     private var latestMeetingActivityCandidate: MeetingCandidate?
     private var latestMeetingActivityCandidateObservedAt: Date?
     private var pendingCalendarAutoRecordCheck: String?
+    private struct PendingCalendarRecordingSwitch {
+        let owner: ObjectIdentifier
+        let eventID: String
+        let startDate: Date
+        let requestedAt: Date
+        let joinMeeting: Bool
+        var visualCaptureStopped = false
+    }
+    private var pendingCalendarRecordingSwitch: PendingCalendarRecordingSwitch?
     private var activeMeetingAutoStop = MeetingAutoStopTracker()
     private var activeMeetingSignalLossResponse: MeetingSignalLossResponse = .none
     private var meetingAutoStopObserver: MeetingAutoStopObserver?
@@ -4838,6 +4847,7 @@ public final class MuesliController: NSObject {
     private func checkUpcomingCalendarNotifications() {
         if isMeetingRecording() {
             notifyScheduledMeetingDuringRecordingIfNeeded()
+            scheduleRecordingConflictNotification()
             return
         }
         guard !isStartingMeetingRecording else { return }
@@ -4971,8 +4981,11 @@ public final class MuesliController: NSObject {
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
                         self.meetingStartingNowTimers.removeValue(forKey: key)
-                        guard !self.isMeetingRecording(),
-                              let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                        if self.isMeetingRecording() {
+                            self.notifyScheduledMeetingDuringRecordingIfNeeded()
+                            return
+                        }
+                        guard let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
                                 from: self.appState.upcomingCalendarEvents,
                                 eventID: eventID,
                                 startDate: startDate,
@@ -4992,8 +5005,29 @@ public final class MuesliController: NSObject {
         }
     }
 
+    private func scheduleRecordingConflictNotification() {
+        guard config.autoRecordMeetings || config.showScheduledMeetingNotifications else { return }
+        let now = Date()
+        guard let event = appState.upcomingCalendarEvents
+            .filter({ ScheduledMeetingNotificationPolicy.shouldShowUpcomingPrompt(
+                for: $0, now: now, windowEnd: now.addingTimeInterval(65),
+                hiddenEventIDs: appState.hiddenCalendarEventIDs
+            ) })
+            .min(by: { $0.startDate < $1.startDate }) else { return }
+        let key = notificationKey(id: event.id, startDate: event.startDate)
+        guard meetingStartingNowTimers[key] == nil else { return }
+        meetingStartingNowTimers[key] = Timer.scheduledTimer(withTimeInterval: event.startDate.timeIntervalSince(now), repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.meetingStartingNowTimers.removeValue(forKey: key)
+                if self.isMeetingRecording() { self.notifyScheduledMeetingDuringRecordingIfNeeded() }
+            }
+        }
+    }
+
     private func notifyScheduledMeetingDuringRecordingIfNeeded() {
-        guard config.autoRecordMeetings,
+        guard config.autoRecordMeetings || config.showScheduledMeetingNotifications else { return }
+        guard
               let recordingID = activeMeetingID,
               activeMeetingSession?.isRecording == true,
               !isStoppingMeetingRecording,
@@ -5013,17 +5047,61 @@ public final class MuesliController: NSObject {
             }
             let didShow = meetingNotification.show(
                 promptID: "calendar-recording-conflict:\(key)",
-                title: "Recording in progress",
+                title: "Switch recording?",
                 subtitle: event.title,
-                actionLabel: "View recording",
+                meetingURL: event.meetingURL,
+                defaultAction: config.meetingJoinDefaultAction,
+                actionLabels: [.recordOnly: "Stop & Transcribe", .joinAndRecord: "Stop, Join, Record"],
                 onStartRecording: { [weak self] in
-                    guard let self, self.activeMeetingID == recordingID,
-                          self.activeMeetingSession?.isRecording == true else { return }
-                    self.showActiveMeetingDocumentIfNeeded()
+                    self?.requestCalendarRecordingSwitch(event: event, recordingID: recordingID, joinMeeting: false)
+                },
+                onJoinAndRecord: event.meetingURL == nil ? nil : { [weak self] in
+                    self?.requestCalendarRecordingSwitch(event: event, recordingID: recordingID, joinMeeting: true)
                 }
             )
             if didShow { autoRecordedCalendarEventIDs.insert(key) }
             return
+        }
+    }
+
+    private func requestCalendarRecordingSwitch(event: UnifiedCalendarEvent, recordingID: Int64, joinMeeting: Bool) {
+        guard activeMeetingID == recordingID,
+              let session = activeMeetingSession,
+              session.isRecording, !isStoppingMeetingRecording,
+              pendingCalendarRecordingSwitch == nil,
+              let currentEvent = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                from: appState.upcomingCalendarEvents, eventID: event.id,
+                startDate: event.startDate, hiddenEventIDs: appState.hiddenCalendarEventIDs
+              ), currentEvent.endDate > Date(),
+              !joinMeeting || currentEvent.meetingURL != nil else { return }
+        pendingCalendarRecordingSwitch = PendingCalendarRecordingSwitch(
+            owner: ObjectIdentifier(session), eventID: event.id, startDate: event.startDate,
+            requestedAt: Date(), joinMeeting: joinMeeting
+        )
+        stopMeetingRecording(preservingCalendarSwitch: true)
+    }
+
+    private func finishCalendarRecordingSwitch(owner: ObjectIdentifier) {
+        guard let request = pendingCalendarRecordingSwitch, request.owner == owner,
+              request.visualCaptureStopped, meetingCapture == nil else { return }
+        pendingCalendarRecordingSwitch = nil
+        guard !isShuttingDown, !isMeetingRecording(), !isStartingMeetingRecording else { return }
+        guard Date().timeIntervalSince(request.requestedAt) <= 30,
+              let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                from: appState.upcomingCalendarEvents, eventID: request.eventID,
+                startDate: request.startDate, hiddenEventIDs: appState.hiddenCalendarEventIDs
+              ), event.endDate > Date(), !request.joinMeeting || event.meetingURL != nil else {
+            presentErrorAlert(title: "Couldn't Switch Recordings", message: "The previous recording stopped, but the scheduled meeting is no longer available. Start the next recording manually if needed.")
+            return
+        }
+        if request.joinMeeting, let url = event.meetingURL {
+            joinAndRecord(title: event.title, meetingURL: url, endDate: event.endDate,
+                          calendarOccurrence: event.resolvedCalendarOccurrence, presentation: .backgroundPill,
+                          requiresExactRoomMatch: true)
+        } else if !request.joinMeeting {
+            recordOnly(title: event.title, meetingURL: event.meetingURL, endDate: event.endDate,
+                       calendarOccurrence: event.resolvedCalendarOccurrence, presentation: .backgroundPill,
+                       requiresExactRoomMatch: true)
         }
     }
 
@@ -8753,8 +8831,12 @@ public final class MuesliController: NSObject {
             Task { @MainActor [weak self] in
                 guard let self, let capture = self.meetingCapture,
                       ObjectIdentifier(capture.session) == owner, self.isStoppingMeetingRecording else { return }
+                let switchCanceled = self.pendingCalendarRecordingSwitch?.owner == owner
+                if switchCanceled { self.pendingCalendarRecordingSwitch = nil }
                 self.presentErrorAlert(title: "Audio Capture Is Still Stopping",
-                    message: "The audio device is not responding. muesli is saving the audio already captured. New recording is paused until the device finishes stopping.")
+                    message: switchCanceled
+                        ? "The audio device is not responding. The switch was canceled while muesli saves the captured audio. Start the next recording after the device finishes stopping."
+                        : "The audio device is not responding. muesli is saving the audio already captured. New recording is paused until the device finishes stopping.")
             }
         }
         meetingCapture = (id, session)
@@ -9151,14 +9233,15 @@ public final class MuesliController: NSObject {
         meetingURL: URL,
         endDate: Date?,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        presentation: MeetingStartPresentation = .foregroundNotes
+        presentation: MeetingStartPresentation = .foregroundNotes,
+        requiresExactRoomMatch: Bool = false
     ) {
         NSWorkspace.shared.open(meetingURL)
         startMeetingRecordingFromEntryPoint(
             title: title,
             calendarOccurrence: calendarOccurrence,
             endDate: endDate,
-            autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL),
+            autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL, requiresExactRoomMatch: requiresExactRoomMatch),
             presentation: presentation,
             startOrigin: .joinAndRecord
         )
@@ -9172,13 +9255,14 @@ public final class MuesliController: NSObject {
         meetingURL: URL?,
         endDate: Date?,
         calendarOccurrence: CalendarOccurrenceReference? = nil,
-        presentation: MeetingStartPresentation = .foregroundNotes
+        presentation: MeetingStartPresentation = .foregroundNotes,
+        requiresExactRoomMatch: Bool = false
     ) {
         startMeetingRecordingFromEntryPoint(
             title: title,
             calendarOccurrence: calendarOccurrence,
             endDate: endDate,
-            autoStopSource: meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
+            autoStopSource: meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: requiresExactRoomMatch) },
             presentation: presentation,
             startOrigin: .scheduledMeetingPrompt
         )
@@ -9594,7 +9678,8 @@ public final class MuesliController: NSObject {
         return template
     }
 
-    func stopMeetingRecording(forSystemSuspension: Bool = false) {
+    func stopMeetingRecording(forSystemSuspension: Bool = false, preservingCalendarSwitch: Bool = false) {
+        if !preservingCalendarSwitch { pendingCalendarRecordingSwitch = nil }
         meetingRecordingHotkeyMonitor.cancelToggleMode()
         guard let sessionToStop = activeMeetingSession else { return }
         meetingStartAttempt?.task.cancel()
@@ -9656,6 +9741,10 @@ public final class MuesliController: NSObject {
             do {
                 sessionToStop.flushScreenRecordingAudio()
                 await self.visualMemory.stopRecording()
+                if self.pendingCalendarRecordingSwitch?.owner == ObjectIdentifier(sessionToStop) {
+                    self.pendingCalendarRecordingSwitch?.visualCaptureStopped = true
+                    self.finishCalendarRecordingSwitch(owner: ObjectIdentifier(sessionToStop))
+                }
                 let stopped = try await sessionToStop.stop(template: selectedTemplate) { url, error in
                     let title = liveMeetingID.flatMap { self.liveMeetingTitle(id: $0) } ?? "Meeting"
                     deferredRetentionDecision = forSystemSuspension && retentionPolicy == .prompt
@@ -9807,6 +9896,7 @@ public final class MuesliController: NSObject {
         syncDictationRecorderWarmup(intent: .idlePrewarm(.meetingStateChanged))
         syncAppState()
         reconcileFinishedMeetingPresentation()
+        finishCalendarRecordingSwitch(owner: owner)
     }
 
     /// Processing and native retirement can finish in either order. Reconcile

@@ -364,6 +364,18 @@ struct MeetingAutoStopPolicyTests {
         #expect(MeetingRecordingStartOrigin.manual.signalLossSource(explicitSource: nil, recentSource: nil) == nil)
     }
 
+    @Test("a switched calendar recording cannot bind an unrelated desktop call")
+    func switchedCalendarNeedsMatchingRoom() throws {
+        let url = try #require(URL(string: "https://zoom.us/j/123456789"))
+        let source = try #require(MeetingAutoStopSource(meetingURL: url, requiresExactRoomMatch: true))
+        let otherCall = candidate(id: "old-call", url: nil, bundle: "us.zoom.xos")
+        #expect(!MeetingAutoStopPolicy.matches(candidate: otherCall, source: source))
+        let matching = candidate(id: "browser-room", url: source.normalizedURL, bundle: "com.google.Chrome")
+        #expect(MeetingAutoStopPolicy.matches(candidate: matching, source: source))
+        #expect(source.refined(with: matching).assertionTarget == .browser(bundleID: "com.google.Chrome"))
+        #expect(source.refined(with: matching).requiresExactRoomMatch)
+    }
+
     @Test("assertion signatures are specific to each platform")
     func assertionPatterns() {
         let on = 255

@@ -145,6 +145,7 @@ struct MeetingAutoStopSource: Equatable {
     let normalizedURL: String?
     let sourceBundleID: String?
     let hasObservedCandidate: Bool
+    let requiresExactRoomMatch: Bool
 
     var assertionTarget: MeetingAssertionTarget? {
         guard hasObservedCandidate, let bundle = sourceBundleID else { return nil }
@@ -164,13 +165,15 @@ struct MeetingAutoStopSource: Equatable {
         suppressionID: String?,
         normalizedURL: String?,
         sourceBundleID: String?,
-        hasObservedCandidate: Bool
+        hasObservedCandidate: Bool,
+        requiresExactRoomMatch: Bool
     ) {
         self.candidateID = candidateID
         self.suppressionID = suppressionID
         self.normalizedURL = normalizedURL
         self.sourceBundleID = sourceBundleID
         self.hasObservedCandidate = hasObservedCandidate
+        self.requiresExactRoomMatch = requiresExactRoomMatch
     }
 
     init(candidate: MeetingCandidate) {
@@ -179,9 +182,10 @@ struct MeetingAutoStopSource: Equatable {
         self.normalizedURL = candidate.url
         self.sourceBundleID = candidate.sourceBundleID
         self.hasObservedCandidate = true
+        self.requiresExactRoomMatch = false
     }
 
-    init?(meetingURL: URL) {
+    init?(meetingURL: URL, requiresExactRoomMatch: Bool = false) {
         guard let normalized = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else {
             return nil
         }
@@ -190,6 +194,7 @@ struct MeetingAutoStopSource: Equatable {
         self.normalizedURL = normalized.url
         self.sourceBundleID = nil
         self.hasObservedCandidate = false
+        self.requiresExactRoomMatch = requiresExactRoomMatch
     }
 
     func refined(with candidate: MeetingCandidate) -> MeetingAutoStopSource {
@@ -201,7 +206,8 @@ struct MeetingAutoStopSource: Equatable {
             suppressionID: refinedSuppressionID,
             normalizedURL: normalizedURL ?? candidate.url,
             sourceBundleID: sourceBundleID ?? candidate.sourceBundleID,
-            hasObservedCandidate: true
+            hasObservedCandidate: true,
+            requiresExactRoomMatch: requiresExactRoomMatch
         )
     }
 }
@@ -281,7 +287,7 @@ enum MeetingAutoStopPolicy {
         // Calendar and join-link sources start with a room URL but no desktop
         // bundle. Allow matching desktop input attribution to refine that source;
         // a running process or a browser URL alone cannot bind it.
-        if source.sourceBundleID == nil,
+        if !source.requiresExactRoomMatch, source.sourceBundleID == nil,
            candidate.url == nil,
            let bundle = candidate.sourceBundleID,
            let prefix = source.candidateID?.split(separator: ":").first,

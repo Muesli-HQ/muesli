@@ -111,6 +111,16 @@ struct MeetingNotificationControllerTests {
             .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinAndRecord, .recordOnly])
     }
 
+    @Test("recording switches always offer join and transcribe or transcribe only")
+    func switchActionsRespectDefaultWithoutOfferingJoinOnly() {
+        for preferred in MeetingJoinDefaultAction.allCases {
+            let primary = preferred.resolved(hasJoinAndRecord: true, hasJoinOnly: false)
+            let alternatives = preferred.availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: false)
+            #expect(Set([primary] + alternatives) == Set([.joinAndRecord, .recordOnly]))
+            #expect(!alternatives.contains(.joinOnly))
+        }
+    }
+
     @Test("Existing installs keep Join & Transcribe as the default")
     func existingInstallsKeepJoinAndTranscribeAsDefault() throws {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
@@ -146,6 +156,9 @@ struct MeetingNotificationControllerTests {
                 MeetingNotificationController.splitButtonLabelFits(action.buttonLabel),
                 "\(action.buttonLabel) overflows the \(MeetingNotificationController.splitButtonWidth)pt split button"
             )
+        }
+        for label in ["Stop & Transcribe", "Stop, Join, Record"] {
+            #expect(MeetingNotificationController.splitButtonLabelFits(label), "\(label) overflows the split button")
         }
     }
 
