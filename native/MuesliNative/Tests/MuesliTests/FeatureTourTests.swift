@@ -246,14 +246,18 @@ struct FeatureTourTests {
     @Test("0.8.6 highlights cover the agreed features without promoting failure recovery")
     func catalogShape() {
         #expect(tour.version == "0.8.6")
-        #expect(tour.steps.count == 11)
+        #expect(tour.steps.count == 12)
         #expect(Set(tour.steps.map(\.id)).count == tour.steps.count)
         #expect(tour.steps.map(\.target) == [
-            .granolaImport, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
+            .granolaImport, .vidshotsSidebar, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
             .cotypistSettings, .appFormatting, .meetingsSidebar, .searchSidebar,
             .modelLibrary, .cleanupModels,
         ])
         #expect(tour.steps.first?.id == "granola-import")
+        #expect(tour.steps.first(where: { $0.id == "vidshots" })?.icon == .vidshot)
+        #expect(tour.steps.first(where: { $0.id == "vidshots" })?.target == .vidshotsSidebar)
+        #expect(FeatureTourTarget.vidshotsSidebar.navigationRoute == .tab(.vidshots))
+        #expect(DashboardTab.vidshots.sidebarFeatureTourTarget == .vidshotsSidebar)
         #expect(tour.steps.first?.icon == .symbol("square.and.arrow.down"))
         #expect(FeatureTourTarget.granolaImport.navigationRoute == .meetingsBrowser)
         #expect(tour.steps.first(where: { $0.id == "time-turner" })?.icon == .timeTurner)
