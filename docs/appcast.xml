@@ -22,7 +22,7 @@
 <li><strong>Reliability and polish throughout.</strong> Clearer permission and restart flows, Keychain credential storage, improved microphone handling and meeting titles, better calendar-linked recording, and more readable controls. New feature badges disappear after you use them.</li>
 </ul>
 <h3>A few details</h3>
-<p>Time Turner recaps send sampled screen text to your selected Meetings provider. Chat sends the context needed for your request to the selected AI provider; attached original files stay in place. Accepted Cotypist suggestions are saved in your local Timeline with preceding text and app name. MedASR requires acceptance of Google's model terms. Meeting video recording requires Screen Recording and Microphone permissions; obtain participants' permission before recording.</p>
+<p>Time Turner recaps send sampled screen text and excerpts from other sources you include, such as saved meetings, to your selected Time Turner provider. Chat sends the context needed for your request to the selected AI provider; attached original files stay in place. Accepted Cotypist suggestions are saved in your local Timeline with preceding text and app name. MedASR requires acceptance of Google's model terms. Meeting video recording requires Screen Recording and Microphone permissions; obtain participants' permission before recording.</p>
 <p>Download <code>Muesli-0.8.6.dmg</code>, open it and drag muesli to Applications, or use Check for Updates in the app. Signed with a Developer ID and notarized by Apple.</p>
 ]]></description>
             <sparkle:version>0.8.6</sparkle:version>
