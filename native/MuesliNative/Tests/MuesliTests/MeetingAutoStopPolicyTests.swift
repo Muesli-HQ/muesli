@@ -400,6 +400,35 @@ struct MeetingAutoStopPolicyTests {
         #expect(selectionWithCandidate.source == MeetingAutoStopSource(candidate: detected))
     }
 
+    @Test("calendar confirmation follows the user's current-call or scheduled-call choice")
+    func confirmationChoiceAttribution() throws {
+        let previousURL = try #require(URL(string: "https://zoom.us/j/111111111"))
+        let scheduledURL = try #require(URL(string: "https://zoom.us/j/222222222"))
+        let previousRoom = try #require(MeetingAutoStopSource(meetingURL: previousURL)?.normalizedURL)
+        let previousCall = candidate(id: "old-call", url: previousRoom, bundle: "com.google.Chrome")
+        let current = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: previousCall, meetingURL: scheduledURL)
+        #expect(current.source == MeetingAutoStopSource(candidate: previousCall))
+        #expect(current.origin == .detectedPrompt)
+        #expect(MeetingAutoStopPolicy.calendarConfirmationHasConflictingRoom(candidate: previousCall, meetingURL: scheduledURL))
+        #expect(!MeetingAutoStopPolicy.calendarConfirmationHasConflictingRoom(candidate: previousCall, meetingURL: previousURL))
+        #expect(!MeetingAutoStopPolicy.calendarConfirmationHasConflictingRoom(candidate: nil, meetingURL: scheduledURL))
+
+        let joined = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: previousCall, meetingURL: scheduledURL,
+                                                                      action: .joinScheduled)
+        let scheduledSource = try #require(joined.source)
+        #expect(joined.origin == .calendarRecordingSwitch)
+        #expect(scheduledSource.requiresExactRoomMatch)
+        #expect(!MeetingAutoStopPolicy.matches(candidate: previousCall, source: scheduledSource))
+        #expect(!MeetingAutoStopPolicy.matches(candidate: candidate(id: "url-less-old", url: nil, bundle: "us.zoom.xos"), source: scheduledSource))
+        let newCall = candidate(id: "new-call", url: scheduledSource.normalizedURL, bundle: "com.google.Chrome")
+        #expect(MeetingAutoStopPolicy.matches(candidate: newCall, source: scheduledSource))
+        let unsupported = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: previousCall,
+            meetingURL: URL(string: "https://chime.aws/123"), action: .joinScheduled)
+        #expect(unsupported.source == nil)
+        #expect(unsupported.origin.signalLossSource(explicitSource: unsupported.source,
+                                                     recentSource: MeetingAutoStopSource(candidate: previousCall)) == nil)
+    }
+
     @Test("switching to an unsupported meeting never binds the previous Zoom call")
     func unsupportedSwitchDoesNotUsePreviousCall() throws {
         let unsupportedURL = try #require(URL(string: "https://chime.aws/123456789"))

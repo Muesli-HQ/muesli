@@ -4908,20 +4908,36 @@ public final class MuesliController: NSObject {
                             title: activeCandidate != nil || hasCallAssertion == true ? "Meeting already active" : "Confirm transcription",
                             subtitle: currentEvent.title,
                             actionLabel: "Start Transcribing",
+                            meetingURL: currentEvent.meetingURL,
+                            defaultAction: self.config.meetingJoinDefaultAction,
                             onStartRecording: { [weak self] in
-                                guard let self else { return }
+                                guard let self,
+                                      let event = self.currentCalendarConfirmationEvent(id: currentEvent.id, startDate: currentEvent.startDate) else { return }
                                 self.isShowingCalendarNotification = false
+                                let candidate = self.recentMeetingActivityCandidate()
                                 let selection = MeetingAutoStopPolicy.calendarConfirmationSource(
-                                    candidate: self.recentMeetingActivityCandidate(), meetingURL: currentEvent.meetingURL
+                                    candidate: candidate, meetingURL: event.meetingURL
+                                )
+                                let differentRoom = MeetingAutoStopPolicy.calendarConfirmationHasConflictingRoom(
+                                    candidate: candidate, meetingURL: event.meetingURL
                                 )
                                 _ = self.startMeetingRecordingFromEntryPoint(
-                                    title: currentEvent.title,
-                                    calendarOccurrence: currentEvent.resolvedCalendarOccurrence,
-                                    endDate: currentEvent.endDate,
+                                    title: differentRoom ? (candidate?.meetingTitle ?? "Meeting") : event.title,
+                                    calendarOccurrence: differentRoom ? nil : event.resolvedCalendarOccurrence,
+                                    endDate: differentRoom ? nil : event.endDate,
                                     autoStopSource: selection.source,
                                     presentation: .backgroundPill,
                                     startOrigin: selection.origin
                                 )
+                            },
+                            onJoinAndRecord: { [weak self] in
+                                guard let self,
+                                      let event = self.currentCalendarConfirmationEvent(id: currentEvent.id, startDate: currentEvent.startDate),
+                                      let url = event.meetingURL else { return }
+                                self.isShowingCalendarNotification = false
+                                self.joinAndRecord(title: event.title, meetingURL: url, endDate: event.endDate,
+                                                   calendarOccurrence: event.resolvedCalendarOccurrence,
+                                                   presentation: .backgroundPill, requiresExactRoomMatch: true)
                             },
                             onDismiss: { [weak self] in self?.isShowingCalendarNotification = false },
                             onAutoDismiss: { [weak self] in self?.isShowingCalendarNotification = false },
@@ -5005,6 +5021,15 @@ public final class MuesliController: NSObject {
 
             return // Show one notification at a time
         }
+    }
+
+    private func currentCalendarConfirmationEvent(id: String, startDate: Date) -> UnifiedCalendarEvent? {
+        guard !isShuttingDown, !isMeetingRecording(), !isStartingMeetingRecording,
+              let event = ScheduledMeetingNotificationPolicy.startingNowCandidate(
+                from: appState.upcomingCalendarEvents, eventID: id, startDate: startDate,
+                hiddenEventIDs: appState.hiddenCalendarEventIDs
+              ), event.endDate > Date() else { return nil }
+        return event
     }
 
     private func scheduleRecordingConflictNotification() {
@@ -9239,13 +9264,16 @@ public final class MuesliController: NSObject {
         requiresExactRoomMatch: Bool = false
     ) {
         NSWorkspace.shared.open(meetingURL)
+        let selection = requiresExactRoomMatch
+            ? MeetingAutoStopPolicy.calendarConfirmationSource(candidate: nil, meetingURL: meetingURL, action: .joinScheduled)
+            : (source: MeetingAutoStopSource(meetingURL: meetingURL), origin: MeetingRecordingStartOrigin.joinAndRecord)
         startMeetingRecordingFromEntryPoint(
             title: title,
             calendarOccurrence: calendarOccurrence,
             endDate: endDate,
-            autoStopSource: MeetingAutoStopSource(meetingURL: meetingURL, requiresExactRoomMatch: requiresExactRoomMatch),
+            autoStopSource: selection.source,
             presentation: presentation,
-            startOrigin: requiresExactRoomMatch ? .calendarRecordingSwitch : .joinAndRecord
+            startOrigin: selection.origin
         )
     }
 

@@ -277,8 +277,24 @@ struct MeetingAutoStopTracker: Equatable {
 }
 
 enum MeetingAutoStopPolicy {
-    static func calendarConfirmationSource(candidate: MeetingCandidate?, meetingURL: URL?)
+    enum CalendarConfirmationAction {
+        case transcribeCurrent
+        case joinScheduled
+    }
+
+    static func calendarConfirmationHasConflictingRoom(candidate: MeetingCandidate?, meetingURL: URL?) -> Bool {
+        guard let candidateRoom = candidate?.url,
+              let scheduledRoom = meetingURL.flatMap({ MeetingAutoStopSource(meetingURL: $0)?.normalizedURL }) else { return false }
+        return candidateRoom != scheduledRoom
+    }
+
+    static func calendarConfirmationSource(candidate: MeetingCandidate?, meetingURL: URL?,
+                                           action: CalendarConfirmationAction = .transcribeCurrent)
         -> (source: MeetingAutoStopSource?, origin: MeetingRecordingStartOrigin) {
+        if action == .joinScheduled {
+            return (meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: true) },
+                    .calendarRecordingSwitch)
+        }
         if let candidate {
             return (MeetingAutoStopSource(candidate: candidate), .detectedPrompt)
         }
