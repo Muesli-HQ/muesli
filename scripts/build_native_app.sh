@@ -400,6 +400,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>$APP_DISPLAY_NAME records microphone audio for dictation, meetings, and Vidshot narration.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>$APP_DISPLAY_NAME checks your browser's active tab to identify meeting links.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>

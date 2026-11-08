@@ -919,19 +919,22 @@ struct FloatingIndicatorPointerInteractionTests {
         let window = try #require(pill.window)
         let rect = window.convertToScreen(pill.convert(indicator.pointerInteractiveRect(in: pill.bounds), to: nil))
         pointer = NSPoint(x: rect.midX, y: rect.midY)
+        var geometryReconciled = false
+        indicator.testingHoverGeometryReconciled = { geometryReconciled = true }
         indicator.setHovered(true)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
         var previousFrame = try #require(indicator.currentFrame)
         var previousReads = reads
         var stableSamples = 0
-        while stableSamples < 3, clock.now < deadline {
+        while (!geometryReconciled || stableSamples < 3), clock.now < deadline {
             try await Task.sleep(for: .milliseconds(100))
             let frame = try #require(indicator.currentFrame)
-            stableSamples = frame == previousFrame && reads == previousReads ? stableSamples + 1 : 0
+            stableSamples = frame == previousFrame && reads == previousReads ? min(stableSamples + 1, 3) : 0
             previousFrame = frame
             previousReads = reads
         }
+        try #require(geometryReconciled, "The hover geometry completion did not run")
         try #require(stableSamples == 3, "The hover entrance did not settle")
         let settledReads = reads
         try await Task.sleep(for: .milliseconds(500))

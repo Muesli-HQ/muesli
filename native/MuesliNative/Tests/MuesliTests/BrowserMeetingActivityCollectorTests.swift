@@ -32,6 +32,20 @@ struct BrowserMeetingActivityCollectorTests {
         )
     }
 
+    @Test("automation failure does not invent a meeting and recovers on a later lookup")
+    func automationFailureThenRecovery() async {
+        var result: BrowserActiveTabProbeResult = .failed(-1743)
+        let collector = BrowserMeetingActivityCollector(
+            documentURLProbeProvider: { _ in .noDocumentURL },
+            activeTabProbeResultProvider: { _ in result }
+        )
+        let failed = await collector.collect(runningApps: [chrome(isActive: true)], refresh: true, now: now)
+        #expect(failed.isEmpty)
+        result = .url("https://meet.google.com/pwm-txwq-txy")
+        let recovered = await collector.collect(runningApps: [chrome(isActive: true)], refresh: true, now: now.addingTimeInterval(1))
+        #expect(recovered.first?.platform == .googleMeet)
+    }
+
     @Test("refresh probes inactive uncached browsers")
     func refreshProbesInactiveUncachedBrowsers() async {
         let collector = BrowserMeetingActivityCollector(
