@@ -99,7 +99,7 @@ struct MeetingContactIdentityTests {
         #expect(MeetingContactIdentity.displayName(for: contact) == "Nova")
     }
 
-    @Test("manual participant uses normalized email identity when available")
+    @Test("manual participant uses contact identity and normalized email")
     func participantSnapshot() {
         let contact = CNMutableContact()
         contact.givenName = "Dana"
@@ -110,7 +110,7 @@ struct MeetingContactIdentityTests {
 
         let participant = MeetingContactIdentity.participant(for: contact)
 
-        #expect(participant.participantIdentifier == "email:dana@example.test")
+        #expect(participant.participantIdentifier == "contact:\(contact.identifier)")
         #expect(participant.displayName == "Dana Sample")
         #expect(participant.emailAddress == "dana@example.test")
     }

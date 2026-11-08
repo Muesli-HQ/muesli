@@ -611,7 +611,7 @@ private actor MeetingDetectionService {
             snapshot: snapshot
         )
         let activityCandidate = scopedActivityCandidate(
-            stabilizedActivityCandidate,
+            MeetingCalendarAssociation.sanitize(stabilizedActivityCandidate, calendarEvent: context.calendarEvent),
             monitoringMode: context.monitoringMode
         )
         let unmutedActivityCandidate = isMuted(

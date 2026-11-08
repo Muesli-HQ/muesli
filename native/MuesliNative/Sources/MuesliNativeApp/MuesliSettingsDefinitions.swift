@@ -650,6 +650,8 @@ extension MuesliController {
         toggle("calendar_meeting_links_only", "Only show events with a meeting link", \.calendarMeetingLinksOnly,
                apply: updateCalendarMeetingLinkFilter)
         toggle("meeting_detection", "Detected meeting notifications", \.showMeetingDetectionNotification)
+        toggle("meeting_auto_stop", "Stop recording when a meeting ends", \.meetingAutoStopEnabled,
+               apply: setMeetingAutoStopEnabled)
         toggle("meeting_hook", "Post-meeting hook", \.meetingHookEnabled)
         toggle("diarize_microphone", "Identify in-room speakers", \.diarizeMicrophoneAudio)
         menu("recording_policy", "Save meeting recordings", MeetingRecordingSavePolicy.allCases, \.meetingRecordingSavePolicy, title: { $0 == .prompt ? "Ask every time" : $0.rawValue.capitalized })

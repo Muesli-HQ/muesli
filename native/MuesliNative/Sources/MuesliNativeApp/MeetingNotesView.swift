@@ -4,6 +4,7 @@ import MuesliCore
 struct MeetingNotesView: View {
     let markdown: String
     var highlightedRange: NSRange? = nil
+    var footer: AnyView? = nil
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -15,6 +16,7 @@ struct MeetingNotesView: View {
                         .background(index == highlightedLine ? MuesliTheme.surfaceSelected : Color.clear)
                         .id(index)
                 }
+                if let footer { footer.padding(.top, MuesliTheme.spacing24) }
             }
             .frame(maxWidth: MuesliTheme.readingWidth, alignment: .leading)
             .padding(.horizontal, MuesliTheme.spacing24)

@@ -87,4 +87,5 @@ fi
 echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d ' ') assigned, $(wc -l < "$tmp_dir/baseline" | tr -d ' ') legacy-unsharded)."
 
 python3 "$repo_root/scripts/test_diagnose_core_crash.py"
+bash "$repo_root/scripts/test_sample_core_test_hang.sh"
 bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"

@@ -241,6 +241,8 @@ final class MeetingSession {
     }
     var onCaptureShutdownTimedOut: (() -> Void)?
     var onMicHealthChanged: ((MeetingMicHealthSnapshot) -> Void)?
+    var onMicRouteHandoff: ((MeetingMicHandoffOutcome) -> Void)?
+    var activeMicrophoneInputDeviceID: AudioObjectID? { meetingMicRecorder.activeInputDeviceID }
     /// Episode-level mic-health events: one degraded/recovered pair per actual
     /// degradation episode, or a single unrecovered event if the meeting ends
     /// while degraded. Feed telemetry here; keep per-snapshot UI updates on
@@ -357,6 +359,7 @@ final class MeetingSession {
             if outcome == .promoted {
                 self?.micPartialSession()?.resetAfterSourceRestart()
             }
+            self?.onMicRouteHandoff?(outcome)
         }
         systemAudioWatchdog.isCaptureActive = { [weak systemAudioRecorder] in
             guard let recorder = systemAudioRecorder else { return false }

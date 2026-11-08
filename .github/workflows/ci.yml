@@ -395,6 +395,11 @@ jobs:
       - name: Run test shard
         run: |
           set -o pipefail
+          if [[ "${{ matrix.shard }}" == core ]]; then
+            bash ./scripts/sample_core_test_hang.sh &
+            watchdog_pid=$!
+            trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+          fi
           bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}" 2>&1 | tee "$RUNNER_TEMP/test-shard.log"
 
       - name: Isolate a core process crash

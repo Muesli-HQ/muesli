@@ -40,8 +40,10 @@ struct GlobalSearchRequest: Equatable {
     var text = ""
     var kind: GlobalSearchKind?
     var app = ""
+    var person: MeetingParticipantDraft?
     var period: GlobalSearchPeriod = .all
     var retry = 0
+    var showsPeople = false
     func query(now: Date = Date(), calendar: Calendar = .current) -> GlobalSearchQuery {
         let from: Date
         switch period {
@@ -52,7 +54,7 @@ struct GlobalSearchRequest: Equatable {
         }
         let app = app.trimmingCharacters(in: .whitespacesAndNewlines)
         return .init(text: text, kinds: kind.map { [$0] } ?? Set(GlobalSearchKind.allCases),
-                     from: from, until: now, app: app.isEmpty ? nil : app, limit: 100)
+                     from: from, until: now, app: app.isEmpty ? nil : app, person: person, limit: person == nil ? 100 : 101)
     }
 }
 
@@ -63,8 +65,11 @@ enum GlobalSearchPeriod: String, CaseIterable {
 @MainActor @Observable
 final class GlobalSearchPresentation {
     var results: [GlobalSearchResult] = []
+    var people: [MeetingParticipantDraft] = []
+    private var showingPeople = false
     var selection: String?
     var isLoading = false
+    var hasMore = false
     var error: String?
     var unavailableKinds: Set<GlobalSearchKind> = []
     var availabilityMessage: String? {
@@ -73,9 +78,37 @@ final class GlobalSearchPresentation {
         return "Some results unavailable: " + names
     }
     private var generation = UUID()
+    private var displayedRevision: [Int64]?
 
     func refresh(_ request: GlobalSearchRequest, using worker: GlobalSearchWorker, debounce: Bool) async {
-        await refreshResponse(request, debounce: debounce) { try await worker.searchResponse($0) }
+        if request.showsPeople && request.person == nil {
+            let text = request.text
+            await refreshPeople(debounce: debounce) { try await worker.people(matching: text) }
+            return
+        }
+        let revision: (@Sendable () async throws -> [Int64])?
+        if request.person != nil { revision = { try await worker.changeToken() } }
+        else { revision = nil }
+        await refreshResponse(request, debounce: debounce, revision: revision) { try await worker.searchResponse($0) }
+    }
+
+    func refreshPeople(debounce: Bool, search: @Sendable () async throws -> [MeetingParticipantDraft]) async {
+        let token = UUID()
+        generation = token; showingPeople = true; error = nil; unavailableKinds = []; hasMore = false
+        if debounce { people = []; selection = nil }
+        results = []; isLoading = true
+        defer { if generation == token { isLoading = false } }
+        do {
+            if debounce { try await Task.sleep(for: .milliseconds(200)) }
+            let found = try await search()
+            try Task.checkCancellation()
+            guard generation == token else { return }
+            people = found
+            if !found.contains(where: { $0.participantIdentifier == selection }) { selection = found.first?.participantIdentifier }
+        } catch is CancellationError {} catch {
+            guard generation == token, !Task.isCancelled else { return }
+            people = []; selection = nil; self.error = "People couldn’t load. Try again."
+        }
     }
 
     func refresh(_ request: GlobalSearchRequest, debounce: Bool,
@@ -84,11 +117,13 @@ final class GlobalSearchPresentation {
     }
 
     func refreshResponse(_ request: GlobalSearchRequest, debounce: Bool,
+                         revision: (@Sendable () async throws -> [Int64])? = nil,
                          search: @Sendable (GlobalSearchQuery) async throws -> GlobalSearchResponse) async {
         let token = UUID()
         generation = token
+        showingPeople = false; people = []; hasMore = false; displayedRevision = nil
         error = nil
-        if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && request.person == nil {
             results = []; selection = nil; unavailableKinds = []; isLoading = false; return
         }
         isLoading = true
@@ -97,11 +132,25 @@ final class GlobalSearchPresentation {
         do {
             if debounce { try await Task.sleep(for: .milliseconds(200)) }
             try Task.checkCancellation()
-            let response = try await search(request.query())
-            let found = response.results
+            var before = try await revision?()
+            var response = try await search(request.query())
+            var after = try await revision?()
+            // Index installation or a concurrent write can change the revision
+            // during the initial read. Retry once before publishing a page.
+            if before != after {
+                try Task.checkCancellation()
+                guard generation == token else { return }
+                before = after
+                response = try await search(request.query())
+                after = try await revision?()
+            }
+            let found = request.person == nil ? response.results : Array(response.results.prefix(100))
             try Task.checkCancellation()
             guard generation == token else { return }
+            guard before == after else { throw GlobalSearchError.changedSources }
             results = found
+            displayedRevision = after
+            hasMore = request.person != nil && response.results.count > 100
             unavailableKinds = response.unavailableKinds
             if !found.contains(where: { $0.id == selection }) { selection = found.first?.id }
         } catch is CancellationError {} catch {
@@ -111,10 +160,41 @@ final class GlobalSearchPresentation {
         }
     }
 
+    func loadMore(_ request: GlobalSearchRequest, using worker: GlobalSearchWorker) async {
+        guard request.person != nil, hasMore, !isLoading else { return }
+        let token = generation
+        isLoading = true
+        defer { if generation == token { isLoading = false } }
+        do {
+            let revision = try await worker.changeToken()
+            guard !Task.isCancelled, generation == token else { return }
+            guard displayedRevision == revision else {
+                await refresh(request, using: worker, debounce: false)
+                return
+            }
+            var query = request.query(); query.offset = results.count
+            let response = try await worker.searchResponse(query)
+            guard !Task.isCancelled, generation == token else { return }
+            let currentRevision = try await worker.changeToken()
+            guard !Task.isCancelled, generation == token else { return }
+            guard currentRevision == revision else {
+                await refresh(request, using: worker, debounce: false)
+                return
+            }
+            results.append(contentsOf: response.results.prefix(100))
+            hasMore = response.results.count > 100
+            unavailableKinds = response.unavailableKinds
+        } catch is CancellationError {} catch {
+            guard generation == token, !Task.isCancelled else { return }
+            self.error = "Search couldn’t load. Try again."
+        }
+    }
+
     func move(_ delta: Int) {
-        guard !results.isEmpty else { return }
-        let current = results.firstIndex { $0.id == selection } ?? 0
-        selection = results[max(0, min(results.count - 1, current + delta))].id
+        let ids = showingPeople ? people.map(\.participantIdentifier) : results.map(\.id)
+        guard !ids.isEmpty else { return }
+        let current = ids.firstIndex { $0 == selection } ?? 0
+        selection = ids[max(0, min(ids.count - 1, current + delta))]
     }
 }
 
@@ -161,6 +241,7 @@ struct GlobalSearchPanel: View {
     @State private var preview = GlobalSearchPreview()
     @State private var copied = false
     @State private var navigationError: String?
+    @State private var peopleSearchText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -176,16 +257,28 @@ struct GlobalSearchPanel: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     chip("All", kind: nil)
-                    ForEach(GlobalSearchKind.allCases, id: \.self) { chip($0.searchLabel, kind: $0) }
+                    ForEach(GlobalSearchKind.allCases, id: \.self) { kind in
+                        chip(kind.searchLabel, kind: kind)
+                        if kind == .meeting { peopleChip }
+                    }
                 }.padding(.horizontal, 16).padding(.vertical, 10)
             }.scrollIndicators(.hidden)
             HStack(spacing: 12) {
+                if !request.showsPeople || request.person != nil {
                 Picker("Date", selection: $request.period) {
                     ForEach(GlobalSearchPeriod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.labelsHidden().frame(width: 145).accessibilityLabel("Search date range")
+                }
+                if !request.showsPeople {
                 TextField("Filter by app…", text: $request.app)
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
                     .accessibilityLabel("Filter by app name or bundle ID")
+                }
+                if let person = request.person {
+                    Button { request.person = nil; request.text = peopleSearchText } label: {
+                        Label(person.displayName, systemImage: "chevron.left")
+                    }.buttonStyle(.muesli(.quiet)).help("Back to people")
+                }
                 Spacer()
             }.padding(.horizontal, 16).padding(.bottom, 10)
             Divider()
@@ -203,7 +296,23 @@ struct GlobalSearchPanel: View {
                     empty(error)
                     Button("Retry") { request.retry += 1 }.buttonStyle(.muesli(.quiet)).padding(.bottom, 24)
                 }
-            } else if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            } else if request.showsPeople && request.person == nil {
+                if model.people.isEmpty {
+                    empty(model.isLoading ? "Searching…" : "No people found.")
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 4) {
+                                ForEach(model.people, id: \.participantIdentifier) { person in
+                                    personRow(person).id(person.participantIdentifier)
+                                }
+                            }.padding(10)
+                        }.onChange(of: model.selection) { _, id in
+                            if let id { proxy.scrollTo(id) }
+                        }
+                    }
+                }
+            } else if request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && request.person == nil {
                 empty("Search your words, meetings, chats and screen history")
             } else if model.results.isEmpty {
                 empty(model.isLoading ? "Searching…" : (model.unavailableKinds.isEmpty
@@ -213,6 +322,10 @@ struct GlobalSearchPanel: View {
                     ScrollView {
                         LazyVStack(spacing: 4) {
                             ForEach(model.results) { result in resultRow(result).id(result.id) }
+                            if model.hasMore {
+                                Button("Show more meetings") { Task { await model.loadMore(request, using: controller.globalSearchWorker) } }
+                                    .disabled(model.isLoading).padding(12)
+                            }
                         }.padding(10)
                     }
                     .onChange(of: model.selection) { _, id in
@@ -222,7 +335,8 @@ struct GlobalSearchPanel: View {
             }
             Divider()
             HStack {
-                Text(model.results.count == 100 ? "Top 100 matches · narrow your search for more" : "\(model.results.count) matches")
+                let count = request.showsPeople && request.person == nil ? model.people.count : model.results.count
+                Text(request.person != nil && model.hasMore ? "\(count) meetings · more available" : count == 100 && request.person == nil ? "Top 100 matches · narrow your search for more" : "\(count) matches")
                 Spacer()
                 Text("↑ ↓ Select   ↵ Open   esc Close")
             }.font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary).padding(12)
@@ -262,13 +376,39 @@ struct GlobalSearchPanel: View {
     }
 
     private func chip(_ title: String, kind: GlobalSearchKind?) -> some View {
-        Button { request.kind = kind } label: {
+        Button { request.showsPeople = false; request.person = nil; request.kind = kind } label: {
             Text(title).font(MuesliTheme.callout())
                 .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(request.kind == kind ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
+                .background(!request.showsPeople && request.kind == kind ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
                 .clipShape(Capsule()).contentShape(Capsule())
         }.buttonStyle(.plain)
-            .accessibilityAddTraits(request.kind == kind ? .isSelected : [])
+            .accessibilityAddTraits(!request.showsPeople && request.kind == kind ? .isSelected : [])
+    }
+
+    private var peopleChip: some View {
+        Button { request.showsPeople = true; request.person = nil; request.kind = .meeting; request.app = "" } label: {
+            Text("People").font(MuesliTheme.callout()).padding(.horizontal, 10).padding(.vertical, 6)
+                .background(request.showsPeople ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
+                .clipShape(Capsule()).contentShape(Capsule())
+        }.buttonStyle(.plain).accessibilityAddTraits(request.showsPeople ? .isSelected : [])
+    }
+
+    private func personRow(_ person: MeetingParticipantDraft) -> some View {
+        Button { model.selection = person.participantIdentifier; openSelection() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle").font(.system(size: 23))
+                    .foregroundStyle(MuesliTheme.accentText).frame(width: 34, height: 40)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(person.displayName).font(MuesliTheme.headline()).lineLimit(1)
+                    if let email = person.emailAddress, !email.isEmpty {
+                        Text(email).font(MuesliTheme.callout()).foregroundStyle(MuesliTheme.textSecondary).lineLimit(1)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                if person.participantIdentifier == model.selection { Image(systemName: "return").foregroundStyle(MuesliTheme.textSecondary) }
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(person.participantIdentifier == model.selection ? MuesliTheme.backgroundHover : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 12)).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(person.participantIdentifier == model.selection ? .isSelected : [])
     }
 
     private func resultRow(_ result: GlobalSearchResult) -> some View {
@@ -326,6 +466,12 @@ struct GlobalSearchPanel: View {
     private func close() { openTask?.cancel(); dismiss() }
 
     private func openSelection() {
+        if request.showsPeople && request.person == nil {
+            guard let person = model.people.first(where: { $0.participantIdentifier == model.selection }) else { return }
+            peopleSearchText = request.text
+            request.text = ""; request.person = person; request.kind = .meeting; request.period = .all
+            return
+        }
         guard !opening, let result = model.results.first(where: { $0.id == model.selection }) else { return }
         opening = true
         navigationError = nil

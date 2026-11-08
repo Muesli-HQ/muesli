@@ -8,6 +8,31 @@ struct MeetingRecordingRecoveryReference: Codable {
     let meetingID: Int64
     let startTime: String
     let databasePath: String
+    /// Older references omit this field and retain their original behavior.
+    var pendingRetentionDecision: Bool? = nil
+
+    init(meetingID: Int64, startTime: String, databasePath: String, pendingRetentionDecision: Bool? = nil) {
+        self.meetingID = meetingID
+        self.startTime = startTime
+        self.databasePath = databasePath
+        self.pendingRetentionDecision = pendingRetentionDecision
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        meetingID = try values.decode(Int64.self, forKey: .meetingID)
+        startTime = try values.decode(String.self, forKey: .startTime)
+        databasePath = try values.decode(String.self, forKey: .databasePath)
+        if !values.contains(.pendingRetentionDecision) {
+            pendingRetentionDecision = nil
+        } else if try values.decodeNil(forKey: .pendingRetentionDecision) {
+            pendingRetentionDecision = nil
+        } else {
+            // A malformed optional value must not discard recovery or silently
+            // assume the user approved retention; ask for a decision again.
+            pendingRetentionDecision = (try? values.decode(Bool.self, forKey: .pendingRetentionDecision)) ?? true
+        }
+    }
 
     static let suffix = ".recovery.json"
 

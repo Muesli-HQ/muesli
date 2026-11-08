@@ -18,6 +18,7 @@ struct MeetingMicRouteDiagnosticsSnapshot: Codable, Equatable {
     let defaultInputDeviceName: String?
     let builtInInputDeviceID: AudioObjectID?
     let systemDefaultInputIsBuiltIn: Bool
+
 }
 
 struct MeetingMicRecorderDiagnosticsSnapshot: Codable, Equatable {
@@ -38,6 +39,8 @@ enum MeetingMicRecoveryRequestResult: Equatable {
 
 protocol MeetingMicRecording: AnyObject {
     var preferredInputDeviceID: AudioObjectID? { get set }
+    /// The input owned by the current capture graph, not a pending handoff.
+    var activeInputDeviceID: AudioObjectID? { get }
     var onRawPCMSamples: ((MicrophoneCaptureAudio) -> Void)? { get set }
     var onRecordingFailed: ((Error) -> Void)? { get set }
     /// Fired when a route handoff settles: a candidate promoted to active, or
@@ -76,6 +79,7 @@ protocol MeetingMicRecording: AnyObject {
 }
 
 extension MeetingMicRecording {
+    var activeInputDeviceID: AudioObjectID? { preferredInputDeviceID }
     func setSampleAdmissionCheck(_ check: @escaping () -> Bool) {}
     func setNativeStopDrainRange(_ range: @escaping () -> Range<Int64>?) {}
     var hasBufferedSampleAdmission: Bool { false }
@@ -191,6 +195,9 @@ final class StreamingMeetingMicRecorderAdapter: MeetingMicRecording {
 
 final class RouteAwareMeetingMicRecorder: MeetingMicRecording {
     enum ActiveRecorderKind: Equatable { case systemDefault, appScoped }
+    var activeInputDeviceID: AudioObjectID? {
+        lock.withLock { $0.active?.deviceID ?? $0.active?.followedDefaultInputDeviceID }
+    }
     private enum LifecycleState { case idle, prepared, running, paused, failed, stopping }
     private struct Child {
         let id: UUID
