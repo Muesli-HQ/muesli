@@ -6,6 +6,32 @@
         <language>en</language>
         <!-- Items are added by generate_appcast or the release script -->
         <item>
+            <title>0.8.6</title>
+            <pubDate>Sun, 08 Nov 2026 20:23:03 +0530</pubDate>
+            <description><![CDATA[
+<h2>What's new in muesli 0.8.6</h2>
+<ul>
+<li>**Time Turner — revisit your day.** Browse and search your screen history, catch up with recaps, and pick up unfinished work with to-dos. Screen capture is off by default, and your history stays on this Mac.</li>
+<li>**Vidshots — show your coding assistant what you mean.** Record a window or screen region while explaining it aloud. Give your coding workflows richer context through video, narration and captured visuals, whether you're showing a bug, explaining a UI or describing a change.</li>
+<li>**Cotypist — contextual autocomplete, right from your keyboard.** Get on-device suggestions as you type. Accept a suggestion with Tab, or take it one word at a time with Option + Right Arrow. Enable it when you're ready in Settings → Experimental.</li>
+<li>**Chat with your muesli data.** Ask questions across your saved history, including meetings, dictations, chats and Time Turner captures. Bring in images, PDFs, Markdown and text files for additional context, with document search and reading on demand.</li>
+<li>**Streaming dictation with Parakeet and Whisper.** See words appear as you speak during hands-free dictation with supported Parakeet and Whisper models. Enabled cleanup runs when you stop.</li>
+<li>**New models across speech recognition and cleanup.** Explore Parakeet Redux and Phonon-2.5 for multilingual transcription, MedASR for English medical dictation, and updated on-device cleanup models.</li>
+<li>**Record your screen during a meeting.** Capture a selected window or display alongside meeting audio, then play it back locally.</li>
+<li>**Dictate while a meeting is recording.** Keep using dictation in your other apps without stopping the meeting recording.</li>
+<li>**Reliability and polish throughout.** Clearer permission and restart flows, Keychain credential storage, improved microphone handling and meeting titles, better calendar-linked recording, and more readable controls. New feature badges disappear after you use them.</li>
+</ul>
+<h3>A few details</h3>
+<p>Time Turner recaps send sampled screen text to your selected Meetings provider. Chat sends the context needed for your request to the selected AI provider; attached original files stay in place. Accepted Cotypist suggestions are saved in your local Timeline with preceding text and app name. MedASR requires acceptance of Google's model terms. Meeting video recording requires Screen Recording and Microphone permissions; obtain participants' permission before recording.</p>
+<p>Download <code>Muesli-0.8.6.dmg</code>, open it and drag muesli to Applications, or use Check for Updates in the app. Signed with a Developer ID and notarized by Apple.</p>
+]]></description>
+            <sparkle:version>0.8.6</sparkle:version>
+            <sparkle:shortVersionString>0.8.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6/Muesli-0.8.6.dmg" length="145626089" type="application/octet-stream" sparkle:edSignature="mkaCaJPx8TkMEEOmOJSH4pDhFCa7TMJVE26SdOnxc1Fp4wX7oY+1bvkzbDYR+sdyXLDQh41vkwQwt0jeegUIBQ=="/>
+        </item>
+        <item>
             <title>0.8.5</title>
             <pubDate>Fri, 09 Oct 2026 03:16:28 +0530</pubDate>
             <description><![CDATA[
