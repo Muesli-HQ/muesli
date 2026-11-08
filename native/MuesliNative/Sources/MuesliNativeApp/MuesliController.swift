@@ -4911,14 +4911,16 @@ public final class MuesliController: NSObject {
                             onStartRecording: { [weak self] in
                                 guard let self else { return }
                                 self.isShowingCalendarNotification = false
-                                let currentSource = self.recentMeetingActivityCandidate().map(MeetingAutoStopSource.init(candidate:))
+                                let selection = MeetingAutoStopPolicy.calendarConfirmationSource(
+                                    candidate: self.recentMeetingActivityCandidate(), meetingURL: currentEvent.meetingURL
+                                )
                                 _ = self.startMeetingRecordingFromEntryPoint(
                                     title: currentEvent.title,
                                     calendarOccurrence: currentEvent.resolvedCalendarOccurrence,
                                     endDate: currentEvent.endDate,
-                                    autoStopSource: currentSource,
+                                    autoStopSource: selection.source,
                                     presentation: .backgroundPill,
-                                    startOrigin: currentSource == nil ? .manual : .detectedPrompt
+                                    startOrigin: selection.origin
                                 )
                             },
                             onDismiss: { [weak self] in self?.isShowingCalendarNotification = false },
@@ -11099,11 +11101,6 @@ public final class MuesliController: NSObject {
 
     private func recentMeetingAutoStopSource() -> MeetingAutoStopSource? {
         guard let candidate = recentMeetingActivityCandidate() else { return nil }
-        guard !isMutedMeetingDetectionCandidate(candidate) else {
-            latestMeetingActivityCandidate = nil
-            latestMeetingActivityCandidateObservedAt = nil
-            return nil
-        }
         return MeetingAutoStopSource(candidate: candidate)
     }
 
@@ -11111,6 +11108,11 @@ public final class MuesliController: NSObject {
         guard let candidate = latestMeetingActivityCandidate,
               let observedAt = latestMeetingActivityCandidateObservedAt,
               Date().timeIntervalSince(observedAt) <= 15 else { return nil }
+        guard !isMutedMeetingDetectionCandidate(candidate) else {
+            latestMeetingActivityCandidate = nil
+            latestMeetingActivityCandidateObservedAt = nil
+            return nil
+        }
         return candidate
     }
 
@@ -13704,6 +13706,11 @@ public final class MuesliController: NSObject {
     var testingPrepareModels: (() async throws -> Bool)?
     var testingIndicator: FloatingIndicatorController { indicator }
     var testingMeetingExclusionCount: Int { meetingDictationExclusions.count }
+    func testingCacheMeetingCandidate(_ candidate: MeetingCandidate) {
+        latestMeetingActivityCandidate = candidate
+        latestMeetingActivityCandidateObservedAt = Date()
+    }
+    func testingRecentMeetingCandidate() -> MeetingCandidate? { recentMeetingActivityCandidate() }
     func testingWaitForModels() async { await nativeRecordingGate.waitForPreparation() }
     var testingBeforeNemotronStart: (() async throws -> Void)?
     func testingInstallDictationCapture(_ manager: DictationAudioSessionManager, meeting: MeetingSession?,

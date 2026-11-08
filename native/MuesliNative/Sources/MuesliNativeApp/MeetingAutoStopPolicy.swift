@@ -277,6 +277,17 @@ struct MeetingAutoStopTracker: Equatable {
 }
 
 enum MeetingAutoStopPolicy {
+    static func calendarConfirmationSource(candidate: MeetingCandidate?, meetingURL: URL?)
+        -> (source: MeetingAutoStopSource?, origin: MeetingRecordingStartOrigin) {
+        if let candidate {
+            return (MeetingAutoStopSource(candidate: candidate), .detectedPrompt)
+        }
+        if let source = meetingURL.flatMap({ MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: true) }) {
+            return (source, .calendarAutoRecord)
+        }
+        return (nil, .manual)
+    }
+
     static func matches(candidate: MeetingCandidate, source: MeetingAutoStopSource) -> Bool {
         // Missing room evidence permits a media fallback; conflicting room
         // evidence must never extend the original recording, even in one browser.

@@ -280,6 +280,9 @@ final class FloatingIndicatorController: NSObject {
     private var meetingFeedbackGeneration = 0
     private(set) var activityRevision = 0
     private var geometryRevision: UInt64 = 0
+    #if DEBUG
+    var testingHoverGeometryReconciled: (() -> Void)?
+    #endif
     var presentsWindows = true
     private(set) var state: DictationState = .idle
     private var dictationPresentation: DictationState = .idle
@@ -1285,6 +1288,9 @@ final class FloatingIndicatorController: NSObject {
             // its actual frame animation, not the separate appearance animation.
             self.contentView?.updateTrackingAreas()
             self.reconcileIdleHover()
+            #if DEBUG
+            self.testingHoverGeometryReconciled?()
+            #endif
         })
         if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
         panel.orderFrontRegardless()

@@ -1,10 +1,32 @@
 import AppKit
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("MeetingNotificationController")
 struct MeetingNotificationControllerTests {
+    @Test("a recently muted app cannot supply a cached calendar candidate")
+    @MainActor
+    func recentlyMutedCandidateIsCleared() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = makeTestConfigStore(supportDirectory: directory)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: DictationStore(databaseURL: directory.appendingPathComponent("test.db")),
+            configStore: store
+        )
+        let candidate = MeetingCandidate(id: "zoom", platform: .zoom, appName: "Zoom", url: nil,
+            evidence: [.audioInputProcess], startedAt: Date(), meetingTitle: nil, sourceBundleID: "us.zoom.xos")
+        controller.testingCacheMeetingCandidate(candidate)
+        #expect(controller.testingRecentMeetingCandidate() == candidate)
+        controller.updateConfig { $0.mutedMeetingDetectionAppBundleIDs = ["us.zoom.xos"] }
+        #expect(controller.testingRecentMeetingCandidate() == nil)
+        controller.updateConfig { $0.mutedMeetingDetectionAppBundleIDs = [] }
+        #expect(controller.testingRecentMeetingCandidate() == nil)
+    }
+
     @Test("calendar auto-record preserves recordings and asks when a call may already be active")
     func autoRecordConflictDecision() {
         let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision

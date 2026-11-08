@@ -376,6 +376,30 @@ struct MeetingAutoStopPolicyTests {
         #expect(source.refined(with: matching).requiresExactRoomMatch)
     }
 
+    @Test("calendar confirmation keeps a room source when detection has not caught up")
+    func confirmationPreservesCalendarSource() throws {
+        let url = try #require(URL(string: "https://zoom.us/j/123456789"))
+        let selection = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: nil, meetingURL: url)
+        let source = try #require(selection.source)
+        #expect(selection.origin == .calendarAutoRecord)
+        #expect(source.requiresExactRoomMatch)
+        #expect(!MeetingAutoStopPolicy.matches(candidate: candidate(id: "other", url: nil, bundle: "us.zoom.xos"), source: source))
+        let matching = candidate(id: "matching", url: source.normalizedURL)
+        var tracker = MeetingAutoStopTracker()
+        tracker.arm(source: selection.origin.signalLossSource(explicitSource: source, recentSource: nil))
+        tracker.observeBeforeRecordingStarted(candidate: matching)
+        tracker.markRecordingStarted(now: now)
+        #expect(tracker.source?.assertionTarget == .browser(bundleID: "com.google.Chrome"))
+        let shouldStop = tracker.observe(candidate: nil, now: now.addingTimeInterval(16), gracePeriod: 15)
+        #expect(shouldStop)
+        let unsupported = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: nil, meetingURL: URL(string: "https://chime.aws/123"))
+        #expect(unsupported.source == nil && unsupported.origin == .manual)
+        let detected = candidate(id: "detected", url: nil, bundle: "us.zoom.xos")
+        let selectionWithCandidate = MeetingAutoStopPolicy.calendarConfirmationSource(candidate: detected, meetingURL: url)
+        #expect(selectionWithCandidate.origin == .detectedPrompt)
+        #expect(selectionWithCandidate.source == MeetingAutoStopSource(candidate: detected))
+    }
+
     @Test("switching to an unsupported meeting never binds the previous Zoom call")
     func unsupportedSwitchDoesNotUsePreviousCall() throws {
         let unsupportedURL = try #require(URL(string: "https://chime.aws/123456789"))
