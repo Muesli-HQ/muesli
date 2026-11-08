@@ -166,6 +166,10 @@ struct SidebarView: View {
                     appState.selectedTab = .timeTurner
                 } else if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .vidshots {
+                    appState.searchQuery = ""
+                    appState.selectedVidshotID = nil
+                    appState.selectedTab = .vidshots
                 } else if tab == .meetings {
                     // Mirror the expanded Meetings action: returning to the
                     // rail must restore the browser, not leave a document open.
@@ -180,7 +184,11 @@ struct SidebarView: View {
                 }
             }
         } label: {
-            (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
+            Group {
+                if tab == .vidshots { VidshotIcon().frame(width: 16, height: 16) }
+                else if tab == .timeTurner { Image(nsImage: TimeTurnerIcon.image()) }
+                else { Image(systemName: icon) }
+            }
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                 .frame(width: 40, height: 36)
@@ -547,6 +555,10 @@ struct SidebarView: View {
                     appState.selectedTab = .timeTurner
                 } else if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .vidshots {
+                    appState.searchQuery = ""
+                    appState.selectedVidshotID = nil
+                    appState.selectedTab = .vidshots
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
                 } else if tab == .models, updateCTA != nil, appState.selectedTab != .models {
@@ -557,7 +569,11 @@ struct SidebarView: View {
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
-                (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
+                Group {
+                    if tab == .vidshots { VidshotIcon().frame(width: 14, height: 14) }
+                    else if tab == .timeTurner { Image(nsImage: TimeTurnerIcon.image()) }
+                    else { Image(systemName: icon) }
+                }
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)

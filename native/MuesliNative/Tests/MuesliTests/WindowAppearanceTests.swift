@@ -24,8 +24,8 @@ struct WindowAppearanceTests {
     func timeTurnerSidebarRestoration() {
         let legacy = "meetingChat,timeline,dictations,meetings,insights,dictionary"
         let restored = SidebarOrder.tabs(from: legacy)
-        #expect(restored.last == .timeTurner)
-        #expect(SidebarOrder.encode(Array(restored.dropLast())) == "meetingChat,timeline,dictations,meetings,dictionary")
+        #expect(Array(restored.suffix(2)) == [.timeTurner, .vidshots])
+        #expect(SidebarOrder.encode(Array(restored.dropLast(2))) == "meetingChat,timeline,dictations,meetings,dictionary")
         #expect(!restored.contains(.insights))
         let moved = SidebarOrder.inserting(.timeTurner, relativeTo: .timeline, after: true, in: legacy)
         #expect(Array(SidebarOrder.tabs(from: moved).prefix(3)) == [.meetingChat, .timeline, .timeTurner])

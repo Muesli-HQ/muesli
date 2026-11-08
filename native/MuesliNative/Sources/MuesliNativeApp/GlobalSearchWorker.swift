@@ -8,6 +8,7 @@ actor GlobalSearchWorker {
     private let databaseURL: URL
     private let screenRoot: URL?
     private var service: GlobalSearchService?
+    private var peopleIndex: GlobalSearchIndex?
     private let mainMonitor: GlobalSearchDatabaseMonitor
     private let screenMonitor: GlobalSearchDatabaseMonitor?
     private var screenStore: VisualMemoryStore?
@@ -46,18 +47,46 @@ actor GlobalSearchWorker {
         try searchResponse(query).matches()
     }
 
+    func people(matching query: String) throws -> [MeetingParticipantDraft] {
+        _ = try mainMonitor.revision()
+        if mainIdentity != mainMonitor.fileIdentity {
+            service = nil; peopleIndex = nil; mainIdentity = mainMonitor.fileIdentity
+        }
+        if peopleIndex == nil { peopleIndex = try GlobalSearchIndex(databaseURL: databaseURL) }
+        try peopleIndex?.installAvailableSources()
+        return try DictationStore(databaseURL: databaseURL, readOnly: true).searchMeetingPeople(query: query, limit: 100)
+    }
+
+    func duplicatePeople() throws -> [DuplicateMeetingPeople] {
+        try DictationStore(databaseURL: databaseURL, readOnly: true).duplicateMeetingPeople()
+    }
+
+    func peopleMergeHistory() throws -> [MeetingPeopleMerge] {
+        try DictationStore(databaseURL: databaseURL, readOnly: true).meetingPeopleMergeHistory()
+    }
+
+    func mergePeople(targetID: String, sourceID: String) throws {
+        try DictationStore(databaseURL: databaseURL).mergeMeetingPeople(targetID: targetID, sourceID: sourceID)
+    }
+
+    func undoPeopleMerge(id: String) throws {
+        try DictationStore(databaseURL: databaseURL).undoMeetingPeopleMerge(id: id)
+    }
+
     func searchResponse(_ query: GlobalSearchQuery) throws -> GlobalSearchResponse {
         guard !query.kinds.isEmpty, query.from < query.until,
-              !query.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (!query.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || query.person != nil),
               query.text.utf8.count <= 4096 else { return .init() }
         if case .unavailable = try GlobalSearchRead<Int64>.perform({ try mainMonitor.revision() }) {
             service = nil // never query an old connection after removal/replacement
+            peopleIndex = nil
         }
         if service == nil || mainIdentity != mainMonitor.fileIdentity {
+            if mainIdentity != mainMonitor.fileIdentity { peopleIndex = nil }
             service = try GlobalSearchService(databaseURL: databaseURL)
             mainIdentity = mainMonitor.fileIdentity
         }
-        if query.kinds.contains(.screenHistory), let screenMonitor, let screenRoot {
+        if query.person == nil, query.kinds.contains(.screenHistory), let screenMonitor, let screenRoot {
             scheduleRetryIfDue()
             let revision = try screenMonitor.revision()
             hasSeenScreenCatalog = hasSeenScreenCatalog || screenMonitor.isPresent
@@ -93,7 +122,7 @@ actor GlobalSearchWorker {
                 return false
             }
         }
-        if query.kinds.contains(.screenHistory), hasSeenScreenCatalog, screenStore == nil {
+        if query.person == nil, query.kinds.contains(.screenHistory), hasSeenScreenCatalog, screenStore == nil {
             response.unavailableKinds.insert(.screenHistory)
         }
         return response
@@ -107,6 +136,7 @@ enum GlobalSearchDestination: Sendable {
     case chat(UUID)
     case capture(VisualMemoryItem)
     case recap(SavedTimeTurnerRecap)
+    case vidshot(String)
 }
 
 extension GlobalSearchWorker {
@@ -153,6 +183,9 @@ extension GlobalSearchWorker {
             guard let screenRoot,
                   let capture = try VisualMemoryStore(root: screenRoot, readOnly: true).moment(id: result.sourceID) else { return nil }
             return .capture(capture)
+        case .vidshot:
+            guard try MuesliHistoryReader(databaseURL: databaseURL).read(kind: .vidshots, id: result.sourceID) != nil else { return nil }
+            return .vidshot(result.sourceID)
         case .recap:
             guard let recap = try TimeTurnerRecapStore(databaseURL: databaseURL, readOnly: true).load(key: result.sourceID),
                   try TimeTurnerRecap.sourcesAreCurrent(recap.sources, root: screenRoot, databaseURL: databaseURL) else { return nil }

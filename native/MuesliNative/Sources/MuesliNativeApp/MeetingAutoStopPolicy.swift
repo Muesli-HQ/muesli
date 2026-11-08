@@ -1,4 +1,47 @@
 import Foundation
+import CoreGraphics
+
+struct MeetingClamshellMicWarningState {
+    private(set) var hasWarned = false
+
+    mutating func update(lidClosed: Bool, effectiveInputIsBuiltIn: Bool?) -> Bool {
+        guard lidClosed else { hasWarned = false; return false }
+        guard let effectiveInputIsBuiltIn else { return false }
+        guard effectiveInputIsBuiltIn else { hasWarned = false; return false }
+        guard !hasWarned else { return false }
+        return true
+    }
+
+    mutating func markShown() { hasWarned = true }
+}
+
+enum MeetingLidStopPolicy {
+    static func shouldStop(lidClosed: Bool, hasActiveExternalDisplay: Bool?) -> Bool {
+        lidClosed && hasActiveExternalDisplay == false
+    }
+
+    static func hasActiveExternalDisplay() -> Bool? {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).contains {
+            CGDisplayIsBuiltin($0) == 0 && CGDisplayIsActive($0) != 0 && CGDisplayIsAsleep($0) == 0
+        }
+    }
+}
+
+enum MeetingSystemStopAction: Equatable {
+    case none, cancelPreparation, stopRecording
+
+    static func action(phase: MeetingCapturePhase) -> Self {
+        switch phase {
+        case .preparing: .cancelPreparation
+        case .capturing, .paused: .stopRecording
+        case .stopping, .stopped: .none
+        }
+    }
+}
 
 enum MeetingRecordingStartOrigin: Equatable {
     case manual

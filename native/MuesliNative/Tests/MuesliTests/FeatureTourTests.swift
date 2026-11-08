@@ -25,6 +25,7 @@ struct FeatureTourTests {
         #expect(NewFeatureDiscovery(defaults: defaults, release: "next").isNew(.chat))
         #expect(NewFeature.sidebar(.meetingChat) == .chat)
         #expect(NewFeature.sidebar(.timeTurner) == .timeTurner)
+        #expect(NewFeature.sidebar(.vidshots) == .vidshots)
         #expect(NewFeature.sidebar(.settings) == nil)
         #expect(NewFeature.setting("buffered_live_dictation") == .liveDictation)
         #expect(NewFeature.setting("cotypist_enabled") == .cotypist)

@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Disk-backed reader for URL-based ASR. Only one window exists
 /// at a time; the caller must finish inference before requesting the next one.
@@ -17,8 +18,12 @@ final class RecordingAudioWindowReader {
     private let capacity: AVAudioFrameCount
     private let overlap: AVAudioFramePosition
     private var finished = false
+    private let quietCuts: Bool
+    private let minimumSeconds: Double
 
-    init(url: URL, seconds: Double, overlapSeconds: Double) throws {
+    init(url: URL, seconds: Double, overlapSeconds: Double, quietCuts: Bool = false, minimumSeconds: Double = 0) throws {
+        self.minimumSeconds = minimumSeconds
+        self.quietCuts = quietCuts
         file = try AVAudioFile(forReading: url)
         let rate = file.processingFormat.sampleRate
         guard rate.isFinite, rate > 0, file.length > 0,
@@ -42,7 +47,23 @@ final class RecordingAudioWindowReader {
         guard !finished else { return nil }
         let start = file.framePosition
         let rate = file.processingFormat.sampleRate
-        let count = AVAudioFrameCount(min(AVAudioFramePosition(capacity), file.length - start))
+        var count = AVAudioFrameCount(min(AVAudioFramePosition(capacity), file.length - start))
+        if quietCuts, count == capacity, start + Int64(count) < file.length {
+            guard let probe = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else {
+                throw CocoaError(.fileReadTooLarge)
+            }
+            var samples: [Float] = []
+            while samples.count < Int(count) {
+                try Task.checkCancellation()
+                try file.read(into: probe, frameCount: count - AVAudioFrameCount(samples.count))
+                guard probe.frameLength > 0, let channel = probe.floatChannelData?[0] else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(probe.frameLength)))
+            }
+            count = AVAudioFrameCount(FeedbackCaptureTranscript.quietCut(samples: samples, sampleRate: rate))
+            file.framePosition = start
+        }
         let url = directory.appendingPathComponent("chunk.wav")
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
@@ -62,6 +83,17 @@ final class RecordingAudioWindowReader {
                 guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
                 try writer.write(from: buffer)
                 remaining -= buffer.frameLength
+            }
+            // Padding is decoder-only: source positions and capture bounds stay real.
+            let padding = max(0, Int(rate * minimumSeconds) - Int(count))
+            if padding > 0 {
+                guard let silence = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                    frameCapacity: AVAudioFrameCount(padding)) else { throw CocoaError(.fileReadTooLarge) }
+                silence.frameLength = silence.frameCapacity
+                for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
+                    if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+                }
+                try writer.write(from: silence)
             }
         }
         let end = file.framePosition

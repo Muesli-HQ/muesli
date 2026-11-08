@@ -1,0 +1,493 @@
+import AppKit
+import Foundation
+import Testing
+import os
+@testable import MuesliCore
+@testable import MuesliNativeApp
+
+@Suite("Vidshot finalizer", .serialized)
+@MainActor
+struct FeedbackCaptureFinalizerTests {
+    @Test func redundantAudioIsRemovedOnlyAfterSuccessfulDurableTranscription() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            for mode in ["success", "failed", "unsafeVideo", "failedVideo"] {
+                var manifest = try store.begin(target: feedbackTarget())
+                manifest.audio = "narration.wav"; manifest.video = "recording.mp4"
+                manifest.videoOffsetMs = 0
+                let wav = try store.mediaURL(id: manifest.id, path: "narration.wav")
+                try Data([1, 2, 3]).write(to: wav)
+                try Data([4, 5, 6]).write(to: store.mediaURL(id: manifest.id, path: "recording.mp4"))
+                manifest.transcript = mode == "failed" ? .unavailable("transcription failed") :
+                    .init(source: "fixture", text: "hello", words: [], segments: [], estimated: false)
+                if mode == "failedVideo" { manifest.failures.append(.init(stage: "video", message: "Encoding stalled")) }
+                var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages().filter { $0.name == .summary })
+                finalizer.audioIsSafelyInVideo = { _, _, _ in mode != "unsafeVideo" }
+                let result = try await finalizer.finish(manifest, context: .init(store: store, finishPasteboardChangeCount: 0))
+                let persisted = try store.manifest(id: manifest.id)
+                let summary = try String(contentsOf: store.mediaURL(id: manifest.id, path: "summary.md"), encoding: .utf8)
+                if mode == "success" {
+                    #expect(result.audio == nil && persisted.audio == nil)
+                    #expect(!FileManager.default.fileExists(atPath: wav.path))
+                    #expect(!summary.contains("Narration: narration.wav"))
+                } else {
+                    #expect(result.audio == "narration.wav" && persisted.audio == "narration.wav")
+                    #expect(FileManager.default.fileExists(atPath: wav.path))
+                    #expect(summary.contains("Narration: narration.wav"))
+                }
+                store.release(id: manifest.id)
+            }
+        }
+    }
+
+    @Test func invalidVideoNeverAuthorizesRemovingWAV() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let capture = try store.begin(target: feedbackTarget())
+            let wav = try store.mediaURL(id: capture.id, path: "narration.wav")
+            let video = try store.mediaURL(id: capture.id, path: "recording.mp4")
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: wav)
+            try Data([1, 2, 3]).write(to: video)
+            #expect(!(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, 0)))
+            #expect(!(await FeedbackCaptureAudioRetention.audioIsSafelyInVideo(wav, video, nil)))
+        }
+    }
+
+    @Test func failedVidshotTranscriptionCanBeRetriedInPlace() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var capture = try store.begin(target: feedbackTarget())
+            capture.audio = "narration.wav"
+            capture.transcript = .unavailable("model unavailable")
+            capture.failures.append(.init(stage: "transcribe", message: "model unavailable"))
+            capture.state = .ready
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: store.mediaURL(id: capture.id, path: "narration.wav"))
+            try store.publish(capture); store.release(id: capture.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root, observeSystem: false)
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in .unavailable("still unavailable") }]
+            await #expect(throws: (any Error).self) { try await controller.retryTranscription(id: capture.id) }
+            #expect(try store.manifest(id: capture.id) == capture)
+            #expect(FileManager.default.fileExists(atPath: try store.mediaURL(id: capture.id, path: "narration.wav").path))
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in
+                .init(source: "fixture", text: "Retried successfully", words: [], segments: [], estimated: true)
+            }]
+            try await controller.retryTranscription(id: capture.id)
+            let saved = try store.manifest(id: capture.id)
+            #expect(saved.transcript?.text == "Retried successfully")
+            #expect(saved.audio == "narration.wav") // There is no verified video to replace it.
+            #expect(!saved.failures.contains { $0.stage == "transcribe" })
+            #expect(try store.list().count == 1)
+            let summary = try String(contentsOf: store.mediaURL(id: capture.id, path: "summary.md"), encoding: .utf8)
+            #expect(summary.contains("Retried successfully"))
+            var second = try store.begin(target: feedbackTarget())
+            second.audio = "narration.wav"; second.video = "recording.mp4"; second.videoOffsetMs = 0
+            second.transcript = .unavailable("model unavailable"); second.state = .ready
+            let secondAudio = try store.mediaURL(id: second.id, path: "narration.wav")
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: secondAudio)
+            try Data([1, 2, 3]).write(to: store.mediaURL(id: second.id, path: "recording.mp4"))
+            try store.publish(second); store.release(id: second.id)
+            controller.finalizer.audioIsSafelyInVideo = { _, _, _ in true }
+            try await controller.retryTranscription(id: second.id)
+            #expect(try store.manifest(id: second.id).audio == nil)
+            #expect(!FileManager.default.fileExists(atPath: secondAudio.path))
+            #expect(try store.manifest(id: second.id).transcript?.text == "Retried successfully")
+        }
+    }
+
+    @Test func retryKeepsNarrationInActionOrderAcrossFrameOrder() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            var capture = try store.begin(target: feedbackTarget())
+            capture.audio = "narration.wav"
+            capture.transcript = .unavailable("model unavailable")
+            capture.state = .ready
+            capture.events = [.drag(t: 1000, t1: 5000, x0: 0.1, y0: 0.1, x1: 0.8, y1: 0.8)]
+            let words: [FeedbackCaptureTranscript.Span] = [
+                .init(t0: 0, t1: 100, text: "Before."), .init(t0: 500, t1: 600, text: "Start."),
+                .init(t0: 1200, t1: 1300, text: "Moving."), .init(t0: 2200, t1: 2300, text: "Settled."),
+                .init(t0: 5000, t1: 5100, text: "Done.")
+            ]
+            let transcript = FeedbackCaptureTranscript(source: "fixture", text: words.map(\.text).joined(separator: " "),
+                words: words, segments: [], estimated: false)
+            let candidates = [
+                FeedbackCaptureContext.Candidate(anchor: 0, time: 0, reason: "initial", eventIndex: nil, score: 1),
+                FeedbackCaptureContext.Candidate(anchor: 2000, time: 2300, reason: "scene_change", eventIndex: nil, score: 1),
+                FeedbackCaptureContext.Candidate(anchor: 1000, time: 5250, reason: "drag", eventIndex: 0, score: 1)
+            ]
+            capture.keyframes = FeedbackCaptureContext.keyframes(candidates, transcript: nil)
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.2, count: 1600), to: store.mediaURL(id: capture.id, path: "narration.wav"))
+            try store.publish(capture); store.release(id: capture.id)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root, observeSystem: false)
+            controller.finalizer.stages = [FeedbackCaptureFinalizer.transcriptionStage { _ in transcript }]
+            try await controller.retryTranscription(id: capture.id)
+            let frames = try store.manifest(id: capture.id).keyframes
+            #expect(frames.map(\.said) == ["Before. Start.", "Settled. Done.", "Moving."])
+            #expect(frames.map(\.narrationAnchor) == [0, 2000, 1000])
+
+            // A pre-anchor manifest can recover an event's start from eventIndex.
+            var legacyJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(capture)) as? [String: Any])
+            var legacyFrames = try #require(legacyJSON["keyframes"] as? [[String: Any]])
+            for index in legacyFrames.indices { legacyFrames[index].removeValue(forKey: "narrationAnchor") }
+            legacyJSON["keyframes"] = legacyFrames
+            var legacy = try JSONDecoder().decode(FeedbackCaptureManifest.self, from: JSONSerialization.data(withJSONObject: legacyJSON))
+            #expect(legacy.keyframes.allSatisfy { $0.narrationAnchor == nil })
+            FeedbackCaptureContext.reassignNarration(&legacy, transcript: transcript)
+            #expect(legacy.keyframes.map(\.narrationAnchor) == [0, 2300, 1000])
+            #expect(legacy.keyframes[2].said.contains("Moving."))
+        }
+    }
+
+    @Test func clipboardCanCarryVideoAndContextAsTwoFiles() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let video = URL(fileURLWithPath: "/tmp/vidshot-fixture.mp4")
+        let context = URL(fileURLWithPath: "/tmp/vidshot-context.md")
+        #expect(FeedbackCaptureDelivery.writeVideoAndContextFiles(video: video, context: context, to: pasteboard) == .copied)
+        let items = try #require(pasteboard.pasteboardItems)
+        #expect(items.count == 2)
+        #expect(items[0].string(forType: .fileURL) == video.absoluteString)
+        #expect(items[1].string(forType: .fileURL) == context.absoluteString)
+    }
+
+    @Test func clipboardVideoCarriesFileAndContext() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let video = URL(fileURLWithPath: "/tmp/vidshot-fixture.mp4")
+        #expect(FeedbackCaptureDelivery.write("context", video: video, to: pasteboard) == .copied)
+        #expect(pasteboard.string(forType: .string) == "context")
+        #expect(pasteboard.string(forType: .fileURL) == video.absoluteString)
+        let items = try #require(pasteboard.pasteboardItems)
+        #expect(items.count == 1)
+        #expect(items[0].string(forType: .fileURL) == video.absoluteString)
+        #expect(items[0].string(forType: .string) == "context")
+    }
+
+    @Test func orderedStagesContinueAfterFailureAndCopyFollowsPublication() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var manifest = try store.begin(target: feedbackTarget())
+            try WavWriter.writeWAV(samples: [Float](repeating: 0.25, count: 1600), to: store.mediaURL(id: manifest.id, path: "narration.wav"))
+            manifest.audio = "narration.wav"
+            var order: [FeedbackCaptureFinalizer.StageName] = []
+            let count = NSPasteboard.general.changeCount
+            let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: count)
+            let finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.StageName.allCases.reversed().map { name in
+                .init(name: name, run: { m, c in
+                    order.append(name)
+                    #expect(c.finishPasteboardChangeCount == count)
+                    if name == .transcribe { throw ScreenVideoRecorder.error("fixture transcription failure") }
+                    if name == .render { m.durationMs = 1234 }
+                    if name == .copy {
+                        #expect(try c.store.get(id: m.id)?.state == .ready)
+                        #expect(try c.store.manifest(id: m.id).durationMs == 1234)
+                        #expect(!FileManager.default.fileExists(atPath: try c.store.mediaURL(id: m.id, path: "unfinished.json").path))
+                    }
+                })
+            })
+            let result = try await finalizer.finish(manifest, context: context)
+            #expect(order == FeedbackCaptureFinalizer.StageName.allCases)
+            #expect(result.state == .ready && result.audio == "narration.wav")
+            #expect(result.failures.map(\.stage) == ["transcribe"])
+            #expect(result.durationMs == 1234)
+            #expect(NSPasteboard.general.changeCount == count)
+            store.release(id: manifest.id)
+        }
+    }
+    @Test func sliceOneHasNoLaterStagesAndNeverWritesClipboard() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let manifest = try store.begin(target: feedbackTarget())
+            let finalizer = FeedbackCaptureFinalizer()
+            let count = NSPasteboard.general.changeCount
+            #expect(finalizer.stages.isEmpty)
+            let result = try await finalizer.finish(manifest, context: .init(store: store, finishPasteboardChangeCount: count))
+            #expect(result.state == .failed)
+            #expect(NSPasteboard.general.changeCount == count)
+            store.release(id: manifest.id)
+        }
+    }
+
+    @Test func failedEmptyCaptureDoesNotCopyFailureSummary() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let manifest = try store.begin(target: feedbackTarget())
+            let pasteboard = NSPasteboard.withUniqueName()
+            defer { pasteboard.releaseGlobally() }
+            pasteboard.setString("keep", forType: .string)
+            let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: pasteboard.changeCount)
+            var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
+            finalizer.stages.append(FeedbackCaptureFinalizer.copyStage(pasteboard: pasteboard))
+
+            let result = try await finalizer.finish(manifest, context: context)
+
+            #expect(result.state == .failed)
+            #expect(context.delivery.result == nil)
+            #expect(pasteboard.string(forType: .string) == "keep")
+            #expect(FeedbackCaptureController.completionState(result, delivery: context.delivery.result, retainsContent: false)
+                == .failed(stage: "Recording", message: "No media captured", retainedMedia: false))
+            store.release(id: manifest.id)
+        }
+    }
+}
+
+@Suite("Vidshot context finalization", .serialized)
+@MainActor
+struct FeedbackCaptureContextFinalizerTests {
+    @Test func syntheticCapturePublishesReadableArtifactsAndCopiesTheirSummary() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.video = "recording.mp4"; m.videoOffsetMs = 250; m.durationMs = 3000
+            try await FeedbackCaptureRendererTests().makeVideo(store.mediaURL(id: m.id, path: "recording.mp4"))
+            m.events = [.click(t: 500, x: 0.5, y: 0.5, button: 0), .click(t: 1500, x: 0.8, y: 0.5, button: 0)]
+            let words: [FeedbackCaptureTranscript.Span] = [
+                .init(t0: 0, t1: 100, text: "Open."), .init(t0: 500, t1: 600, text: "Click"),
+                .init(t0: 700, t1: 800, text: "here."), .init(t0: 1500, t1: 1600, text: "Done.")
+            ]
+            m.transcript = .init(source: "fixture", text: "Open. Click here. Done.", words: words, segments: [], estimated: false)
+            let pasteboard = NSPasteboard.withUniqueName(); defer { pasteboard.releaseGlobally() }
+            let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: pasteboard.changeCount)
+            var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
+            finalizer.prepareThumbnails = { manifest, context in
+                try await FeedbackCaptureFinalizer.prepareContextThumbnails(manifest, context: context, timeout: .seconds(30))
+            }
+            let captureID = m.id
+            finalizer.stages.append(FeedbackCaptureFinalizer.copyStage(pasteboard: pasteboard, load: { url in
+                // Copy must observe the durable ready manifest, after publication removed the journal.
+                #expect(try store.manifest(id: captureID).state == .ready)
+                #expect(!FileManager.default.fileExists(atPath: try store.mediaURL(id: captureID, path: "unfinished.json").path))
+                return try String(contentsOf: url, encoding: .utf8)
+            }))
+            let result = try await finalizer.finish(m, context: context)
+            #expect(result.state == .ready)
+            #expect(result.failures.isEmpty, "Vidshot finalization failures: \(result.failures.map { "\($0.stage): \($0.message)" }.joined(separator: "; "))")
+            #expect(result.transcript == m.transcript)
+            try #require(!result.keyframes.isEmpty)
+            #expect(result.keyframes.contains { !$0.said.isEmpty })
+            #expect(try store.manifest(id: m.id) == result)
+            let sheet = try #require(result.contactSheet)
+            for path in result.keyframes.map(\.file) + [sheet] {
+                let data = try Data(contentsOf: store.mediaURL(id: m.id, path: path))
+                #expect(NSBitmapImageRep(data: data) != nil)
+            }
+            let summary = try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8)
+            #expect(!summary.isEmpty)
+            #expect(pasteboard.string(forType: .string) == summary && context.delivery.result == .copied)
+            #expect(pasteboard.data(forType: .png) == (try Data(contentsOf: store.mediaURL(id: m.id, path: sheet))))
+            let image = try Data(contentsOf: store.mediaURL(id: m.id, path: sheet))
+            #expect(FeedbackCaptureDelivery.writeImage(image, to: pasteboard) == .copied)
+            #expect(pasteboard.data(forType: .png) == image && pasteboard.string(forType: .string) == nil)
+            store.release(id: m.id)
+        }
+    }
+    @Test func copyReadFailurePreservesPublishedBundleAndNamesDeliveryFailure() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.events = [.click(t: 1000, x: 0.5, y: 0.5, button: 0)]
+            let pasteboard = NSPasteboard.withUniqueName(); defer { pasteboard.releaseGlobally() }
+            pasteboard.setString("keep", forType: .string)
+            let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: pasteboard.changeCount)
+            let finalizer = FeedbackCaptureFinalizer(stages: [FeedbackCaptureFinalizer.copyStage(pasteboard: pasteboard)])
+            let result = try await finalizer.finish(m, context: context)
+            #expect(result.state == .ready && context.delivery.result == .failed)
+            #expect(result.failures.map(\.stage) == ["copy"])
+            #expect(try store.manifest(id: m.id) == result)
+            #expect(pasteboard.string(forType: .string) == "keep")
+            #expect(FeedbackCaptureController.completionState(result, delivery: .failed, retainsContent: true)
+                == .failed(stage: "Copy", message: result.failures[0].message, retainedMedia: true))
+            store.release(id: m.id)
+        }
+    }
+    @Test func completionSeparatesClipboardOutcomeFromPartialStageFailures() {
+        var m = FeedbackCaptureManifest(id: "fc-1000-abcd", createdAtMs: 1000, target: feedbackTarget())
+        m.state = .ready
+        m.failures = [.init(stage: "transcribe", message: "fixture"), .init(stage: "keyframes", message: "fixture"),
+            .init(stage: "render", message: "fixture")]
+        #expect(FeedbackCaptureController.completionState(m, delivery: .copied, retainsContent: true)
+            == .copied(partial: "no transcript, frames failed"))
+        #expect(FeedbackCaptureController.completionState(m, delivery: .skipped, retainsContent: true)
+            == .readyToCopy(partial: "no transcript, frames failed"))
+    }
+    @Test func eventOnlyCapturePublishesSummaryAndRecoveryNeverCopies() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.events = [.click(t: 1000, x: 0.5, y: 0.2, button: 0)]
+            var copies = 0
+            var finalizer = FeedbackCaptureFinalizer()
+            finalizer.stages = FeedbackCaptureFinalizer.contextStages()
+            finalizer.stages.append(.init(name: .copy) { _, _ in copies += 1 })
+            let result = try await finalizer.finish(m, context: .init(store: store, finishPasteboardChangeCount: 0), completionState: .recovered)
+            #expect(result.state == .recovered)
+            #expect(copies == 0)
+            #expect(try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8).contains("No transcript"))
+            #expect(try store.manifest(id: m.id).events == m.events)
+            #expect(!FileManager.default.fileExists(atPath: try store.mediaURL(id: m.id, path: "unfinished.json").path))
+            store.release(id: m.id)
+        }
+    }
+    @Test func thumbnailPreparationOverlapsTranscriptionAndJoinsBeforeSelection() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget()); m.audio = "narration.wav"
+            let started = OSAllocatedUnfairLock(initialState: false)
+            var finalizer = FeedbackCaptureFinalizer()
+            finalizer.prepareThumbnails = { _, _ in
+                started.withLock { $0 = true }
+                return [.init(t: 250, luma: [0])]
+            }
+            finalizer.stages = [
+                .init(name: .transcribe) { manifest, _ in
+                    for _ in 0..<100 {
+                        if started.withLock({ $0 }) { break }
+                        try await Task.sleep(for: .milliseconds(2))
+                    }
+                    #expect(started.withLock { $0 })
+                    manifest.transcript = .unavailable("fixture")
+                },
+                .init(name: .keyframes) { _, context in #expect(context.thumbnails.map(\.t) == [250]) }
+            ]
+            let result = try await finalizer.finish(m, context: .init(store: store, finishPasteboardChangeCount: 0))
+            #expect(result.transcript?.missing?.reason == "fixture")
+            store.release(id: m.id)
+        }
+    }
+    @Test func recoveredThumbnailTimeoutPreservesSavedImages() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.events = [.click(t: 500, x: 0.5, y: 0.5, button: 0)]
+            m.keyframes = [.init(index: 1, t: 500, reason: "click", file: "frames/frame-01.png", eventIndex: 0,
+                said: "Keep this saved scene.", saidRange: .init(from: 0, to: 0))]
+            m.contactSheet = "contact-sheet.png"
+
+            let image = try #require(CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
+            let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+            try FileManager.default.createDirectory(at: store.mediaURL(id: m.id, path: "frames"), withIntermediateDirectories: true)
+            try png.write(to: store.mediaURL(id: m.id, path: "frames/frame-01.png"))
+            try png.write(to: store.mediaURL(id: m.id, path: "contact-sheet.png"))
+            try store.checkpoint(m)
+
+            var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
+            finalizer.prepareThumbnails = { _, _ in throw ScreenVideoRecorder.error("fixture thumbnail timeout") }
+            let result = try await finalizer.finish(m,
+                context: .init(store: store, finishPasteboardChangeCount: 0), completionState: .recovered)
+
+            #expect(result.state == .recovered)
+            #expect(result.keyframes == m.keyframes)
+            #expect(result.contactSheet == m.contactSheet)
+            #expect(result.failures.contains { $0.stage == "keyframes" && $0.message.contains("fixture thumbnail timeout") })
+            let summary = try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8)
+            #expect(summary.contains("contact-sheet.png"))
+            #expect(summary.contains("frames/frame-01.png"))
+            #expect(!FileManager.default.fileExists(atPath: try store.mediaURL(id: m.id, path: "unfinished.json").path))
+
+            let loaded = try FeedbackCaptureView.load(id: m.id, store: store)
+            #expect(loaded.contactSheet != nil)
+            #expect(loaded.frames["frames/frame-01.png"] != nil)
+            #expect(!loaded.missingArtifacts.contains("contact-sheet.png"))
+            #expect(!loaded.missingArtifacts.contains("frames/frame-01.png"))
+            store.release(id: m.id)
+        }
+    }
+    @Test func recoveredThumbnailTimeoutDropsUnreadableSavedImages() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget())
+            m.transcript = .init(source: "fixture", text: "Keep this. Missing frame words. Bad frame words.", words: [
+                .init(t0: 0, t1: 100, text: "Keep"), .init(t0: 100, t1: 200, text: "this."),
+                .init(t0: 200, t1: 300, text: "Missing"), .init(t0: 300, t1: 400, text: "frame"),
+                .init(t0: 400, t1: 500, text: "words."), .init(t0: 500, t1: 600, text: "Bad"),
+                .init(t0: 600, t1: 700, text: "frame"), .init(t0: 700, t1: 800, text: "words.")
+            ], segments: [], estimated: false)
+            m.keyframes = [
+                .init(index: 1, t: 100, reason: "initial", file: "frames/frame-01.png", said: "Keep this.", saidRange: .init(from: 0, to: 2)),
+                .init(index: 2, t: 300, reason: "click", file: "frames/frame-02.png", said: "Missing frame words.", saidRange: .init(from: 2, to: 5)),
+                .init(index: 3, t: 600, reason: "click", file: "frames/frame-03.png", said: "Bad frame words.", saidRange: .init(from: 5, to: 8))
+            ]
+            m.contactSheet = "contact-sheet.png"
+
+            let image = try #require(CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
+            let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+            try FileManager.default.createDirectory(at: store.mediaURL(id: m.id, path: "frames"), withIntermediateDirectories: true)
+            try png.write(to: store.mediaURL(id: m.id, path: "frames/frame-01.png"))
+            try Data("not a PNG".utf8).write(to: store.mediaURL(id: m.id, path: "frames/frame-03.png"))
+            try store.checkpoint(m)
+
+            var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
+            finalizer.prepareThumbnails = { _, _ in throw ScreenVideoRecorder.error("fixture thumbnail timeout") }
+            let result = try await finalizer.finish(m,
+                context: .init(store: store, finishPasteboardChangeCount: 0), completionState: .recovered)
+
+            #expect(result.keyframes.map(\.file) == ["frames/frame-01.png"])
+            #expect(result.contactSheet == nil)
+            let summary = try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8)
+            #expect(summary.contains("frames/frame-01.png"))
+            #expect(!summary.contains("frames/frame-02.png"))
+            #expect(!summary.contains("frames/frame-03.png"))
+            #expect(!summary.contains("contact-sheet.png"))
+            #expect(summary.contains("Unillustrated narration: “Missing frame words. Bad frame words.”"))
+
+            let loaded = try FeedbackCaptureView.load(id: m.id, store: store)
+            #expect(loaded.contactSheet == nil)
+            #expect(loaded.frames["frames/frame-01.png"] != nil)
+            #expect(loaded.missingArtifacts.isEmpty)
+            store.release(id: m.id)
+        }
+    }
+    @Test func thumbnailFailureStillProducesAllNarrationInSummary() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget()); m.audio = "narration.wav"
+            m.transcript = .init(source: "fixture", text: "Every word survives.", words: [
+                .init(t0: 0, t1: 100, text: "Every"), .init(t0: 200, t1: 300, text: "word"),
+                .init(t0: 400, t1: 500, text: "survives.")], segments: [], estimated: true)
+            var finalizer = FeedbackCaptureFinalizer(stages: FeedbackCaptureFinalizer.contextStages())
+            finalizer.prepareThumbnails = { _, _ in throw ScreenVideoRecorder.error("fixture thumbnail failure") }
+            let result = try await finalizer.finish(m, context: .init(store: store, finishPasteboardChangeCount: 0))
+            #expect(result.state == .ready)
+            #expect(result.keyframes.isEmpty)
+            #expect(result.failures.contains { $0.stage == "keyframes" && $0.message.contains("fixture thumbnail failure") })
+            let summary = try String(contentsOf: store.mediaURL(id: m.id, path: "summary.md"), encoding: .utf8)
+            #expect(summary.contains("Unillustrated narration: “Every word survives.”"))
+            #expect(!summary.contains("contact-sheet.png"))
+            store.release(id: m.id)
+        }
+    }
+    @Test("Automatic copy checks the clipboard at write time", arguments: [false, true])
+    func clipboardRace(changed: Bool) async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            var m = try store.begin(target: feedbackTarget()); m.audio = "narration.wav"
+            let pasteboard = NSPasteboard.withUniqueName()
+            defer { pasteboard.releaseGlobally() }
+            pasteboard.clearContents(); pasteboard.setString("before", forType: .string)
+            let count = pasteboard.changeCount
+            let overwrite: @MainActor @Sendable () -> Void = {
+                pasteboard.clearContents(); pasteboard.setString("new user copy", forType: .string)
+            }
+            let context = FeedbackCaptureFinalizer.Context(store: store, finishPasteboardChangeCount: count)
+            let finalizer = FeedbackCaptureFinalizer(stages: [
+                .init(name: .summary) { manifest, context in
+                    try Data("durable summary".utf8).write(to: context.store.mediaURL(id: manifest.id, path: "summary.md"), options: .atomic)
+                },
+                FeedbackCaptureFinalizer.copyStage(pasteboard: pasteboard, load: { url in
+                    let summary = try String(contentsOf: url, encoding: .utf8)
+                    if changed { await overwrite() }
+                    return summary
+                })
+            ])
+            let result = try await finalizer.finish(m, context: context)
+            #expect(result.failures.isEmpty)
+            #expect(context.delivery.result == (changed ? .skipped : .copied))
+            #expect(pasteboard.string(forType: .string) == (changed ? "new user copy" : "durable summary"))
+            store.release(id: m.id)
+        }
+    }
+    @Test func explicitCopyReadsDurableSummaryAndRejectsStalePresentation() async throws {
+        try await withFeedbackStoreAsync { store, root in
+            let m = try store.begin(target: feedbackTarget())
+            try Data("saved summary".utf8).write(to: store.mediaURL(id: m.id, path: "summary.md"), options: .atomic)
+            let pasteboard = NSPasteboard.withUniqueName(); defer { pasteboard.releaseGlobally() }
+            pasteboard.clearContents(); pasteboard.setString("keep", forType: .string)
+            let controller = FeedbackCaptureController(databaseURL: root.appendingPathComponent("muesli.db"), supportDirectory: root,
+                observeSystem: false)
+            let stale = await controller.copy(id: m.id, expectedPresentationID: controller.presentationID + 1, pasteboard: pasteboard)
+            #expect(stale == .skipped && pasteboard.string(forType: .string) == "keep")
+            #expect(await controller.copy(id: m.id, pasteboard: pasteboard) == .copied)
+            #expect(pasteboard.string(forType: .string) == "saved summary")
+            try FileManager.default.removeItem(at: store.mediaURL(id: m.id, path: "summary.md"))
+            #expect(await controller.copy(id: m.id, pasteboard: pasteboard) == .failed)
+            #expect(pasteboard.string(forType: .string) == "saved summary")
+            store.release(id: m.id)
+        }
+    }
+}

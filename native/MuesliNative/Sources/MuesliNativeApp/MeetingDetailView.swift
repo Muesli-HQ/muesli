@@ -763,7 +763,8 @@ struct MeetingDetailView: View {
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
-                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript || $0.citation.kind == .title ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
+                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript || $0.citation.kind == .title ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) },
+                        footer: AnyView(RelatedMeetingsSection(meetingID: meeting.id, controller: controller)))
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
@@ -2426,6 +2427,75 @@ struct TranscriptChatMessage: Identifiable, Equatable {
             return true
         }
         return false
+    }
+}
+
+private struct RelatedMeetingsSection: View {
+    let meetingID: Int64
+    let controller: MuesliController
+    @State private var meetings: [RelatedMeeting] = []
+    @State private var limit = 5
+    @State private var requestID = UUID()
+    @State private var navigationTask: Task<Void, Never>?
+    @State private var hasMore = false
+    @State private var loadingMore = false
+
+    var body: some View {
+        Group {
+            if !meetings.isEmpty {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("Meetings with shared people").font(MuesliTheme.title3())
+                    ForEach(meetings.prefix(limit)) { meeting in
+                        Button {
+                            navigationTask?.cancel()
+                            navigationTask = Task { await controller.showRelatedMeeting(id: meeting.meetingID, from: meetingID) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(meeting.title).font(MuesliTheme.body())
+                                Text(meeting.sharedNames.joined(separator: ", ") + " · " + MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                    if meetings.count > limit || hasMore {
+                        Button("Show more") {
+                            if meetings.count > limit { limit += 10 }
+                            else { Task { await loadMore() } }
+                        }.buttonStyle(.plain).disabled(loadingMore)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task(id: meetingID) { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { _ in
+            Task { await reload() }
+        }
+        .onDisappear { requestID = UUID(); navigationTask?.cancel() }
+    }
+
+    private func reload() async {
+        let token = UUID()
+        requestID = token
+        do {
+            let found = try await controller.relatedMeetings(meetingID: meetingID, limit: 100)
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings = found; hasMore = found.count == 100; limit = 5
+        } catch {
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings = []
+        }
+    }
+
+    private func loadMore() async {
+        guard !loadingMore else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        let token = requestID
+        do {
+            let found = try await controller.relatedMeetings(meetingID: meetingID, limit: 100, offset: meetings.count)
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings.append(contentsOf: found); hasMore = found.count == 100; limit += 10
+        } catch { hasMore = false }
     }
 }
 

@@ -5,6 +5,18 @@ import Testing
 
 @Suite("MeetingNotificationController")
 struct MeetingNotificationControllerTests {
+    @Test("A close callback can install the next notification callback")
+    @MainActor
+    func closePreservesNextCallback() {
+        let controller = MeetingNotificationController()
+        var nextClosed = false
+        controller.onClose = { controller.onClose = { nextClosed = true } }
+        controller.close()
+        #expect(controller.onClose != nil)
+        controller.close()
+        #expect(nextClosed)
+    }
+
     @Test("Slack candidates map to the Slack notification platform")
     func slackCandidateMapsToSlackNotificationPlatform() {
         #expect(MeetingPlatform(.slack) == .slack)

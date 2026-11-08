@@ -1,0 +1,267 @@
+import SwiftUI
+import AVKit
+import MuesliCore
+
+struct FeedbackCaptureView: View {
+    struct Loaded: @unchecked Sendable {
+        let manifest: FeedbackCaptureManifest
+        let video: URL?, audio: URL?, bundle: URL
+        let active: Bool
+        let contactSheet: NSImage?
+        let frames: [String: NSImage]
+        let summaryAvailable: Bool
+        let missingArtifacts: [String]
+    }
+    nonisolated static func load(id: String, store: FeedbackCaptureStore) throws -> Loaded {
+        try Task.checkCancellation()
+        let manifest = try store.manifest(id: id)
+        var missing: [String] = []
+        func existing(_ path: String?) throws -> URL? {
+            guard let path else { return nil }
+            let url = try store.mediaURL(id: id, path: path)
+            guard FileManager.default.fileExists(atPath: url.path) else { missing.append(path); return nil }
+            return url
+        }
+        func image(_ path: String?) throws -> NSImage? {
+            try Task.checkCancellation()
+            guard let path, let url = try existing(path) else { return nil }
+            guard let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) else {
+                missing.append(path); return nil
+            }
+            let image = NSImage(size: bitmap.size); image.addRepresentation(bitmap)
+            return image
+        }
+        let sheet = try image(manifest.contactSheet)
+        var frames: [String: NSImage] = [:]
+        for frame in manifest.keyframes { frames[frame.file] = try image(frame.file) }
+        let video = try existing(manifest.video), audio = try existing(manifest.audio)
+        let summary = try store.mediaURL(id: id, path: "summary.md")
+        try Task.checkCancellation()
+        return Loaded(manifest: manifest, video: video, audio: audio, bundle: try store.bundleURL(id: id),
+            active: store.isActive(id: id), contactSheet: sheet, frames: frames,
+            summaryAvailable: FileManager.default.fileExists(atPath: summary.path), missingArtifacts: missing)
+    }
+    let controller: FeedbackCaptureController
+    @State var selectedID: String?
+    var onBack: (() -> Void)? = nil
+    var backLabel = "Vidshots"
+    @State private var manifest: FeedbackCaptureManifest?
+    @State private var player: AVPlayer?
+    @State private var mode = "Screen"
+    @State private var videoURL: URL?
+    @State private var audioURL: URL?
+    @State private var message: String?
+    @State private var loading = true
+    @State private var confirmDelete = false
+    @State private var activeWriter = true
+    @State private var bundleURL: URL?
+    @State private var contactSheet: NSImage?
+    @State private var frames: [String: NSImage] = [:]
+    @State private var summaryAvailable = false
+    @State private var copyTask: Task<Void, Never>?
+    @State private var copyMessage: String?
+    private var selected: FeedbackCaptureRecord? { selectedID == nil ? controller.records.first : controller.records.first { $0.id == selectedID } }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if loading { ProgressView("Loading captures…") }
+                if let selected {
+                    if let onBack {
+                        Button(action: onBack) {
+                            Label(backLabel, systemImage: "chevron.left")
+                                .padding(.horizontal, 8)
+                                .frame(minHeight: 32)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel("Back to \(backLabel)")
+                    } else {
+                        HStack(spacing: 8) {
+                            VidshotIcon().frame(width: 16, height: 16).foregroundStyle(MuesliTheme.accentText)
+                            Picker("Capture", selection: Binding(get: { selected.id }, set: { selectedID = $0 })) {
+                                ForEach(controller.records) { record in
+                                    Text("\(record.title) · \(Date(timeIntervalSince1970: record.createdAt).formatted())").tag(record.id)
+                                }
+                            }
+                        }
+                    }
+                    HStack {
+                        Text(selected.title).font(MuesliTheme.font(size: 15, weight: .semibold))
+                        Text(Date(timeIntervalSince1970: selected.createdAt).formatted()).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%d:%02d", selected.durationMs / 60_000, (selected.durationMs / 1000) % 60)).monospacedDigit()
+                    }
+                    ViewThatFits(in: .horizontal) {
+                        HStack { copyButtons(selected) }
+                        VStack(alignment: .leading, spacing: 8) { copyButtons(selected) }
+                    }
+                    .foregroundStyle(MuesliTheme.accentText)
+                    if let copyMessage { Text(copyMessage).font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary) }
+                    Text("Paste support varies by destination app.")
+                        .font(MuesliTheme.font(size: 12)).foregroundStyle(.secondary)
+                    if videoURL != nil && audioURL != nil {
+                        Picker("Media", selection: $mode) {
+                            Text("Video").tag("Screen")
+                            Text("Audio").tag("Audio")
+                        }
+                        .pickerStyle(.segmented).frame(width: 180)
+                    }
+                    if videoURL != nil && (mode == "Screen" || audioURL == nil) {
+                        if let player { MeetingVideoPlayerView(player: player).frame(minHeight: 220, maxHeight: .infinity) }
+                    } else if let audioURL {
+                        MeetingRecordingPlayerView(recordingPath: audioURL.path).id(audioURL)
+                    } else if manifest?.strokes.isEmpty != false {
+                        ContentUnavailableView("Media unavailable", systemImage: "video.slash", description: Text("The saved media may be missing or still recording."))
+                    }
+                    if let manifest {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Narration").font(MuesliTheme.font(size: 15, weight: .semibold))
+                                if manifest.audio != nil && (manifest.transcript == nil || manifest.transcript?.missing != nil) {
+                                    Button(controller.retryingTranscriptionIDs.contains(selected.id) ? "Transcribing…" : "Retry transcription") {
+                                        let id = selected.id
+                                        Task {
+                                            do { try await controller.retryTranscription(id: id) }
+                                            catch { if self.selected?.id == id { message = error.localizedDescription } }
+                                        }
+                                    }
+                                    .disabled(loading || activeWriter || controller.retryingTranscriptionIDs.contains(selected.id))
+                                }
+                            }
+                            if let transcript = manifest.transcript, !transcript.text.isEmpty {
+                                Text(transcript.text)
+                                    .font(MuesliTheme.font(size: 14))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                            } else if let reason = FeedbackCaptureContext.unillustratedNarration(manifest).missingReason {
+                                Text("No transcript: \(reason)").foregroundStyle(.secondary)
+                            } else {
+                                Text(selected.state == .processing ? "Transcribing narration…" : "No transcript saved")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if let manifest, !manifest.keyframes.isEmpty {
+                        DisclosureGroup("Frames and timestamps") {
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 12) {
+                                    ForEach(manifest.keyframes, id: \.index) { frame in
+                                        HStack(alignment: .top, spacing: 12) {
+                                            if let image = frames[frame.file] {
+                                                Image(nsImage: image).resizable().scaledToFit().frame(width: 220)
+                                                    .accessibilityLabel("Frame \(frame.index)")
+                                            } else { Label("Frame unavailable", systemImage: "photo").frame(width: 220) }
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                Text(String(format: "#%d · %d:%02d", frame.index, frame.t / 60_000, (frame.t / 1000) % 60)).font(MuesliTheme.font(size: 15, weight: .semibold))
+                                                Text(frame.said.isEmpty ? "No narration for this frame" : frame.said)
+                                            }.frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                }.textSelection(.enabled)
+                            }.frame(maxHeight: 220)
+                        }
+                    }
+                    if let manifest, !manifest.marks.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(manifest.marks, id: \.id) { mark in
+                                Text("✎ \(mark.description)")
+                            }
+                        }.textSelection(.enabled)
+                    }
+                    if (manifest?.state ?? selected.state) != .ready {
+                        Text((manifest?.state ?? selected.state).rawValue.capitalized).font(MuesliTheme.font(size: 15, weight: .semibold))
+                    }
+                    HStack {
+                        Button("Show in Finder") {
+                            if let url = bundleURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        }
+                        Button("Delete…", role: .destructive) { confirmDelete = true }
+                            .disabled(loading || activeWriter)
+                    }
+                    if manifest?.audio == nil, manifest?.video != nil, manifest?.transcript?.missing != nil { Text("Narration unavailable").foregroundStyle(.secondary) }
+                    if manifest?.video == nil, manifest?.audio != nil { Text("Audio only · video unavailable").foregroundStyle(.secondary) }
+                    ForEach(Array((manifest?.failures ?? []).enumerated()), id: \.offset) { _, failure in
+                        Text("\(failure.stage): \(failure.message)").font(MuesliTheme.font(size: 12)).foregroundStyle(.orange)
+                    }
+
+                } else if !loading {
+                    ContentUnavailableView {
+                        Label { Text("No Vidshots") } icon: { VidshotIcon().frame(width: 36, height: 36) }
+                    } description: {
+                        Text("Enable Vidshot in Experimental settings, then select a window or region to record.")
+                    }
+                }
+                if let state = controller.state, controller.hasAttempt { Text(state.title).foregroundStyle(.secondary) }
+                if let message { Text(message).foregroundStyle(.orange) }
+                if let error = controller.errorMessage { Text(error).font(MuesliTheme.font(size: 12)).foregroundStyle(.orange) }
+            }
+            .padding(24)
+        }
+        .font(MuesliTheme.font(size: 14))
+        .task(id: "\(selected?.id ?? "none")-\(selected?.state.rawValue ?? "none")-\(controller.hasAttempt)-\(controller.recoveryRevision)") {
+            loading = true; player?.pause(); player = nil; manifest = nil; message = nil; bundleURL = nil
+            videoURL = nil; audioURL = nil; mode = "Screen"
+            contactSheet = nil; frames = [:]; summaryAvailable = false; copyTask?.cancel(); copyMessage = nil
+            defer { if !Task.isCancelled { loading = false } }
+            guard let id = selected?.id, let store = controller.store else { return }
+            let isActive = await Task.detached { store.isActive(id: id) }.value
+            guard !Task.isCancelled else { return }
+            activeWriter = isActive
+            do {
+                let loader = Task.detached(priority: .utility) { try Self.load(id: id, store: store) }
+                let loaded = try await withTaskCancellationHandler { try await loader.value } onCancel: { loader.cancel() }
+                guard !Task.isCancelled else { return }
+                manifest = loaded.manifest; videoURL = loaded.video; audioURL = loaded.audio
+                bundleURL = loaded.bundle; activeWriter = loaded.active
+                contactSheet = loaded.contactSheet; frames = loaded.frames; summaryAvailable = loaded.summaryAvailable
+                if !loaded.missingArtifacts.isEmpty { message = "Missing or unreadable: " + loaded.missingArtifacts.joined(separator: ", ") }
+                else if videoURL == nil && audioURL == nil && loaded.manifest.events.isEmpty && loaded.manifest.strokes.isEmpty { message = "Saved media file is missing" }
+            } catch {
+                if !Task.isCancelled { message = error.localizedDescription }
+            }
+        }
+        .task(id: "\(mode)-\(videoURL?.path ?? "none")-\(audioURL?.path ?? "none")") {
+            player?.pause(); player = nil
+            guard !Task.isCancelled, mode == "Screen" || audioURL == nil, let videoURL else { return }
+            player = AVPlayer(url: videoURL)
+        }
+        .task { await controller.reload(requestedID: selectedID) }
+        .onDisappear { player?.pause(); player = nil; copyTask?.cancel() }
+        .confirmationDialog("Delete this capture and all its files?", isPresented: $confirmDelete) {
+            Button("Delete capture", role: .destructive) {
+                guard let id = selected?.id else { return }
+                Task {
+                    do {
+                        try await controller.delete(id: id)
+                        if selectedID == id { selectedID = nil; onBack?() }
+                    }
+                    catch { message = error.localizedDescription }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+    @ViewBuilder private func copyButtons(_ selected: FeedbackCaptureRecord) -> some View {
+        Button { copy(selected.id) } label: { Label("Context", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy context")
+            .disabled(loading || activeWriter || !summaryAvailable)
+        Button { copy(selected.id, imageOnly: true) } label: { Label("Image", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy image")
+            .disabled(loading || activeWriter || contactSheet == nil)
+        Button { copy(selected.id, video: true) } label: { Label("Video", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy video")
+            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
+        Button { copy(selected.id, videoAndContextFiles: true) } label: { Label("Video + context files", systemImage: "doc.on.clipboard") }
+            .accessibilityLabel("Copy video and context files")
+            .disabled(loading || activeWriter || !summaryAvailable || videoURL == nil)
+    }
+    private func copy(_ id: String, video: Bool = false, imageOnly: Bool = false, videoAndContextFiles: Bool = false) {
+        copyTask?.cancel(); copyMessage = nil
+        copyTask = Task {
+            let result = await controller.copy(id: id, video: video, imageOnly: imageOnly, videoAndContextFiles: videoAndContextFiles)
+            guard !Task.isCancelled, selected?.id == id else { return }
+            copyMessage = result == .copied ? "Copied" : result == .failed ? "Copy failed" : nil
+        }
+    }
+
+}

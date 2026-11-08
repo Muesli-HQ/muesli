@@ -448,6 +448,24 @@ Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
 
+### Meeting people
+
+The Meetings browser uses a floating new-meeting button at the bottom right,
+above the chat composer. It uses the sidebar meeting icon, a small plus badge,
+and the semantic join green on hover, with an adjacent “Quick Note” label shown
+on hover or keyboard focus. The label does not intercept pointer events. Reserve
+scroll space beneath the last row.
+Meetings includes a People tab for browsing people and reviewing possible
+duplicates. Duplicate review uses the adaptive warning color for a subtle amber
+surface, border, and evidence label. Global search also offers People alongside
+the other content categories. Selecting a person opens their associated meetings,
+including with no text query. Meeting notes end with a compact list of other meetings with shared
+people. Calendar associations indicate invitations rather than verified attendance.
+The People popover allows a name to be entered directly and offers an explicit
+Find participants action. Suggestions appear as compact person rows and require
+the user to add or dismiss them. The app validates evidence before suggesting a
+name. Helper text discloses provider sharing and partial meeting coverage.
+
 ## About privacy control
 
 About includes a Privacy card with the canonical “Disable anonymous analytics”

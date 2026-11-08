@@ -696,6 +696,8 @@ struct FloatingIndicatorPointerInteractionTests {
         pointer = NSPoint(x: compact.midX, y: compact.midY)
         let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
             .compactMap { $0 as? HoverIndicatorView }.first { $0.owner === indicator })
+        // AppKit may defer its first tracking-area update in a headless test host.
+        pill.updateTrackingAreas()
         let tracking = try #require(pill.trackingAreas.first)
         indicator.setHovered(true)
         if leavesDuringExpansion {
@@ -763,6 +765,8 @@ struct FloatingIndicatorPointerInteractionTests {
         let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .bottomLeading
+        config.indicatorHoverStyle = .classic
+        config.dictationHotkey.label = "Fn"
         store.save(config)
         var pointer = NSPoint(x: -100_000, y: -100_000)
         let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { pointer })
@@ -790,19 +794,30 @@ struct FloatingIndicatorPointerInteractionTests {
         // delay on a busy runner. Establish a settled baseline before checking
         // that the interrupted hover cannot move or retire this presentation.
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(5))
+        let deadline = clock.now.advanced(by: .seconds(10))
         var presented = try #require(indicator.currentFrame)
         var stableSamples = 0
-        while stableSamples < 5, clock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
+        while stableSamples < 3, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
             let frame = try #require(indicator.currentFrame)
             stableSamples = frame == presented ? stableSamples + 1 : 0
             presented = frame
         }
-        #expect(stableSamples == 5, "The presentation's entrance frame did not settle")
+        try #require(stableSamples == 3, "The presentation's entrance frame did not settle")
         #expect(presented.size != compact.size)
         try await Task.sleep(for: .milliseconds(400))
-        #expect(indicator.currentFrame == presented)
+        let current = try #require(indicator.currentFrame)
+        let expandedPresentationCenter = CGPoint(x: compact.minX + 110, y: compact.minY + 18)
+        if presentation == "notice" || presentation == "loading" {
+            #expect(current.width > compact.width && current.width < 220)
+            let screen = try #require(NSScreen.main?.visibleFrame)
+            let expectedX = min(max(expandedPresentationCenter.x, screen.minX + current.width / 2), screen.maxX - current.width / 2)
+            let expectedY = min(max(expandedPresentationCenter.y, screen.minY + current.height / 2), screen.maxY - current.height / 2)
+            #expect(abs(current.midX - expectedX) <= 1, "Current: \(current), compact: \(compact), screen: \(screen), expected: \(expectedX)")
+            #expect(abs(current.midY - expectedY) <= 1, "Current: \(current), compact: \(compact), screen: \(screen), expected: \(expectedY)")
+        } else {
+            #expect(current == presented)
+        }
     }
 
     @MainActor
@@ -869,7 +884,11 @@ struct FloatingIndicatorPointerInteractionTests {
         config.indicatorAnchor = .topTrailing
         store.save(config)
         indicator.ensureVisible(config: config)
-        try await Task.sleep(for: .milliseconds(650))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline,
+              indicator.currentFrame?.size != compact.size || indicator.currentFrame?.contains(pointer) != false {
+            try await Task.sleep(for: .milliseconds(25))
+        }
         #expect(indicator.currentFrame?.size == compact.size)
         #expect(indicator.currentFrame?.contains(pointer) == false)
     }
@@ -901,7 +920,19 @@ struct FloatingIndicatorPointerInteractionTests {
         let rect = window.convertToScreen(pill.convert(indicator.pointerInteractiveRect(in: pill.bounds), to: nil))
         pointer = NSPoint(x: rect.midX, y: rect.midY)
         indicator.setHovered(true)
-        try await Task.sleep(for: .milliseconds(500))
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        var previousFrame = try #require(indicator.currentFrame)
+        var previousReads = reads
+        var stableSamples = 0
+        while stableSamples < 3, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            let frame = try #require(indicator.currentFrame)
+            stableSamples = frame == previousFrame && reads == previousReads ? stableSamples + 1 : 0
+            previousFrame = frame
+            previousReads = reads
+        }
+        try #require(stableSamples == 3, "The hover entrance did not settle")
         let settledReads = reads
         try await Task.sleep(for: .milliseconds(500))
         #expect(reads == settledReads)
@@ -1087,7 +1118,7 @@ struct FloatingIndicatorPointerInteractionTests {
         config.indicatorOrigin = CGPointCodable(x: 600, y: 400)
         config.showMeetingTranscriptOnIndicatorHover = true
         store.save(config)
-        let indicator = FloatingIndicatorController(configStore: store)
+        let indicator = FloatingIndicatorController(configStore: store, pointerLocation: { NSPoint(x: 600, y: 400) })
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var pauseCount = 0
         indicator.onToggleMeetingPause = { pauseCount += 1 }

@@ -438,6 +438,7 @@ public enum ManagedASRModelPlans {
 
 /// Bridges Hugging Face discovery to the resumable coordinator and legacy scalar UI callbacks.
 public enum ManagedASRModelDownloader {
+    @TaskLocal public static var localOnly = false
     private static let operations = ManagedASRModelOperations()
 
     @discardableResult
@@ -449,7 +450,11 @@ public enum ManagedASRModelDownloader {
         mirrorResolver: MuesliModelMirrorManifestResolver = .shared,
         coordinator: ModelDownloadCoordinator = .shared
     ) async throws -> URL {
-        try await operations.run(modelID: plan.modelID) { cancellation in
+        if localOnly {
+            guard plan.isAvailableLocally() else { throw CocoaError(.fileNoSuchFile) }
+            return plan.cacheDirectory
+        }
+        return try await operations.run(modelID: plan.modelID) { cancellation in
             if plan.isAvailableLocally() { return plan.cacheDirectory }
 
             return try await performDownload(
@@ -481,7 +486,7 @@ public enum ManagedASRModelDownloader {
         load: (URL) async throws -> T
     ) async throws -> T {
         // Display-only consumers must never repair, delete or download artifacts.
-        if !allowDownload {
+        if !allowDownload || localOnly {
             try Task.checkCancellation()
             guard plan.isAvailableLocally() else { throw CocoaError(.fileNoSuchFile) }
             return try await load(plan.cacheDirectory)

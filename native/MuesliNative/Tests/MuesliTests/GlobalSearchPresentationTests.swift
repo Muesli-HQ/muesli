@@ -5,6 +5,60 @@ import Testing
 
 @Suite("Global search presentation")
 struct GlobalSearchPresentationTests {
+    @Test("Person pagination restarts when previously displayed associations change")
+    @MainActor func personPageRevision() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("people-pages-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("muesli.db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let person = MeetingParticipantDraft(participantIdentifier: "contact:alice", displayName: "Alice")
+        for n in 0..<102 {
+            let date = Date().addingTimeInterval(Double(-n - 10))
+            let id = try store.insertMeeting(title: "Meeting", calendarEventID: nil, startTime: date,
+                endTime: date, rawTranscript: "", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
+            try store.attachMeetingParticipant(meetingID: id, participant: person)
+        }
+        let worker = GlobalSearchWorker(databaseURL: url, screenRoot: nil)
+        let model = GlobalSearchPresentation()
+        let request = GlobalSearchRequest(person: person)
+        await model.refresh(request, using: worker, debounce: false)
+        #expect(model.results.count == 100 && model.hasMore)
+        let first = try #require(model.results.first)
+        let removed = try #require(Int64(first.sourceID))
+        try store.removeMeetingParticipant(meetingID: removed, participantIdentifier: person.participantIdentifier)
+        await model.loadMore(request, using: worker)
+        #expect(model.results.count == 100 && model.hasMore)
+        #expect(!model.results.contains { $0.sourceID == String(removed) })
+        await model.loadMore(request, using: worker)
+        #expect(model.results.count == 101 && !model.hasMore)
+        #expect(Set(model.results.map(\.id)).count == 101)
+    }
+    @Test("People results support keyboard selection and reject stale searches")
+    @MainActor func peopleSearch() async {
+        let model = GlobalSearchPresentation()
+        let alice = MeetingParticipantDraft(participantIdentifier: "contact:alice", displayName: "Alice")
+        let bob = MeetingParticipantDraft(participantIdentifier: "contact:bob", displayName: "Bob")
+        await model.refreshPeople(debounce: false) { [alice, bob] }
+        #expect(model.people == [alice, bob])
+        #expect(model.selection == alice.participantIdentifier)
+        model.move(1)
+        #expect(model.selection == bob.participantIdentifier)
+        let started = AsyncStream<Void>.makeStream()
+        let old = Task { @MainActor in
+            await model.refreshPeople(debounce: false) {
+                started.continuation.yield(())
+                try await Task.sleep(for: .milliseconds(80))
+                return [alice]
+            }
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        await iterator.next()
+        await model.refreshPeople(debounce: false) { [bob] }
+        await old.value
+        #expect(model.people == [bob])
+    }
     @Test("Preview distinguishes temporary failures from deletion and recovers without losing selection")
     @MainActor func previewRecovery() async {
         let preview = GlobalSearchPreview()

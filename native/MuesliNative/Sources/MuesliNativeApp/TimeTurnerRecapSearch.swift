@@ -11,7 +11,7 @@ struct TimeTurnerRecapSearch: Sendable {
     private var optionalKinds: [GlobalSearchKind: MuesliHistoryKind] {
         let mapping: [GlobalSearchKind: MuesliHistoryKind] = [
             .meeting: .meetings, .dictation: .dictations, .command: .commands,
-            .quill: .quill, .cotypist: .cotypist, .chat: .chat
+            .quill: .quill, .cotypist: .cotypist, .chat: .chat, .vidshot: .vidshots
         ]
         return mapping.filter { config[keyPath: $0.value.configKey] }
     }
@@ -52,7 +52,7 @@ struct TimeTurnerRecapSearch: Sendable {
                 text: query.phrase, from: interval.start, until: interval.end, limit: 5)
             passages = []
             history = []
-        case .dictation, .command, .chat:
+        case .dictation, .command, .chat, .vidshot:
             guard let kind else { throw MeetingChatHarnessError.toolProtocol }
             // Indexed Julian dates have floating-point conversion error. Include
             // boundary candidates and apply the exact half-open interval to originals.

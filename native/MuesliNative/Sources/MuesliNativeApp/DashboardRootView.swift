@@ -272,6 +272,8 @@ struct DashboardRootView: View {
                 TimeTurnerPage(appState: appState, controller: controller)
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
+            case .vidshots:
+                VidshotsPage(appState: appState, controller: controller)
             case .insights:
                 InsightsView(
                     initialSection: appState.insightsInitialSection,

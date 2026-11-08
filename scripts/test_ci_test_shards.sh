@@ -27,6 +27,19 @@ for shard in core dictation-transcription meetings; do
   bash "$runner" --list-filters "$shard"
 done | sort -u > "$tmp_dir/assigned"
 
+# The crash-only diagnostic must cover each core suite exactly once.
+python3 "$repo_root/scripts/diagnose_core_crash.py" --list-groups > "$tmp_dir/core-diagnostic"
+awk '{print $2}' "$tmp_dir/core-diagnostic" | sort > "$tmp_dir/core-diagnostic-suites"
+bash "$runner" --list-filters core | sort > "$tmp_dir/core-suites"
+if ! cmp -s "$tmp_dir/core-suites" "$tmp_dir/core-diagnostic-suites"; then
+  echo "Core crash diagnostic groups must cover every core suite exactly once" >&2
+  exit 1
+fi
+if [[ "$(awk '{print $1}' "$tmp_dir/core-diagnostic" | sort -u | wc -l | tr -d ' ')" != 4 ]]; then
+  echo "Core crash diagnostics must contain four nonempty groups" >&2
+  exit 1
+fi
+
 sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$baseline" \
   | sort -u > "$tmp_dir/baseline"
 
@@ -54,10 +67,24 @@ if [[ -s "$tmp_dir/stale-baseline" ]]; then
   failed=true
 fi
 
+# UI timing and deadline-bound Vidshot media processing need the serial shard,
+# not competition with the concurrent core run.
+for suite in NotchIndicatorTests FeedbackCaptureTranscriptTests FeedbackCaptureContextFinalizerTests; do
+  if ! bash "$runner" --list-filters dictation-transcription | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must run in the serialized dictation-transcription shard" >&2
+    failed=true
+  fi
+  if bash "$runner" --list-filters core | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must not also run in the parallel core shard" >&2
+    failed=true
+  fi
+done
+
 if [[ "$failed" == true ]]; then
   exit 1
 fi
 
 echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d ' ') assigned, $(wc -l < "$tmp_dir/baseline" | tr -d ' ') legacy-unsharded)."
 
+python3 "$repo_root/scripts/test_diagnose_core_crash.py"
 bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"

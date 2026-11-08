@@ -127,7 +127,7 @@ actor FluidAudioTranscriber {
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
             let models: AsrModels
-            if ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+            if ManagedASRModelDownloader.localOnly || ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
                 models = try AsrModels.loadLocal(
                     from: modelDirectory, version: version,
                     encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
@@ -193,6 +193,10 @@ actor FluidAudioTranscriber {
             // more context. Decoder errors remain fatal and never reach here.
             throw BufferedTranscriptionPreviewDeferral.textAlignmentMismatch
         }
+    }
+
+    static func captureWords(_ tokens: [TokenTiming]) -> [SpeechSegment] {
+        buildWordTimings(from: tokens).map { SpeechSegment(start: $0.startTime, end: $0.endTime, text: $0.word) }
     }
 
     private func removeWaiter(_ callerID: UUID, generation: UUID) {

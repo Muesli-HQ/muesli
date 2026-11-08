@@ -305,6 +305,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(timeTurnerMenuItem())
+        if controller.config.enableFeedbackCapture {
+            let active = controller.feedbackCaptureOwnsMicrophone
+            let vidshot = actionItem(title: active ? "Finish Vidshot" : "Start Vidshot",
+                action: active ? #selector(MuesliController.finishFeedbackCapture) : #selector(MuesliController.toggleFeedbackCapture))
+            vidshot.image = VidshotIcon.image()
+            menu.addItem(vidshot)
+        }
         menu.addItem(actionItem(title: "Settings…", action: #selector(MuesliController.openSettingsTab)))
         menu.addItem(actionItem(title: "What's New in muesli", action: #selector(MuesliController.showWhatsNew)))
         menu.addItem(checkForUpdatesItem())
