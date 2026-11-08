@@ -4,6 +4,14 @@ import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
 
+private final class CalendarVideoCallFixture: NSObject {
+    @objc var conferenceURL: NSURL?
+    init(_ url: String?) { conferenceURL = url.flatMap { NSURL(string: $0) } }
+}
+private final class CalendarVideoCallWrongSignatureFixture: NSObject {
+    @objc func conferenceURL() -> Int { 1 }
+}
+
 @Suite("Google Calendar integration")
 @MainActor
 struct GoogleCalendarTests {
@@ -335,6 +343,27 @@ struct GoogleCalendarTests {
 
         let url = CalendarMonitor.extractMeetingURL(from: event)
         #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
+    }
+
+    @Test("Calendar video-call links accept supported meeting URLs and reject other links")
+    func calendarVideoCallURL() throws {
+        let meeting = CalendarVideoCallFixture("https://meet.google.com/abc-defg-hij")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(meeting)?.host == "meet.google.com")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallFixture("https://example.com/")) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallFixture(nil)) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(NSObject()) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallWrongSignatureFixture()) == nil)
+    }
+
+    @Test("EventKit video-call field is used when the standard URL is absent")
+    func eventKitVideoCallField() throws {
+        let event = EKEvent(eventStore: EKEventStore())
+        let setter = NSSelectorFromString("setConferenceURL:")
+        guard event.responds(to: setter) else { return }
+        _ = event.perform(setter, with: NSURL(string: "https://meet.google.com/abc-defg-hij"))
+        #expect(CalendarMonitor.extractMeetingURL(from: event)?.absoluteString == "https://meet.google.com/abc-defg-hij")
+        event.url = URL(string: "https://zoom.us/j/123456789")
+        #expect(CalendarMonitor.extractMeetingURL(from: event)?.absoluteString == "https://zoom.us/j/123456789")
     }
 
     @Test("EventKit event URL ignores non-meeting Teams free pages and lookalike hosts")

@@ -2,6 +2,7 @@ import AppKit
 import EventKit
 import Foundation
 import MuesliCore
+import ObjectiveC.runtime
 
 /// A local attendee snapshot sourced exclusively from EventKit. Direct Google
 /// API events retain the default empty attendee list.
@@ -396,17 +397,36 @@ final class CalendarMonitor {
             return url
         }
 
-        // 2. Search location field
+        // 2. Calendar's separate video-call field, when available.
+        if let url = meetingURLFromCalendarVideoCall(event) {
+            return url
+        }
+
+        // 3. Search location field
         if let location = event.location, let url = findMeetingURL(in: location) {
             return url
         }
 
-        // 3. Search notes/description
+        // 4. Search notes/description
         if let notes = event.notes, let url = findMeetingURL(in: notes) {
             return url
         }
 
         return nil
+    }
+
+    /// EventKit does not publicly expose an event's separate Calendar video-call
+    /// field. This undocumented accessor is best effort: verify its signature
+    /// and return nil when it disappears or returns an unsupported value.
+    static func meetingURLFromCalendarVideoCall(_ object: NSObject) -> URL? {
+        let selector = NSSelectorFromString("conferenceURL")
+        guard let cls = object_getClass(object),
+              let method = class_getInstanceMethod(cls, selector),
+              method_getNumberOfArguments(method) == 2,
+              let signature = method_getTypeEncoding(method), signature.pointee == 64,
+              let value = object.perform(selector)?.takeUnretainedValue() as? URL,
+              isMeetingURL(value) else { return nil }
+        return value
     }
 
     private static func isMeetingURL(_ url: URL) -> Bool {
