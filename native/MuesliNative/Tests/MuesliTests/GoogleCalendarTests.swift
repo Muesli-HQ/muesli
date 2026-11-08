@@ -529,6 +529,25 @@ struct GoogleCalendarTests {
 
     // MARK: - Cached meeting detection event selection
 
+    @Test("detected call associates only with its matching nearby calendar room")
+    func detectedCallSelectsMatchingCalendarRoom() throws {
+        let now = date("2026-04-10T10:00:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "zoom", title: "Zoom", startDate: now, endDate: now.addingTimeInterval(1800), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/111111111")),
+            UnifiedCalendarEvent(id: "meet", title: "Meet", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(1800), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")),
+        ]
+        let google = MeetingCandidate(id: "meet", platform: .googleMeet, appName: "Chrome",
+            url: "meet.google.com/meet/abc-defg-hij?authuser=0", evidence: [.browserURL], startedAt: now, meetingTitle: nil)
+        #expect(selectMatchingCalendarEvent(for: google, from: events, now: now)?.id == "meet")
+        let urlLessZoom = MeetingCandidate(id: "zoom", platform: .zoom, appName: "Zoom", url: nil,
+            evidence: [.audioInputProcess], startedAt: now, meetingTitle: nil, sourceBundleID: "us.zoom.xos")
+        #expect(selectMatchingCalendarEvent(for: urlLessZoom, from: events, now: now) == nil)
+        let otherZoom = MeetingCandidate(id: "other", platform: .zoom, appName: "Zoom", url: "zoom.us/j/222222222",
+            evidence: [.browserURL], startedAt: now, meetingTitle: nil)
+        #expect(selectMatchingCalendarEvent(for: otherZoom, from: events, now: now) == nil)
+        #expect(selectMatchingCalendarEvent(for: google, from: events, now: now.addingTimeInterval(1801)) == nil)
+    }
+
     @Test("Calendar link filtering shares visibility with detection and preserves the raw cache")
     func calendarMeetingLinkVisibility() {
         let state = AppState()

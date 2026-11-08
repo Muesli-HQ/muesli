@@ -11363,7 +11363,8 @@ public final class MuesliController: NSObject {
             return
         }
 
-        let title = candidate.subtitle
+        let matchingEvent = matchingCalendarEvent(for: candidate)
+        let title = matchingEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
         presentedMeetingCandidate = candidate
         let preferredScreen = meetingSourceWindowLocator.screen(for: candidate)
         let didShow = meetingNotification.show(
@@ -11374,11 +11375,10 @@ public final class MuesliController: NSObject {
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
                 guard let self else { return }
-                let calendarEvent = candidate.evidence.contains(.calendarEvent)
-                    ? self.currentOrNearbyCachedCalendarEvent()
-                    : nil
+                let calendarEvent = self.matchingCalendarEvent(for: candidate)
+                let recordingTitle = calendarEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
                 if self.startMeetingRecordingFromEntryPoint(
-                    title: title,
+                    title: recordingTitle,
                     calendarOccurrence: calendarEvent?.calendarOccurrence,
                     autoStopSource: MeetingAutoStopSource(candidate: candidate),
                     presentation: .backgroundPill,
@@ -11419,6 +11419,10 @@ public final class MuesliController: NSObject {
         } else if presentedMeetingCandidate == candidate {
             presentedMeetingCandidate = nil
         }
+    }
+
+    private func matchingCalendarEvent(for candidate: MeetingCandidate) -> CalendarEventContext? {
+        selectMatchingCalendarEvent(for: candidate, from: appState.visibleUpcomingCalendarEvents)
     }
 
     @MainActor
@@ -15450,7 +15454,8 @@ func selectCurrentOrNearbyCachedCalendarEvent(
         return CalendarEventContext(
             id: active.id,
             title: active.title,
-            calendarOccurrence: active.resolvedCalendarOccurrence
+            calendarOccurrence: active.resolvedCalendarOccurrence,
+            meetingURL: active.meetingURL
         )
     }
 
@@ -15459,9 +15464,18 @@ func selectCurrentOrNearbyCachedCalendarEvent(
             CalendarEventContext(
                 id: $0.id,
                 title: $0.title,
-                calendarOccurrence: $0.resolvedCalendarOccurrence
+                calendarOccurrence: $0.resolvedCalendarOccurrence,
+                meetingURL: $0.meetingURL
             )
         }
+}
+
+func selectMatchingCalendarEvent(
+    for candidate: MeetingCandidate, from events: [UnifiedCalendarEvent], now: Date = Date()
+) -> CalendarEventContext? {
+    selectCurrentOrNearbyCachedCalendarEvent(from: events.filter {
+        MeetingCalendarAssociation.matches(candidate: candidate, meetingURL: $0.meetingURL)
+    }, now: now)
 }
 
 /// Keeps recorder startup independent of AX while preserving the exact PCM
