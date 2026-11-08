@@ -33,10 +33,10 @@ Muesli is a **native macOS app for dictation and meeting transcription**, built 
 Speech recognition runs on your Mac by default. Hosted transcription and AI features are optional and send the content needed for the selected task to your provider. iCloud sync transfers text and sync metadata, never audio. See [Muesli's privacy policy](https://muesli.works/privacy).
 
 <p align="center">
-  <img src="assets/muesli-github-ss.png" alt="Muesli 0.8.4 Timeline with illustrative dictation, meeting, iPhone, and Computer Use entries" width="900" />
+  <img src="assets/muesli-github-ss.png" alt="muesli Timeline with illustrative activity, meeting folders, and feature navigation" width="900" />
 </p>
 
-<p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
+<p align="center"><sub>Illustrative image based on the muesliDev interface; meeting folder names and activity entries are fictional.</sub></p>
 
 ## Features
 
