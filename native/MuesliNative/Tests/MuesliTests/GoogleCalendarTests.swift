@@ -11,6 +11,18 @@ private final class CalendarVideoCallFixture: NSObject {
 private final class CalendarVideoCallWrongSignatureFixture: NSObject {
     @objc func conferenceURL() -> Int { 1 }
 }
+private final class CalendarJoinMethodFixture: NSObject {
+    @objc(URL) var url: NSURL?
+    init(_ value: String?) { url = value.flatMap { NSURL(string: $0) } }
+}
+private final class CalendarConferenceFixture: NSObject {
+    @objc var joinMethods: [NSObject]
+    init(_ methods: [NSObject]) { joinMethods = methods }
+}
+private final class CalendarVirtualEventFixture: NSObject {
+    @objc var virtualConference: NSObject?
+    init(_ conference: NSObject?) { virtualConference = conference }
+}
 
 @Suite("Google Calendar integration")
 @MainActor
@@ -353,6 +365,19 @@ struct GoogleCalendarTests {
         #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallFixture(nil)) == nil)
         #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(NSObject()) == nil)
         #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallWrongSignatureFixture()) == nil)
+    }
+
+    @Test("Calendar virtual conference join methods provide the first supported meeting URL")
+    func calendarVirtualConferenceJoinMethods() {
+        let conference = CalendarConferenceFixture([
+            CalendarJoinMethodFixture("https://example.com/"),
+            CalendarJoinMethodFixture("https://meet.google.com/abc-defg-hij"),
+            CalendarJoinMethodFixture("https://zoom.us/j/123456789")
+        ])
+        let event = CalendarVirtualEventFixture(conference)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(event)?.host == "meet.google.com")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVirtualEventFixture(nil)) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVirtualEventFixture(CalendarConferenceFixture([]))) == nil)
     }
 
     @Test("EventKit video-call field is used when the standard URL is absent")

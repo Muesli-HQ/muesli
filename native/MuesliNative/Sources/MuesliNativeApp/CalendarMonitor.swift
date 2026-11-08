@@ -419,14 +419,26 @@ final class CalendarMonitor {
     /// field. This undocumented accessor is best effort: verify its signature
     /// and return nil when it disappears or returns an unsupported value.
     static func meetingURLFromCalendarVideoCall(_ object: NSObject) -> URL? {
-        let selector = NSSelectorFromString("conferenceURL")
+        if let url = calendarObjectValue(object, selectorName: "conferenceURL") as? URL, isMeetingURL(url) {
+            return url
+        }
+        guard let conference = calendarObjectValue(object, selectorName: "virtualConference") as? NSObject,
+              let methods = calendarObjectValue(conference, selectorName: "joinMethods") as? [NSObject] else { return nil }
+        for method in methods {
+            if let url = calendarObjectValue(method, selectorName: "URL") as? URL, isMeetingURL(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func calendarObjectValue(_ object: NSObject, selectorName: String) -> AnyObject? {
+        let selector = NSSelectorFromString(selectorName)
         guard let cls = object_getClass(object),
               let method = class_getInstanceMethod(cls, selector),
               method_getNumberOfArguments(method) == 2,
-              let signature = method_getTypeEncoding(method), signature.pointee == 64,
-              let value = object.perform(selector)?.takeUnretainedValue() as? URL,
-              isMeetingURL(value) else { return nil }
-        return value
+              let signature = method_getTypeEncoding(method), signature.pointee == 64 else { return nil }
+        return object.perform(selector)?.takeUnretainedValue()
     }
 
     private static func isMeetingURL(_ url: URL) -> Bool {
