@@ -249,7 +249,7 @@ struct FeatureTourTests {
         #expect(tour.steps.count == 12)
         #expect(Set(tour.steps.map(\.id)).count == tour.steps.count)
         #expect(tour.steps.map(\.target) == [
-            .granolaImport, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
+            .granolaImport, .vidshotsSidebar, .chatSidebar, .timeTurnerSidebar, .liveDictation, .quillSettings,
             .cotypistSettings, .appFormatting, .meetingsSidebar, .searchSidebar,
             .modelLibrary, .cleanupModels,
         ])
