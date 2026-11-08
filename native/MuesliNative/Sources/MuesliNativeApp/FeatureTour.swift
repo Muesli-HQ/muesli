@@ -37,6 +37,7 @@ struct MarketingVersion: Comparable, Equatable {
 enum FeatureTourTarget: String, Hashable {
     case chatSidebar
     case timeTurnerSidebar
+    case vidshotsSidebar
     case searchSidebar
     case liveDictation
     case cotypistSettings
@@ -76,6 +77,8 @@ enum FeatureTourTarget: String, Hashable {
             return .tab(.meetingChat)
         case .timeTurnerSidebar:
             return .tab(.timeTurner)
+        case .vidshotsSidebar:
+            return .tab(.vidshots)
         case .searchSidebar:
             return .tab(.timeline)
         case .cleanupModels:
@@ -125,6 +128,7 @@ enum FeatureTourIcon: Equatable {
     case symbol(String)
     case quill
     case timeTurner
+    case vidshot
 }
 
 struct FeatureTourStep: Identifiable, Equatable {
@@ -168,6 +172,14 @@ enum FeatureTourCatalog {
                 message: "Bring meeting notes, summaries and transcripts from a Granola ZIP or CSV export into muesli. Open Meetings → Import → Granola… to preview your meetings before importing.",
                 icon: .symbol("square.and.arrow.down"),
                 target: .granolaImport
+            ),
+            FeatureTourStep(
+                id: "vidshots",
+                eyebrow: "VIDSHOTS",
+                title: "Show it with a Vidshot",
+                message: "Record a window or screen region with spoken narration. Revisit the recording and transcript in Vidshots. Enable Vidshot in Settings → Experimental to get started.",
+                icon: .vidshot,
+                target: .vidshotsSidebar
             ),
             FeatureTourStep(
                 id: "ask-meetings",
@@ -364,6 +376,7 @@ extension DashboardTab {
         case .timeline: .timelineSidebar
         case .meetings: .meetingsSidebar
         case .meetingChat: .chatSidebar
+        case .vidshots: .vidshotsSidebar
         case .timeTurner: .timeTurnerSidebar
         default: nil
         }
