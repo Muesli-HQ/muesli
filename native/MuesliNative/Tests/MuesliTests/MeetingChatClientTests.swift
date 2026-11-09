@@ -522,6 +522,33 @@ struct MeetingChatClientTests {
         #expect(request.httpMethod == "POST")
         if backend == "openai" { #expect(body["store"] as? Bool == false) }
     }
+
+    @Test(arguments: ["ollama", "lmstudio", "custom_openai", "custom_anthropic"])
+    func summaryImagesUseEndpointVisionFormat(endpoint: String) throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = endpoint.hasPrefix("custom_") ? "custom_llm" : endpoint
+        config.ollamaModel = "vision-test"; config.lmStudioModel = "vision-test"
+        config.customLLMModel = "vision-test"; config.customLLMURL = "http://localhost:1234"
+        config.customLLMFormat = endpoint == "custom_anthropic" ? "anthropic" : "openai"
+        let image = ChatImageInput(name: "synthetic", data: Data([1, 2, 3]))
+        let input = MeetingTextGenerationRequest(system: "System", user: "User", config: config,
+            images: [image], allowSummaryImageEndpoints: true)
+        let request = try MeetingTextGenerationClient.makeRequest(input, credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(body["messages"] as? [[String: Any]])
+        let user = try #require(messages.last)
+        if endpoint == "ollama" {
+            #expect((user["images"] as? [String]) == [image.data.base64EncodedString()])
+        } else {
+            let blocks = try #require(user["content"] as? [[String: Any]])
+            #expect(blocks.count == 2)
+            #expect(blocks.last?["type"] as? String == (endpoint == "custom_anthropic" ? "image" : "image_url"))
+        }
+        var chatInput = input
+        chatInput.allowSummaryImageEndpoints = false
+        #expect(throws: ChatFileError.self) { try MeetingTextGenerationClient.makeRequest(chatInput, credential: "synthetic") }
+    }
     @Test(arguments: [ReasoningEffort.off, .low, .high])
     func openAIReasoningBudgetIncludesVisibleAnswer(effort: ReasoningEffort) throws {
         var config = AppConfig(); config.meetingSummaryBackend = "openai"

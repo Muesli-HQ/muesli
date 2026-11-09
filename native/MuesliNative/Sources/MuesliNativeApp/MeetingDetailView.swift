@@ -439,6 +439,7 @@ struct MeetingDetailView: View {
 
     private var compactFormattingToolbar: some View {
         HStack(spacing: 4) {
+            manualNotesSaveIndicator
             markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
                 manualEditorCommand = MarkdownEditorCommand(kind: .heading)
             }
@@ -627,18 +628,14 @@ struct MeetingDetailView: View {
                             .background(MuesliTheme.backgroundBase)
                             .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
                             .manualNotesEditorChrome(compact: false)
-                            .overlay(alignment: .bottomLeading) {
-                                if manualNotesSaveStatus == .saving {
-                                    Text(manualNotesSaveStatus.label)
-                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
-                                }
-                            }
                             .overlay(alignment: .topTrailing) {
                                 if isManualNotesEditable {
                                     Group {
                                         if hasNotesSelection {
                                             compactFormattingToolbar
                                         } else {
+                                            HStack(spacing: 6) {
+                                            manualNotesSaveIndicator
                                             Menu {
                                                 Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
                                                 Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
@@ -651,6 +648,7 @@ struct MeetingDetailView: View {
                                             .fixedSize()
                                             .help("Format notes")
                                             .accessibilityLabel("Format notes")
+                                            }
                                         }
                                     }
                                     .padding(6)
@@ -707,16 +705,14 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                TextEditor(text: $editableNotes)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(MuesliTheme.spacing24)
+                MarkdownRichTextEditor(text: $editableNotes, command: $manualEditorCommand,
+                                       renderMarkdownFormatting: false,
+                                       onTextChange: { notes in
+                                           editableNotes = notes
+                                           debounceSaveNotes(for: meeting)
+                                       })
                     .background(MuesliTheme.backgroundBase)
                     .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
-                    .onChange(of: editableNotes) { _, _ in
-                        debounceSaveNotes(for: meeting)
-                    }
             }
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
@@ -1171,13 +1167,9 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func manualNotesToolbar(for meeting: MeetingRecord) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            if canEditManualNotes(for: meeting) {
-                Text(manualNotesSaveStatus.label)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-
             Spacer()
+
+            if canEditManualNotes(for: meeting) { manualNotesSaveIndicator }
 
             markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
                 manualEditorCommand = MarkdownEditorCommand(kind: .heading)
@@ -1193,6 +1185,14 @@ struct MeetingDetailView: View {
             }
         }
         .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    private var manualNotesSaveIndicator: some View {
+        Label(manualNotesSaveStatus.label, systemImage: "arrow.triangle.2.circlepath")
+            .font(MuesliTheme.font(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .help(manualNotesSaveStatus.label)
+            .accessibilityLabel(manualNotesSaveStatus.label)
     }
 
     @ViewBuilder

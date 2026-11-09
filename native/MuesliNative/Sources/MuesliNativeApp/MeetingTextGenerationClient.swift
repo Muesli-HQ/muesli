@@ -10,6 +10,9 @@ struct MeetingTextGenerationRequest {
     var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
     var outputTokenLimit: Int? = nil
     var images: [ChatImageInput] = []
+    // Summary images may use vision-capable local/custom endpoints. Chat's
+    // attachment capability policy remains unchanged unless explicitly opted in.
+    var allowSummaryImageEndpoints = false
 }
 
 protocol MeetingTextGenerating: Sendable {
@@ -207,7 +210,9 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let model = model(config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
-        let content: Any = input.images.isEmpty || provider != .openRouter ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
+        let supportsChatImageFormat = provider == .openRouter || (input.allowSummaryImageEndpoints &&
+            (provider == .lmStudio || (provider == .customLLM && config.customLLMFormat != CustomLLMFormat.anthropic.rawValue)))
+        let content: Any = input.images.isEmpty || !supportsChatImageFormat ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
         let messages: [[String: Any]] = [["role": "system", "content": input.system], ["role": "user", "content": content]]
         var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": input.maxOutputTokens]
         let url: URL
@@ -258,9 +263,13 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         default: throw MeetingTextGenerationError.invalidEndpoint
         }
         if !input.images.isEmpty {
-            guard [.openAI, .openRouter, .anthropic].contains(provider) else { throw ChatFileError.unsupportedProvider }
+            let additional = input.allowSummaryImageEndpoints && [.ollama, .lmStudio, .customLLM].contains(provider)
+            guard [.openAI, .openRouter, .anthropic].contains(provider) || additional else { throw ChatFileError.unsupportedProvider }
             if anthropic {
                 body["messages"] = [["role": "user", "content": [["type": "text", "text": input.user]] + input.images.map(\.anthropicContent)]]
+            } else if provider == .ollama {
+                body["messages"] = [["role": "system", "content": input.system],
+                                    ["role": "user", "content": input.user, "images": input.images.map { $0.data.base64EncodedString() }]]
             }
         }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = provider == .ollama || provider == .lmStudio || provider == .customLLM ? 300 : 120

@@ -7482,8 +7482,18 @@ public final class MuesliController: NSObject {
 
     static func notesContextForResummary(_ meeting: MeetingRecord) -> String? {
         guard meeting.notesState == .structuredNotes else { return nil }
-        let trimmed = stripManualNotesSection(from: meeting.formattedNotes)
+        var trimmed = stripManualNotesSection(from: meeting.formattedNotes)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Images added while editing a completed summary can be inside the
+        // generated Written notes section, which is normally stripped here.
+        // Keep those references even when they are absent from manual_notes.
+        var included = Set(MeetingNoteImages.references(in: trimmed + "\n" + meeting.manualNotes).map(\.id))
+        let additional = MeetingNoteImages.references(in: meeting.formattedNotes)
+            .filter { included.insert($0.id).inserted }.map(\.markdown)
+        if !additional.isEmpty {
+            if !trimmed.isEmpty { trimmed += "\n\n" }
+            trimmed += additional.joined(separator: "\n")
+        }
         return trimmed.isEmpty ? nil : trimmed
     }
 

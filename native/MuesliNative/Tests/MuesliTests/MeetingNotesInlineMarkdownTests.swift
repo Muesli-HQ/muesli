@@ -213,4 +213,218 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(changeCount == 1)
         #expect(command == nil)
     }
+    @Test("note images survive editor serialization with surrounding Unicode")
+    @MainActor
+    func imageMarkdownRoundTrip() {
+        let id = UUID()
+        let source = "😀 before ![Image](muesli-note-image:\(id.uuidString)) after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: .zero)
+        coordinator.apply(markdown: source, to: view)
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+    }
+
+    @Test("summary notes with headings and lists round-trip in the image editor")
+    @MainActor
+    func summaryMarkdownRoundTrip() {
+        let id = UUID()
+        let source = "## Summary\n- **Decision:** ship\n- Owner: Priya\n\n### Details\nSee [notes](https://example.com)\n![Image](muesli-note-image:\(id.uuidString))"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: .zero)
+        coordinator.apply(markdown: source, to: view)
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+    }
+
+    @Test("editing an existing summary preserves raw Markdown around images")
+    @MainActor
+    func rawSummaryMarkdownRoundTrip() {
+        let source = "## Summary\n```swift\nlet value = 2 * 3\n```\n> Quote\n| A | B |\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil),
+            onTextChange: nil, renderMarkdownFormatting: false)
+        let view = NSTextView(frame: .zero)
+        coordinator.apply(markdown: source, to: view)
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+    }
+
+    @Test("editing beside an image reuses the attachment")
+    @MainActor
+    func imageAttachmentIsReusedDuringTyping() throws {
+        let source = "Before ![Image](muesli-note-image:\(UUID().uuidString)) after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: .zero)
+        view.delegate = coordinator
+        coordinator.apply(markdown: source, to: view)
+        let index = (view.string as NSString).range(of: "\u{fffc}").location
+        let original = try #require(view.textStorage?.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment)
+        view.insertText("!", replacementRange: NSRange(location: (view.string as NSString).length, length: 0))
+        let current = try #require(view.textStorage?.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment)
+        #expect(current === original)
+        #expect(coordinator.serializedMarkdown(from: view) == source + "!")
+    }
+
+    @Test("moving an image preserves the reference and surrounding Unicode")
+    @MainActor
+    func imageMovesInBothDirections() {
+        let marker = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let source = "😀 first \(marker) last"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: .zero)
+        view.isEditable = true
+        view.delegate = coordinator
+        coordinator.apply(markdown: source, to: view)
+        let image = (view.string as NSString).range(of: "\u{fffc}")
+        #expect(NoteImageMove.move(in: view, source: image, destination: 0))
+        #expect(coordinator.serializedMarkdown(from: view) == "\(marker)😀 first  last")
+        #expect(NoteImageMove.move(in: view, source: NSRange(location: 0, length: 1), destination: (view.string as NSString).length))
+        #expect(coordinator.serializedMarkdown(from: view) == "😀 first  last\(marker)")
+        let last = (view.string as NSString).range(of: "\u{fffc}")
+        #expect(!NoteImageMove.move(in: view, source: last, destination: last.location))
+        #expect(!NoteImageMove.move(in: view, source: NSRange(location: 0, length: 1), destination: last.location))
+    }
+
+    @Test("pointer hit testing recognizes the whole image")
+    @MainActor
+    func imageHitTesting() throws {
+        let marker = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let source = "Text before\n\(marker)\nText after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 600))
+        view.textContainerInset = NSSize(width: 34, height: 30)
+        coordinator.apply(markdown: source, to: view)
+        let storage = try #require(view.textStorage)
+        let manager = try #require(view.layoutManager)
+        let container = try #require(view.textContainer)
+        let expected = (storage.string as NSString).range(of: "\u{fffc}")
+        let attachment = try #require(storage.attribute(.attachment, at: expected.location, effectiveRange: nil) as? NSTextAttachment)
+        attachment.bounds = NSRect(x: 0, y: 0, width: 500, height: 250)
+        storage.addAttribute(.attachment, value: attachment, range: expected)
+        manager.ensureLayout(for: container)
+        let glyph = manager.glyphIndexForCharacter(at: expected.location)
+        let rect = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+        #expect(rect.width > 0 && rect.height > 0)
+        for fraction in [0.1, 0.5, 0.9] {
+            let point = NSPoint(x: rect.minX + rect.width * fraction + view.textContainerOrigin.x,
+                                y: rect.midY + view.textContainerOrigin.y)
+            #expect(NoteImageMove.imageRange(in: view, at: point) == expected)
+        }
+        #expect(NoteImageMove.imageRange(in: view, at: NSPoint(x: 0, y: 0)) == nil)
+        view.setSelectedRange(expected)
+        let selection = try #require(NoteImageMove.selectedImageBounds(in: view))
+        #expect(selection.width == rect.width && selection.height == rect.height)
+        view.setSelectedRange(NSRange(location: 0, length: 1))
+        #expect(NoteImageMove.selectedImageBounds(in: view) == nil)
+    }
+
+    @Test("typing beside a pasted image never duplicates it")
+    @MainActor
+    func typingAfterImagePreservesText() {
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(""), command: .constant(nil), onTextChange: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        let view = NSTextView(frame: window.contentView!.bounds)
+        view.isEditable = true
+        view.allowsUndo = true
+        view.delegate = coordinator
+        window.contentView?.addSubview(view)
+        window.makeFirstResponder(view)
+        coordinator.apply(markdown: "", to: view)
+        let reference = MeetingNoteImages.Reference(id: UUID(), range: NSRange(location: 0, length: 0))
+        coordinator.insertImageReference(reference, into: view, replacing: NSRange(location: 0, length: 0))
+        for character in "Hello" { view.insertText(String(character), replacementRange: view.selectedRange()) }
+        #expect(coordinator.serializedMarkdown(from: view) == reference.markdown + "Hello")
+        #expect(MeetingNoteImages.references(in: coordinator.serializedMarkdown(from: view)).count == 1)
+    }
+
+    @Test("pasting an image is one undoable edit")
+    @MainActor
+    func imagePasteCanBeUndone() throws {
+        let source = "Before after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        let view = NSTextView(frame: window.contentView!.bounds)
+        view.isEditable = true
+        view.allowsUndo = true
+        view.delegate = coordinator
+        window.contentView?.addSubview(view)
+        window.makeFirstResponder(view)
+        coordinator.apply(markdown: source, to: view)
+        let reference = MeetingNoteImages.Reference(id: UUID(), range: NSRange(location: 0, length: 0))
+        coordinator.insertImageReference(reference, into: view, replacing: NSRange(location: 7, length: 0))
+        #expect(coordinator.serializedMarkdown(from: view) == "Before \(reference.markdown)after")
+        let undo = try #require(view.undoManager)
+        undo.undo()
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+        undo.redo()
+        #expect(coordinator.serializedMarkdown(from: view) == "Before \(reference.markdown)after")
+    }
+
+    @Test("moving an image is undoable")
+    @MainActor
+    func imageMoveCanBeUndone() throws {
+        let marker = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let source = "Before \(marker) after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        let view = NSTextView(frame: window.contentView!.bounds)
+        view.isEditable = true
+        view.allowsUndo = true
+        view.delegate = coordinator
+        window.contentView?.addSubview(view)
+        window.makeFirstResponder(view)
+        coordinator.apply(markdown: source, to: view)
+        let image = (view.string as NSString).range(of: "\u{fffc}")
+        let undo = try #require(view.undoManager)
+        undo.beginUndoGrouping()
+        #expect(NoteImageMove.move(in: view, source: image, destination: 0))
+        undo.endUndoGrouping()
+        #expect(undo.canUndo)
+        undo.undo()
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+        #expect(undo.canRedo)
+        undo.redo()
+        #expect(coordinator.serializedMarkdown(from: view) == "\(marker)Before  after")
+    }
+
+    @Test("meeting notes group markdown tables and preserve source line positions")
+    func noteTableBlocks() {
+        let markdown = "Heading\n| Model | Score |\n| --- | ---: |\n| **A** | 42 |\nAfter\n```\n| no | table |\n| --- | --- |\n```"
+        let blocks = MeetingNotesView.blocks(markdown)
+        #expect(blocks.count == 7)
+        #expect(blocks[1].start == 1)
+        #expect(blocks[1].count == 3)
+        #expect(blocks[1].table == [["Model", "Score"], ["**A**", "42"]])
+        #expect(blocks.dropFirst(2).allSatisfy { $0.table == nil })
+    }
+
+    @Test("note assets are validated, resolved, and exported with relative paths")
+    func imageStorageAndExport() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let data = try #require(bitmap.representation(using: .png, properties: [:]))
+        let reference = try MeetingNoteImages.save(data, supportDirectory: root)
+        let markdown = "Before \(reference.markdown) after \(reference.markdown)"
+        let inputs = try MeetingNoteImages.inputs(in: markdown, supportDirectory: root)
+        #expect(inputs.count == 1)
+        #expect(inputs[0].data == data)
+        #expect(inputs[0].mediaType == "image/png")
+        let tiff = try #require(bitmap.representation(using: .tiff, properties: [:]))
+        let tiffReference = try MeetingNoteImages.save(tiff, supportDirectory: root)
+        let compatible = try #require(MeetingNoteImages.inputs(in: tiffReference.markdown, supportDirectory: root).first)
+        #expect(compatible.mediaType == "image/jpeg")
+        #expect(compatible.data.count <= MeetingNoteImages.maximumSummaryImageBytes)
+        #expect(try Data(contentsOf: MeetingNoteImages.url(for: tiffReference.id, supportDirectory: root)) == tiff)
+        let resized = "![Image](muesli-note-image:\(reference.id.uuidString)?width=320)"
+        #expect(MeetingNoteImages.references(in: resized).first?.width == 320)
+        let destination = root.appendingPathComponent("A meeting.md")
+        let exported = try MeetingNoteImages.exportMarkdown(markdown, to: destination, supportDirectory: root)
+        #expect(exported.contains("A%20meeting-assets/\(reference.id.uuidString).png"))
+        #expect(!exported.contains("muesli-note-image:"))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("A meeting-assets/\(reference.id.uuidString).png").path))
+        try FileManager.default.removeItem(at: MeetingNoteImages.url(for: reference.id, supportDirectory: root))
+        #expect(throws: ChatFileError.self) { try MeetingNoteImages.inputs(in: markdown, supportDirectory: root) }
+    }
+
 }

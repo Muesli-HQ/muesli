@@ -152,7 +152,8 @@ struct MeetingExporter {
     private static func writeMarkdown(_ text: String, to url: URL) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try text.write(to: url, atomically: true, encoding: .utf8)
+                let exported = try MeetingNoteImages.exportMarkdown(text, to: url)
+                try exported.write(to: url, atomically: true, encoding: .utf8)
                 ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                 DispatchQueue.main.async { NSWorkspace.shared.open(url) }
             } catch {

@@ -2029,6 +2029,16 @@ struct MeetingsNavigationTests {
         #expect(context == "## Summary\n- Decision captured")
     }
 
+    @Test("resummary retains images added to the completed written-notes section")
+    func resummaryContextPreservesWrittenNoteImages() {
+        let reference = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 910, title: "Resummarize",
+            formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this\n\(reference)",
+            status: .completed, manualNotes: "- User typed this")
+        let context = MuesliController.notesContextForResummary(meeting)
+        #expect(context == "## Summary\n- Decision captured\n\n\(reference)")
+    }
+
     @Test("startup recovery preserves stale live meetings with notes")
     func startupRecoveryPreservesStaleLiveMeetingWithNotes() throws {
         let store = try makeStore()

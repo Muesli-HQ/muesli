@@ -334,6 +334,22 @@ meeting, or iPhone meeting record.
 - Sync/tombstone bookkeeping: `updated_at`, `deleted_at`, `cloud_*`,
   `last_synced_at`, `sync_dirty`
 
+
+Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
+optionally with `?width=<points>` for the displayed size. The width does not
+change the image sent to a summary provider. Summary requests use a temporary,
+bounded JPEG representation for unsupported formats or large images; the
+stored original remains unchanged. Original image files are stored locally under `Meeting Note Images/`
+in the active Application Support directory. Image bytes do not enter SQLite,
+CloudKit, retrieval indexes, or telemetry. Synced note text can therefore refer
+to an image unavailable on another device; views show an unavailable image and
+summary generation fails visibly instead of silently omitting that context.
+Markdown export copies referenced files into a sibling assets folder. Image
+references are opaque identifiers, not paths or permission to read arbitrary files.
+Unreferenced image files are retained for now, including after an image or its
+meeting is deleted; undo and shared Markdown references must be accounted for
+before introducing garbage collection.
+
 Calendar IDs are lookup metadata, not unique meeting identities. A calendar
 occurrence can be recorded more than once.
 

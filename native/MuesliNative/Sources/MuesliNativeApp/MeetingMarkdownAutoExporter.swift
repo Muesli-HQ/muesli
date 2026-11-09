@@ -111,15 +111,14 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
         content: MeetingExportContent
     ) throws -> URL {
         let baseName = baseFilename(meeting: meeting, content: content, fileExtension: "md")
-        let data = Data(markdown.utf8)
         let firstCandidate = folder.appendingPathComponent("\(baseName).md")
-        if try write(data, toNewFileAt: firstCandidate) {
+        if try writeMarkdownExport(markdown, toNewFileAt: firstCandidate) {
             return firstCandidate
         }
 
         for index in 2...Self.maxCollisionAttempts {
             let candidate = folder.appendingPathComponent("\(baseName)-\(index).md")
-            if try write(data, toNewFileAt: candidate) {
+            if try writeMarkdownExport(markdown, toNewFileAt: candidate) {
                 return candidate
             }
         }
@@ -127,7 +126,7 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
         // Degenerate case (folder saturated with the same base name): fall back to
         // a UUID-suffixed name so we never overwrite and never loop unbounded.
         let fallback = folder.appendingPathComponent("\(baseName)-\(UUID().uuidString).md")
-        guard try write(data, toNewFileAt: fallback) else {
+        guard try writeMarkdownExport(markdown, toNewFileAt: fallback) else {
             throw CocoaError(.fileWriteFileExists)
         }
         return fallback
@@ -198,7 +197,7 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
 
     /// Atomically reserves a path before writing so concurrent exports cannot
     /// choose the same destination after a preflight existence check.
-    private func write(_ data: Data, toNewFileAt url: URL) throws -> Bool {
+    private func writeMarkdownExport(_ markdown: String, toNewFileAt url: URL) throws -> Bool {
         let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
         guard descriptor >= 0 else {
             if errno == EEXIST { return false }
@@ -207,6 +206,8 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
 
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
+            let exported = try MeetingNoteImages.exportMarkdown(markdown, to: url, supportDirectory: supportDirectory)
+            let data = Data(exported.utf8)
             try handle.write(contentsOf: data)
             try handle.close()
             return true

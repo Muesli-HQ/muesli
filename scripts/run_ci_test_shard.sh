@@ -275,6 +275,7 @@ case "${shard}" in
       MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
+      MeetingMarkdownAutoExporterTests
       TranscriptFormatterTests
       TranscriptReconcilerTests
       SpeakerAttributionTests

@@ -1,5 +1,7 @@
 import SwiftUI
 import MuesliCore
+import ImageIO
+import AIElementsSwift
 
 struct MeetingNotesView: View {
     let markdown: String
@@ -10,11 +12,14 @@ struct MeetingNotesView: View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                let lines = markdown.components(separatedBy: .newlines)
-                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                    markdownLine(line)
-                        .background(index == highlightedLine ? MuesliTheme.surfaceSelected : Color.clear)
-                        .id(index)
+                let blocks = Self.blocks(markdown)
+                ForEach(blocks, id: \.start) { block in
+                    Group {
+                        if let rows = block.table { markdownTable(rows) }
+                        else { markdownLine(block.line) }
+                    }
+                        .background(highlightedLine.map { block.start <= $0 && $0 < block.start + block.count } == true ? MuesliTheme.surfaceSelected : Color.clear)
+                        .id(block.start)
                 }
                 if let footer { footer.padding(.top, MuesliTheme.spacing24) }
             }
@@ -25,9 +30,67 @@ struct MeetingNotesView: View {
             .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear { if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
-        .onChange(of: highlightedRange) { _, _ in if let line = highlightedLine { proxy.scrollTo(line, anchor: .center) } }
+        .onAppear { if let line = highlightedBlock { proxy.scrollTo(line, anchor: .center) } }
+        .onChange(of: highlightedRange) { _, _ in if let line = highlightedBlock { proxy.scrollTo(line, anchor: .center) } }
         }
+    }
+    private var highlightedBlock: Int? {
+        guard let line = highlightedLine else { return nil }
+        return Self.blocks(markdown).first { $0.start <= line && line < $0.start + $0.count }?.start
+    }
+
+    struct NoteBlock {
+        let start: Int
+        let count: Int
+        let line: String
+        let table: [[String]]?
+    }
+
+    static func blocks(_ markdown: String) -> [NoteBlock] {
+        let lines = markdown.components(separatedBy: .newlines)
+        var result: [NoteBlock] = []
+        var index = 0
+        var fence: (Character, Int)?
+        while index < lines.count {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if let first = trimmed.first, first == "`" || first == "~" {
+                let length = trimmed.prefix { $0 == first }.count
+                if length >= 3 {
+                    if let open = fence, open.0 == first, length >= open.1,
+                       trimmed.dropFirst(length).trimmingCharacters(in: .whitespaces).isEmpty { fence = nil }
+                    else if fence == nil { fence = (first, length) }
+                }
+            }
+            if fence == nil, let table = AIMarkdownBlock.table(in: lines, startingAt: index) {
+                result.append(NoteBlock(start: index, count: table.lineCount, line: "", table: table.rows))
+                index += table.lineCount
+            } else {
+                result.append(NoteBlock(start: index, count: 1, line: lines[index], table: nil))
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private func markdownTable(_ rows: [[String]]) -> some View {
+        ScrollView(.horizontal) {
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in
+                    GridRow {
+                        ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                            Text(Self.inline(cell))
+                                .font(MuesliTheme.font(size: 14, weight: row == 0 ? .semibold : .regular))
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                                .frame(minWidth: 110, maxWidth: 240, alignment: .leading)
+                                .padding(10)
+                                .background(row == 0 ? MuesliTheme.surfaceSelected : MuesliTheme.surfacePrimary)
+                                .overlay(Rectangle().stroke(MuesliTheme.surfaceBorder, lineWidth: 0.5))
+                        }
+                    }
+                }
+            }.clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        }
+        .padding(.vertical, 4)
     }
     private var highlightedLine: Int? {
         guard let range = highlightedRange, range.location >= 0, range.location <= (markdown as NSString).length else { return nil }
@@ -38,7 +101,22 @@ struct MeetingNotesView: View {
     private func markdownLine(_ rawLine: String) -> some View {
         let line = rawLine.trimmingCharacters(in: .whitespaces)
         let indentLevel = Self.indentLevel(for: rawLine)
-        if line.isEmpty {
+        let references = MeetingNoteImages.references(in: rawLine)
+        if !references.isEmpty {
+            let parts = Self.imageParts(rawLine, references: references)
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                    switch part {
+                    case .text(let text):
+                        if !text.isEmpty {
+                            Text(Self.inline(text)).font(MuesliTheme.reading()).foregroundStyle(MuesliTheme.textPrimary)
+                        }
+                    case .image(let id, let width):
+                        MeetingNoteImageView(id: id, width: width)
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        } else if line.isEmpty {
             Color.clear
                 .frame(height: MuesliTheme.spacing8)
         } else if line.hasPrefix("# ") {
@@ -86,6 +164,26 @@ struct MeetingNotesView: View {
                 .lineSpacing(5)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private enum ImagePart {
+        case text(String)
+        case image(UUID, Int?)
+    }
+
+    private static func imageParts(_ line: String, references: [MeetingNoteImages.Reference]) -> [ImagePart] {
+        let source = line as NSString
+        var offset = 0
+        var parts: [ImagePart] = []
+        for reference in references {
+            if reference.range.location > offset {
+                parts.append(.text(source.substring(with: NSRange(location: offset, length: reference.range.location - offset))))
+            }
+            parts.append(.image(reference.id, reference.width))
+            offset = reference.range.upperBound
+        }
+        if offset < source.length { parts.append(.text(source.substring(from: offset))) }
+        return parts
     }
 
     @ViewBuilder
@@ -146,5 +244,39 @@ struct MeetingNotesView: View {
         let text = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
         guard !marker.isEmpty, !text.isEmpty else { return nil }
         return (String(marker), text)
+    }
+}
+
+private struct MeetingNoteImageView: View {
+    let id: UUID
+    let width: Int?
+    @State private var image: NSImage?
+    @State private var loaded = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: min(CGFloat(width ?? 500), image.size.width), alignment: .leading)
+                    .accessibilityLabel("Meeting note image")
+            } else if loaded {
+                Label("Image unavailable on this device", systemImage: "photo")
+                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .task(id: id) {
+            let thumbnail = await Task.detached(priority: .utility) {
+                guard let source = CGImageSourceCreateWithURL(MeetingNoteImages.url(for: id) as CFURL,
+                    [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil as CGImage? }
+                return CGImageSourceCreateThumbnailAtIndex(source, 0,
+                    [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                     kCGImageSourceThumbnailMaxPixelSize: 1000,
+                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = thumbnail.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+            loaded = true
+        }
     }
 }
