@@ -7,6 +7,7 @@ struct MeetingCandidate: Equatable {
         case teams
         case webex
         case facetime
+        case inline
         case slack
         case whatsApp
         case unknown
@@ -18,6 +19,7 @@ struct MeetingCandidate: Equatable {
             case .teams: return "Teams"
             case .webex: return "Webex"
             case .facetime: return "FaceTime"
+            case .inline: return "Inline"
             case .slack: return "Slack"
             case .whatsApp: return "WhatsApp"
             case .unknown: return "Meeting"
@@ -32,6 +34,7 @@ struct MeetingCandidate: Equatable {
         case calendarEvent
         case foregroundApp
         case dedicatedApp
+        case callWindow
         case audioInputProcess
     }
 
@@ -123,6 +126,7 @@ struct MeetingSignalSnapshot {
     let browserMeetings: [BrowserMeetingContext]
     let audioInputProcesses: [AudioProcessActivity]
     let foregroundBundleID: String?
+    let inlineCall: InlineGridCallObservation
     let now: Date
 
     init(
@@ -133,6 +137,7 @@ struct MeetingSignalSnapshot {
         browserMeetings: [BrowserMeetingContext],
         audioInputProcesses: [AudioProcessActivity] = [],
         foregroundBundleID: String?,
+        inlineCall: InlineGridCallObservation = .absent,
         now: Date
     ) {
         self.micActive = micActive
@@ -142,6 +147,7 @@ struct MeetingSignalSnapshot {
         self.browserMeetings = browserMeetings
         self.audioInputProcesses = audioInputProcesses
         self.foregroundBundleID = foregroundBundleID
+        self.inlineCall = inlineCall
         self.now = now
     }
 }
@@ -303,6 +309,8 @@ final class MeetingCandidateResolver {
     /// prompt identity is scoped to a contiguous attributed-audio session.
     private let appAudioSessionIdleTimeout: TimeInterval
     private var appAudioSessions: [String: AppAudioSession] = [:]
+    private var inlineSessionID: String?
+    private var inlineLastPID: pid_t?
 
     init(appAudioSessionIdleTimeout: TimeInterval = 10) {
         self.appAudioSessionIdleTimeout = appAudioSessionIdleTimeout
@@ -311,6 +319,13 @@ final class MeetingCandidateResolver {
     func resolve(_ snapshot: MeetingSignalSnapshot) -> MeetingCandidate? {
         pruneExpiredAppAudioSessions(now: snapshot.now)
 
+        switch snapshot.inlineCall {
+        case .active(let pid): inlineLastPID = pid
+        case .absent:
+            inlineLastPID = nil
+            inlineSessionID = nil
+        case .unavailable: break
+        }
         let browserMeeting = bestBrowserMeeting(from: snapshot)
 
         if let browserMeeting,
@@ -346,6 +361,17 @@ final class MeetingCandidateResolver {
                 sourceBundleID: browserMeeting.bundleID,
                 sourcePID: browserMeeting.pid,
                 now: snapshot.now
+            )
+        }
+
+        if let pid = inlineLastPID, pid > 0 {
+            let id = inlineSessionID ?? "inline:session:\(UUID().uuidString)"
+            inlineSessionID = id
+            return candidate(
+                id: id, platform: .inline, appName: "Inline", url: nil,
+                title: snapshot.calendarEvent?.title,
+                evidence: mediaEvidence(from: snapshot).union([.callWindow]),
+                sourceBundleID: InlineGridCallCollector.bundleID, sourcePID: pid, now: snapshot.now
             )
         }
 

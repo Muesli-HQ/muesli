@@ -630,7 +630,7 @@ enum MeetingPlatform: Equatable {
             self = .webex
         case .facetime:
             self = .facetime
-        case .whatsApp, .unknown:
+        case .inline, .whatsApp, .unknown:
             return nil
         }
     }
