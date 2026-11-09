@@ -10,7 +10,13 @@ for name in names {
     let img = NSImage(size: size)
     img.lockFocus()
     NSColor.black.set()
-    let rect = NSRect(x: 0, y: 0, width: 48, height: 48)
+    let symbolSize = configured.size
+    guard symbolSize.width > 0, symbolSize.height > 0 else { fatalError("Invalid symbol size: \(name)") }
+    let scale = min(size.width / symbolSize.width, size.height / symbolSize.height)
+    let fittedSize = NSSize(width: symbolSize.width * scale, height: symbolSize.height * scale)
+    let rect = NSRect(x: (size.width - fittedSize.width) / 2,
+                      y: (size.height - fittedSize.height) / 2,
+                      width: fittedSize.width, height: fittedSize.height)
     configured.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
     img.unlockFocus()
     guard let tiff = img.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let data = bitmap.representation(using: .png, properties: [:]) else { fatalError(name) }
