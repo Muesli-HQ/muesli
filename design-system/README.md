@@ -343,12 +343,11 @@ The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary tra
 
 Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
 
-Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. The sidebar icon grid uses locally generated SF Symbols and custom icons based on `TimeTurnerIcon.swift` and `VidshotIcon.swift`. Run `swift design-system/scripts/render-sidebar-symbols.swift` from the repository root to render the locally ignored SF Symbol previews; symbol names remain visible without them. Other browser specimens remain illustrative. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
 
 ### Reorderable sidebar
 
-Only the top six navigation destinations can be reordered in expanded and icon-only
-layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
+The seven navigation destinations (Timeline, Time Turner, Dictations, Vidshots, Meetings, Chat and Dictionary) can be reordered in expanded and icon-only layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
 to the upper or lower half of another row; an accent-colored insertion line marks
 the exact boundary before or after it. Meetings moves with its entire folder tree,
 and the line stays outside that group. Folder drags remain a separate interaction.
