@@ -335,6 +335,22 @@ meeting, or iPhone meeting record.
   `last_synced_at`, `sync_dirty`
 
 
+New locally created meetings use `notes_layout_version = 1`: `manual_notes`
+is the editable user document (including inline image references), and
+`formatted_notes` is independently editable generated output. Summary requests
+read current user notes plus the transcript; they never reconstruct user notes
+from generated output or feed a previous summary back into a new-layout request.
+Saving a summary must not modify user notes. Completed meetings expose Summary,
+Your notes, and Transcript; full exports include both note documents.
+
+The additive column defaults to 0. Existing rows and Granola imports retain
+their legacy combined-document presentation and content without extraction,
+matching, or rewriting. Missing/invalid Codable layout metadata defaults to
+legacy. The optional sync field `notesLayoutVersion` carries this presentation
+contract with the already-synced note fields; an older client's absent marker
+must not downgrade an existing separated record. It does not sync image bytes.
+
+
 Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
 optionally with `?width=<points>` for the displayed size. The width does not
 change the image sent to a summary provider. Summary requests use a temporary,

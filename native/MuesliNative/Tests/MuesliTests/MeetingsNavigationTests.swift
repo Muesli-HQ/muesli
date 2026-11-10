@@ -2014,128 +2014,104 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting.formattedNotes == "## Summary\nFollow-up items discussed.")
     }
 
-    @Test("resummary context strips appended written notes section")
-    func resummaryContextStripsWrittenNotesSection() {
-        let meeting = makeMeeting(
-            id: 909,
-            title: "Resummarize",
-            formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this",
-            status: .completed,
-            manualNotes: "- User typed this"
-        )
-
-        let context = MuesliController.notesContextForResummary(meeting)
-
-        #expect(context == "## Summary\n- Decision captured")
-    }
-
-    @Test("resummary retains images added to the completed written-notes section")
-    func resummaryContextPreservesWrittenNoteImages() {
-        let reference = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let meeting = makeMeeting(id: 910, title: "Resummarize",
-            formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this\n\(reference)",
-            status: .completed, manualNotes: "- User typed this")
-        let context = MuesliController.notesContextForResummary(meeting)
-        let currentNotes = MuesliController.manualNotesForResummary(meeting)
-        #expect(context == "## Summary\n- Decision captured")
-        #expect(currentNotes.contains(reference))
-    }
-
-    @Test("resummary uses the edited completed notes instead of stale manual images")
-    func resummaryUsesCurrentCompletedNotes() {
-        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let kept = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let added = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let meeting = makeMeeting(id: 911, title: "Resummarize",
-            formattedNotes: "## Summary\n\(added)\n\n### Written notes\n\nUpdated note \(kept)",
-            status: .completed, manualNotes: "Old note \(removed) \(kept)")
-        let manual = MuesliController.manualNotesForResummary(meeting)
-        let context = MuesliController.notesContextForResummary(meeting) ?? ""
-        #expect(manual == "Updated note \(kept)")
-        #expect(context.contains(added))
-        #expect(!manual.contains(removed) && !context.contains(removed))
-    }
-
-    @Test("removing the completed written-notes section does not restore it")
-    func deletedWrittenSectionStaysDeleted() {
-        let meeting = makeMeeting(id: 912, title: "Resummarize", formattedNotes: "## Summary\nCurrent notes",
-            status: .completed, manualNotes: "Old note ![Image](muesli-note-image:\(UUID().uuidString))")
+    @Test("legacy combined documents remain unchanged and are not matched")
+    func legacyNotesRemainIntact() {
+        let combined = "## Summary\nDiscussed pricing tiers\n\n### Written notes\n\nPricing"
+        let meeting = makeMeeting(id: 909, title: "Legacy", formattedNotes: combined, manualNotes: "Pricing")
+        #expect(MuesliController.notesContextForResummary(meeting) == combined)
         #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
+        #expect(!meeting.hasSeparateUserNotes)
     }
 
-    @Test("clearing a completed note does not restore historical text")
-    func emptyCompletedNotesStayEmpty() {
-        let meeting = makeMeeting(id: 917, title: "Test", formattedNotes: "", status: .completed, manualNotes: "Deleted content")
+    @Test("new summaries use exact current user notes and exclude older generated content")
+    func separateNotesAreAuthoritative() {
+        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let current = "Pricing\r\nSecond  line\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 910, title: "New", formattedNotes: "## Summary\nDiscussed pricing tiers\n" + removed,
+            manualNotes: current, notesLayoutVersion: 1)
+        #expect(MuesliController.notesContextForResummary(meeting) == nil)
+        #expect(MuesliController.manualNotesForResummary(meeting) == current)
+        #expect(!MuesliController.manualNotesForResummary(meeting).contains(removed))
+        #expect(MeetingDetailView.copyContent(for: meeting, content: .userNotes).contains(current))
+        let exported = MeetingExporter.buildMarkdown(meeting: meeting, content: .fullMeeting)
+        #expect(exported.contains("## Your notes\n" + current))
+        #expect(exported.contains(meeting.formattedNotes))
+    }
+
+    @Test("cleared user notes stay empty after summarization")
+    func separateNotesStayDeleted() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Test", calendarEventID: nil, startTime: Date())
+        let original = "First line\nSecond line\n![Image](muesli-note-image:\(UUID().uuidString))"
+        try store.updateMeetingManualNotes(id: id, manualNotes: original)
+        try store.updateMeetingSummary(id: id, title: "Test", formattedNotes: "## Summary\n" + original,
+            selectedTemplateID: "auto", selectedTemplateName: "Auto", selectedTemplateKind: .auto, selectedTemplatePrompt: "")
+        #expect(try store.meeting(id: id)?.manualNotes == original)
+        try store.updateMeetingManualNotes(id: id, manualNotes: "")
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.hasSeparateUserNotes)
         #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
         #expect(MuesliController.notesContextForResummary(meeting) == nil)
     }
 
-    @Test("nested written headings do not discard the start of current notes")
-    func nestedWrittenHeadings() {
-        let current = "First note\n\n### Written notes\n\nSecond note"
-        let meeting = makeMeeting(id: 914, title: "Test", formattedNotes: "## Summary\nOverview\n\n### Written notes\n\n" + current,
-            status: .completed, manualNotes: "Historical note")
-        #expect(MuesliController.manualNotesForResummary(meeting) == current)
-        #expect(MuesliController.notesContextForResummary(meeting) == "## Summary\nOverview")
+    @Test("sync preserves separated notes and accepts legacy metadata")
+    func separatedNotesSync() throws {
+        let store = try makeStore()
+        let date = Date()
+        var record = SyncTextRecord(id: UUID().uuidString, kind: .meeting, title: "Synced",
+            text: "Transcript", summaryText: "Generated", manualNotes: "User notes",
+            notesLayoutVersion: 1, createdAt: date, updatedAt: date, durationSeconds: 1, wordCount: 1)
+        #expect(try store.upsertSyncedTextRecord(record))
+        let first = try #require(try store.recentMeetings().first)
+        #expect(first.hasSeparateUserNotes)
+        #expect(first.manualNotes == "User notes")
+        record.updatedAt = date.addingTimeInterval(1)
+        record.notesLayoutVersion = nil
+        record.summaryText = "Updated summary"
+        #expect(try store.upsertSyncedTextRecord(record))
+        let updated = try #require(try store.meeting(id: first.id))
+        #expect(updated.hasSeparateUserNotes)
+        #expect(updated.manualNotes == "User notes")
+        #expect(updated.formattedNotes == "Updated summary")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object["notesLayoutVersion"] = "unknown"
+        let decoded = try JSONDecoder().decode(SyncTextRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.notesLayoutVersion == nil)
+        #expect(decoded.manualNotes == record.manualNotes)
     }
 
-    @Test("embedded written blocks retain protection only while still visible")
-    func embeddedWrittenBlocks() {
-        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let meeting = makeMeeting(id: 915, title: "Test", formattedNotes: "## Summary\n- Keep this exact note\n- Edited note",
-            status: .completed, manualNotes: "- Keep this exact note\n- Old note\n- " + removed)
-        #expect(MuesliController.manualNotesForResummary(meeting) == "- Keep this exact note")
-        #expect(!(MuesliController.notesContextForResummary(meeting) ?? "").contains(removed))
+    @Test("schema upgrade leaves legacy meeting documents byte-for-byte intact")
+    func legacyNotesMigration() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Legacy fixture", calendarEventID: nil, startTime: Date())
+        let original = "Pricing\r\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let combined = "## Summary\nDiscussed pricing tiers\n" + original
+        try store.updateMeetingManualNotes(id: id, manualNotes: original)
+        try store.updateMeetingNotes(id: id, formattedNotes: combined)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        // Synthetic fixture only: emulate the pre-column schema.
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings DROP COLUMN notes_layout_version", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let legacy = try #require(try reopened.meeting(id: id))
+        #expect(!legacy.hasSeparateUserNotes)
+        #expect(legacy.manualNotes == original)
+        #expect(legacy.formattedNotes == combined)
     }
 
-    @Test("visible notes keep current bullets, spacing and casing", arguments: ["* Ship  the release", "1. Ship the release", "• SHIP the release"])
-    func visibleNotesSurviveFormattingChanges(current: String) {
-        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let meeting = makeMeeting(id: 918, title: "Test", formattedNotes: "## Summary\n" + current + "\nUnrelated text",
-            status: .completed, manualNotes: "- Ship the release\n- Deleted note\n- " + removed)
-        #expect(MuesliController.manualNotesForResummary(meeting) == current)
-        #expect(!MuesliController.manualNotesForResummary(meeting).contains(removed))
-    }
-
-    @Test("visible paragraph matching handles Unicode and CRLF without duplicates")
-    func visibleNoteWhitespaceAndUnicode() {
-        let current = "## Summary\r\n😀 Keep   this note\r\nSecond line\r\n"
-        let retained = MeetingSummaryClient.visibleManualNoteBlocks(in: current, historicalNotes: "😀 Keep this note\nSecond line")
-        #expect(retained == ["😀 Keep   this note\r\nSecond line"])
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "😀 Keep   this note\r\n", historicalNotes: "😀 Keep this note") == ["😀 Keep   this note"])
-    }
-
-    @Test("multiline retention uses current spans across whitespace and wrapping", arguments: ["\n", "\r\n", "\r"])
-    func multilineRetentionAcrossLineEndings(newline: String) {
-        let currentBlock = "😀 Keep   this note" + newline + "Second\tline"
-        let current = "## Summary" + newline + currentBlock + newline + "## Actions" + newline + "Other text"
-        let meeting = makeMeeting(id: 919, title: "Test", formattedNotes: current,
-            status: .completed, manualNotes: "😀 Keep this note\nSecond line")
-        #expect(MuesliController.manualNotesForResummary(meeting) == currentBlock)
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Summary\nKeep this\nnote here\nEnd", historicalNotes: "Keep this note here") == ["Keep this\nnote here"])
-    }
-
-    @Test("multiline matching never restores a deleted line or image")
-    func multilineDeletedContentIsNotRestored() {
-        let image = "![Image](muesli-note-image:\(UUID().uuidString))"
-        let historical = "Keep this note\nDeleted line\n" + image
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "## Summary\r\nKeep  this note\r\n", historicalNotes: historical).isEmpty)
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Keep this note\nChanged line\n" + image, historicalNotes: historical).isEmpty)
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Keep this\n## Heading\nnote", historicalNotes: "Keep this note").isEmpty)
-    }
-
-    @Test("repeated words and overlapping blocks retain each visible span once")
-    func overlappingVisibleNoteMatches() {
-        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "* Go go go\r\n* Next step", historicalNotes: "- Go go go\n- Next step\n- Next step") == ["* Go go go", "* Next step"])
-    }
-
-    @Test("summary retry excludes the appended transcript from protected notes")
-    func retryWrittenNotesExcludeTranscript() {
-        let written = "Important note\n\n## Raw Transcript\n\nA user-written heading"
-        let failure = MeetingSummaryClient.summaryFailureNotes(transcript: "Transcript", meetingTitle: "Test",
-            error: NSError(domain: "test", code: 1), manualNotes: written)
-        let meeting = makeMeeting(id: 916, title: "Test", formattedNotes: failure, status: .completed, manualNotes: "Old note")
-        #expect(MuesliController.manualNotesForResummary(meeting) == written)
+    @Test("legacy serialized meetings decode without the layout marker")
+    func legacyMeetingDecoding() throws {
+        let legacy = makeMeeting(id: 911, title: "Legacy", manualNotes: "Original")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        object.removeValue(forKey: "notesLayoutVersion")
+        let decoded = try JSONDecoder().decode(MeetingRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(!decoded.hasSeparateUserNotes)
+        #expect(decoded.manualNotes == legacy.manualNotes)
+        #expect(decoded.formattedNotes == legacy.formattedNotes)
+        object["notesLayoutVersion"] = "invalid"
+        #expect(try JSONDecoder().decode(MeetingRecord.self, from: JSONSerialization.data(withJSONObject: object)).notesLayoutVersion == 0)
     }
 
     @Test("unfinished meeting resummary retains current manual notes")
@@ -2646,7 +2622,8 @@ struct MeetingsNavigationTests {
         title: String,
         formattedNotes: String = "## Summary",
         status: MeetingStatus = .completed,
-        manualNotes: String = ""
+        manualNotes: String = "",
+        notesLayoutVersion: Int = 0
     ) -> MeetingRecord {
         MeetingRecord(
             id: id,
@@ -2662,6 +2639,7 @@ struct MeetingsNavigationTests {
             systemAudioPath: nil,
             status: status,
             manualNotes: manualNotes,
+            notesLayoutVersion: notesLayoutVersion,
             selectedTemplateID: MeetingTemplates.autoID,
             selectedTemplateName: "Auto",
             selectedTemplateKind: .auto,

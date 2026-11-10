@@ -6985,6 +6985,12 @@ public final class MuesliController: NSObject {
         summaryConfig: AppConfig?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
+        flushCachedMeetingManualNotes(id: meeting.id, sync: false)
+        let currentManualNotes = liveManualNotesCache[meeting.id]
+        let meeting = (try? dictationStore.meeting(id: meeting.id)) ?? meeting
+        let summaryManualNotes = meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.usesImportedManualNotes
+            ? (currentManualNotes ?? meeting.manualNotes)
+            : Self.manualNotesForResummary(meeting)
         let summaryConfig = summaryConfig ?? config
         let provider = MeetingSummaryBackendOption.resolved(summaryConfig.meetingSummaryBackend)
         guard canUseSummaryProvider(provider, config: summaryConfig) else {
@@ -7001,7 +7007,7 @@ public final class MuesliController: NSObject {
                 config: summaryConfig,
                 template: templateSnapshot,
                 existingNotes: notesContextForResummary(meeting),
-                manualNotesToRetain: Self.manualNotesForResummary(meeting),
+                manualNotesToRetain: summaryManualNotes,
                 participantNames: participantNames,
                 openRouterAPIKeyOverride: openRouterKey
             )
@@ -7009,7 +7015,7 @@ public final class MuesliController: NSObject {
             if MeetingResummarizationPolicy.shouldGenerateTitle(for: meeting) {
                 generatedTitle = await MeetingSummaryClient.generateTitle(
                     transcript: meeting.rawTranscript,
-                    manualNotes: Self.manualNotesForResummary(meeting),
+                    manualNotes: summaryManualNotes,
                     config: summaryConfig,
                     openRouterAPIKeyOverride: openRouterKey
                 )
@@ -7083,7 +7089,7 @@ public final class MuesliController: NSObject {
         // Register synchronously: a second click cannot race task startup.
         flushCachedMeetingTitle(id: meeting.id)
         flushCachedMeetingManualNotes(id: meeting.id, sync: false)
-        guard let meeting = self.meeting(id: meeting.id) else {
+        guard let meeting = try? dictationStore.meeting(id: meeting.id) else {
             completion(.failure(MeetingRetranscriptionError.recordingUnavailable))
             return
         }
@@ -7481,70 +7487,18 @@ public final class MuesliController: NSObject {
     }
 
     static func notesContextForResummary(_ meeting: MeetingRecord) -> String? {
-        guard meeting.notesState == .structuredNotes else { return nil }
-        var trimmed = stripManualNotesSection(from: meeting.formattedNotes)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Images added while editing a completed summary can be inside the
-        // generated Written notes section, which is normally stripped here.
-        // Keep those references even when they are absent from manual_notes.
-        var included = Set(MeetingNoteImages.references(in: trimmed + "\n" + manualNotesForResummary(meeting)).map(\.id))
-        let additional = MeetingNoteImages.references(in: meeting.formattedNotes)
-            .filter { included.insert($0.id).inserted }.map(\.markdown)
-        if !additional.isEmpty {
-            if !trimmed.isEmpty { trimmed += "\n\n" }
-            trimmed += additional.joined(separator: "\n")
-        }
-        return trimmed.isEmpty ? nil : trimmed
+        // Legacy combined documents stay intact. New summaries are rebuilt from
+        // the transcript and current user notes, never from a previous summary.
+        guard !meeting.hasSeparateUserNotes, meeting.notesState == .structuredNotes else { return nil }
+        return meeting.formattedNotes.isEmpty ? nil : meeting.formattedNotes
     }
 
-    /// After completion, the editable summary is the current source of truth.
-    /// The separately stored live notes are a historical snapshot and may
-    /// contain content the user has since removed from the displayed notes.
     static func manualNotesForResummary(_ meeting: MeetingRecord) -> String {
-        guard meeting.status == .completed, !meeting.usesImportedManualNotes else {
+        // Do not infer authorship by matching fragments in legacy documents.
+        if meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.usesImportedManualNotes {
             return meeting.manualNotes
         }
-        guard meeting.notesState == .structuredNotes else { return "" }
-        var current = meeting.formattedNotes
-        if MeetingSummaryClient.isSummaryFailureNotes(current) {
-            // Reuse the failure report's boundary resolver: a heading inside
-            // written notes must not be mistaken for the appended transcript.
-            if let boundary = MeetingSummaryClient.failureTranscriptBoundary(
-                in: current, marker: "\n\n## Raw Transcript\n\n", previousTranscript: meeting.rawTranscript
-            ) {
-                current = String(current[..<boundary.lowerBound])
-            } else {
-                // Ambiguous edited failure reports remain ordinary context,
-                // never a verbatim protected transcript.
-                return ""
-            }
-        }
-        let section = manualNotesBoundary(in: current)
-        let embeddedContext = section.map { String(current[..<$0.lowerBound]) } ?? current
-        // Older summaries may have incorporated written blocks without adding
-        // a section. Protect only matching text still visible in today's note;
-        // historical text is never a fallback for deleted or edited content.
-        let embedded = MeetingSummaryClient.visibleManualNoteBlocks(in: embeddedContext, historicalNotes: meeting.manualNotes)
-        let written = section.map { String(current[$0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
-        return (embedded + (written.isEmpty ? [] : [written])).joined(separator: "\n\n")
-    }
-
-    private static func manualNotesBoundary(in notes: String) -> Range<String.Index>? {
-        ["### Written notes\n\n", "## Manual Notes\n\n"].compactMap { marker in
-            var start = notes.startIndex
-            while let range = notes.range(of: marker, range: start..<notes.endIndex) {
-                if range.lowerBound == notes.startIndex || notes[notes.index(before: range.lowerBound)] == "\n" {
-                    return range
-                }
-                start = range.upperBound
-            }
-            return nil
-        }.min { $0.lowerBound < $1.lowerBound }
-    }
-
-    static func stripManualNotesSection(from notes: String) -> String {
-        guard let range = manualNotesBoundary(in: notes) else { return notes }
-        return String(notes[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ""
     }
 
     func updateMeetingTitle(id: Int64, title: String) {
@@ -10177,7 +10131,7 @@ public final class MuesliController: NSObject {
                 transcript: combined,
                 meetingTitle: result.title,
                 error: error,
-                manualNotes: manualNotes
+                manualNotes: originalMeeting?.hasSeparateUserNotes == true ? nil : manualNotes
             )
         }
         return result.overriding(

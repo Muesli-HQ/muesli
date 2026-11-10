@@ -127,8 +127,8 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
-            if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
-                parts.append("## Original manual notes from Granola")
+            if (meeting.hasSeparateUserNotes || meeting.source == .granolaImport), !meeting.manualNotes.isEmpty {
+                parts.append(meeting.hasSeparateUserNotes ? "## Your notes" : "## Original manual notes from Granola")
                 parts.append(meeting.manualNotes)
                 parts.append("")
             }
