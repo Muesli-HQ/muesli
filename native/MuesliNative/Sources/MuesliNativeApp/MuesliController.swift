@@ -12554,6 +12554,7 @@ public final class MuesliController: NSObject {
         let analyticsOutcome: AnalyticsOutcome
         switch result.status {
         case .done: analyticsOutcome = .success
+        case .incomplete: analyticsOutcome = .partial
         case .cancelled: analyticsOutcome = .cancelled
         case .needsConfirmation: analyticsOutcome = .blocked
         case .timedOut, .failed: analyticsOutcome = .failed
