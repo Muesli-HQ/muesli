@@ -2088,6 +2088,23 @@ struct MeetingsNavigationTests {
         #expect(!(MuesliController.notesContextForResummary(meeting) ?? "").contains(removed))
     }
 
+    @Test("visible notes keep current bullets, spacing and casing", arguments: ["* Ship  the release", "1. Ship the release", "• SHIP the release"])
+    func visibleNotesSurviveFormattingChanges(current: String) {
+        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 918, title: "Test", formattedNotes: "## Summary\n" + current + "\nUnrelated text",
+            status: .completed, manualNotes: "- Ship the release\n- Deleted note\n- " + removed)
+        #expect(MuesliController.manualNotesForResummary(meeting) == current)
+        #expect(!MuesliController.manualNotesForResummary(meeting).contains(removed))
+    }
+
+    @Test("visible paragraph matching handles Unicode and CRLF without duplicates")
+    func visibleNoteWhitespaceAndUnicode() {
+        let current = "## Summary\r\n😀 Keep   this note\r\nSecond line\r\n"
+        let retained = MeetingSummaryClient.visibleManualNoteBlocks(in: current, historicalNotes: "😀 Keep this note\nSecond line")
+        #expect(retained.isEmpty) // The surrounding summary is not itself a written block.
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "😀 Keep   this note\r\n", historicalNotes: "😀 Keep this note") == ["😀 Keep   this note"])
+    }
+
     @Test("summary retry excludes the appended transcript from protected notes")
     func retryWrittenNotesExcludeTranscript() {
         let written = "Important note\n\n## Raw Transcript\n\nA user-written heading"

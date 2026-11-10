@@ -806,6 +806,34 @@ enum MeetingSummaryClient {
         return [normalized]
     }
 
+    /// Match historical blocks only to locate still-visible text. Return the
+    /// current spelling/markers, never historical content that was removed.
+    static func visibleManualNoteBlocks(in current: String, historicalNotes: String) -> [String] {
+        let historical = manualNoteBlocks(from: historicalNotes)
+        let normalized = Set(historical.map(normalizedManualNoteMatchText).filter { !$0.isEmpty })
+        guard !normalized.isEmpty else { return [] }
+        let source = current as NSString
+        var ranges = historical.map { source.range(of: $0) }.filter { $0.location != NSNotFound }
+        // Lists match per line; paragraphs also allow harmless whitespace changes.
+        for separator in ["\n", "\n\n"] {
+            var start = 0
+            while start < source.length {
+                let boundary = source.range(of: separator, range: NSRange(location: start, length: source.length - start))
+                let end = boundary.location == NSNotFound ? source.length : boundary.location
+                let range = NSRange(location: start, length: end - start)
+                if normalized.contains(normalizedManualNoteMatchText(source.substring(with: range))) { ranges.append(range) }
+                start = boundary.location == NSNotFound ? source.length : NSMaxRange(boundary)
+            }
+        }
+        ranges.sort { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
+        var end = 0
+        return ranges.compactMap { range in
+            guard range.location >= end, range.length > 0 else { return nil }
+            end = NSMaxRange(range)
+            return source.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
     private static func generatedNotesContainManualNote(_ generatedNotes: String, note: String) -> Bool {
         let normalizedNote = normalizedManualNoteMatchText(note)
         guard !normalizedNote.isEmpty else { return true }

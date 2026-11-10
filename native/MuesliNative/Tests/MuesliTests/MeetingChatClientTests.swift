@@ -523,6 +523,63 @@ struct MeetingChatClientTests {
         if backend == "openai" { #expect(body["store"] as? Bool == false) }
     }
 
+    @Test(arguments: ["anthropic", "custom_llm"], [false, true])
+    func imageSummaryPreservesAnthropicOutputPolicy(backend: String, capped: Bool) async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.anthropicModel = "claude-haiku-4-5"
+        config.customLLMModel = "claude-haiku-4-5"
+        config.customLLMFormat = "anthropic"
+        config.customLLMURL = "https://example.invalid/v1/messages"
+        config.meetingSummaryMaxOutputTokens = capped ? 5_000 : nil
+        let image = ChatImageInput(name: "synthetic", data: Data([1, 2, 3]))
+        for truncated in [false, true] {
+            let client = MeetingTextGenerationClient(credentialResolver: { _ in "synthetic" }, load: { request in
+                let data = try #require(request.httpBody)
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(body["max_tokens"] as? Int == (capped ? 5_000 : 64_000))
+                #expect(body["stream"] as? Bool == !capped)
+                let messages = try #require(body["messages"] as? [[String: Any]])
+                let content = try #require(messages.first?["content"] as? [[String: Any]])
+                #expect(content.contains { $0["type"] as? String == "image" })
+                let reason = truncated ? "max_tokens" : "end_turn"
+                let payload = capped
+                    ? #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"Notes"}]}"#
+                    : [
+                        #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Notes"}}"#,
+                        #"{"type":"message_delta","delta":{"stop_reason":"\#(reason)"}}"#,
+                        #"{"type":"message_stop"}"#
+                    ].map { "data: " + $0 + "\n\n" }.joined()
+                return (Data(payload.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+            do {
+                let text = try await client.generate(.init(system: "S", user: "U", config: config,
+                    images: [image], allowSummaryImageEndpoints: true))
+                #expect(!truncated)
+                #expect(text == "Notes")
+            } catch MeetingSummaryOutputPolicy.OutputError.outputLimitReached {
+                #expect(truncated)
+            }
+        }
+    }
+
+    @Test(arguments: ["openai", "openrouter", "ollama", "lmstudio", "custom_llm"], [false, true])
+    func imageSummaryHonorsOptionalOutputCap(backend: String, capped: Bool) throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.openAIModel = "gpt-5.4-mini"
+        config.lmStudioModel = "test"; config.customLLMModel = "test"
+        config.meetingSummaryMaxOutputTokens = capped ? 5_000 : nil
+        let input = MeetingTextGenerationRequest(system: "S", user: "U", config: config,
+            images: [ChatImageInput(name: "synthetic", data: Data([1]))], allowSummaryImageEndpoints: true)
+        let request = try MeetingTextGenerationClient.makeRequest(input, credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let limit = backend == "ollama" ? (body["options"] as? [String: Any])?["num_predict"] as? Int
+            : (body["max_output_tokens"] ?? body["max_completion_tokens"] ?? body["max_tokens"]) as? Int
+        #expect(limit == (capped ? 5_000 : nil))
+    }
+
     @Test(arguments: ["ollama", "lmstudio", "custom_openai", "custom_anthropic"])
     func summaryImagesUseEndpointVisionFormat(endpoint: String) throws {
         var config = AppConfig()

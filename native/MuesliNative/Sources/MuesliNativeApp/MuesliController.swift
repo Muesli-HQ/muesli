@@ -7522,10 +7522,9 @@ public final class MuesliController: NSObject {
         let section = manualNotesBoundary(in: current)
         let embeddedContext = section.map { String(current[..<$0.lowerBound]) } ?? current
         // Older summaries may have incorporated written blocks without adding
-        // a section. Protect only exact blocks still visible in today's note;
+        // a section. Protect only matching text still visible in today's note;
         // historical text is never a fallback for deleted or edited content.
-        let embedded = MeetingSummaryClient.manualNoteBlocks(from: meeting.manualNotes)
-            .filter { embeddedContext.contains($0) }
+        let embedded = MeetingSummaryClient.visibleManualNoteBlocks(in: embeddedContext, historicalNotes: meeting.manualNotes)
         let written = section.map { String(current[$0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
         return (embedded + (written.isEmpty ? [] : [written])).joined(separator: "\n\n")
     }

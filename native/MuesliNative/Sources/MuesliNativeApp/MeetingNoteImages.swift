@@ -127,7 +127,7 @@ enum MeetingNoteImages {
             guard FileManager.default.fileExists(atPath: source.path),
                   let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
                   let type = CGImageSourceGetType(imageSource).flatMap({ UTType($0 as String) }) else { continue }
-            let ext = type.preferredFilenameExtension ?? "image"
+            guard let ext = type.preferredFilenameExtension else { continue }
             extensions[reference.id] = ext
             let target = folder.appendingPathComponent(reference.id.uuidString + "." + ext)
             if !FileManager.default.fileExists(atPath: target.path) {
