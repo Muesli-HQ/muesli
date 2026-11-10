@@ -2063,6 +2063,40 @@ struct MeetingsNavigationTests {
         #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
     }
 
+    @Test("clearing a completed note does not restore historical text")
+    func emptyCompletedNotesStayEmpty() {
+        let meeting = makeMeeting(id: 917, title: "Test", formattedNotes: "", status: .completed, manualNotes: "Deleted content")
+        #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
+        #expect(MuesliController.notesContextForResummary(meeting) == nil)
+    }
+
+    @Test("nested written headings do not discard the start of current notes")
+    func nestedWrittenHeadings() {
+        let current = "First note\n\n### Written notes\n\nSecond note"
+        let meeting = makeMeeting(id: 914, title: "Test", formattedNotes: "## Summary\nOverview\n\n### Written notes\n\n" + current,
+            status: .completed, manualNotes: "Historical note")
+        #expect(MuesliController.manualNotesForResummary(meeting) == current)
+        #expect(MuesliController.notesContextForResummary(meeting) == "## Summary\nOverview")
+    }
+
+    @Test("embedded written blocks retain protection only while still visible")
+    func embeddedWrittenBlocks() {
+        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 915, title: "Test", formattedNotes: "## Summary\n- Keep this exact note\n- Edited note",
+            status: .completed, manualNotes: "- Keep this exact note\n- Old note\n- " + removed)
+        #expect(MuesliController.manualNotesForResummary(meeting) == "- Keep this exact note")
+        #expect(!(MuesliController.notesContextForResummary(meeting) ?? "").contains(removed))
+    }
+
+    @Test("summary retry excludes the appended transcript from protected notes")
+    func retryWrittenNotesExcludeTranscript() {
+        let written = "Important note\n\n## Raw Transcript\n\nA user-written heading"
+        let failure = MeetingSummaryClient.summaryFailureNotes(transcript: "Transcript", meetingTitle: "Test",
+            error: NSError(domain: "test", code: 1), manualNotes: written)
+        let meeting = makeMeeting(id: 916, title: "Test", formattedNotes: failure, status: .completed, manualNotes: "Old note")
+        #expect(MuesliController.manualNotesForResummary(meeting) == written)
+    }
+
     @Test("unfinished meeting resummary retains current manual notes")
     func unfinishedMeetingUsesManualNotes() {
         let meeting = makeMeeting(id: 913, title: "Draft", formattedNotes: "", status: .failed, manualNotes: "Current draft")

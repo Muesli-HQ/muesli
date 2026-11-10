@@ -563,7 +563,7 @@ enum MeetingSummaryClient {
         )
     }
 
-    private static func failureTranscriptBoundary(
+    static func failureTranscriptBoundary(
         in notes: String,
         marker: String,
         previousTranscript: String

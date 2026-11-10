@@ -575,6 +575,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                         imageAttachments[reference.id] = attachment
                     }
                     let imageText = NSMutableAttributedString(attachment: attachment)
+                    imageText.addAttributes(attributes, range: NSRange(location: 0, length: imageText.length))
                     imageText.addAttribute(.muesliMarkdownImage, value: reference.markdown, range: NSRange(location: 0, length: imageText.length))
                     result.append(imageText)
                     offset = reference.range.upperBound
@@ -728,7 +729,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             let full = textView.string as NSString
             guard full.length > 0 else { return [NSRange(location: 0, length: 0)] }
             return full.paragraphRanges(for: selectedRange).map { range in
-                NSRange(location: range.location, length: max(range.length - 1, 0))
+                var contentsEnd = 0
+                full.getParagraphStart(nil, end: nil, contentsEnd: &contentsEnd, for: range)
+                return NSRange(location: range.location, length: max(contentsEnd - range.location, 0))
             }
         }
 

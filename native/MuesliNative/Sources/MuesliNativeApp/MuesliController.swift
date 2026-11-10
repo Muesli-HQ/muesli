@@ -7009,7 +7009,7 @@ public final class MuesliController: NSObject {
             if MeetingResummarizationPolicy.shouldGenerateTitle(for: meeting) {
                 generatedTitle = await MeetingSummaryClient.generateTitle(
                     transcript: meeting.rawTranscript,
-                    manualNotes: meeting.manualNotes,
+                    manualNotes: Self.manualNotesForResummary(meeting),
                     config: summaryConfig,
                     openRouterAPIKeyOverride: openRouterKey
                 )
@@ -7215,7 +7215,7 @@ public final class MuesliController: NSObject {
                         transcript: rawTranscript,
                         meetingTitle: meeting.title,
                         error: error,
-                        manualNotes: meeting.manualNotes
+                        manualNotes: Self.manualNotesForResummary(meeting)
                     )
                     summaryFailureWarning = "Summary could not be regenerated. The new transcript was saved separately from any retained note edits. \(error.localizedDescription)"
                 }
@@ -7501,33 +7501,51 @@ public final class MuesliController: NSObject {
     /// The separately stored live notes are a historical snapshot and may
     /// contain content the user has since removed from the displayed notes.
     static func manualNotesForResummary(_ meeting: MeetingRecord) -> String {
-        guard meeting.status == .completed, meeting.notesState == .structuredNotes else {
+        guard meeting.status == .completed, !meeting.usesImportedManualNotes else {
             return meeting.manualNotes
         }
-        for marker in ["### Written notes\n\n", "## Manual Notes\n\n"] {
-            if let range = meeting.formattedNotes.range(of: marker, options: [.backwards]),
-               range.lowerBound == meeting.formattedNotes.startIndex || meeting.formattedNotes[meeting.formattedNotes.index(before: range.lowerBound)] == "\n" {
-                return String(meeting.formattedNotes[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard meeting.notesState == .structuredNotes else { return "" }
+        var current = meeting.formattedNotes
+        if MeetingSummaryClient.isSummaryFailureNotes(current) {
+            // Reuse the failure report's boundary resolver: a heading inside
+            // written notes must not be mistaken for the appended transcript.
+            if let boundary = MeetingSummaryClient.failureTranscriptBoundary(
+                in: current, marker: "\n\n## Raw Transcript\n\n", previousTranscript: meeting.rawTranscript
+            ) {
+                current = String(current[..<boundary.lowerBound])
+            } else {
+                // Ambiguous edited failure reports remain ordinary context,
+                // never a verbatim protected transcript.
+                return ""
             }
         }
-        return ""
+        let section = manualNotesBoundary(in: current)
+        let embeddedContext = section.map { String(current[..<$0.lowerBound]) } ?? current
+        // Older summaries may have incorporated written blocks without adding
+        // a section. Protect only exact blocks still visible in today's note;
+        // historical text is never a fallback for deleted or edited content.
+        let embedded = MeetingSummaryClient.manualNoteBlocks(from: meeting.manualNotes)
+            .filter { embeddedContext.contains($0) }
+        let written = section.map { String(current[$0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        return (embedded + (written.isEmpty ? [] : [written])).joined(separator: "\n\n")
+    }
+
+    private static func manualNotesBoundary(in notes: String) -> Range<String.Index>? {
+        ["### Written notes\n\n", "## Manual Notes\n\n"].compactMap { marker in
+            var start = notes.startIndex
+            while let range = notes.range(of: marker, range: start..<notes.endIndex) {
+                if range.lowerBound == notes.startIndex || notes[notes.index(before: range.lowerBound)] == "\n" {
+                    return range
+                }
+                start = range.upperBound
+            }
+            return nil
+        }.min { $0.lowerBound < $1.lowerBound }
     }
 
     static func stripManualNotesSection(from notes: String) -> String {
-        let markers = [
-            "\n\n### Written notes\n\n",
-            "\n### Written notes\n\n",
-            "### Written notes\n\n",
-            "\n\n## Manual Notes\n\n",
-            "\n## Manual Notes\n\n",
-            "## Manual Notes\n\n"
-        ]
-        for marker in markers {
-            if let range = notes.range(of: marker, options: [.backwards]) {
-                return String(notes[..<range.lowerBound])
-            }
-        }
-        return notes
+        guard let range = manualNotesBoundary(in: notes) else { return notes }
+        return String(notes[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func updateMeetingTitle(id: Int64, title: String) {

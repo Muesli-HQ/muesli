@@ -9,10 +9,14 @@ struct MeetingNotesView: View {
     var footer: AnyView? = nil
 
     var body: some View {
-        ScrollViewReader { proxy in
+        let blocks = Self.blocks(markdown)
+        let highlightedLine = self.highlightedLine
+        let highlightedBlock = highlightedLine.flatMap { line in
+            blocks.first { $0.start <= line && line < $0.start + $0.count }?.start
+        }
+        return ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                let blocks = Self.blocks(markdown)
                 ForEach(blocks, id: \.start) { block in
                     Group {
                         if let rows = block.table { markdownTable(rows) }
@@ -33,10 +37,6 @@ struct MeetingNotesView: View {
         .onAppear { if let line = highlightedBlock { proxy.scrollTo(line, anchor: .center) } }
         .onChange(of: highlightedRange) { _, _ in if let line = highlightedBlock { proxy.scrollTo(line, anchor: .center) } }
         }
-    }
-    private var highlightedBlock: Int? {
-        guard let line = highlightedLine else { return nil }
-        return Self.blocks(markdown).first { $0.start <= line && line < $0.start + $0.count }?.start
     }
 
     struct NoteBlock {

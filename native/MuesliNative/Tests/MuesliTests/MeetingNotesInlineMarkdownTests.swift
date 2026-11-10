@@ -350,6 +350,43 @@ struct MeetingNotesInlineMarkdownTests {
         #expect((view.string as NSString).range(of: "\u{fffc}").location != NSNotFound)
     }
 
+    @Test("list commands keep the caret after an unterminated line", arguments: [MarkdownEditorCommand.Kind.bullet, .checkbox])
+    @MainActor
+    func listCaretAtEnd(command: MarkdownEditorCommand.Kind) {
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant("Notes"), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView()
+        coordinator.apply(markdown: "Notes", to: view)
+        view.setSelectedRange(NSRange(location: 5, length: 0))
+        coordinator.perform(command, in: view)
+        #expect(view.selectedRange().location == (view.string as NSString).length)
+        view.insertText("!", replacementRange: view.selectedRange())
+        #expect(view.string.hasSuffix("Notes!"))
+    }
+
+    @Test("heading formatting includes the last character", arguments: ["Notes", "Notes\n", "Notes\r\n"])
+    @MainActor
+    func headingIncludesLastCharacter(source: String) throws {
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView()
+        coordinator.apply(markdown: source, to: view)
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        coordinator.perform(.heading, in: view)
+        let first = try #require(view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let last = try #require(view.textStorage?.attribute(.font, at: 4, effectiveRange: nil) as? NSFont)
+        #expect(first == last)
+        #expect(coordinator.serializedMarkdown(from: view).hasPrefix("# Notes"))
+    }
+
+    @Test("image-leading headings preserve their marker")
+    @MainActor
+    func imageLeadingHeadingRoundTrip() {
+        let source = "# ![Image](muesli-note-image:\(UUID().uuidString)) Caption"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView()
+        coordinator.apply(markdown: source, to: view)
+        #expect(coordinator.serializedMarkdown(from: view) == source)
+    }
+
     @Test("pasting an image is one undoable edit")
     @MainActor
     func imagePasteCanBeUndone() throws {
