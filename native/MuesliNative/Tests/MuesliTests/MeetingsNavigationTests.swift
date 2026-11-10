@@ -2101,8 +2101,32 @@ struct MeetingsNavigationTests {
     func visibleNoteWhitespaceAndUnicode() {
         let current = "## Summary\r\n😀 Keep   this note\r\nSecond line\r\n"
         let retained = MeetingSummaryClient.visibleManualNoteBlocks(in: current, historicalNotes: "😀 Keep this note\nSecond line")
-        #expect(retained.isEmpty) // The surrounding summary is not itself a written block.
+        #expect(retained == ["😀 Keep   this note\r\nSecond line"])
         #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "😀 Keep   this note\r\n", historicalNotes: "😀 Keep this note") == ["😀 Keep   this note"])
+    }
+
+    @Test("multiline retention uses current spans across whitespace and wrapping", arguments: ["\n", "\r\n", "\r"])
+    func multilineRetentionAcrossLineEndings(newline: String) {
+        let currentBlock = "😀 Keep   this note" + newline + "Second\tline"
+        let current = "## Summary" + newline + currentBlock + newline + "## Actions" + newline + "Other text"
+        let meeting = makeMeeting(id: 919, title: "Test", formattedNotes: current,
+            status: .completed, manualNotes: "😀 Keep this note\nSecond line")
+        #expect(MuesliController.manualNotesForResummary(meeting) == currentBlock)
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Summary\nKeep this\nnote here\nEnd", historicalNotes: "Keep this note here") == ["Keep this\nnote here"])
+    }
+
+    @Test("multiline matching never restores a deleted line or image")
+    func multilineDeletedContentIsNotRestored() {
+        let image = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let historical = "Keep this note\nDeleted line\n" + image
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "## Summary\r\nKeep  this note\r\n", historicalNotes: historical).isEmpty)
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Keep this note\nChanged line\n" + image, historicalNotes: historical).isEmpty)
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "Keep this\n## Heading\nnote", historicalNotes: "Keep this note").isEmpty)
+    }
+
+    @Test("repeated words and overlapping blocks retain each visible span once")
+    func overlappingVisibleNoteMatches() {
+        #expect(MeetingSummaryClient.visibleManualNoteBlocks(in: "* Go go go\r\n* Next step", historicalNotes: "- Go go go\n- Next step\n- Next step") == ["* Go go go", "* Next step"])
     }
 
     @Test("summary retry excludes the appended transcript from protected notes")

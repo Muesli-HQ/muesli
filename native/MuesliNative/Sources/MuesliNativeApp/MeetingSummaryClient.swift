@@ -809,20 +809,30 @@ enum MeetingSummaryClient {
     /// Match historical blocks only to locate still-visible text. Return the
     /// current spelling/markers, never historical content that was removed.
     static func visibleManualNoteBlocks(in current: String, historicalNotes: String) -> [String] {
-        let historical = manualNoteBlocks(from: historicalNotes)
-        let normalized = Set(historical.map(normalizedManualNoteMatchText).filter { !$0.isEmpty })
-        guard !normalized.isEmpty else { return [] }
         let source = current as NSString
-        var ranges = historical.map { source.range(of: $0) }.filter { $0.location != NSNotFound }
-        // Lists match per line; paragraphs also allow harmless whitespace changes.
-        for separator in ["\n", "\n\n"] {
-            var start = 0
-            while start < source.length {
-                let boundary = source.range(of: separator, range: NSRange(location: start, length: source.length - start))
-                let end = boundary.location == NSNotFound ? source.length : boundary.location
-                let range = NSRange(location: start, length: end - start)
-                if normalized.contains(normalizedManualNoteMatchText(source.substring(with: range))) { ranges.append(range) }
-                start = boundary.location == NSNotFound ? source.length : NSMaxRange(boundary)
+        let visible = manualNoteTokens(in: current)
+        guard !visible.isEmpty else { return [] }
+        var ranges: [NSRange] = []
+        for block in manualNoteBlocks(from: historicalNotes) {
+            let pattern = manualNoteTokens(in: block).map(\.text)
+            guard !pattern.isEmpty, pattern.count <= visible.count else { continue }
+            // KMP keeps matching linear even for long notes with repeated words.
+            var prefix = Array(repeating: 0, count: pattern.count)
+            var matched = 0
+            for index in pattern.indices.dropFirst() {
+                while matched > 0 && pattern[index] != pattern[matched] { matched = prefix[matched - 1] }
+                if pattern[index] == pattern[matched] { matched += 1 }
+                prefix[index] = matched
+            }
+            matched = 0
+            for index in visible.indices {
+                while matched > 0 && visible[index].text != pattern[matched] { matched = prefix[matched - 1] }
+                if visible[index].text == pattern[matched] { matched += 1 }
+                if matched == pattern.count {
+                    let first = visible[index - matched + 1].range.location
+                    ranges.append(NSRange(location: first, length: NSMaxRange(visible[index].range) - first))
+                    matched = prefix[matched - 1]
+                }
             }
         }
         ranges.sort { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
@@ -832,6 +842,36 @@ enum MeetingSummaryClient {
             end = NSMaxRange(range)
             return source.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    private struct ManualNoteToken {
+        let text: String
+        let range: NSRange
+    }
+
+    private static let manualNoteWordPattern = try! NSRegularExpression(pattern: #"\S+"#)
+
+    /// Normalize for matching while keeping UTF-16 offsets into the original.
+    /// The first word includes its list marker so retained text keeps today's
+    /// formatting. Spans between words preserve original spaces and CRLFs.
+    private static func manualNoteTokens(in text: String) -> [ManualNoteToken] {
+        let source = text as NSString
+        var tokens: [ManualNoteToken] = []
+        source.enumerateSubstrings(in: NSRange(location: 0, length: source.length), options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
+            let line = source.substring(with: lineRange)
+            let content = normalizedManualNoteContent(line)
+            guard !content.isEmpty else { return }
+            let contentRange = (line as NSString).range(of: content, options: .backwards)
+            guard contentRange.location != NSNotFound else { return }
+            let range = NSRange(location: lineRange.location + contentRange.location, length: contentRange.length)
+            let words = manualNoteWordPattern.matches(in: text, range: range)
+            for (index, word) in words.enumerated() {
+                let start = index == 0 ? lineRange.location : word.range.location
+                tokens.append(ManualNoteToken(text: source.substring(with: word.range).lowercased(),
+                    range: NSRange(location: start, length: NSMaxRange(word.range) - start)))
+            }
+        }
+        return tokens
     }
 
     private static func generatedNotesContainManualNote(_ generatedNotes: String, note: String) -> Bool {
