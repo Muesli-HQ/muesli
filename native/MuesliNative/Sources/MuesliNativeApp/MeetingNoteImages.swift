@@ -117,24 +117,37 @@ enum MeetingNoteImages {
         guard !refs.isEmpty else { return markdown }
         let folderName = destination.deletingPathExtension().lastPathComponent + "-assets"
         let folder = destination.deletingLastPathComponent().appendingPathComponent(folderName, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var copied = Set<UUID>()
         var extensions: [UUID: String] = [:]
+        var created: [URL] = []
+        let folderExisted = FileManager.default.fileExists(atPath: folder.path)
+        do {
         for reference in refs where copied.insert(reference.id).inserted {
             let source = url(for: reference.id, supportDirectory: supportDirectory)
-            guard FileManager.default.fileExists(atPath: source.path) else { throw ChatFileError.unavailable }
-            guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+            guard FileManager.default.fileExists(atPath: source.path),
+                  let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
                   let type = CGImageSourceGetType(imageSource).flatMap({ UTType($0 as String) }),
-                  let ext = type.preferredFilenameExtension else { throw ChatFileError.unavailable }
+                  let ext = type.preferredFilenameExtension else { continue }
             extensions[reference.id] = ext
             let target = folder.appendingPathComponent(reference.id.uuidString + "." + ext)
-            if !FileManager.default.fileExists(atPath: target.path) { try FileManager.default.copyItem(at: source, to: target) }
+            if !FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: source, to: target)
+                created.append(target)
+            }
+        }
+        } catch {
+            for url in created { try? FileManager.default.removeItem(at: url) }
+            if !folderExisted { try? FileManager.default.removeItem(at: folder) }
+            throw error
         }
         let result = NSMutableString(string: markdown)
         let safe = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "#?()"))
         let encodedFolder = folderName.addingPercentEncoding(withAllowedCharacters: safe) ?? folderName
         for reference in refs.reversed() {
-            result.replaceCharacters(in: reference.range, with: "![Image](\(encodedFolder)/\(reference.id.uuidString).\(extensions[reference.id] ?? "jpg"))")
+            let replacement = extensions[reference.id].map { "![Image](\(encodedFolder)/\(reference.id.uuidString).\($0))" }
+                ?? "*[Image unavailable on this device]*"
+            result.replaceCharacters(in: reference.range, with: replacement)
         }
         return result as String
     }

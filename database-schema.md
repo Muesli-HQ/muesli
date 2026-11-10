@@ -344,7 +344,8 @@ in the active Application Support directory. Image bytes do not enter SQLite,
 CloudKit, retrieval indexes, or telemetry. Synced note text can therefore refer
 to an image unavailable on another device; views show an unavailable image and
 summary generation fails visibly instead of silently omitting that context.
-Markdown export copies referenced files into a sibling assets folder. Image
+Markdown export copies available referenced files into a sibling assets folder
+and marks unavailable images in the exported document. Image
 references are opaque identifiers, not paths or permission to read arbitrary files.
 Unreferenced image files are retained for now, including after an image or its
 meeting is deleted; undo and shared Markdown references must be accounted for

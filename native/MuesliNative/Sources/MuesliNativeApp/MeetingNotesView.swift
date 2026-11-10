@@ -78,9 +78,7 @@ struct MeetingNotesView: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { row, cells in
                     GridRow {
                         ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                            Text(Self.inline(cell))
-                                .font(MuesliTheme.font(size: 14, weight: row == 0 ? .semibold : .regular))
-                                .foregroundStyle(MuesliTheme.textPrimary)
+                            tableCell(cell, header: row == 0)
                                 .frame(minWidth: 110, maxWidth: 240, alignment: .leading)
                                 .padding(10)
                                 .background(row == 0 ? MuesliTheme.surfaceSelected : MuesliTheme.surfacePrimary)
@@ -91,6 +89,24 @@ struct MeetingNotesView: View {
             }.clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
         .padding(.vertical, 4)
+    }
+
+    private func tableCell(_ cell: String, header: Bool) -> some View {
+        let parts = Self.imageParts(cell, references: MeetingNoteImages.references(in: cell))
+        return VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                switch part {
+                case .text(let text):
+                    if !text.isEmpty {
+                        Text(Self.inline(text))
+                            .font(MuesliTheme.font(size: 14, weight: header ? .semibold : .regular))
+                            .foregroundStyle(MuesliTheme.textPrimary)
+                    }
+                case .image(let id, let width):
+                    MeetingNoteImageView(id: id, width: width)
+                }
+            }
+        }
     }
     private var highlightedLine: Int? {
         guard let range = highlightedRange, range.location >= 0, range.location <= (markdown as NSString).length else { return nil }

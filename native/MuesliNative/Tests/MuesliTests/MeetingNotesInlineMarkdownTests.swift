@@ -334,6 +334,22 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(MeetingNoteImages.references(in: coordinator.serializedMarkdown(from: view)).count == 1)
     }
 
+    @Test("list formatting retains inline images", arguments: [MarkdownEditorCommand.Kind.bullet, .checkbox])
+    @MainActor
+    func listFormattingRetainsImage(command: MarkdownEditorCommand.Kind) {
+        let marker = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let source = "Before \(marker) after"
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        view.isEditable = true
+        view.delegate = coordinator
+        coordinator.apply(markdown: source, to: view)
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        coordinator.perform(command, in: view)
+        #expect(coordinator.serializedMarkdown(from: view).contains(marker))
+        #expect((view.string as NSString).range(of: "\u{fffc}").location != NSNotFound)
+    }
+
     @Test("pasting an image is one undoable edit")
     @MainActor
     func imagePasteCanBeUndone() throws {
@@ -396,6 +412,7 @@ struct MeetingNotesInlineMarkdownTests {
     }
 
     @Test("note assets are validated, resolved, and exported with relative paths")
+    @MainActor
     func imageStorageAndExport() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -423,8 +440,18 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(exported.contains("A%20meeting-assets/\(reference.id.uuidString).png"))
         #expect(!exported.contains("muesli-note-image:"))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("A meeting-assets/\(reference.id.uuidString).png").path))
+        let pdf = MeetingExporter.buildAttributedString(from: markdown, supportDirectory: root)
+        var attachmentCount = 0
+        pdf.enumerateAttribute(.attachment, in: NSRange(location: 0, length: pdf.length)) { value, _, _ in
+            if value is NSTextAttachment { attachmentCount += 1 }
+        }
+        #expect(attachmentCount == 2)
         try FileManager.default.removeItem(at: MeetingNoteImages.url(for: reference.id, supportDirectory: root))
         #expect(throws: ChatFileError.self) { try MeetingNoteImages.inputs(in: markdown, supportDirectory: root) }
+        let missing = root.appendingPathComponent("Missing.md")
+        let placeholder = try MeetingNoteImages.exportMarkdown(markdown, to: missing, supportDirectory: root)
+        #expect(placeholder.contains("[Image unavailable on this device]"))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Missing-assets").path))
     }
 
 }

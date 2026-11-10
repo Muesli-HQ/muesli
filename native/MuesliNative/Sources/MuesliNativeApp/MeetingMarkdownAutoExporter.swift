@@ -145,7 +145,7 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
             fileExtension: "pdf"
         ) { url in
             try await MainActor.run {
-                let attributed = MeetingExporter.buildAttributedString(from: markdown)
+                let attributed = MeetingExporter.buildAttributedString(from: markdown, supportDirectory: supportDirectory)
                 try MeetingExporter.writePDF(attributed: attributed, to: url)
             }
         }

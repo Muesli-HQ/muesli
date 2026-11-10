@@ -551,7 +551,17 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                     }
                     let attachment: NSTextAttachment
                     if let cached = imageAttachments[reference.id] {
-                        attachment = cached
+                        if let image = imageCache[reference.id] {
+                            let scale = min(1, CGFloat(reference.width ?? 500) / max(image.size.width, 1))
+                            let desired = NSRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale)
+                            if cached.bounds != desired {
+                                let resized = NSTextAttachment()
+                                resized.image = image
+                                resized.bounds = desired
+                                imageAttachments[reference.id] = resized
+                                attachment = resized
+                            } else { attachment = cached }
+                        } else { attachment = cached }
                     } else {
                         attachment = NSTextAttachment()
                         attachment.image = imageCache[reference.id] ?? NSImage(systemSymbolName: "photo", accessibilityDescription: "Image unavailable")
@@ -665,33 +675,27 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private func insertLinePrefix(_ prefix: String, in textView: NSTextView) {
             let ranges = paragraphRanges(for: textView)
             let full = textView.string as NSString
-            let replacements = ranges.map { range in
-                let existingLine = full.substring(with: range).trimmingCharacters(in: .newlines)
-                return prefix + removingListPrefix(from: existingLine)
+            let prefixRanges = ranges.map { range in
+                let line = full.substring(with: range)
+                let oldLength = ["• ", "☐ ", "☑ "].contains { line.hasPrefix($0) } ? 2 : 0
+                return NSRange(location: range.location, length: oldLength)
             }
 
             isApplying = true
             var totalDelta = 0
-            for (range, replacement) in zip(ranges, replacements).reversed() {
-                textView.replaceCharacters(in: range, with: replacement)
-                totalDelta += replacement.count - range.length
+            for range in prefixRanges.reversed() {
+                textView.replaceCharacters(in: range, with: prefix)
+                totalDelta += (prefix as NSString).length - range.length
             }
             isApplying = false
 
             guard let firstRange = ranges.first, let lastRange = ranges.last else { return }
             if ranges.count == 1 {
-                textView.setSelectedRange(NSRange(location: firstRange.location + replacements[0].count, length: 0))
+                textView.setSelectedRange(NSRange(location: firstRange.upperBound + totalDelta, length: 0))
             } else {
                 let originalEnd = lastRange.location + lastRange.length
                 textView.setSelectedRange(NSRange(location: firstRange.location, length: originalEnd + totalDelta - firstRange.location))
             }
-        }
-
-        private func removingListPrefix(from line: String) -> String {
-            for existingPrefix in ["• ", "☐ ", "☑ "] where line.hasPrefix(existingPrefix) {
-                return String(line.dropFirst(existingPrefix.count))
-            }
-            return line
         }
 
         private func continueListIfNeeded(in textView: NSTextView, affectedCharRange: NSRange) {
