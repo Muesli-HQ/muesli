@@ -1129,12 +1129,24 @@ struct AppConfigTests {
     @Test func displayCaptureScopeDefaultsToFocusedAndRoundTrips() throws {
         let old = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
         #expect(old.timeTurnerCaptureScope == "focused")
+        #expect(old.timeTurnerSelectedDisplays.isEmpty)
         var config = old
         config.timeTurnerCaptureScope = "all_displays"
         let data = try JSONEncoder().encode(config)
         let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(fields["time_turner_capture_scope"] as? String == "all_displays")
         #expect(try JSONDecoder().decode(AppConfig.self, from: data).timeTurnerCaptureScope == "all_displays")
+    }
+
+    @Test func selectedDisplayIdentitiesSurviveRestart() throws {
+        var config = AppConfig()
+        config.timeTurnerCaptureScope = "selected_displays"
+        config.timeTurnerSelectedDisplays = ["stable-a": "Studio Display", "stable-b": "Studio Display"]
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(decoded.timeTurnerCaptureScope == "selected_displays")
+        #expect(decoded.timeTurnerSelectedDisplays == config.timeTurnerSelectedDisplays)
+        // Duplicate human-readable monitor names do not collapse physical identities.
+        #expect(decoded.timeTurnerSelectedDisplays.count == 2)
     }
 
 

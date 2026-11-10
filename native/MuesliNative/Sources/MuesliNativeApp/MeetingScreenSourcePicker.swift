@@ -76,7 +76,7 @@ struct MeetingScreenSourcePicker: View {
 }
 
 @MainActor
-private struct MeetingScreenThumbnail: View {
+struct MeetingScreenThumbnail: View {
     let source: MeetingScreenSource
     @State private var image: NSImage?
     @State private var failed = false

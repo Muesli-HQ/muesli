@@ -890,7 +890,15 @@ CLI history/search/get expose these optional fields. The internal chat `screens`
 projection lists included app names in `app` and the display in `title`.
 
 Settings stores `time_turner_capture_scope` as `focused` (the compatible default)
-or `all_displays`. All displays captures each non-mirrored connected display
+or `all_displays`, plus `selected_displays` for an explicit monitor selection.
+`time_turner_selected_displays` is a local config dictionary of stable CoreGraphics
+display UUIDs to last-known display names, decoding to an empty dictionary in older
+configs. Setup previews connected monitors and saves the chosen set at Finish;
+settings offers the same picker. Disconnected selections persist across restarts.
+New monitors are not implicitly selected; an empty or disconnected selection never
+falls back to another monitor. Selection changes invalidate in-flight capture.
+Preview images are transient and never saved to the history catalog.
+All displays captures each non-mirrored connected display
 separately and sequentially, with its actual acquisition timestamp and pixel size.
 It includes eligible normal app windows only, omitting desktop, Dock, menu bar,
 notifications, excluded apps and detected private/secure apps. This is best-effort
@@ -898,7 +906,7 @@ private-content detection, not pixel redaction. Each display has independent
 change detection. Display enumeration is refreshed each interval; disconnection
 or changing window identity during acquisition discards that display's sample.
 Pause, lock, inactivity, meeting recording and privacy gates apply to all displays.
-Storage budgets remain shared, and estimates scale with connected display count.
+Storage budgets remain shared; estimates scale with selected display count (or connected count in All displays mode).
 
 The additive local `time_turner_lifecycle` table has one row (`id=1`) with
 `capture_ready_at` as fractional Unix seconds. It is set once when Time Turner is

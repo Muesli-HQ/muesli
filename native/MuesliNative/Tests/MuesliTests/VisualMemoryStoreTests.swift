@@ -8,6 +8,20 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+
+    @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
+        let selected: Set<String> = ["external-a", "external-b"]
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))
+        // A newly connected display, even with a reused numeric display ID, is not selected.
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "built-in", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: []))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "focused", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "unknown", selected: selected))
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "all_displays", selected: []))
+        // Reconnection uses the saved UUID, independent of enumeration order or numeric ID.
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-b", scope: "selected_displays", selected: selected))
+    }
     private func removeDisplaySchema(_ db: OpaquePointer?) throws {
         #expect(sqlite3_exec(db, """
             DROP TRIGGER capture_display_insert;

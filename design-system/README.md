@@ -526,7 +526,12 @@ summaries never replace that document. Legacy meetings keep Notes / Transcript u
 After that, Saved notes holds the current source, and a collapsed Previous notes
 disclosure in Summary exposes the other pre-upgrade document when present.
 
-Time Turner Capture settings and onboarding share the canonical Capture menu:
-Focused window or All displays. Whole-display history shows a display symbol and
+Time Turner Capture settings use the canonical Capture menu: Focused window,
+All displays, or Selected displays. Setup adds a multi-select monitor preview step
+after permissions, reusing the meeting screen picker's thumbnail renderer. Connected
+monitors start checked on first setup; choices are saved only at Finish. Settings
+“Choose displays…” edits the same persistent selection with Save/Cancel. Disconnected
+monitors retain their selection; newly connected ones require selection. Preview
+cards use semantic borders, checkmarks and accessible selection traits. Whole-display history shows a display symbol and
 display/app label instead of attributing the image to a single app. All displays
 keeps one compact scrubber; each monitor's sample remains independently selectable.

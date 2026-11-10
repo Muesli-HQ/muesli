@@ -19,6 +19,11 @@ public struct VisualMemoryApp: Codable, Sendable, Equatable, Hashable {
 
 /// Pure policy shared by capture planning and synthetic multi-monitor regressions.
 public enum VisualMemoryDisplayPolicy {
+    /// Selection never falls back to an unselected display after disconnection.
+    public static func selects(uuid: String, scope: String, selected: Set<String>) -> Bool {
+        scope == "all_displays" || (scope == "selected_displays" && selected.contains(uuid))
+    }
+
     public static func includes(window: CGRect, layer: Int, display: CGRect,
                                 bundleID: String, title: String, excluded: Set<String>) -> Bool {
         guard layer == 0, !bundleID.isEmpty, !excluded.contains(bundleID),

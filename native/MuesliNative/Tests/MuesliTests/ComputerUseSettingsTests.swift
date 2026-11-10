@@ -9,6 +9,25 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Display selection requires explicit resources and persists atomically")
+    func timeTurnerSelectedDisplays() async throws {
+        try await withShortcutSettings { controller, configStore in
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
+            }
+            #expect(controller.config.timeTurnerCaptureScope == "focused")
+            controller.saveTimeTurnerDisplays(["external-uuid": "External monitor"])
+            #expect(configStore.load().timeTurnerCaptureScope == "selected_displays")
+            #expect(configStore.load().timeTurnerSelectedDisplays == ["external-uuid": "External monitor"])
+            // Empty selection cannot erase the saved set or silently enable all monitors.
+            controller.saveTimeTurnerDisplays([:])
+            #expect(configStore.load().timeTurnerSelectedDisplays.count == 1)
+            try await controller.applySetting("time_turner_capture_scope", value: "focused")
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
+            #expect(controller.config.timeTurnerSelectedDisplays.count == 1)
+        }
+    }
+
     @Test("Feedback checks chord conflicts without changing the shared bare modifier rule")
     func feedbackChordConflicts() async throws {
         let feedback = HotkeyConfig.feedbackCaptureDefault

@@ -337,8 +337,12 @@ extension MuesliController {
             toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
         }
 
-        textMenu("time_turner_capture_scope", "Capture", [Choice(id: "focused", label: "Focused window"),
-            Choice(id: "all_displays", label: "All displays")], \.timeTurnerCaptureScope)
+        add("time_turner_capture_scope", "Capture", [Choice(id: "focused", label: "Focused window"),
+            Choice(id: "all_displays", label: "All displays"), Choice(id: "selected_displays", label: "Selected displays")],
+            read: { $0.timeTurnerCaptureScope }, unavailable: { value in
+                value == "selected_displays" && self.config.timeTurnerSelectedDisplays.isEmpty
+                    ? "Choose displays in Time Turner settings first." : nil
+            }) { value in self.updateConfig { $0.timeTurnerCaptureScope = value } }
         textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
             Choice(id: $0, label: "\($0) seconds")
         }, \.timeTurnerInterval)
