@@ -249,7 +249,14 @@ final class AppState {
     /// Keep the complete cache for attendee reconciliation and hidden-event pruning.
     /// Calendar presentation and passive detection share this filtered view.
     var visibleUpcomingCalendarEvents: [UnifiedCalendarEvent] {
-        upcomingCalendarEvents.filter {
+        let window = config.upcomingMeetingsWindow
+        let end = UpcomingMeetingsWindow.endDate(dayCount: window.dayCount, hourCount: window.hourCount) ?? Date()
+        return visibleMenuBarCalendarEvents.filter { $0.startDate < end }
+    }
+
+    /// The label can show the next meeting anywhere today, independently of the agenda window.
+    var visibleMenuBarCalendarEvents: [UnifiedCalendarEvent] {
+        UnifiedCalendarEvent.filter(upcomingCalendarEvents, disabledCalendarIDs: Set(config.disabledCalendarIDs)).filter {
             !$0.isAllDay && !hiddenCalendarEventIDs.contains($0.id)
                 && (!config.calendarMeetingLinksOnly || $0.meetingURL != nil)
         }

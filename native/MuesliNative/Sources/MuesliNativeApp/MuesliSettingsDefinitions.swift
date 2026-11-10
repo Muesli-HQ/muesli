@@ -362,6 +362,13 @@ extension MuesliController {
         toggle("mute_audio", "Mute system audio during dictation", \.muteSystemAudioDuringDictation)
         toggle("show_hotkey_menu", "Show shortcut in menu bar", \.showHotkeyInMenuBar)
         toggle("show_next_meeting", "Show next meeting in menu bar", \.showNextMeetingInMenuBar)
+        toggle("show_invite_documents", "Show invite documents", \.showInviteDocuments)
+        add("calendar_menu_label", "Meeting label", CalendarMenuLabelStyle.allCases.map {
+            Choice(id: $0.rawValue, label: $0.title)
+        }, read: { $0.calendarMenuLabelStyle.rawValue }) { value in
+            guard let style = CalendarMenuLabelStyle(rawValue: value) else { return }
+            self.updateConfig { $0.calendarMenuLabelStyle = style }
+        }
         toggle("show_floating_indicator", "Always show floating indicator", \.showFloatingIndicator) { enabled in
             self.updateConfig { $0.showFloatingIndicator = enabled }
             self.refreshIndicatorVisibility()

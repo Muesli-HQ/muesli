@@ -288,6 +288,10 @@ case "${shard}" in
       CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
+      CalendarMenuPresentationTests
+      CalendarMenuActionTests
+      CalendarInviteDocumentTests
+      CalendarDocumentTitleResolverTests
       MeetingTitleLayoutTests
     )
     ;;
