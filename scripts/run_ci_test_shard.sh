@@ -53,6 +53,7 @@ case "${shard}" in
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
       OpenRouterAuthTests
+      PlusPreviewAccountTests
       SettingsPermissionRefreshReasonTests
       InteractionPermissionMonitorTests
       PermissionRestartRecoveryTests
