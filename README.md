@@ -33,10 +33,9 @@ Muesli is a **native macOS app for dictation and meeting transcription**, built 
 Speech recognition runs on your Mac by default. Hosted transcription and AI features are optional and send the content needed for the selected task to your provider. iCloud sync transfers text and sync metadata, never audio. See [Muesli's privacy policy](https://muesli.works/privacy).
 
 <p align="center">
-  <img src="assets/muesli-github-ss.png" alt="Muesli 0.8.4 Timeline with illustrative dictation, meeting, iPhone, and Computer Use entries" width="900" />
+  <img src="assets/muesli-github-ss.png" alt="muesli Timeline with illustrative activity, meeting folders, and feature navigation" width="900" />
 </p>
 
-<p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
 
 ## Features
 
@@ -64,7 +63,7 @@ Opt in under **Settings → Experimental**; availability depends on your build a
 - **[Time Turner](docs/visual-memory.md)** — Search local screen history by text, app, and date, generate source-linked daily recaps with your selected meeting model, and retrieve OCR and screenshots through `muesli-cli time-turner`.
 - **Computer Use voice commands** — Control apps, browsers, and supported muesli settings with on-device Gemma on macOS 15+ or a connected ChatGPT account; AI prompt settings remain manual-only.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
-- **Cotypist typeahead (experimental)** — Enable Cotypist in Settings for on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word. Off by default. Accepted suggestions appear in your local Timeline with the preceding text and app name.
+- **Cotypist typeahead** — Enable Cotypist in Settings for on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word. Off by default. Accepted suggestions appear in your local Timeline with the preceding text and app name.
 
 ---
 

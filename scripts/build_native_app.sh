@@ -19,7 +19,7 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.5"
+DEFAULT_APP_VERSION="0.8.6"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -400,6 +400,8 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>$APP_DISPLAY_NAME records microphone audio for dictation, meetings, and Vidshot narration.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>$APP_DISPLAY_NAME checks your browser's active tab to identify meeting links.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>

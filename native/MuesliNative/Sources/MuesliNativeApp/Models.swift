@@ -2292,6 +2292,10 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
+private enum LegacyAutoStopCodingKey: String, CodingKey {
+    case zoomMeetingAutoStopEnabled = "zoom_meeting_auto_stop_enabled"
+}
+
 struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -2340,6 +2344,7 @@ struct AppConfig: Codable, Equatable {
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
+    var meetingAutoStopEnabled: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -2554,6 +2559,7 @@ struct AppConfig: Codable, Equatable {
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case meetingAutoStopEnabled = "meeting_auto_stop_enabled"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -2796,6 +2802,10 @@ struct AppConfig: Codable, Equatable {
             (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
             ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        let legacyAutoStop = try? decoder.container(keyedBy: LegacyAutoStopCodingKey.self)
+            .decode(Bool.self, forKey: .zoomMeetingAutoStopEnabled)
+        meetingAutoStopEnabled = (try? c.decode(Bool.self, forKey: .meetingAutoStopEnabled))
+            ?? legacyAutoStop ?? defaults.meetingAutoStopEnabled
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))

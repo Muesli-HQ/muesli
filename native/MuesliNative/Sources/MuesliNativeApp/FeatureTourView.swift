@@ -98,7 +98,7 @@ struct FeatureTourCalloutLayout {
 
     private static func preferredEdges(for target: FeatureTourTarget) -> [FeatureTourCalloutEdge] {
         switch target {
-        case .timelineSidebar, .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .searchSidebar:
+        case .timelineSidebar, .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .vidshotsSidebar, .searchSidebar:
             return [.trailing, .leading, .below, .above]
         case .granolaImport, .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
             return [.below, .above, .trailing, .leading]
@@ -368,6 +368,8 @@ private struct FeatureTourIconView: View {
             Image(nsImage: Self.quill).resizable().scaledToFit()
         case .timeTurner:
             Image(nsImage: Self.timeTurner).resizable().scaledToFit()
+        case .vidshot:
+            VidshotIcon()
         }
     }
 }

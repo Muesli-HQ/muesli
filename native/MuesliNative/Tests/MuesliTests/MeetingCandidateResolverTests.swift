@@ -12,6 +12,45 @@ struct MeetingCandidateResolverTests {
         return resolver
     }
 
+    @Test("nearby Google Meet does not label or attach an unrelated detected Zoom call")
+    func unrelatedZoomDoesNotInheritCalendarMeeting() throws {
+        let meetURL = try #require(URL(string: "https://meet.google.com/abc-defg-hij"))
+        let context = CalendarEventContext(id: "calendar", title: "Scheduled Meet", meetingURL: meetURL)
+        let detected = try #require(resolver().resolve(snapshot(
+            micActive: false, cameraActive: false, calendarEvent: context,
+            audioInputProcesses: [AudioProcessActivity(pid: 4321, bundleID: "us.zoom.xos", appName: "Zoom",
+                isRunningInput: true, isRunningOutput: false)]
+        )))
+        let candidate = try #require(MeetingCalendarAssociation.sanitize(detected, calendarEvent: context))
+        #expect(candidate.platform == .zoom)
+        #expect(candidate.subtitle == "Zoom")
+        #expect(!candidate.evidence.contains(.calendarEvent))
+        #expect(!MeetingCalendarAssociation.matches(candidate: candidate, meetingURL: meetURL))
+        #expect(ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: MeetingAutoStopSource(candidate: candidate).normalizedURL,
+            scheduledRoom: MeetingAutoStopSource(meetingURL: meetURL)?.normalizedURL
+        ))
+    }
+
+    @Test("calendar association requires a matching room even for the same platform")
+    func calendarAssociationRequiresRoomIdentity() throws {
+        let context = CalendarEventContext(id: "calendar", title: "Scheduled Meet",
+            meetingURL: URL(string: "https://meet.google.com/meet/abc-defg-hij?authuser=0"))
+        func candidate(_ url: String?) -> MeetingCandidate {
+            MeetingCandidate(id: "detected", platform: .googleMeet, appName: "Chrome", url: url,
+                evidence: [.browserURL, .calendarEvent], startedAt: now, meetingTitle: "Old title",
+                sourceBundleID: "com.google.Chrome")
+        }
+        let matched = try #require(MeetingCalendarAssociation.sanitize(candidate("meet.google.com/abc-defg-hij"), calendarEvent: context))
+        #expect(matched.meetingTitle == "Scheduled Meet" && matched.evidence.contains(.calendarEvent))
+        let other = try #require(MeetingCalendarAssociation.sanitize(candidate("meet.google.com/xyz-abcd-efg"), calendarEvent: context))
+        #expect(other.meetingTitle == nil && !other.evidence.contains(.calendarEvent))
+        let unknown = try #require(MeetingCalendarAssociation.sanitize(candidate(nil), calendarEvent: context))
+        #expect(unknown.meetingTitle == nil && !unknown.evidence.contains(.calendarEvent))
+        let noEvent = try #require(MeetingCalendarAssociation.sanitize(candidate("meet.google.com/abc-defg-hij"), calendarEvent: nil))
+        #expect(noEvent.meetingTitle == nil && !noEvent.evidence.contains(.calendarEvent))
+    }
+
     private func snapshot(
         micActive: Bool = true,
         cameraActive: Bool = true,
@@ -1114,11 +1153,17 @@ struct MeetingCandidateResolverTests {
         #expect(normalized?.id == "googleMeet:meet.google.com/pwm-txwq-txy")
         #expect(normalized?.url == "meet.google.com/pwm-txwq-txy")
         #expect(normalized?.platform == .googleMeet)
+        let prefixed = MeetingURLNormalizer.normalize("https://meet.google.com/meet/pwm-txwq-txy?authuser=0")
+        #expect(prefixed?.id == normalized?.id)
+        #expect(prefixed?.url == normalized?.url)
+        #expect(prefixed?.platform == .googleMeet)
     }
 
     @Test("URL normalizer rejects Google Meet landing pages")
     func googleMeetURLNormalizationRejectsLandingPages() {
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/landing") == nil)
         #expect(MeetingURLNormalizer.normalize("https://meet.google.com/") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://meet.google.com/meet/") == nil)
+        #expect(MeetingURLNormalizer.normalize("https://meet.google.com/meet/landing") == nil)
     }
 }
