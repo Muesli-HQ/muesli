@@ -522,4 +522,6 @@ never use the raw saved accent as a label color on a neutral surface.
 
 New completed meetings show a segmented Summary / Your notes / Transcript control.
 Your notes reuses the live note editor and its inline save status; generated
-summaries never replace that document. Legacy meetings keep Notes / Transcript.
+summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
+After that, Saved notes holds the current source, and a collapsed Previous notes
+disclosure in Summary exposes the other pre-upgrade document when present.

@@ -1286,6 +1286,7 @@ final class MuesliICloudSyncEngine {
             cloud["speakerTranscript"] = nil as NSString?
             cloud["summaryText"] = nil as NSString?
             cloud["manualNotes"] = nil as NSString?
+            cloud["previousNotes"] = nil as NSString?
             cloud["followUpToRecordName"] = nil as NSString?
             return cloud
         }
@@ -1294,6 +1295,7 @@ final class MuesliICloudSyncEngine {
         cloud["speakerTranscript"] = record.speakerTranscript as NSString?
         cloud["summaryText"] = record.summaryText as NSString?
         cloud["manualNotes"] = record.manualNotes as NSString?
+        cloud["previousNotes"] = record.previousNotes as NSString?
         cloud["notesLayoutVersion"] = record.notesLayoutVersion.map { NSNumber(value: $0) }
         return cloud
     }
@@ -1324,6 +1326,7 @@ final class MuesliICloudSyncEngine {
             speakerTranscript: record["speakerTranscript"] as? String,
             summaryText: record["summaryText"] as? String,
             manualNotes: record["manualNotes"] as? String,
+            previousNotes: record["previousNotes"] as? String,
             notesLayoutVersion: (record["notesLayoutVersion"] as? NSNumber)?.intValue,
             source: record["source"] as? String,
             localSource: record["localSource"] as? String,
@@ -1600,7 +1603,7 @@ final class MuesliICloudSyncEngine {
             "speakerTranscript",
             "summaryText",
             "manualNotes",
-            "notesLayoutVersion",
+            "notesLayoutVersion", "previousNotes",
             "source",
             "localSource",
             "meetingStatus",

@@ -343,13 +343,22 @@ from generated output or feed a previous summary back into a new-layout request.
 Saving a summary must not modify user notes. Completed meetings expose Summary,
 Your notes, and Transcript; full exports include both note documents.
 
-The additive column defaults to 0. Existing rows and Granola imports retain
-their legacy combined-document presentation and content without extraction,
-matching, or rewriting. Missing/invalid Codable layout metadata defaults to
-legacy. The optional sync field `notesLayoutVersion` carries this presentation
-contract with the already-synced note fields; an older client's absent marker
-must not downgrade an existing separated record. It does not sync image bytes.
+The layout column defaults to 0. Installing the update or opening an existing
+meeting does not rewrite either document. On the first replacement summary,
+the same SQLite update saves the new summary and switches the row to layout 1.
+For an ordinary completed legacy record, the old visible combined document
+becomes editable Saved notes; the historical manual document is retained
+verbatim in nullable `previous_notes`. When finishing a recording/resume or
+regenerating a Granola import, the live/imported manual document remains the
+editable source and the old formatted document becomes Previous notes. Neither
+path attempts to infer authorship. Later generations never append or replace
+Previous notes; it is available in the summary disclosure and full export,
+but is not provider input. Template selection alone does not convert a record.
 
+Missing layout metadata defaults to legacy. Sync carries `notesLayoutVersion`
+and the optional `previousNotes` text; older clients omitting these fields
+must not downgrade the layout or erase the preserved document. Tombstones
+clear note text, including the previous document. Image bytes stay local.
 
 Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
 optionally with `?width=<points>` for the displayed size. The width does not

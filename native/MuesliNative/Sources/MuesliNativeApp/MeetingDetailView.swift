@@ -743,7 +743,13 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
+                if documentMode == .notes, let previous = meeting.previousNotes, !previous.isEmpty {
+                    DisclosureGroup("Previous notes") {
+                        MeetingNotesView(markdown: previous)
+                            .frame(height: 200)
+                    }
+                }
+                if !meeting.hasSeparateUserNotes, meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
                     DisclosureGroup("Original manual notes from Granola") {
                         MeetingNotesView(markdown: meeting.manualNotes)
                             .frame(height: 200)
@@ -785,7 +791,7 @@ struct MeetingDetailView: View {
         Picker("", selection: $documentMode) {
             Text(meeting?.hasSeparateUserNotes == true ? "Summary" : "Notes").tag(MeetingDocumentMode.notes)
             if meeting?.hasSeparateUserNotes == true {
-                Text("Your notes").tag(MeetingDocumentMode.userNotes)
+                Text(meeting?.previousNotes == nil ? "Your notes" : "Saved notes").tag(MeetingDocumentMode.userNotes)
             }
             Text("Transcript").tag(MeetingDocumentMode.transcript)
         }

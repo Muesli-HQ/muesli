@@ -127,8 +127,11 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
+            if let previous = meeting.previousNotes, !previous.isEmpty {
+                parts += ["## Previous notes", previous, ""]
+            }
             if (meeting.hasSeparateUserNotes || meeting.source == .granolaImport), !meeting.manualNotes.isEmpty {
-                parts.append(meeting.hasSeparateUserNotes ? "## Your notes" : "## Original manual notes from Granola")
+                parts.append(meeting.previousNotes != nil ? "## Saved notes" : (meeting.hasSeparateUserNotes ? "## Your notes" : "## Original manual notes from Granola"))
                 parts.append(meeting.manualNotes)
                 parts.append("")
             }

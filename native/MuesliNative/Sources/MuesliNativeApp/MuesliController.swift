@@ -6961,7 +6961,7 @@ public final class MuesliController: NSObject {
         try dictationStore.updateMeetingSummary(
             id: meetingID, title: meeting.title, formattedNotes: meeting.formattedNotes,
             selectedTemplateID: template.id, selectedTemplateName: template.name,
-            selectedTemplateKind: template.kind, selectedTemplatePrompt: template.prompt
+            selectedTemplateKind: template.kind, selectedTemplatePrompt: template.prompt, replacingSummary: false
         )
         lastRecordingTemplateSelection = (meetingID, template)
         scheduleICloudSyncAfterLocalChange()
@@ -6986,9 +6986,12 @@ public final class MuesliController: NSObject {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         flushCachedMeetingManualNotes(id: meeting.id, sync: false)
-        let currentManualNotes = liveManualNotesCache[meeting.id]
+        // A successfully persisted cache entry may predate a sync or a legacy
+        // document promotion. Only an unsaved edit takes precedence over SQLite.
+        let cached = liveManualNotesCache[meeting.id]
+        let currentManualNotes = cached != liveManualNotesLastPersistedValue[meeting.id] ? cached : nil
         let meeting = (try? dictationStore.meeting(id: meeting.id)) ?? meeting
-        let summaryManualNotes = meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.usesImportedManualNotes
+        let summaryManualNotes = meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.source == .granolaImport
             ? (currentManualNotes ?? meeting.manualNotes)
             : Self.manualNotesForResummary(meeting)
         let summaryConfig = summaryConfig ?? config
@@ -7235,7 +7238,9 @@ public final class MuesliController: NSObject {
                         selectedTemplateID: templateSnapshot.id,
                         selectedTemplateName: templateSnapshot.name,
                         selectedTemplateKind: templateSnapshot.kind,
-                        selectedTemplatePrompt: templateSnapshot.prompt
+                        selectedTemplatePrompt: templateSnapshot.prompt,
+                        replacingSummary: summaryFailureWarning == nil,
+                        originalStatus: meeting.status
                     )
                 } catch {
                     if error is CancellationError { throw error }
@@ -7495,7 +7500,7 @@ public final class MuesliController: NSObject {
 
     static func manualNotesForResummary(_ meeting: MeetingRecord) -> String {
         // Do not infer authorship by matching fragments in legacy documents.
-        if meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.usesImportedManualNotes {
+        if meeting.hasSeparateUserNotes || meeting.status != .completed || meeting.source == .granolaImport {
             return meeting.manualNotes
         }
         return ""
@@ -10120,7 +10125,7 @@ public final class MuesliController: NSObject {
                 meetingTitle: result.title,
                 config: config,
                 template: result.templateSnapshot,
-                existingNotes: nil,
+                existingNotes: originalMeeting.flatMap(Self.notesContextForResummary),
                 manualNotesToRetain: manualNotes,
                 participantNames: participantNames,
                 visualContext: mergedVisualContext
@@ -10130,8 +10135,7 @@ public final class MuesliController: NSObject {
             regeneratedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: combined,
                 meetingTitle: result.title,
-                error: error,
-                manualNotes: originalMeeting?.hasSeparateUserNotes == true ? nil : manualNotes
+                error: error
             )
         }
         return result.overriding(
