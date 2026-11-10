@@ -11,14 +11,15 @@ BUILD_CONFIG="${1:-release}"
 APP_BINARY="MuesliNativeApp"
 CLI_BINARY="muesli-cli"
 APP_NAME="${MUESLI_APP_NAME:-Muesli}"
-APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$APP_NAME}"
+DEFAULT_APP_DISPLAY_NAME="${APP_NAME/#Muesli/muesli}"
+APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$DEFAULT_APP_DISPLAY_NAME}"
 APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
 APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Muesli}"
-APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_DISPLAY_NAME}"
+APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.5"
+DEFAULT_APP_VERSION="0.8.6"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -347,9 +348,8 @@ cp "$ROOT/assets/linkedin-logo.png" "$STAGED_APP_DIR/Contents/Resources/linkedin
 cp "$ROOT/assets/insights-share-background.png" "$STAGED_APP_DIR/Contents/Resources/insights-share-background.png"
 cp "$ROOT/assets/muesli_app_icon.png" "$STAGED_APP_DIR/Contents/Resources/muesli_app_icon.png"
 cp "$ROOT/assets/quill-icon.svg" "$STAGED_APP_DIR/Contents/Resources/quill-icon.svg"
-if [[ -d "$ROOT/assets/fonts" ]]; then
-  ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
-fi
+# App typography ships in the MuesliNativeApp SwiftPM resource bundle. Do not
+# also ship the retired Inter assets; no native surface loads them anymore.
 if [[ -d "$ROOT/assets/audio" ]]; then
   ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
@@ -362,7 +362,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleDisplayName</key>
   <string>$APP_DISPLAY_NAME</string>
   <key>CFBundleIdentifier</key>
@@ -375,6 +375,17 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>com.muesli.sidebar-tab</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>public.data</string></array>
+      <key>UTTypeDescription</key>
+      <string>muesli sidebar navigation item</string>
+    </dict>
+  </array>
   <key>CFBundleIconFile</key>
   <string>muesli.icns</string>
   <key>MuesliSupportDirectoryName</key>
@@ -388,7 +399,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key>
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
+  <string>$APP_DISPLAY_NAME records microphone audio for dictation, meetings, and Vidshot narration.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads the address of your active browser tab to recognize which online meeting you are in, so it can match the call to your calendar event for the meeting title and speaker names. This is optional: if you choose Don't Allow, recording still works and meetings are named by time.</string>
   <key>NSInputMonitoringUsageDescription</key>
@@ -396,7 +407,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>NSAudioCaptureUsageDescription</key>
   <string>$APP_DISPLAY_NAME captures system audio from other applications during meeting recordings.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>$APP_DISPLAY_NAME captures screen content for meeting context.</string>
+  <string>$APP_DISPLAY_NAME captures screen content for meetings and selected Vidshot recordings.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads calendar events to help with meeting recordings.</string>
   <key>NSContactsUsageDescription</key>
@@ -424,13 +435,10 @@ bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME
 
 # Cotypist (experimental): the typeahead input method lives inside the app and is registered by
 # Muesli at launch. It owns keys and the inline ghost; Muesli does the rest. Muesli enables the
-# feature only when this helper is bundled, so this flag is the single switch. Dev bundle IDs get
-# it by default; a public release opts in with MUESLI_INCLUDE_COTYPIST=1 and then goes through the
-# same Developer ID signing, hardened runtime, timestamp and notarization as the app.
-INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-}"
-if [[ -z "$INCLUDE_COTYPIST" ]]; then
-  [[ "$BUNDLE_ID" == com.muesli.dev* ]] && INCLUDE_COTYPIST=1 || INCLUDE_COTYPIST=0
-fi
+# feature only when this helper is bundled. Include it in all builds by default; users still
+# enable Cotypist in Settings. MUESLI_INCLUDE_COTYPIST=0 explicitly omits the helper.
+# Release helpers use the app's Developer ID signing, hardened runtime and notarization.
+INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-1}"
 if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"

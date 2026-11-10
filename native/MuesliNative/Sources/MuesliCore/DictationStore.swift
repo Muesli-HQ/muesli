@@ -1,10 +1,14 @@
 import Foundation
 import SQLite3
+import CryptoKit
 
 public enum DictationStoreError: Error, LocalizedError {
     case dictationNotFound(id: Int64)
     case meetingNotFound(id: Int64)
     case invalidParticipantIdentifier
+    case staleParticipantSuggestion
+    case invalidPeopleMerge
+    case peopleMergeUndoOrder
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +18,12 @@ public enum DictationStoreError: Error, LocalizedError {
             return "Meeting \(id) no longer exists."
         case .invalidParticipantIdentifier:
             return "That meeting participant could not be identified."
+        case .invalidPeopleMerge:
+            return "These people changed. Refresh the list and try again."
+        case .peopleMergeUndoOrder:
+            return "Undo newer merges involving these people first."
+        case .staleParticipantSuggestion:
+            return "The meeting changed. Find participants again to review current evidence."
         }
     }
 }
@@ -33,7 +43,17 @@ public final class DictationStore {
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let iso8601FormatterLock = NSLock()
 
+    private let wordObserverLock = NSLock()
+    private var wordObserver: (@Sendable (Int64, Int) -> Void)?
+    /// Local successful normal inserts only; never sync imports or recovery retries.
+    /// The observer must enqueue work without waiting for disk/network activity.
+    public var onLocalDictationWords: (@Sendable (Int64, Int) -> Void)? {
+        get { wordObserverLock.withLock { wordObserver } }
+        set { wordObserverLock.withLock { wordObserver = newValue } }
+    }
+
     private let databaseURL: URL
+    private let readOnly: Bool
     private static let dictationColumns = """
     d.id, d.timestamp, d.duration_seconds, d.raw_text, d.app_context, d.word_count, d.source,
     d.target_app_name, d.target_app_bundle_id,
@@ -45,10 +65,12 @@ public final class DictationStore {
 
     public init() {
         self.databaseURL = MuesliPaths.defaultDatabaseURL()
+        self.readOnly = false
     }
 
-    public init(databaseURL: URL) {
+    public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL
+        self.readOnly = readOnly
     }
 
     public var resolvedDatabaseURL: URL {
@@ -148,10 +170,26 @@ public final class DictationStore {
             insertion_order INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT 'manual',
             is_suppressed INTEGER NOT NULL DEFAULT 0,
+            person_id TEXT,
             PRIMARY KEY (meeting_id, participant_identifier)
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_participants_order
             ON meeting_participants(meeting_id, insertion_order);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_identity
+            ON meeting_participants(participant_identifier, meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_email
+            ON meeting_participants(email_address COLLATE NOCASE, meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_name
+            ON meeting_participants(display_name COLLATE NOCASE, meeting_id);
+        CREATE TABLE IF NOT EXISTS meeting_participant_suggestions (
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+            fingerprint TEXT NOT NULL,
+            name TEXT NOT NULL COLLATE NOCASE,
+            source TEXT NOT NULL,
+            excerpt TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            PRIMARY KEY(meeting_id, fingerprint, name)
+        );
 
         CREATE TABLE IF NOT EXISTS meeting_transcript_checkpoints (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -261,6 +299,7 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
             "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meeting_participants ADD COLUMN person_id TEXT",
             "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
         ] {
             guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
@@ -272,6 +311,57 @@ public final class DictationStore {
                 throw lastError(db)
             }
         }
+        // Partial indexes keep the one-time legacy mobile-history check bounded.
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_dictations_mobile_origin ON dictations(id)
+                WHERE deleted_at IS NULL AND LOWER(TRIM(COALESCE(source,''))) = 'ios';
+            CREATE INDEX IF NOT EXISTS idx_meetings_mobile_origin ON meetings(id)
+                WHERE deleted_at IS NULL AND LOWER(TRIM(COALESCE(source,''))) = 'ios';
+            """, db: db)
+        try exec("""
+            CREATE TRIGGER IF NOT EXISTS meeting_participant_suggestions_invalidate
+            AFTER UPDATE OF raw_transcript, manual_notes, deleted_at ON meetings
+            WHEN OLD.raw_transcript IS NOT NEW.raw_transcript OR OLD.manual_notes IS NOT NEW.manual_notes
+              OR (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
+            BEGIN DELETE FROM meeting_participant_suggestions WHERE meeting_id=NEW.id; END;
+            """, db: db)
+        // A person is local and stable; source identifiers and email addresses are
+        // provenance, not the identity itself. Backfill only exact source identities.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS meeting_people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_meeting_people_name ON meeting_people(display_name COLLATE NOCASE, id);
+            CREATE TABLE IF NOT EXISTS meeting_person_identifiers (
+                identifier TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES meeting_people(id));
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_identifiers_person
+                ON meeting_person_identifiers(person_id, identifier);
+            CREATE TABLE IF NOT EXISTS meeting_people_merges (
+                id TEXT PRIMARY KEY, target_id TEXT NOT NULL, source_id TEXT NOT NULL,
+                target_name TEXT NOT NULL, source_name TEXT NOT NULL, created_at REAL NOT NULL,
+                undone INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS idx_meeting_people_merges_active ON meeting_people_merges(undone,created_at);
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_identifiers (
+                merge_id TEXT NOT NULL, identifier TEXT NOT NULL, PRIMARY KEY(merge_id,identifier));
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_emails (
+                merge_id TEXT NOT NULL, email TEXT NOT NULL COLLATE NOCASE, source_identifier TEXT NOT NULL,
+                target_had INTEGER NOT NULL, PRIMARY KEY(merge_id,email,source_identifier));
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_participants (
+                merge_id TEXT NOT NULL, meeting_id INTEGER NOT NULL, identifier TEXT NOT NULL,
+                PRIMARY KEY(merge_id,meeting_id,identifier));
+            CREATE TABLE IF NOT EXISTS meeting_person_emails (
+                person_id TEXT NOT NULL REFERENCES meeting_people(id), email TEXT NOT NULL COLLATE NOCASE,
+                source_identifier TEXT NOT NULL, PRIMARY KEY(person_id, email, source_identifier));
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_emails_email ON meeting_person_emails(email, person_id);
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_emails_source ON meeting_person_emails(source_identifier, person_id);
+            CREATE INDEX IF NOT EXISTS idx_meeting_participants_person ON meeting_participants(person_id, meeting_id);
+            """, db: db)
+        try MeetingChatSQL.transaction(db: db) {
+            let migrated = try MeetingChatSQL.rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_people_v1'", db: db) { _ in true }.first ?? false
+            if !migrated {
+                try backfillMeetingPeople(db: db)
+                try MeetingChatSQL.execute("INSERT INTO local_migrations VALUES('meeting_people_v1',strftime('%s','now'))", db: db)
+            }
+        }
+        try installMeetingPeopleSearch(db: db)
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
             db,
@@ -350,8 +440,10 @@ public final class DictationStore {
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
+        try FeedbackCaptureStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
+        try migrateQuillHistory(db: db)
         try backfillQuillStatisticsIfNeeded(db: db)
         try repairLegacyMacOriginSources(db: db)
         try renameLegacyGranolaImportFolder(db: db)
@@ -456,6 +548,128 @@ public final class DictationStore {
         """, db: db)
     }
 
+    // MARK: - Quill conversations
+
+    // Quill history is local-only. Deleted session identities remain as tombstones
+    // so an in-flight preview or response cannot resurrect a deleted conversation.
+    private func migrateQuillHistory(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE TABLE IF NOT EXISTS quill_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL UNIQUE,
+            timestamp TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'quill',
+            deleted_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS quill_conversation_turns (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            turn_id TEXT NOT NULL UNIQUE,
+            conversation_id INTEGER NOT NULL REFERENCES quill_conversations(id) ON DELETE CASCADE,
+            body TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quill_turns_conversation ON quill_conversation_turns(conversation_id, seq);
+        """, db: db)
+    }
+
+    public func appendQuillTurn(sessionID: UUID, turn: QuillHistoryTurn) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("INSERT OR IGNORE INTO quill_conversations(session_id, timestamp) VALUES (?, ?)", db: db, bind: {
+                self.bindCotypistText(sessionID.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(turn.timestamp, at: 2, statement: $0)
+            })
+            let body = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+            try withStatement("""
+            INSERT OR IGNORE INTO quill_conversation_turns(turn_id, conversation_id, body)
+            SELECT ?, id, ? FROM quill_conversations WHERE session_id = ? AND deleted_at IS NULL
+            """, db: db, bind: {
+                self.bindCotypistText(turn.id.uuidString, at: 1, statement: $0)
+                self.bindCotypistText(body, at: 2, statement: $0)
+                self.bindCotypistText(sessionID.uuidString, at: 3, statement: $0)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func updateQuillQuestion(turnID: UUID, question: String) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var body: String?
+            try withStatement("""
+            SELECT t.body FROM quill_conversation_turns t JOIN quill_conversations c ON c.id = t.conversation_id
+            WHERE t.turn_id = ? AND c.deleted_at IS NULL
+            """, db: db, bind: { self.bindCotypistText(turnID.uuidString, at: 1, statement: $0) }, row: {
+                body = String(cString: sqlite3_column_text($0, 0))
+            })
+            if let body {
+                var turn = try JSONDecoder().decode(QuillHistoryTurn.self, from: Data(body.utf8))
+                turn.question = question
+                let updated = String(decoding: try JSONEncoder().encode(turn), as: UTF8.self)
+                try withStatement("UPDATE quill_conversation_turns SET body = ? WHERE turn_id = ?", db: db, bind: {
+                    self.bindCotypistText(updated, at: 1, statement: $0)
+                    self.bindCotypistText(turnID.uuidString, at: 2, statement: $0)
+                })
+            }
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func deleteQuillConversation(id: Int64) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            try withStatement("UPDATE quill_conversations SET deleted_at = ? WHERE id = ?", db: db, bind: {
+                sqlite3_bind_double($0, 1, Date().timeIntervalSince1970)
+                sqlite3_bind_int64($0, 2, id)
+            })
+            try withStatement("DELETE FROM quill_conversation_turns WHERE conversation_id = ?", db: db, bind: {
+                sqlite3_bind_int64($0, 1, id)
+            })
+            try exec("COMMIT", db: db)
+        } catch { try? exec("ROLLBACK", db: db); throw error }
+    }
+
+    public func quillConversation(id: Int64) throws -> QuillConversationRecord? {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try quillConversation(id: id, db: db)
+    }
+
+    private func quillConversation(id: Int64, db: OpaquePointer?, previewOnly: Bool = false) throws -> QuillConversationRecord? {
+        var identity: (UUID, String)?
+        try withStatement("SELECT session_id, timestamp FROM quill_conversations WHERE id = ? AND deleted_at IS NULL", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: {
+                if let uuid = UUID(uuidString: String(cString: sqlite3_column_text($0, 0))) {
+                    identity = (uuid, String(cString: sqlite3_column_text($0, 1)))
+                }
+            })
+        guard let identity else { return nil }
+        var turnCount = 0
+        try withStatement("SELECT COUNT(*) FROM quill_conversation_turns WHERE conversation_id = ?", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { turnCount = Int(sqlite3_column_int64($0, 0)) })
+        // Decode only two bounded bodies during the shared synchronous Timeline refresh.
+        // Full conversation materialization happens off the UI actor on expansion.
+        let endpointFilter = previewOnly ? " AND (seq = (SELECT MIN(seq) FROM quill_conversation_turns WHERE conversation_id = ?1) OR seq = (SELECT MAX(seq) FROM quill_conversation_turns WHERE conversation_id = ?1))" : ""
+        var bodies: [String] = []
+        try withStatement("SELECT body FROM quill_conversation_turns WHERE conversation_id = ?1\(endpointFilter) ORDER BY seq", db: db,
+            bind: { sqlite3_bind_int64($0, 1, id) }, row: { bodies.append(String(cString: sqlite3_column_text($0, 0))) })
+        let turns = bodies.compactMap { try? JSONDecoder().decode(QuillHistoryTurn.self, from: Data($0.utf8)) }
+        // Damaged endpoints must not hide potentially readable middle turns.
+        guard !turns.isEmpty || (previewOnly && turnCount > 2) else { return nil }
+        return QuillConversationRecord(id: id, sessionID: identity.0, timestamp: identity.1, turns: turns, turnCount: turnCount)
+    }
+
     // MARK: - Cotypist
 
     /// Cotypist typeahead history, local only (see database-schema.md). `cotypist_suggestions` has
@@ -536,6 +750,9 @@ public final class DictationStore {
     /// a suggestion that wasn't taken only counts toward an open session. Returns the session id.
     @discardableResult
     public func recordCotypistSuggestion(_ event: CotypistSuggestionEvent) throws -> Int64? {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
@@ -725,8 +942,12 @@ public final class DictationStore {
         bodhanMeasurement: BodhanWBCSMeasurement? = nil,
         transcriptionModel: DictationModelIdentity? = nil
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        var savedWords = 0
         let id = try insertDictation(
             text: text,
             durationSeconds: durationSeconds,
@@ -737,7 +958,8 @@ public final class DictationStore {
             startedAt: startedAt,
             endedAt: endedAt,
             transcriptionModel: transcriptionModel,
-            db: db
+            db: db,
+            countedWords: { savedWords = $0 }
         )
         if let bodhanMeasurement {
             do {
@@ -748,7 +970,74 @@ public final class DictationStore {
                 fputs("[muesli-store] could not save Bodhan WBCS measurement: \(error)\n", stderr)
             }
         }
+        if source == "dictation" { onLocalDictationWords?(id, savedWords) }
         return id
+    }
+
+    /// Recovery-only persistence: commit the history row and its local retry key
+    /// together. A retry after archive cleanup fails returns the saved text,
+    /// including after relaunch, instead of inserting another history row.
+    public func insertRecoveredDictation(
+        recoveryID: UUID,
+        text: String,
+        durationSeconds: Double,
+        startedAt: Date,
+        endedAt: Date,
+        transcriptionModel: DictationModelIdentity? = nil
+    ) throws -> String {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        // Lazy creation keeps normal dictation persistence/migrations unchanged.
+        try exec("""
+        CREATE TABLE IF NOT EXISTS dictation_recovery_history (
+            recovery_id TEXT PRIMARY KEY,
+            dictation_id INTEGER NOT NULL UNIQUE REFERENCES dictations(id) ON DELETE CASCADE
+        )
+        """, db: db)
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            var existing: OpaquePointer?
+            let lookup = """
+            SELECT d.raw_text FROM dictation_recovery_history r
+            JOIN dictations d ON d.id = r.dictation_id
+            WHERE r.recovery_id = ? AND d.deleted_at IS NULL
+            """
+            guard sqlite3_prepare_v2(db, lookup, -1, &existing, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(existing) }
+            sqlite3_bind_text(existing, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            let status = sqlite3_step(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+            if status == SQLITE_ROW {
+                let savedText = stringColumn(existing, index: 0)
+                if !savedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try exec("COMMIT", db: db)
+                    return savedText
+                }
+            }
+            let id = try insertDictation(text: text, durationSeconds: durationSeconds,
+                source: "dictation", targetAppName: nil, targetAppBundleID: nil,
+                startedAt: startedAt, endedAt: endedAt,
+                transcriptionModel: transcriptionModel, db: db)
+            var link: OpaquePointer?
+            guard sqlite3_prepare_v2(db,
+                """
+                INSERT INTO dictation_recovery_history (recovery_id, dictation_id) VALUES (?, ?)
+                ON CONFLICT(recovery_id) DO UPDATE SET dictation_id = excluded.dictation_id
+                """,
+                -1, &link, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(link) }
+            sqlite3_bind_text(link, 1, (recoveryID.uuidString as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(link, 2, id)
+            guard sqlite3_step(link) == SQLITE_DONE else { throw lastError(db) }
+            try exec("COMMIT", db: db)
+            return text
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
     }
 
     private func insertBodhanWBCSMeasurement(
@@ -772,7 +1061,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 3)
         }
         sqlite3_bind_int64(statement, 4, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     @discardableResult
@@ -791,6 +1080,9 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date
     ) throws -> Int64 {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try exec("BEGIN IMMEDIATE", db: db)
@@ -854,7 +1146,8 @@ public final class DictationStore {
         startedAt: Date,
         endedAt: Date,
         transcriptionModel: DictationModelIdentity? = nil,
-        db: OpaquePointer?
+        db: OpaquePointer?,
+        countedWords: (Int) -> Void = { _ in }
     ) throws -> Int64 {
 
         let sql = """
@@ -877,7 +1170,8 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 2, durationSeconds)
         sqlite3_bind_text(statement, 3, (text as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (appContext as NSString).utf8String, -1, nil)
-        sqlite3_bind_int(statement, 5, Int32(Self.countWords(in: statisticsText ?? text)))
+        let words = Self.countWords(in: statisticsText ?? text)
+        sqlite3_bind_int(statement, 5, Int32(words))
         sqlite3_bind_text(statement, 6, (source as NSString).utf8String, -1, nil)
         bindOptionalText(targetAppName, at: 7, statement: statement)
         bindOptionalText(targetAppBundleID, at: 8, statement: statement)
@@ -890,9 +1184,10 @@ public final class DictationStore {
         bindOptionalText(transcriptionModel?.name, at: 14, statement: statement)
         bindOptionalText(transcriptionModel?.endpoint, at: 15, statement: statement)
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
+        countedWords(words)
         return sqlite3_last_insert_rowid(db)
     }
 
@@ -1042,9 +1337,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeDictationRecord(statement)
     }
 
@@ -1054,7 +1349,9 @@ public final class DictationStore {
         fromDate: String? = nil,
         toDate: String? = nil,
         origin: RecordOriginFilter = .all,
-        targetApplication: DictationTargetApplication? = nil
+        targetApplication: DictationTargetApplication? = nil,
+        searchText: String = "",
+        activity: String = "All activity"
     ) throws -> [TimelineEntry] {
         guard limit > 0 else { return [] }
         let db = try openDatabase()
@@ -1086,6 +1383,14 @@ public final class DictationStore {
             origin: origin,
             targetApplication: targetApplication
         )
+        var quillFilter = historyFilterConditions(alias: "q", dateColumn: "timestamp",
+            fromDate: fromDate, toDate: toDate, origin: origin)
+        if targetApplication != nil { quillFilter.conditions.append("0 = 1") }
+        var captureConditions = ["1 = 1"]
+        var captureValues: [String] = []
+        if let fromDate { captureConditions.append("julianday(f.created_at, 'unixepoch') >= julianday(?)"); captureValues.append(fromDate) }
+        if let toDate { captureConditions.append("julianday(f.created_at, 'unixepoch') <= julianday(?)"); captureValues.append(toDate) }
+        if origin == .fromIPhone || targetApplication != nil { captureConditions.append("0 = 1") }
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -1099,11 +1404,16 @@ public final class DictationStore {
             SELECT 2, c.id, c.timestamp
             FROM cotypist_sessions c
             WHERE \(cotypistFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 3, q.id, q.timestamp FROM quill_conversations q
+            WHERE \(quillFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 4, f.id, strftime('%Y-%m-%dT%H:%M:%fZ', f.created_at, 'unixepoch')
+            FROM vidshots f WHERE \(captureConditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
         ORDER BY julianday(sort_time) DESC, sort_time DESC, kind ASC, record_id DESC
-        LIMIT ? OFFSET ?
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1111,30 +1421,71 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues + captureValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
-        sqlite3_bind_int(statement, Int32(boundValues.count + 1), Int32(limit))
-        sqlite3_bind_int(statement, Int32(boundValues.count + 2), Int32(max(0, offset)))
-
-        var keys: [(kind: Int32, id: Int64)] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            keys.append((sqlite3_column_int(statement, 0), sqlite3_column_int64(statement, 1)))
-        }
-
+        // Pagination counts readable entries, not SQL keys that may be omitted.
         var entries: [TimelineEntry] = []
-        entries.reserveCapacity(keys.count)
-        for key in keys {
-            if key.kind == 0, let record = try dictation(id: key.id, db: db) {
-                entries.append(.dictation(record))
-            } else if key.kind == 1, let record = try meeting(id: key.id, db: db) {
-                entries.append(.meeting(record))
-            } else if key.kind == 2, let record = try cotypistSession(id: key.id, db: db) {
-                entries.append(.cotypist(record))
+        var remainingOffset = max(0, offset)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var captureStore: FeedbackCaptureStore?
+        var captureRecords: [String: FeedbackCaptureRecord]?
+        while sqlite3_step(statement) == SQLITE_ROW {
+            try Task.checkCancellation()
+            let kind = sqlite3_column_int(statement, 0)
+            let id = sqlite3_column_int64(statement, 1)
+            let labels = ["Dictations", "Meetings", "Cotypist", "Quill", "Vidshots"]
+            guard activity == "All activity" || (kind >= 0 && Int(kind) < labels.count && labels[Int(kind)] == activity) else { continue }
+            let entry: TimelineEntry?
+            switch kind {
+            case 0: entry = try dictation(id: id, db: db).map(TimelineEntry.dictation)
+            case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
+            case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
+            case 3: entry = try quillConversation(id: id, db: db, previewOnly: query.isEmpty).map(TimelineEntry.quill)
+            case 4:
+                guard let rawID = sqlite3_column_text(statement, 1) else { continue }
+                let captureID = String(cString: rawID)
+                if captureStore == nil {
+                    let store = try FeedbackCaptureStore(databaseURL: databaseURL, support: databaseURL.deletingLastPathComponent())
+                    captureRecords = try Dictionary(uniqueKeysWithValues: store.list().map { ($0.id, $0) })
+                    captureStore = store
+                }
+                entry = captureRecords?[captureID].map(TimelineEntry.vidshot)
+            default: entry = nil
             }
+            guard let entry else { continue }
+            if !query.isEmpty {
+                let text: String
+                switch entry {
+                case .meeting(let record): text = [record.title, record.rawTranscript, record.formattedNotes, record.manualNotes].joined(separator: "\n")
+                case .dictation(let record): text = record.rawText
+                case .quill(let record): text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
+                case .cotypist(let record): text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
+                case .vidshot(let record):
+                    let transcript = try? captureStore?.manifest(id: record.id).transcript?.text
+                    text = [record.title, transcript ?? ""].joined(separator: "\n")
+                }
+                guard text.localizedCaseInsensitiveContains(query) else { continue }
+            }
+            if remainingOffset > 0 { remainingOffset -= 1; continue }
+            entries.append(entry)
+            if entries.count == limit { break }
         }
         return entries
+    }
+
+    /// Local iOS-origin records are durable evidence that another device has synced,
+    /// including databases predating companion-device discovery.
+    public func hasMobileOriginHistory() throws -> Bool {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        let rows = try MeetingChatSQL.rows("""
+            SELECT EXISTS(SELECT 1 FROM dictations WHERE deleted_at IS NULL
+                AND LOWER(TRIM(COALESCE(source,''))) = 'ios')
+              OR EXISTS(SELECT 1 FROM meetings WHERE deleted_at IS NULL
+                AND LOWER(TRIM(COALESCE(source,''))) = 'ios')
+            """, db: db) { sqlite3_column_int($0, 0) != 0 }
+        return rows.first ?? false
     }
 
     public func meetingCounts(
@@ -1346,9 +1697,9 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
 
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw lastError(db) }
         return makeMeetingRecord(statement)
     }
 
@@ -1578,10 +1929,280 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 24)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
+    }
+
+    public static func participantEvidenceFingerprint(transcript: String, notes: String) -> String {
+        let data = Data(("\(transcript.utf8.count):" + transcript + notes).utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func saveParticipantSuggestions(meetingID: Int64, fingerprint: String, suggestions: [MeetingParticipantSuggestion]) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard let meeting = try meeting(id: meetingID, db: db),
+                  Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes) == fingerprint else {
+                throw DictationStoreError.staleParticipantSuggestion
+            }
+            let sql = "INSERT OR IGNORE INTO meeting_participant_suggestions(meeting_id,fingerprint,name,source,excerpt) VALUES(?,?,?,?,?)"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for suggestion in suggestions.prefix(20) {
+                let name = suggestion.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let excerpt = suggestion.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = suggestion.source == "transcript" ? meeting.rawTranscript : suggestion.source == "notes" ? meeting.manualNotes : ""
+                guard !name.isEmpty, name.count <= 200, excerpt.count >= 8, excerpt.count <= 500,
+                      text.contains(excerpt), excerpt.range(of: name, options: [.caseInsensitive, .diacriticInsensitive]) != nil else { continue }
+                sqlite3_reset(statement); sqlite3_clear_bindings(statement)
+                sqlite3_bind_int64(statement, 1, meetingID)
+                for (slot, value) in [(2, fingerprint), (3, name), (4, suggestion.source), (5, excerpt)] {
+                    sqlite3_bind_text(statement, Int32(slot), value, -1, transient)
+                }
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            }
+            try Task.checkCancellation()
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error
+        }
+    }
+
+    public func participantSuggestions(meetingID: Int64) throws -> [MeetingParticipantSuggestion] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        guard let meeting = try meeting(id: meetingID, db: db) else { return [] }
+        let fingerprint = Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT name,source,excerpt FROM meeting_participant_suggestions WHERE meeting_id=? AND fingerprint=? AND state='pending' ORDER BY name COLLATE NOCASE", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 2, fingerprint, -1, transient)
+        var result: [MeetingParticipantSuggestion] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let name = stringColumn(statement, index: 0)
+                result.append(.init(id: name, name: name, source: stringColumn(statement, index: 1), excerpt: stringColumn(statement, index: 2)))
+            case SQLITE_DONE: return result
+            default: throw lastError(db)
+            }
+        }
+    }
+
+    public func resolveParticipantSuggestion(meetingID: Int64, fingerprint: String, name: String, add: Bool, existingPerson: MeetingParticipantDraft? = nil) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard let meeting = try meeting(id: meetingID, db: db),
+                  Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes) == fingerprint else { throw DictationStoreError.staleParticipantSuggestion }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "UPDATE meeting_participant_suggestions SET state=? WHERE meeting_id=? AND fingerprint=? AND name=? COLLATE NOCASE AND state='pending'", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(statement, 1, add ? "accepted" : "dismissed", -1, transient)
+            sqlite3_bind_int64(statement, 2, meetingID)
+            sqlite3_bind_text(statement, 3, fingerprint, -1, transient)
+            sqlite3_bind_text(statement, 4, name, -1, transient)
+            guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else { throw DictationStoreError.staleParticipantSuggestion }
+            if add {
+                let participant = existingPerson ?? .init(participantIdentifier: "manual:\(UUID().uuidString)", displayName: name)
+                try upsertMeetingParticipants(meetingID: meetingID, participants: [participant], source: .manual, db: db)
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error
+        }
+    }
+
+    public func searchMeetingPeople(query: String, limit: Int = 50) throws -> [MeetingParticipantDraft] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.utf8.count <= 512 else { return [] }
+        if !text.isEmpty && !text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) { return [] }
+        let match = text.isEmpty ? "" : "JOIN meeting_people_fts ON meeting_people_fts.rowid=person.rowid"
+        let predicate = text.isEmpty ? "" : "AND meeting_people_fts MATCH ?"
+        let sql = """
+        SELECT person.id, person.display_name,
+          (SELECT email FROM meeting_person_emails e WHERE e.person_id=person.id ORDER BY email LIMIT 1)
+        FROM meeting_people person \(match)
+        WHERE EXISTS (SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id
+            WHERE p.person_id=person.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          \(predicate)
+        ORDER BY person.display_name COLLATE NOCASE, person.id LIMIT ?
+        """
+        var values: [MeetingChatSQL.Value] = []
+        if !text.isEmpty { values.append(.text("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"*")) }
+        values.append(.integer(Int64(max(1, min(limit, 100)))))
+        return try MeetingChatSQL.rows(sql, values, db: db) { statement in
+            let id = MeetingChatSQL.text(statement, 0)
+            return MeetingParticipantDraft(participantIdentifier: id, displayName: MeetingChatSQL.text(statement, 1),
+                emailAddress: sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : MeetingChatSQL.text(statement, 2), personID: id)
+        }
+    }
+
+    /// Exact indexed source evidence only; never consider names or infer attendance.
+    public func duplicateMeetingPeople(limit: Int = 100) throws -> [DuplicateMeetingPeople] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        let sql = """
+        WITH email_matches AS (
+          SELECT DISTINCT a.person_id first_id, b.person_id second_id
+          FROM meeting_person_emails a JOIN meeting_person_emails b
+            ON a.email=b.email COLLATE NOCASE AND a.person_id<b.person_id
+          WHERE EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          LIMIT 100
+        ), contact_matches AS (
+          SELECT DISTINCT a.person_id first_id, b.person_id second_id
+          FROM meeting_person_emails a JOIN meeting_person_emails b
+            ON a.source_identifier=b.source_identifier AND a.person_id<b.person_id
+          WHERE a.source_identifier LIKE 'contact:%'
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          LIMIT 100
+        ), candidates AS (
+          SELECT * FROM email_matches UNION SELECT * FROM contact_matches
+        )
+        SELECT a.id,a.display_name,b.id,b.display_name,COALESCE(
+          (SELECT x.email FROM meeting_person_emails x JOIN meeting_person_emails y
+            ON x.email=y.email COLLATE NOCASE WHERE x.person_id=a.id AND y.person_id=b.id LIMIT 1),
+          (SELECT x.source_identifier FROM meeting_person_emails x JOIN meeting_person_emails y
+            ON x.source_identifier=y.source_identifier WHERE x.person_id=a.id AND y.person_id=b.id
+              AND x.source_identifier LIKE 'contact:%' LIMIT 1))
+        FROM candidates c JOIN meeting_people a ON a.id=c.first_id JOIN meeting_people b ON b.id=c.second_id
+        WHERE EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+        GROUP BY a.id,b.id ORDER BY a.display_name COLLATE NOCASE,b.display_name COLLATE NOCASE,a.id,b.id LIMIT ?
+        """
+        return try MeetingChatSQL.rows(sql, [.integer(Int64(max(1,min(limit,100))))], db: db) { row in
+            let a = MeetingChatSQL.text(row,0), b = MeetingChatSQL.text(row,2)
+            return DuplicateMeetingPeople(first: .init(participantIdentifier:a,displayName:MeetingChatSQL.text(row,1),personID:a),
+                second: .init(participantIdentifier:b,displayName:MeetingChatSQL.text(row,3),personID:b), evidence:MeetingChatSQL.text(row,4))
+        }
+    }
+
+    /// Caller must present the candidate and obtain explicit user confirmation.
+    public func mergeMeetingPeople(targetID: String, sourceID: String) throws {
+        guard targetID != sourceID else { throw DictationStoreError.invalidPeopleMerge }
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try MeetingChatSQL.transaction(db: db) {
+            let names = try MeetingChatSQL.rows("SELECT id,display_name FROM meeting_people WHERE id IN (?,?)", [.text(targetID),.text(sourceID)], db: db) { (MeetingChatSQL.text($0,0),MeetingChatSQL.text($0,1)) }
+            guard names.count == 2,
+                  let targetName = names.first(where: { $0.0 == targetID })?.1,
+                  let sourceName = names.first(where: { $0.0 == sourceID })?.1 else { throw DictationStoreError.invalidPeopleMerge }
+            let evidence = try MeetingChatSQL.rows("""
+              SELECT 1 FROM meeting_person_emails a JOIN meeting_person_emails b
+                ON (a.email=b.email COLLATE NOCASE OR (a.source_identifier=b.source_identifier AND a.source_identifier LIKE 'contact:%'))
+              WHERE a.person_id=? AND b.person_id=? LIMIT 1
+              """, [.text(targetID),.text(sourceID)], db: db) { _ in true }.first ?? false
+            let active = try MeetingChatSQL.rows("""
+                SELECT count(DISTINCT p.person_id) FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id
+                WHERE p.person_id IN (?,?) AND p.is_suppressed=0 AND m.deleted_at IS NULL
+                """, [.text(targetID),.text(sourceID)], db: db) { sqlite3_column_int($0,0) }.first ?? 0
+            guard evidence && active == 2 else { throw DictationStoreError.invalidPeopleMerge }
+            let id = UUID().uuidString
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merges(id,target_id,source_id,target_name,source_name,created_at) VALUES(?,?,?,?,?,?)", [.text(id),.text(targetID),.text(sourceID),.text(targetName),.text(sourceName),.real(Date().timeIntervalSince1970)], db: db)
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merge_identifiers SELECT ?,identifier FROM meeting_person_identifiers WHERE person_id=?", [.text(id),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merge_participants SELECT ?,meeting_id,participant_identifier FROM meeting_participants WHERE person_id=?", [.text(id),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("""
+              INSERT INTO meeting_people_merge_emails SELECT ?,s.email,s.source_identifier,
+                EXISTS(SELECT 1 FROM meeting_person_emails t WHERE t.person_id=? AND t.email=s.email COLLATE NOCASE AND t.source_identifier=s.source_identifier)
+              FROM meeting_person_emails s WHERE s.person_id=?
+              """, [.text(id),.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_person_identifiers SET person_id=? WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails SELECT ?,email,source_identifier FROM meeting_person_emails WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("DELETE FROM meeting_person_emails WHERE person_id=?", [.text(sourceID)], db: db)
+        }
+    }
+
+    public func meetingPeopleMergeHistory(limit: Int = 100) throws -> [MeetingPeopleMerge] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try MeetingChatSQL.rows("SELECT id,target_name,source_name FROM meeting_people_merges WHERE undone=0 ORDER BY created_at DESC,rowid DESC LIMIT ?", [.integer(Int64(max(1,min(limit,100))))], db: db) {
+            MeetingPeopleMerge(id:MeetingChatSQL.text($0,0),targetName:MeetingChatSQL.text($0,1),sourceName:MeetingChatSQL.text($0,2))
+        }
+    }
+
+    public func undoMeetingPeopleMerge(id: String) throws {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try MeetingChatSQL.transaction(db: db) {
+            let merges = try MeetingChatSQL.rows("SELECT target_id,source_id,rowid FROM meeting_people_merges WHERE id=? AND undone=0", [.text(id)], db: db) { (MeetingChatSQL.text($0,0),MeetingChatSQL.text($0,1),sqlite3_column_int64($0,2)) }
+            guard let (target, source, sequence) = merges.first else { throw DictationStoreError.invalidPeopleMerge }
+            let later = try MeetingChatSQL.rows("SELECT 1 FROM meeting_people_merges WHERE undone=0 AND id!=? AND rowid>? AND (target_id IN (?,?) OR source_id IN (?,?)) LIMIT 1", [.text(id),.integer(sequence),.text(target),.text(source),.text(target),.text(source)], db: db) { _ in true }.first ?? false
+            guard !later else { throw DictationStoreError.peopleMergeUndoOrder }
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_participants SET person_id=? WHERE person_id=? AND (
+                participant_identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+                OR EXISTS(SELECT 1 FROM meeting_people_merge_participants x WHERE x.merge_id=? AND x.meeting_id=meeting_participants.meeting_id AND x.identifier=meeting_participants.participant_identifier))
+              """, [.text(source),.text(target),.text(id),.text(id)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_person_identifiers SET person_id=? WHERE person_id=? AND identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)", [.text(source),.text(target),.text(id)], db: db)
+            try MeetingChatSQL.execute("""
+              INSERT OR IGNORE INTO meeting_person_emails SELECT ?,e.email,e.source_identifier FROM meeting_people_merge_emails e
+              WHERE e.merge_id=? AND EXISTS(SELECT 1 FROM meeting_person_emails t WHERE t.person_id=? AND t.email=e.email COLLATE NOCASE AND t.source_identifier=e.source_identifier)
+              """, [.text(source),.text(id),.text(target)], db: db)
+            try MeetingChatSQL.execute("""
+              DELETE FROM meeting_person_emails WHERE person_id=? AND EXISTS(SELECT 1 FROM meeting_people_merge_emails e
+                WHERE e.merge_id=? AND e.target_had=0 AND e.email=meeting_person_emails.email COLLATE NOCASE AND e.source_identifier=meeting_person_emails.source_identifier)
+              """, [.text(target),.text(id)], db: db)
+            // Addresses discovered after the merge inherit the ownership of
+            // the moved source identifier, so undo does not strand them.
+            try MeetingChatSQL.execute("""
+              INSERT OR IGNORE INTO meeting_person_emails SELECT ?,t.email,t.source_identifier FROM meeting_person_emails t
+              WHERE t.person_id=? AND t.source_identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+              """, [.text(source),.text(target),.text(id)], db: db)
+            try MeetingChatSQL.execute("""
+              DELETE FROM meeting_person_emails WHERE person_id=? AND source_identifier IN
+                (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+                AND NOT EXISTS (SELECT 1 FROM meeting_people_merge_emails e WHERE e.merge_id=? AND e.target_had=1
+                  AND e.email=meeting_person_emails.email COLLATE NOCASE AND e.source_identifier=meeting_person_emails.source_identifier)
+              """, [.text(target),.text(id),.text(id)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_people_merges SET undone=1 WHERE id=?", [.text(id)], db: db)
+        }
+    }
+
+    public func relatedMeetings(meetingID: Int64, limit: Int = 20, offset: Int = 0) throws -> [RelatedMeeting] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        WITH matches AS (
+            SELECT DISTINCT p.meeting_id, own.person_id AS person, person.display_name
+            FROM meeting_participants own
+            JOIN meeting_participants p ON p.person_id = own.person_id
+            JOIN meeting_people person ON person.id = own.person_id
+            WHERE own.meeting_id = ?1 AND own.is_suppressed = 0 AND p.is_suppressed = 0 AND p.meeting_id != ?1
+        )
+        SELECT m.id, m.title, m.start_time, group_concat(matches.display_name, char(10))
+        FROM matches JOIN meetings m ON m.id = matches.meeting_id
+        WHERE m.deleted_at IS NULL
+        GROUP BY m.id ORDER BY count(DISTINCT matches.person) DESC, julianday(m.start_time) DESC, m.id DESC
+        LIMIT ?2 OFFSET ?3
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_int(statement, 2, Int32(max(1, min(limit, 100))))
+        sqlite3_bind_int(statement, 3, Int32(max(0, min(offset, Int(Int32.max)))))
+        var result: [RelatedMeeting] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                result.append(RelatedMeeting(meetingID: sqlite3_column_int64(statement, 0),
+                    title: stringColumn(statement, index: 1), startTime: stringColumn(statement, index: 2),
+                    sharedNames: stringColumn(statement, index: 3).components(separatedBy: "\n")))
+            case SQLITE_DONE: return result
+            default: throw lastError(db)
+            }
+        }
     }
 
     public func listMeetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
@@ -1590,8 +2211,13 @@ public final class DictationStore {
 
         let sql = """
         SELECT meeting_id, participant_identifier, display_name, email_address, insertion_order
-        FROM meeting_participants
-        WHERE meeting_id = ? AND is_suppressed = 0
+        FROM (
+            SELECT p.*, ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(person_id, participant_identifier)
+                ORDER BY CASE source WHEN 'manual' THEN 0 ELSE 1 END, insertion_order, participant_identifier
+            ) AS person_rank
+            FROM meeting_participants p WHERE meeting_id = ? AND is_suppressed = 0
+        ) WHERE person_rank = 1
         ORDER BY insertion_order, participant_identifier
         """
         var statement: OpaquePointer?
@@ -1728,22 +2354,21 @@ public final class DictationStore {
 
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
         do {
-            if try meetingParticipantSource(
-                meetingID: meetingID,
-                participantIdentifier: normalizedIdentifier,
-                db: db
-            ) == .calendar {
-                try suppressMeetingParticipant(
-                    meetingID: meetingID,
-                    participantIdentifier: normalizedIdentifier,
-                    db: db
-                )
-            } else {
-                try deleteMeetingParticipant(
-                    meetingID: meetingID,
-                    participantIdentifier: normalizedIdentifier,
-                    db: db
-                )
+            // A person may have multiple source snapshots in the same meeting.
+            // Remove the association as a whole while retaining calendar suppression.
+            let ids = try MeetingChatSQL.rows("""
+                SELECT p.participant_identifier, p.source FROM meeting_participants p
+                WHERE p.meeting_id=? AND p.person_id=(SELECT person_id FROM meeting_participants
+                    WHERE meeting_id=? AND participant_identifier=?)
+                """, [.integer(meetingID), .integer(meetingID), .text(normalizedIdentifier)], db: db) {
+                    (MeetingChatSQL.text($0, 0), MeetingChatSQL.text($0, 1))
+                }
+            for (identifier, source) in ids {
+                if source == MeetingParticipantSource.calendar.rawValue {
+                    try suppressMeetingParticipant(meetingID: meetingID, participantIdentifier: identifier, db: db)
+                } else {
+                    try deleteMeetingParticipant(meetingID: meetingID, participantIdentifier: identifier, db: db)
+                }
             }
             try exec("COMMIT", db: db)
         } catch {
@@ -1765,9 +2390,99 @@ public final class DictationStore {
             return MeetingParticipantDraft(
                 participantIdentifier: participantIdentifier,
                 displayName: displayName,
-                emailAddress: participant.emailAddress
+                emailAddress: participant.emailAddress,
+                emailAddresses: participant.emailAddresses, personID: participant.personID
             )
         }
+    }
+
+    private func installMeetingPeopleSearch(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS meeting_people_fts USING fts5(name, emails, prefix='2 3 4');
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_insert AFTER INSERT ON meeting_people BEGIN
+          INSERT INTO meeting_people_fts(rowid,name,emails) VALUES(new.rowid,new.display_name,'');
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_update AFTER UPDATE OF display_name ON meeting_people BEGIN
+          UPDATE meeting_people_fts SET name=new.display_name WHERE rowid=new.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_delete AFTER DELETE ON meeting_people BEGIN
+          DELETE FROM meeting_people_fts WHERE rowid=old.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_email_insert AFTER INSERT ON meeting_person_emails BEGIN
+          UPDATE meeting_people_fts SET emails=COALESCE((SELECT group_concat(email,' ') FROM meeting_person_emails WHERE person_id=new.person_id),'')
+          WHERE rowid=(SELECT rowid FROM meeting_people WHERE id=new.person_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_email_delete AFTER DELETE ON meeting_person_emails BEGIN
+          UPDATE meeting_people_fts SET emails=COALESCE((SELECT group_concat(email,' ') FROM meeting_person_emails WHERE person_id=old.person_id),'')
+          WHERE rowid=(SELECT rowid FROM meeting_people WHERE id=old.person_id);
+        END;
+        """, db: db)
+        try MeetingChatSQL.transaction(db: db) {
+            let indexed = try MeetingChatSQL.rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_people_fts_v1'", db: db) { _ in true }.first ?? false
+            if !indexed {
+                try exec("""
+                  INSERT INTO meeting_people_fts(rowid,name,emails)
+                    SELECT p.rowid,p.display_name,COALESCE((SELECT group_concat(e.email,' ') FROM meeting_person_emails e WHERE e.person_id=p.id),'') FROM meeting_people p;
+                  INSERT INTO local_migrations VALUES('meeting_people_fts_v1',strftime('%s','now'));
+                  """, db: db)
+            }
+        }
+    }
+
+    private func backfillMeetingPeople(db: OpaquePointer?) throws {
+        let missing = try MeetingChatSQL.rows("SELECT participant_identifier, display_name FROM meeting_participants WHERE person_id IS NULL GROUP BY participant_identifier", db: db) { (MeetingChatSQL.text($0, 0), MeetingChatSQL.text($0, 1)) }
+        for (identifier, name) in missing {
+            let id = try resolveMeetingPerson(.init(participantIdentifier: identifier, displayName: name), db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE participant_identifier=? AND person_id IS NULL", [.text(id), .text(identifier)], db: db)
+        }
+        try MeetingChatSQL.execute("""
+            INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier)
+            SELECT person_id, lower(trim(email_address)), participant_identifier FROM meeting_participants
+            WHERE person_id IS NOT NULL AND email_address IS NOT NULL AND trim(email_address) != ''
+            """, db: db)
+    }
+
+    private func resolveMeetingPerson(_ participant: MeetingParticipantDraft, source: MeetingParticipantSource? = nil, db: OpaquePointer?) throws -> String {
+        let identifier = participant.participantIdentifier
+        let existing = try MeetingChatSQL.rows("SELECT person_id FROM meeting_person_identifiers WHERE identifier=?", [.text(identifier)], db: db) { MeetingChatSQL.text($0, 0) }.first
+        let requested = participant.personID.flatMap { $0.isEmpty ? nil : $0 }
+        let requestedExists = try requested.map { id in
+            try !MeetingChatSQL.rows("SELECT id FROM meeting_people WHERE id=?", [.text(id)], db: db) { MeetingChatSQL.text($0, 0) }.isEmpty
+        } ?? false
+        let emails = Set((participant.emailAddresses + [participant.emailAddress].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        let isContact = identifier.hasPrefix("contact:")
+        var id = existing ?? (requestedExists ? requested! : "")
+        if id.isEmpty { id = "person:\(UUID().uuidString)" }
+        try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_people(id,display_name) VALUES(?,?)", [.text(id), .text(participant.displayName)], db: db)
+        try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_identifiers(identifier,person_id) VALUES(?,?)", [.text(identifier), .text(id)], db: db)
+        if isContact {
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=? AND NOT EXISTS (
+                SELECT 1 FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
+                WHERE m.undone=0 AND m.target_id=? AND i.identifier=?)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(identifier)], db: db)
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=(
+                SELECT m.source_id FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
+                WHERE m.undone=0 AND i.identifier=? ORDER BY m.rowid LIMIT 1)
+              """, [.text(participant.displayName), .text(identifier)], db: db)
+        } else if source == .calendar {
+            // Calendar-only identities can follow attendee edits. A contact or
+            // a confirmed merge owns the canonical name and must not be overwritten.
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=?
+                AND NOT EXISTS (SELECT 1 FROM meeting_person_identifiers i
+                                WHERE i.person_id=? AND i.identifier NOT LIKE 'calendar:%' AND i.identifier NOT LIKE 'email:%')
+                AND NOT EXISTS (SELECT 1 FROM meeting_participants p
+                                WHERE p.person_id=? AND p.source='manual')
+                AND NOT EXISTS (SELECT 1 FROM meeting_people_merges m
+                                WHERE m.undone=0 AND m.target_id=?)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(id), .text(id)], db: db)
+        }
+        for email in emails {
+            try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier) VALUES(?,?,?)", [.text(id), .text(email), .text(identifier)], db: db)
+        }
+        return id
     }
 
     private func upsertMeetingParticipants(
@@ -1822,6 +2537,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
 
         for participant in participants {
+            let personID = try resolveMeetingPerson(participant, source: source, db: db)
             sqlite3_reset(statement)
             sqlite3_clear_bindings(statement)
             sqlite3_bind_int64(statement, 1, meetingID)
@@ -1842,9 +2558,10 @@ public final class DictationStore {
             bindOptionalText(participant.emailAddress, at: 4, statement: statement)
             sqlite3_bind_int64(statement, 5, meetingID)
             sqlite3_bind_text(statement, 6, (source.rawValue as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE meeting_id=? AND participant_identifier=? AND person_id IS NOT ?", [.text(personID), .integer(meetingID), .text(participant.participantIdentifier), .text(personID)], db: db)
         }
     }
 
@@ -1923,7 +2640,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -1944,7 +2661,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
         sqlite3_bind_text(statement, 2, (participantIdentifier as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -2008,7 +2725,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 17)
         }
 
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -2250,6 +2967,26 @@ public final class DictationStore {
         else { return nil }
         let runs = optionalDataColumn(statement, index: 1).flatMap { try? JSONDecoder().decode([Int].self, from: $0) }
         return BodhanWBCSMeasurement(languageSamples: samples, runLengths: runs)
+    }
+
+    /// One consistent snapshot; no transcript or record identifiers leave this API's caller.
+    /// Synced rows without local-only model provenance are ambiguous and excluded.
+    public func localDictationWordBaseline() throws -> (lastID: Int64, words: Int) {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var lastID: Int64 = 0
+        var words = 0
+        try withStatement("""
+        SELECT COALESCE(MAX(id), 0), COALESCE(SUM(CASE
+          WHEN source = 'dictation' AND deleted_at IS NULL
+            AND (cloud_record_name IS NULL OR transcription_backend IS NOT NULL)
+          THEN MAX(word_count, 0) ELSE 0 END), 0)
+        FROM dictations
+        """, db: db, row: {
+            lastID = sqlite3_column_int64($0, 0)
+            words = Int(sqlite3_column_int64($0, 1))
+        })
+        return (lastID, words)
     }
 
     public func dictationStats(
@@ -2499,7 +3236,7 @@ public final class DictationStore {
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_text(statement, 1, (signature as NSString).utf8String, -1, nil)
-            guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
@@ -2676,7 +3413,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode(pairs)
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 10, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Records the source revision even when it contributes no analytics. This keeps
@@ -2698,7 +3435,7 @@ public final class DictationStore {
         let blob = InsightsContributionCodec.encode([])
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         _ = blob.withUnsafeBytes { sqlite3_bind_blob(statement, 5, $0.baseAddress, Int32(blob.count), transient) }
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func removeCachedInsightsRecord(kind: String, id: Int64, db: OpaquePointer?) throws {
@@ -2730,7 +3467,7 @@ public final class DictationStore {
         guard sqlite3_prepare_v2(db, "DELETE FROM insights_record_cache WHERE kind = ? AND record_id = ?", -1, &delete, nil) == SQLITE_OK else { throw lastError(db) }
         defer { sqlite3_finalize(delete) }
         sqlite3_bind_text(delete, 1, (kind as NSString).utf8String, -1, nil); sqlite3_bind_int64(delete, 2, id)
-        guard sqlite3_step(delete) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(delete) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsDaily(day: String, dictationWords: Int, dictationSessions: Int, meetingWords: Int, meetings: Int, duration: Double, db: OpaquePointer?) throws {
@@ -2744,7 +3481,7 @@ public final class DictationStore {
         var s: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(s) }
         sqlite3_bind_text(s, 1, (day as NSString).utf8String, -1, nil); sqlite3_bind_int64(s, 2, Int64(dictationWords))
         sqlite3_bind_int(s, 3, Int32(dictationSessions)); sqlite3_bind_int64(s, 4, Int64(meetingWords)); sqlite3_bind_int(s, 5, Int32(meetings)); sqlite3_bind_double(s, 6, duration)
-        guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
     }
 
     private func adjustInsightsToken(day: String, pair: InsightsContributionCodec.Pair, meeting: Bool, multiplier: Int, db: OpaquePointer?) throws {
@@ -2757,13 +3494,13 @@ public final class DictationStore {
             var index: Int32 = 1
             if sql.contains("daily_tokens") { sqlite3_bind_text(s, index, (day as NSString).utf8String, -1, nil); index += 1 }
             sqlite3_bind_int64(s, index, pair.tokenID); sqlite3_bind_int(s, index + 1, Int32(dictation)); sqlite3_bind_int(s, index + 2, Int32(meetingCount))
-            guard sqlite3_step(s) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(s) == SQLITE_DONE else { throw lastError(db) }
         }
     }
 
     private func internInsightsToken(_ token: String, db: OpaquePointer?) throws -> Int64 {
         var insert: OpaquePointer?; guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO insights_tokens(token) VALUES(?)", -1, &insert, nil) == SQLITE_OK else { throw lastError(db) }
-        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
+        sqlite3_bind_text(insert, 1, (token as NSString).utf8String, -1, nil); guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { sqlite3_finalize(insert); throw lastError(db) }; sqlite3_finalize(insert)
         var select: OpaquePointer?; guard sqlite3_prepare_v2(db, "SELECT id FROM insights_tokens WHERE token=?", -1, &select, nil) == SQLITE_OK else { throw lastError(db) }; defer { sqlite3_finalize(select) }
         sqlite3_bind_text(select, 1, (token as NSString).utf8String, -1, nil); guard sqlite3_step(select) == SQLITE_ROW else { throw lastError(db) }
         return sqlite3_column_int64(select, 0)
@@ -2942,7 +3679,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, now)
         sqlite3_bind_double(statement, 2, now)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -2987,7 +3724,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 1, now)
             sqlite3_bind_double(statement, 2, now)
             sqlite3_bind_int64(statement, 3, id)
-            guard sqlite3_step(statement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
             guard sqlite3_changes(db) > 0 else {
@@ -3042,7 +3779,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (message as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -3054,6 +3791,9 @@ public final class DictationStore {
         finalMessage: String,
         events: [ComputerUseTraceEvent]
     ) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         try insertComputerUseTrace(
@@ -3107,7 +3847,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (finalStatus as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 3, (finalMessage as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statement, 4, (traceJSON as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3120,7 +3860,15 @@ public final class DictationStore {
         try MeetingChatSQL.clear(db: db)
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
+        try exec("DELETE FROM meeting_participant_suggestions", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
+        try exec("DELETE FROM meeting_people_merge_participants", db: db)
+        try exec("DELETE FROM meeting_people_merge_emails", db: db)
+        try exec("DELETE FROM meeting_people_merge_identifiers", db: db)
+        try exec("DELETE FROM meeting_people_merges", db: db)
+        try exec("DELETE FROM meeting_person_emails", db: db)
+        try exec("DELETE FROM meeting_person_identifiers", db: db)
+        try exec("DELETE FROM meeting_people", db: db)
         try exec(
             """
             UPDATE meetings
@@ -3157,7 +3905,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3174,7 +3922,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (formattedNotes as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3194,7 +3942,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 2, Int32(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3291,7 +4039,7 @@ public final class DictationStore {
                 sqlite3_bind_double(statement, 4, entry.startSeconds)
                 sqlite3_bind_double(statement, 5, entry.endSeconds)
                 sqlite3_bind_text(statement, 6, (entry.text as NSString).utf8String, -1, nil)
-                guard sqlite3_step(statement) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -3351,7 +4099,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 6, Int32(wordCount))
         sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3381,7 +4129,7 @@ public final class DictationStore {
         sqlite3_bind_int64(statement, 2, Int64(wordCount))
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 4, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3425,7 +4173,7 @@ public final class DictationStore {
             sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(statement, 3, id)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3490,7 +4238,7 @@ public final class DictationStore {
         bindOptionalText(visualContext, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 19, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3645,7 +4393,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 4, snapshot.durationSeconds)
         sqlite3_bind_text(statement, 5, (snapshot.startTime as NSString).utf8String, -1, nil)
         bindOptionalText(snapshot.endTime, at: 6, statement: statement)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3770,7 +4518,7 @@ public final class DictationStore {
         sqlite3_bind_int(statement, 7, Int32(wordCount))
         sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 9, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3817,7 +4565,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3830,7 +4578,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3843,7 +4591,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, meetingID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3856,7 +4604,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, dictationID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3868,13 +4616,14 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        replacingTitleIfUnchanged expectedTitle: String? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET title = CASE WHEN ? IS NULL OR title = ? THEN ? ELSE title END, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -3882,15 +4631,19 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 2, (formattedNotes as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 3, (selectedTemplateID as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 4, (selectedTemplateName as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 5, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(statement, 6, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
-        sqlite3_bind_int64(statement, 8, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        if let expectedTitle {
+            sqlite3_bind_text(statement, 1, (expectedTitle as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (expectedTitle as NSString).utf8String, -1, nil)
+        }
+        sqlite3_bind_text(statement, 3, (title as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 4, (formattedNotes as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 5, (selectedTemplateID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 6, (selectedTemplateName as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 7, (selectedTemplateKind.rawValue as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 10, id)
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3928,7 +4681,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 8, (selectedTemplatePrompt as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 9, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 10, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         guard sqlite3_changes(db) > 0 else {
@@ -3948,7 +4701,7 @@ public final class DictationStore {
         sqlite3_bind_text(statement, 1, (title as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 3, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3964,7 +4717,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         bindOptionalText(path, at: 1, statement: statement)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -3985,7 +4738,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 2)
         }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_last_insert_rowid(db)
@@ -4002,7 +4755,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4074,7 +4827,7 @@ public final class DictationStore {
                     sqlite3_bind_null(reparentStmt, 1)
                 }
                 sqlite3_bind_int64(reparentStmt, 2, childID)
-                guard sqlite3_step(reparentStmt) == SQLITE_DONE else {
+                guard try GlobalSearchIndex.stepSourceWrite(reparentStmt) == SQLITE_DONE else {
                     throw lastError(db)
                 }
             }
@@ -4086,7 +4839,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s1) }
             sqlite3_bind_int64(s1, 1, id)
-            guard sqlite3_step(s1) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s1) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4096,7 +4849,7 @@ public final class DictationStore {
             }
             defer { sqlite3_finalize(s2) }
             sqlite3_bind_int64(s2, 1, id)
-            guard sqlite3_step(s2) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(s2) == SQLITE_DONE else {
                 throw lastError(db)
             }
 
@@ -4130,7 +4883,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4155,7 +4908,7 @@ public final class DictationStore {
             sqlite3_bind_null(statement, 1)
         }
         sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -4333,7 +5086,7 @@ public final class DictationStore {
             sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(data.count), transient)
         }
         sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     public func clearCloudSyncStateData(forKey key: String) throws {
@@ -4346,7 +5099,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, (key as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Promotes a legacy environment namespace only when its hashed account owner
@@ -4398,7 +5151,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(Data(expectedScope.utf8), at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4411,7 +5164,7 @@ public final class DictationStore {
             }
             sqlite3_bind_text(deleteStatement, 1, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4510,7 +5263,7 @@ public final class DictationStore {
             sqlite3_bind_text(deleteStatement, 1, (stateKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 2, (legacyAccountScopeKey as NSString).utf8String, -1, nil)
             sqlite3_bind_text(deleteStatement, 3, (legacyStateKey as NSString).utf8String, -1, nil)
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4524,7 +5277,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (accountScopeKey as NSString).utf8String, -1, nil)
             bindOptionalBlob(expectedData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else {
                 sqlite3_finalize(insertStatement)
                 throw lastError(db)
             }
@@ -4597,7 +5350,7 @@ public final class DictationStore {
                     nil
                 )
             }
-            guard sqlite3_step(deleteStatement) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(deleteStatement) == SQLITE_DONE else {
                 sqlite3_finalize(deleteStatement)
                 throw lastError(db)
             }
@@ -4680,7 +5433,7 @@ public final class DictationStore {
             sqlite3_bind_text(insertStatement, 1, (key as NSString).utf8String, -1, nil)
             bindOptionalBlob(scopeData, at: 2, statement: insertStatement)
             sqlite3_bind_double(insertStatement, 3, Date().timeIntervalSince1970)
-            guard sqlite3_step(insertStatement) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insertStatement) == SQLITE_DONE else { throw lastError(db) }
             try exec("COMMIT", db: db)
             return true
         } catch {
@@ -5002,7 +5755,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 3, syncedAt.timeIntervalSince1970)
         sqlite3_bind_text(statement, 4, (recordName as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statement, 5, recordUpdatedAt.timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5033,7 +5786,7 @@ public final class DictationStore {
         bindOptionalText(changeTag, at: 1, statement: statement)
         bindOptionalBlob(systemFields, at: 2, statement: statement)
         sqlite3_bind_text(statement, 3, (recordName as NSString).utf8String, -1, nil)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
     }
 
     /// Drops obsolete CKRecord versions after this same account's zone was recreated.
@@ -5145,7 +5898,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_int64(statement, 2, predecessorID)
         sqlite3_bind_int64(statement, 3, predecessorID)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5188,7 +5941,7 @@ public final class DictationStore {
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, cutoff)
         sqlite3_bind_double(statement, 3, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5210,7 +5963,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return Int(sqlite3_changes(db))
@@ -5257,7 +6010,7 @@ public final class DictationStore {
             sqlite3_bind_text(update, 1, (recordName as NSString).utf8String, -1, nil)
             sqlite3_bind_double(update, 2, Date().timeIntervalSince1970)
             sqlite3_bind_int64(update, 3, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5292,7 +6045,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(fillRecordName) }
         sqlite3_bind_double(fillRecordName, 1, now)
-        guard sqlite3_step(fillRecordName) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillRecordName) == SQLITE_DONE else {
             throw lastError(db)
         }
 
@@ -5331,7 +6084,7 @@ public final class DictationStore {
             throw lastError(db)
         }
         defer { sqlite3_finalize(fillLocalID) }
-        guard sqlite3_step(fillLocalID) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(fillLocalID) == SQLITE_DONE else {
             throw lastError(db)
         }
     }
@@ -5498,7 +6251,7 @@ public final class DictationStore {
             defer { sqlite3_finalize(update) }
             sqlite3_bind_text(update, 1, (source as NSString).utf8String, -1, nil)
             sqlite3_bind_int64(update, 2, id)
-            guard sqlite3_step(update) == SQLITE_DONE else {
+            guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else {
                 throw lastError(db)
             }
         }
@@ -5561,7 +6314,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 11, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 12, statement: statement)
         sqlite3_bind_double(statement, 13, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5635,7 +6388,7 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
         return sqlite3_changes(db) > 0
@@ -5761,29 +6514,47 @@ public final class DictationStore {
     }
 
     private func openDatabase() throws -> OpaquePointer? {
-        try FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
         var db: OpaquePointer?
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            throw lastError(db)
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        guard sqlite3_open_v2(databaseURL.path, &db, flags | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let error = lastError(db)
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_busy_timeout(db, 5_000) != SQLITE_OK {
-            throw lastError(db)
+        do {
+            guard sqlite3_busy_timeout(db, 5_000) == SQLITE_OK else { throw lastError(db) }
+            if !readOnly {
+                guard sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) == SQLITE_OK else { throw lastError(db) }
+            }
+            return db
+        } catch {
+            sqlite3_close(db)
+            throw error
         }
-        if sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        if sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
-        }
-        return db
     }
 
     private func exec(_ sql: String, db: OpaquePointer?) throws {
-        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-            throw lastError(db)
+        // Match sqlite3_exec's multi-statement behavior, but give each source
+        // statement the same narrowly scoped FTS recovery as bound writes.
+        try sql.withCString { start in
+            var cursor = start
+            while cursor.pointee != 0 {
+                var statement: OpaquePointer?
+                var tail: UnsafePointer<CChar>?
+                guard sqlite3_prepare_v2(db, cursor, -1, &statement, &tail) == SQLITE_OK else { throw lastError(db) }
+                defer { sqlite3_finalize(statement) }
+                if let statement {
+                    var status = try GlobalSearchIndex.stepSourceWrite(statement)
+                    while status == SQLITE_ROW { status = try GlobalSearchIndex.stepSourceWrite(statement) }
+                    guard status == SQLITE_DONE else { throw lastError(db) }
+                }
+                guard let tail, tail > cursor else { break }
+                cursor = tail
+            }
         }
     }
 
@@ -6001,7 +6772,7 @@ public final class DictationStore {
                     sqlite3_bind_int(update, 1, Int32(Self.countWords(in: instruction)))
                     sqlite3_bind_double(update, 2, migrationTime)
                     sqlite3_bind_int64(update, 3, dictationID)
-                    guard sqlite3_step(update) == SQLITE_DONE else { throw lastError(db) }
+                    guard try GlobalSearchIndex.stepSourceWrite(update) == SQLITE_DONE else { throw lastError(db) }
                 }
 
                 let markSQL = """
@@ -6020,7 +6791,7 @@ public final class DictationStore {
                     -1,
                     nil
                 )
-                guard sqlite3_step(mark) == SQLITE_DONE else { throw lastError(db) }
+                guard try GlobalSearchIndex.stepSourceWrite(mark) == SQLITE_DONE else { throw lastError(db) }
             }
             try exec("COMMIT", db: db)
         } catch {
@@ -6194,7 +6965,7 @@ extension DictationStore {
             let create = try prepare("INSERT INTO meeting_folders (name, parent_id) VALUES (?, NULL)")
             defer { sqlite3_finalize(create) }
             text("Granola", 1, create)
-            guard sqlite3_step(create) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(create) == SQLITE_DONE else { throw lastError(db) }
             let id = sqlite3_last_insert_rowid(db)
             destinationFolderID = id
             return id
@@ -6230,13 +7001,13 @@ extension DictationStore {
             sqlite3_bind_int64(insert, 7, try importFolder())
             sqlite3_bind_double(insert, 8, Date().timeIntervalSince1970)
             text(record.syncIdentity, 9, insert)
-            guard sqlite3_step(insert) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(insert) == SQLITE_DONE else { throw lastError(db) }
             let meetingID = sqlite3_last_insert_rowid(db)
             sqlite3_reset(provenance); sqlite3_clear_bindings(provenance)
             sqlite3_bind_int64(provenance, 1, meetingID)
             text(record.id, 2, provenance); text(record.workspace, 3, provenance); text(record.ownerEmail, 4, provenance)
             sqlite3_bind_double(provenance, 5, Date().timeIntervalSince1970)
-            guard sqlite3_step(provenance) == SQLITE_DONE else { throw lastError(db) }
+            guard try GlobalSearchIndex.stepSourceWrite(provenance) == SQLITE_DONE else { throw lastError(db) }
             imported += 1
         }
         // Finalize the existence cursor before committing when the last record was a duplicate.

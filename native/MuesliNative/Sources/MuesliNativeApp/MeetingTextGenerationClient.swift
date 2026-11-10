@@ -9,16 +9,21 @@ struct MeetingTextGenerationRequest {
     var sessionID: UUID = UUID()
     var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
     var outputTokenLimit: Int? = nil
+    var images: [ChatImageInput] = []
 }
 
 protocol MeetingTextGenerating: Sendable {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String
     func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String?
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating
+    func chatContextTokens(config: AppConfig) -> Int?
     func supportsNativeTools(config: AppConfig) -> Bool
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse
 }
 
 extension MeetingTextGenerating {
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating { self }
+    func chatContextTokens(config: AppConfig) -> Int? { nil }
     func supportsNativeTools(config: AppConfig) -> Bool { false }
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
         throw MeetingTextGenerationError.invalidEndpoint
@@ -40,6 +45,32 @@ enum MeetingTextGenerationError: Error, LocalizedError {
 }
 
 struct MeetingTextGenerationClient: MeetingTextGenerating {
+    var gemmaCapabilities: GemmaChatCapabilities?
+    var localChatCapabilities: LocalChatCapabilities?
+    var localChatProbeCache = LocalChatProbeCache.shared
+    var gemmaNative: @Sendable (MeetingNativeToolRequest, GemmaChatCapabilities) async throws -> MeetingNativeToolResponse = { request, capabilities in
+        guard #available(macOS 15, *) else { throw GemmaMeetingChatError.macOSRequired }
+        return try await GemmaNativeAudioTranscriber.shared(for: capabilities.model).generateChat(request, capabilities: capabilities)
+    }
+    func preparedForChat(config: AppConfig) async throws -> any MeetingTextGenerating {
+        var copy = self
+        if MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX {
+            if gemmaCapabilities?.model.nativeChatModelID == Self.model(config) { return self }
+            let id = Self.model(config)
+            copy.gemmaCapabilities = try await Task.detached { try GemmaChatCapabilities.detect(modelID: id) }.value
+        } else if LocalChatToolTransport.supportsProvider(config) {
+            if localChatCapabilities?.matches(config) == true { return self }
+            copy.localChatCapabilities = try await LocalChatToolTransport.detect(config: config,
+                credential: credentialResolver(config), load: load, cache: localChatProbeCache)
+        } else { return self }
+        try Task.checkCancellation()
+        return copy
+    }
+    func chatContextTokens(config: AppConfig) -> Int? {
+        if localChatCapabilities?.matches(config) == true { return localChatCapabilities?.contextTokens }
+        return MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .gemmaMLX && gemmaCapabilities?.model.nativeChatModelID == Self.model(config) ? gemmaCapabilities?.contextTokens : nil
+    }
+
     var credentialResolver: @Sendable (AppConfig) async throws -> String = { config in
         if MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend) == .customLLM {
             return try await MeetingSummaryClient.resolveCustomLLMAPIKey(config: config)
@@ -50,7 +81,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     var chatGPT: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ChatGPTResponsesClient.respond(systemPrompt: request.system, userPrompt: request.user,
             model: Self.model(request.config), maxOutputTokens: request.maxOutputTokens,
-            reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, logCategory: "meeting-chat")
+            reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, images: request.images, logCategory: "meeting-chat")
     }
     var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ClaudeCodeSummarizer.run(instructions: request.system, input: request.user,
@@ -59,6 +90,8 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
 
     func supportsNativeTools(config: AppConfig) -> Bool {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
+        if LocalChatToolTransport.supportsProvider(config) { return localChatCapabilities?.matches(config) == true && localChatCapabilities?.nativeTools == true }
+        if provider == .gemmaMLX { return gemmaCapabilities?.model.nativeChatModelID == Self.model(config) && gemmaCapabilities?.nativeTools == true }
         if provider == .chatGPT || provider == .openAI { return true }
         guard provider == .openRouter else { return false }
         let model = Self.model(config).lowercased()
@@ -71,26 +104,52 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     func generateNative(_ request: MeetingNativeToolRequest) async throws -> MeetingNativeToolResponse {
         try Task.checkCancellation()
         let provider = MeetingSummaryBackendOption.resolved(request.base.config.meetingSummaryBackend)
+        if provider == .gemmaMLX {
+            guard let capabilities = gemmaCapabilities, supportsNativeTools(config: request.base.config) else { throw GemmaMeetingChatError.unsupportedModel }
+            return try await gemmaNative(request, capabilities)
+        }
+        if LocalChatToolTransport.supportsProvider(request.base.config) {
+            guard let capabilities = localChatCapabilities, capabilities.matches(request.base.config), capabilities.nativeTools else { throw MeetingTextGenerationError.invalidEndpoint }
+            var urlRequest = capabilities.template
+            urlRequest.httpBody = try ChatFileReader.requestData(LocalChatToolTransport.body(request, capabilities: capabilities))
+            let (data, status) = try await LocalChatToolTransport.checked(urlRequest, load: load)
+            guard (200..<300).contains(status) else { throw MeetingTextGenerationError.failed(status) }
+            let response = try LocalChatToolTransport.parse(data, wire: capabilities.wire, maximumArgumentBytes: request.maximumArgumentBytes)
+            guard request.allowTools || response.calls.isEmpty else { throw MeetingChatHarnessError.toolProtocol }
+            return response
+        }
         if provider == .chatGPT { return try await ChatGPTResponsesClient.respondNative(request) }
         guard supportsNativeTools(config: request.base.config) else { throw MeetingTextGenerationError.invalidEndpoint }
         let credential = try await credentialResolver(request.base.config)
         try Task.checkCancellation()
-        var urlRequest = try Self.makeRequest(request.base, credential: credential)
+        var headerOnly = request.base
+        headerOnly.images = []
+        var urlRequest = try Self.makeRequest(headerOnly, credential: credential)
         if provider == .openRouter { urlRequest.url = URL(string: "https://openrouter.ai/api/v1/responses")! }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: MeetingNativeToolTransport.requestBody(request, stream: false))
+        urlRequest.httpBody = try ChatFileReader.requestData(MeetingNativeToolTransport.requestBody(request, stream: false))
         let (data, response) = try await load(urlRequest)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
         guard (200..<300).contains(http.statusCode) else { throw MeetingTextGenerationError.failed(http.statusCode) }
-        return try MeetingNativeToolTransport.parseResponse(data)
+        return try MeetingNativeToolTransport.parseResponse(data, maximumArgumentBytes: request.maximumArgumentBytes)
     }
 
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         try Task.checkCancellation()
+        if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .gemmaMLX {
+            let client = try await preparedForChat(config: request.config)
+            guard let client = client as? MeetingTextGenerationClient, let capabilities = client.gemmaCapabilities else { throw GemmaMeetingChatError.unsupportedModel }
+            guard request.images.isEmpty else { throw ChatFileError.unsupportedProvider }
+            let items: [[String: Any]] = [["role": "user", "content": [["type": "input_text", "text": request.user]]]]
+            let response = try await client.gemmaNative(.init(base: request, inputItems: JSONSerialization.data(withJSONObject: items), tools: Data("[]".utf8), allowTools: false, requiresMeetingAnswerFormat: false), capabilities)
+            guard response.calls.isEmpty else { throw MeetingChatHarnessError.toolProtocol }
+            return response.text
+        }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .chatGPT {
             return try await chatGPT(request)
         }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .claudeCode {
+            guard request.images.isEmpty else { throw ChatFileError.unsupportedProvider }
             return try await claudeCode(request)
         }
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .customLLM {
@@ -148,7 +207,8 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let model = model(config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
-        let messages = [["role": "system", "content": input.system], ["role": "user", "content": input.user]]
+        let content: Any = input.images.isEmpty || provider != .openRouter ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
+        let messages: [[String: Any]] = [["role": "system", "content": input.system], ["role": "user", "content": content]]
         var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": input.maxOutputTokens]
         let url: URL
         var anthropic = false
@@ -163,6 +223,9 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             let requestedBudget = effort != nil && effort != "none" ? max(input.maxOutputTokens, 32_768) : input.maxOutputTokens
             let budget = min(requestedBudget, max(1, input.outputTokenLimit ?? requestedBudget))
             body = ["model": model, "instructions": input.system, "input": input.user, "store": false, "max_output_tokens": budget]
+            if !input.images.isEmpty {
+                body["input"] = [["role": "user", "content": [["type": "input_text", "text": input.user]] + input.images.map(\.responsesContent)]]
+            }
             if let effort { body["reasoning"] = ["effort": effort] }
         case .openRouter:
             guard !credential.isEmpty else { throw MeetingTextGenerationError.missingConnection }
@@ -194,16 +257,24 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
             }
         default: throw MeetingTextGenerationError.invalidEndpoint
         }
+        if !input.images.isEmpty {
+            guard [.openAI, .openRouter, .anthropic].contains(provider) else { throw ChatFileError.unsupportedProvider }
+            if anthropic {
+                body["messages"] = [["role": "user", "content": [["type": "text", "text": input.user]] + input.images.map(\.anthropicContent)]]
+            }
+        }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = provider == .ollama || provider == .lmStudio || provider == .customLLM ? 300 : 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if anthropic { request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version") }
         if !credential.isEmpty { request.setValue(anthropic ? credential : "Bearer \(credential)", forHTTPHeaderField: anthropic ? "x-api-key" : "Authorization") }
         if provider == .openRouter { request.setValue(AppIdentity.displayName, forHTTPHeaderField: "X-OpenRouter-Title") }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         if provider == .anthropic {
-            return try AnthropicAPIRequest.make(url: url, apiKey: credential,
+            let anthropicRequest = try AnthropicAPIRequest.make(url: url, apiKey: credential,
                 workspaceID: MeetingSummaryClient.resolvedAnthropicWorkspaceID(config: config), body: body, timeout: request.timeoutInterval)
+            guard (anthropicRequest.httpBody?.count ?? 0) <= ChatFileReader.maximumRequestBytes else { throw ChatFileError.tooLarge }
+            return anthropicRequest
         }
+        request.httpBody = try ChatFileReader.requestData(body)
         if provider == .customLLM { try CustomLLMRequestHeaders.apply(config.customLLMHeaders, to: &request) }
         return request
     }

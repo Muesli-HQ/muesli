@@ -355,13 +355,13 @@ private final class DictionarySuggestionPromptView: NSView {
         let addX = ignoreX - buttonGap - buttonWidth
         let textWidth = cardFrame.width - textX - 14
 
-        let title = label("Add correction?", font: .systemFont(ofSize: 13, weight: .semibold), color: .white)
+        let title = label("Add correction?", font: AppFonts.font(size: 13, weight: .semibold), color: .white)
         title.frame = NSRect(x: textX, y: 66, width: textWidth, height: 18)
         cardView.addSubview(title)
 
         let detail = label(
             "\"\(suggestion.observed)\" -> \"\(suggestion.replacement)\"",
-            font: .systemFont(ofSize: 13),
+            font: AppFonts.font(size: 13),
             color: NSColor.white.withAlphaComponent(0.72),
             lineBreakMode: .byTruncatingMiddle
         )
@@ -393,7 +393,7 @@ private final class DictionarySuggestionPromptView: NSView {
 
     private func button(title: String, action: Selector, isPrimary: Bool) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
-        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.font = AppFonts.font(size: 12, weight: .medium)
         button.wantsLayer = true
         button.layer?.backgroundColor = isPrimary
             ? NSColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 1.0).cgColor

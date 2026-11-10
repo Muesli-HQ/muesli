@@ -348,12 +348,12 @@ struct SidebarHitAreaTests {
         let source = try sidebarViewSource()
         let meetingFilterRow = try sourceSection(
             in: source,
-            from: "private func meetingFilterRow",
+            from: "private func meetingFilterRow(",
             to: "private func folderRenameField"
         )
 
         #expect(meetingFilterRow.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
-        #expect(meetingFilterRow.contains(".background("))
+        #expect(meetingFilterRow.contains(".modifier(SidebarRowFeedback(isSelected: isSelected))"))
         #expect(meetingFilterRow.contains(".contentShape(Rectangle())"))
         #expect(try index(of: ".frame(maxWidth: .infinity, alignment: .leading)", in: meetingFilterRow) <
             index(of: ".contentShape(Rectangle())", in: meetingFilterRow))

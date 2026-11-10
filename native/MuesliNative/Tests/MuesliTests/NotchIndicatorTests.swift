@@ -6,6 +6,28 @@ import MuesliCore
 
 @Suite("Notch indicator geometry")
 struct NotchIndicatorTests {
+    @Test("repeated meeting notices each retain their dismissal deadline")
+    @MainActor
+    func repeatedMeetingNotice() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        var dismissals: [DispatchWorkItem] = []
+        let indicator = FloatingIndicatorController(
+            configStore: ConfigStore(supportDirectory: directory),
+            scheduleMeetingFeedbackDismissal: { _, item in dismissals.append(item) }
+        )
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        indicator.presentsWindows = false
+        indicator.setMeetingRecording(true, config: AppConfig())
+        indicator.showWarning("Model preparation failed. Try again.")
+        indicator.showWarning("Model preparation failed. Try again.")
+        #expect(dismissals.count == 2)
+        guard dismissals.count == 2 else { return }
+        dismissals[0].perform()
+        #expect(indicator.meetingFeedbackMessage == "Model preparation failed. Try again.")
+        dismissals[1].perform()
+        #expect(indicator.meetingFeedbackMessage == nil)
+    }
+
     @MainActor
     private func makeNotch(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) -> NotchIndicatorController {
         NotchIndicatorController(resolveGeometry: { screen in
@@ -14,13 +36,393 @@ struct NotchIndicatorTests {
         }, pointerLocation: pointerLocation)
     }
 
+    @Test("overlap state retains the surviving activity and routes Finish and Cancel to dictation")
+    @MainActor
+    func dictationOverlap() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ConfigStore(supportDirectory: directory), notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        let config = AppConfig()
+        indicator.presentsWindows = false
+        var cancelled = 0, finished = 0, stoppedMeeting = 0
+        var meetingPauses = 0, meetingDiscards = 0
+        indicator.onCancelDictation = { cancelled += 1 }
+        indicator.onStopToggleDictation = { finished += 1 }
+        indicator.onStopMeeting = { stoppedMeeting += 1 }
+        indicator.onToggleMeetingPause = { meetingPauses += 1 }
+        indicator.onDiscardMeeting = { meetingDiscards += 1 }
+        indicator.setMeetingRecording(true, config: config)
+        indicator.showLoading("Owned warmup")
+        #expect(indicator.meetingFeedbackMessage == "Owned warmup" && indicator.isShowingLoading)
+        #expect(indicator.overlapMeetingStatus == "Meeting recording")
+        indicator.cancelNotchActivity()
+        #expect(meetingDiscards == 1 && cancelled == 0)
+        indicator.hideLoading()
+        #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+        #expect(indicator.state == .recording && indicator.overlapMeetingStatus == nil)
+        indicator.toggleNotchMeetingPause()
+        indicator.stopNotchMeeting()
+        #expect(meetingPauses == 1 && stoppedMeeting == 1)
+        for ending in ["end", "hide", "pause", "resume", "dictation", "meeting", "notice"] {
+            indicator.setMeetingRecordingPaused(ending == "resume", config: config)
+            indicator.pointerInteractionBegan()
+            indicator.showLoading("First progress")
+            indicator.showLoading("Latest progress")
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading,
+                "Loading must remain deferred throughout a drag")
+            switch ending {
+            case "hide": indicator.hideLoading()
+            case "pause": indicator.setMeetingRecordingPaused(true, config: config)
+            case "resume": indicator.setMeetingRecordingPaused(false, config: config)
+            case "dictation":
+                indicator.setDictationState(.preparing, config: config)
+                indicator.setDictationState(.idle, config: config)
+            case "meeting":
+                indicator.setMeetingRecording(false, config: config)
+                indicator.setMeetingRecording(true, config: config)
+            case "notice": indicator.showWarning("Newer notice")
+            default: break
+            }
+            indicator.pointerInteractionEnded()
+            #expect(indicator.meetingFeedbackMessage == (ending == "end" ? "Latest progress" : (ending == "notice" ? "Newer notice" : nil)))
+            #expect(indicator.isShowingLoading == (ending == "end"))
+            indicator.hideLoading()
+        }
+        indicator.setMeetingRecordingPaused(false, config: config)
+        // No panel is created: exercise the production redraw decision with an
+        // existing floating panel as input, separately from loading ownership.
+        for loading in [false, true] {
+            for paused in [true, false] {
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+                if loading { indicator.showLoading("Preparing dictation") }
+                else { indicator.showWarning("Try dictation again") }
+                #expect(indicator.isShowingLoading == loading)
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: !paused, hasPanel: true, config: config))
+                #expect(indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config),
+                    "A pause transition must redraw retired feedback on an existing floating panel")
+                indicator.setMeetingRecordingPaused(paused, config: config)
+                #expect(indicator.meetingFeedbackMessage == nil)
+                #expect(!indicator.isShowingLoading, "Retired loading must not keep meeting hover controls disabled")
+                #expect(!indicator.shouldRefreshMeetingPausePresentation(paused: paused, hasPanel: true, config: config))
+            }
+        }
+        for takeover in [false, true] {
+            indicator.showLoading("Preparing dictation")
+            #expect(indicator.meetingFeedbackMessage != nil && indicator.isShowingLoading)
+            if takeover { indicator.setDictationState(.preparing, config: config) }
+            else { indicator.setMeetingRecording(false, config: config) }
+            #expect(indicator.state == (takeover ? .preparing : .idle))
+            #expect(indicator.meetingFeedbackMessage == nil && !indicator.isShowingLoading)
+            indicator.setDictationState(.idle, config: config)
+            indicator.setMeetingRecording(true, config: config)
+        }
+        indicator.setMeetingRecording(false, config: config)
+        indicator.showLoading("Unrelated background loading")
+        indicator.setDictationState(.idle, config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.meetingFeedbackMessage == nil && indicator.isShowingLoading)
+        indicator.hideLoading()
+        indicator.setMeetingRecording(true, config: config)
+        for target: DictationState in [.idle, .recording] {
+            indicator.setDictationState(.preparing, config: config)
+            indicator.setPreparingWaveformWaiting(config: config)
+            #expect(indicator.recordingWaveformMode == .waiting)
+            indicator.setDictationState(.preparing, config: config)
+            #expect(indicator.recordingWaveformMode == .waiting, "Same-state refresh preserves intentional waiting")
+            for state: DictationState in [.preparing, .recording, .transcribing] {
+                for paused in [false, true] {
+                    for reason: BufferedDictationInsertionStopReason? in [nil, .cursorOwnershipLost, .transcriptionFailed] {
+                        let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: reason)
+                        let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+                        #expect(size.height == 28)
+                        #expect(ceil(text.size().width) + 8 <= size.width - 116)
+                        let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+                        label.attributedText = text
+                        let status = NSRect(x: size.width - 107, y: (size.height - 14) / 2, width: 14, height: 14)
+                        #expect(label.frame.maxX <= status.minX, "Text must not overlap the meeting indicator")
+                        #expect(label.frame.minY >= 0 && label.frame.maxY <= size.height, "Text must fit within the pill")
+                        let bars = (0..<5).map { IndicatorWaveformDynamics.standingBarFrame(index: $0, amplitude: 1, bounds: CGRect(origin: .zero, size: size), overlapsMeeting: true) }
+                        #expect(bars.allSatisfy { $0.minX >= status.maxX && $0.maxX <= size.width - 58 }, "Waveform must stay between the meeting status and finish control")
+                        if state == .recording && reason == nil {
+                            #expect(text.string.hasPrefix("Dictating"))
+                            #expect(size.width * size.height < 220 * 40, "The overlap pill should remain compact")
+                        }
+                    }
+                }
+            }
+            indicator.setDictationState(target, config: config)
+            #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+            indicator.setDictationState(.idle, config: config)
+        }
+        indicator.setMeetingRecordingPaused(true, config: config)
+        for state: DictationState in [.preparing, .recording, .transcribing] {
+            indicator.setDictationState(state, config: config)
+            #expect(indicator.overlapMeetingStatus == "Meeting paused")
+            notch.onCancel?()
+            if state == .recording { notch.onStopRecording?() }
+            indicator.stopNotchMeeting()
+        }
+        #expect(cancelled == 3 && finished == 1 && stoppedMeeting == 1)
+        indicator.setDictationState(.idle, config: config)
+        #expect(indicator.overlapMeetingStatus == nil)
+        indicator.stopNotchMeeting()
+        #expect(stoppedMeeting == 2)
+        indicator.setDictationState(.recording, config: config)
+        #expect(indicator.overlapMeetingStatus == "Meeting paused")
+        indicator.setRecordingWaveformWaiting(config: config)
+        indicator.setMeetingRecording(false, config: config)
+        #expect(indicator.state == .recording && indicator.recordingWaveformMode == .level)
+        #expect(indicator.overlapMeetingStatus == nil)
+        let ordinary = CGRect(x: 0, y: 0, width: 76, height: 22)
+        #expect(indicator.standingWaveformFrame(index: 0, amplitude: 0, bounds: ordinary) ==
+            IndicatorWaveformDynamics.standingBarFrame(index: 0, amplitude: 0, bounds: ordinary))
+        indicator.cancelNotchActivity()
+        #expect(cancelled == 4)
+
+        var transcriptVisible = true, geometry = "expanded"
+        var effects: [String] = []
+        var compactWrites: [() -> Void] = [], completions: [() -> Void] = []
+        let applyGeometry: (Bool, @escaping () -> Void) -> Void = { animated, completion in
+            let compact = { geometry = "compact"; effects.append("compact") }
+            if animated { compactWrites.append(compact) } else { compact() }
+            effects.append("layout")
+            completions.append { effects.append("completion"); completion() }
+        }
+        let restore = { transcriptVisible = true; geometry = "expanded"; effects.append("restore") }
+        for _ in 0..<2 {
+            let restores = transcriptVisible
+            transcriptVisible = false // The renderer normalizes expanded content before compact layout.
+            effects.removeAll()
+            FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: restores, geometry: applyGeometry, restore: restore)
+            #expect(transcriptVisible && geometry == "expanded", "Each refresh must restore before returning")
+            #expect(effects == ["compact", "layout", "restore"])
+            #expect(compactWrites.isEmpty, "Restoring refreshes cannot leave a deferred compact frame")
+        }
+        transcriptVisible = false
+        geometry = "compact" // Collapse before ordinary animation completions are delivered.
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact", "A stale completion cannot reopen a collapsed transcript")
+        compactWrites.removeAll()
+        completions.removeAll()
+        effects.removeAll()
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry, restore: restore)
+        #expect(effects == ["layout"] && compactWrites.count == 1 && completions.count == 1)
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+        compactWrites.removeAll()
+        completions.removeAll()
+        var reconciledGeometry: String?
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry,
+            restore: restore, onCompletion: { reconciledGeometry = geometry })
+        #expect(reconciledGeometry == nil, "Reconciliation must wait for geometry completion")
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(reconciledGeometry == "compact")
+    }
+
+    @Test("meeting status draws an unclipped recording dot")
+    @MainActor
+    func meetingStatusDotRendering() throws {
+        let view = MeetingOverlapStatusView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 14, pixelsHigh: 14,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        view.draw(view.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        #expect((bitmap.colorAt(x: 4, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 9, y: 7)?.alphaComponent ?? 0) > 0.5)
+        #expect((bitmap.colorAt(x: 0, y: 7)?.alphaComponent ?? 1) == 0)
+        #expect((bitmap.colorAt(x: 13, y: 7)?.alphaComponent ?? 1) == 0)
+    }
+
+    @Test("overlap text and recording dot render on the same center line")
+    @MainActor
+    func overlapTextAndDotAlignment() throws {
+        for state: DictationState in [.recording, .transcribing] {
+            let text = FloatingIndicatorController.dictationOverlapText(state: state, insertionStopReason: nil)
+            let size = FloatingIndicatorController.dictationOverlapSize(for: text)
+            let label = MeetingOverlapTitleView(frame: NSRect(x: 8, y: 0, width: size.width - 116, height: size.height))
+            label.attributedText = text
+            let status = MeetingOverlapStatusView(frame: NSRect(x: size.width - 107, y: 7, width: 14, height: 14))
+            let scale: CGFloat = 2
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.cgContext.clear(CGRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
+            context.cgContext.scaleBy(x: scale, y: scale)
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: label.frame.minX, y: label.frame.minY)
+            label.draw(label.bounds)
+            context.cgContext.restoreGState()
+            context.cgContext.saveGState()
+            context.cgContext.translateBy(x: status.frame.minX, y: status.frame.minY)
+            status.draw(status.bounds)
+            context.cgContext.restoreGState()
+            NSGraphicsContext.restoreGraphicsState()
+            var textRows: [Int] = [], dotRows: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y), color.alphaComponent > 0.5 else { continue }
+                    if CGFloat(x) / scale < label.frame.maxX { textRows.append(y) }
+                    if CGFloat(x) / scale >= status.frame.minX && CGFloat(x) / scale < status.frame.maxX { dotRows.append(y) }
+                }
+            }
+            let textMin = try #require(textRows.min()), textMax = try #require(textRows.max())
+            let dotMin = try #require(dotRows.min()), dotMax = try #require(dotRows.max())
+            #expect(abs(CGFloat(textMin + textMax - dotMin - dotMax) / 2) <= 2 * scale,
+                "Text and recording dot should share a visual center line")
+        }
+    }
+
+    @Test("overlap control symbols move closer without shrinking their targets")
+    @MainActor
+    func overlapControlSymbolOffsets() throws {
+        _ = NSApplication.shared
+        let cell = FloatingIndicatorButtonCell()
+        cell.image = try #require(NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil))
+        cell.imagePosition = .imageOnly
+        let bounds = NSRect(x: 0, y: 0, width: 28, height: 28)
+        let original = cell.imageRect(forBounds: bounds)
+        cell.imageHorizontalOffset = 3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX + 3)
+        cell.imageHorizontalOffset = -3
+        #expect(cell.imageRect(forBounds: bounds).midX == original.midX - 3)
+
+        func renderedCenter(offset: CGFloat) throws -> CGFloat {
+            let button = NSButton(frame: bounds)
+            let renderedCell = FloatingIndicatorButtonCell()
+            renderedCell.imageHorizontalOffset = offset
+            button.cell = renderedCell
+            button.title = ""
+            button.imagePosition = .imageOnly
+            button.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)
+            button.isBordered = false
+            button.contentTintColor = .white
+            let bitmap = try #require(button.bitmapImageRepForCachingDisplay(in: bounds))
+            button.cacheDisplay(in: bounds, to: bitmap)
+            var columns: [Int] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 {
+                    columns.append(x)
+                }
+            }
+            let minimum = try #require(columns.min()), maximum = try #require(columns.max())
+            return CGFloat(minimum + maximum) / 2
+        }
+        let left = try renderedCenter(offset: -3)
+        let right = try renderedCenter(offset: 3)
+        #expect(right > left, "The rendered icon should move inside the unchanged button target")
+    }
+
+    @Test("Quill processing labels the assistant, not the foreground app")
+    @MainActor
+    func quillHeaderDoesNotImpersonateProvider() throws {
+        _ = NSApplication.shared
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.updateInstructionApp(name: "ChatGPT", bundleID: "com.apple.finder")
+        indicator.instructionMode = .quill
+        indicator.isToggleDictation = true
+        var stops = 0
+        indicator.onStopToggleDictation = { stops += 1 }
+        indicator.setState(.recording, config: config)
+        #expect(indicator.notchInstruction == nil)
+        notch.onStopRecording?()
+        #expect(stops == 1)
+        indicator.showQuilInstruction("A question", config: config)
+        #expect(indicator.notchInstruction == "A question")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+        indicator.updateInstructionApp(name: "Another app", bundleID: "com.apple.TextEdit")
+        #expect(notch.appName == "Quill")
+        #expect(notch.appIcon == nil)
+    }
+
+    @Test("Quill answers persist across idle callbacks and collapse, then yield to recording")
+    @MainActor
+    func quillResponseLifecycle() throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = makeTestConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        indicator.showQuilInstruction("A question", config: config)
+        let processingFrame = try #require(notch.screenFrame)
+        #expect(notch.expandedPanelFrame != nil)
+        // Complete directly from processing, before the controller's idle callback.
+        indicator.showQuillAnswer("An answer", question: "A question", config: config, onDismiss: {}, onFollowUp: {})
+        #expect(notch.screenFrame == processingFrame)
+        indicator.setState(.idle, config: config)
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.quillQuestion == "A question")
+        #expect(try #require(notch.expandedPanelFrame).height < 180)
+        #expect(notch.expandedPanelFrame != nil)
+        #expect(notch.expandedPanelFrame?.width == notch.screenFrame?.width)
+        #expect(notch.expandedPanelFrame?.minX == notch.screenFrame?.minX)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame == nil)
+        indicator.setState(.idle, config: config)
+        indicator.showLoading("Late model preparation")
+        indicator.hideLoading()
+        #expect(notch.quillAnswer == "An answer")
+        #expect(notch.refreshOutcomePlacement(on: screen))
+        #expect(notch.expandedPanelFrame == nil)
+        notch.toggleInstructionExpansion()
+        #expect(notch.expandedPanelFrame != nil)
+        indicator.instructionMode = .quill
+        indicator.setState(.recording, config: config)
+        #expect(notch.quillAnswer == nil)
+        #expect(notch.isVisible)
+    }
+
+    @Test("Short Quill answers fit their content and long answers have a bounded viewport")
+    @MainActor
+    func answerSizing() {
+        let short = QuillAssistantLayout.contentHeight(answer: "The capital of Azerbaijan is Baku.", question: nil, width: 420)
+        let long = QuillAssistantLayout.contentHeight(answer: String(repeating: "A longer explanation with multiple paragraphs.\n\n", count: 40), question: nil, width: 420)
+        if let path = ProcessInfo.processInfo.environment["MUESLI_QUILL_SNAPSHOT"] {
+            let height = QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420)
+            let view = NSHostingView(rootView: QuillAssistantView(
+                answer: "The capital of Azerbaijan is Baku.", question: nil,
+                contentHeight: height - QuillAssistantLayout.chromeHeight, onFollowUp: {}, onDismiss: {}))
+            view.frame = CGRect(x: 0, y: 0, width: 420, height: height)
+            view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+        }
+        #expect(short > 0)
+        #expect(QuillAssistantLayout.height(contentHeight: short, maximumHeight: 420) < 150)
+        #expect(long > 420)
+        #expect(QuillAssistantLayout.height(contentHeight: long, maximumHeight: 420) == 420)
+    }
+
     @Test("Insertion-stop notice persists during recording and resets before the next session", arguments: [false, true], [false, true])
     @MainActor
     func cursorStopNoticeLifecycle(useNotch: Bool, decoderFailed: Bool) throws {
         _ = NSApplication.shared
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -62,7 +464,7 @@ struct NotchIndicatorTests {
     func statusRouting(kind: NotchStatus) throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -85,6 +487,38 @@ struct NotchIndicatorTests {
         indicator.hideLoading()
         indicator.hideComputerUseCursor()
         #expect(notch.isVisible)
+    }
+
+    @Test("Quill warmup and ready feedback stay in the notch with a floating dictation preference")
+    @MainActor
+    func quillPreparationFeedbackUsesNotch() throws {
+        _ = try #require(NSScreen.main)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = makeTestConfigStore(supportDirectory: directory)
+        let notch = makeNotch()
+        let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
+        defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+        var config = AppConfig()
+        config.indicatorAnchor = .custom
+        store.save(config)
+        indicator.showLoading("Preparing models… Mic off", preferNotch: true)
+        #expect(notch.status == .loading)
+        #expect(notch.isVisible)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(!indicator.isShowingLoading)
+        indicator.showSuccess("Ready to record", preferNotch: true)
+        #expect(notch.status == .success)
+        #expect(notch.isVisible)
+        indicator.showWarning("Model preparation failed", preferNotch: true)
+        #expect(notch.status == .warning)
+        indicator.instructionMode = .quill
+        indicator.setState(.preparing, config: config)
+        #expect(notch.status == nil)
+        #expect(notch.isVisible)
+        indicator.setState(.recording, config: config)
+        indicator.hideLoading(restoreIdlePresentation: false)
+        #expect(notch.isVisible)
+        #expect(store.load().indicatorAnchor == .custom)
     }
 
     @Test("Changing progress preserves collapsed disclosure", arguments: [NotchStatus.loading, .cursor])
@@ -114,7 +548,7 @@ struct NotchIndicatorTests {
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
         })
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
@@ -154,7 +588,7 @@ struct NotchIndicatorTests {
     func progressConfigurationCache() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.indicatorAnchor = .notch
         config.showFloatingIndicator = false
@@ -192,7 +626,7 @@ struct NotchIndicatorTests {
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110) : nil
         })
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
@@ -216,7 +650,7 @@ struct NotchIndicatorTests {
     func loadingCompletionPreservesNotice() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -236,7 +670,7 @@ struct NotchIndicatorTests {
     func statusFallback() throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = NotchIndicatorController(resolveGeometry: { _ in nil })
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -354,7 +788,7 @@ struct NotchIndicatorTests {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let notch = makeNotch()
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory), notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
         var config = AppConfig()
         config.indicatorAnchor = .notch
@@ -373,7 +807,7 @@ struct NotchIndicatorTests {
     func loadingPreservesNotch(state: DictationState) throws {
         _ = try #require(NSScreen.main)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         let notch = makeNotch()
         let indicator = FloatingIndicatorController(configStore: store, notchIndicator: notch)
         defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
@@ -417,18 +851,24 @@ struct NotchIndicatorTests {
 
     @MainActor
     @Test("Placement refresh does not extend success dismissal")
-    func outcomeDeadline() async throws {
+    func outcomeDeadline() throws {
         let screen = try #require(NSScreen.main)
+        var scheduled: [(TimeInterval, DispatchWorkItem)] = []
         let controller = NotchIndicatorController(resolveGeometry: { screen in
             NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
                 y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 110)
-        })
+        }, scheduleOutcomeDismissal: { duration, work in scheduled.append((duration, work)) })
         defer { controller.hide() }
         #expect(controller.showOutcome(on: screen, outcome: .success,
             instruction: nil, message: "Done", icon: NSImage()))
-        try await Task.sleep(for: .seconds(1.2))
+        #expect(scheduled.count == 1)
+        let original = try #require(scheduled.first)
+        #expect(original.0 == NotchOutcome.success.duration)
         #expect(controller.refreshOutcomePlacement(on: screen))
-        try await Task.sleep(for: .seconds(1.1))
+        #expect(scheduled.count == 1)
+        #expect(!original.1.isCancelled)
+        #expect(controller.outcome == .success)
+        original.1.perform()
         #expect(controller.outcome == nil)
         #expect(!controller.isVisible)
     }
@@ -470,7 +910,13 @@ struct NotchIndicatorTests {
         #expect(NotchOutcome.quillFailure(QuilTransformationError.emptyResponse) == .failure)
         #expect(NotchOutcome.success.color == .systemGreen)
         #expect(NotchOutcome.needsInput.color == .systemYellow)
-        #expect(NotchOutcome.failure.color == .systemRed)
+        let failureColor = NotchOutcome.failure.color.usingColorSpace(.sRGB)!
+        #expect(failureColor.redComponent > failureColor.greenComponent)
+        #expect(failureColor.redComponent > failureColor.blueComponent)
+        let failureHex = (Int((failureColor.redComponent * 255).rounded()) << 16)
+            | (Int((failureColor.greenComponent * 255).rounded()) << 8)
+            | Int((failureColor.blueComponent * 255).rounded())
+        #expect(MuesliContrast.ratio(0xFFFFFF, failureHex) >= 4.5)
         #expect(NotchOutcome.success.duration == 2)
         #expect(NotchOutcome.needsInput.duration == nil)
         #expect(NotchOutcome.failure.duration == 5)
@@ -486,7 +932,7 @@ struct NotchIndicatorTests {
         #expect(frame.width == 440)
         #expect(frame.height == 100)
         let progress = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900), resultCount: 99)
-        #expect(progress.height == 190)
+        #expect(progress.height == 202)
         #expect(progress.maxY == geometry.cutout.minY)
         let narrow = CGRect(x: 1500, y: 0, width: 300, height: 900)
         #expect(geometry.instructionFrame(in: narrow).minX == narrow.minX)
@@ -501,7 +947,7 @@ struct NotchIndicatorTests {
     @Test("Compact tool responses are bounded, deduplicated, and cleared between commands")
     func toolResultLifecycle() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -534,7 +980,7 @@ struct NotchIndicatorTests {
     @Test("Live instruction survives status updates and clears at session end")
     func instructionLifecycle() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -657,7 +1103,7 @@ struct NotchIndicatorTests {
     @Test("Notch cancel routes recording and processing to cancellation, never finish")
     func cancellationRouting() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false
@@ -690,7 +1136,7 @@ struct NotchIndicatorTests {
     @MainActor
     func meetingControlsAndSharedPower() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory))
+        let indicator = FloatingIndicatorController(configStore: makeTestConfigStore(supportDirectory: directory))
         defer { indicator.close() }
         var config = AppConfig()
         config.showFloatingIndicator = false

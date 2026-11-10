@@ -1,10 +1,12 @@
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// File-transcription models whose implementations live in the app library.
 /// Stable command-line names are separate from provider repository identifiers.
 public enum NativeFileTranscriptionModel: String, CaseIterable, Sendable {
     case appleSpeech = "apple-speech"
+    case medASR = "medasr"
     case cohere = "cohere-transcribe"
     case bodhanCore = "bodhan-core"
     case bodhanFlex = "bodhan-flex"
@@ -16,6 +18,7 @@ public enum NativeFileTranscriptionModel: String, CaseIterable, Sendable {
     var backend: BackendOption {
         switch self {
         case .appleSpeech: .appleSpeechAnalyzer
+        case .medASR: .medASR
         case .cohere: .cohereTranscribe
         case .bodhanCore: .bodhanCore
         case .bodhanFlex: .bodhanFlex
@@ -51,7 +54,8 @@ public enum NativeFileTranscriber {
     public static func transcribe(
         wavURL: URL,
         model: NativeFileTranscriptionModel,
-        progress: @escaping (String) -> Void
+        progress: @escaping (String) -> Void,
+        medASRLicense: MedASRLicense = .shared
     ) async throws -> String {
         try Task.checkCancellation()
         if let reason = model.unavailabilityReason() {
@@ -71,6 +75,17 @@ public enum NativeFileTranscriber {
             // SpeechAnalyzer streams the file directly; don't impose the small
             // replay windows required by fixed-context transcription engines.
             return try await transcriber.transcribe(wavURL: wavURL).text
+        case .medASR:
+            let transcriber = MedASRTranscriber(license: medASRLicense)
+            do {
+                try await transcriber.prepare(progress: report)
+                let result = try await transcriber.transcribe(wavURL: wavURL)
+                await transcriber.shutdown()
+                return result.text
+            } catch {
+                await transcriber.shutdown()
+                throw error
+            }
         case .cohere:
             guard #available(macOS 15, *) else { throw unsupported(model) }
             return try await transcribeCohereRecording(wavURL: wavURL) { url in
@@ -112,8 +127,12 @@ public enum NativeFileTranscriber {
         return try await infer(wavURL)
     }
 
-    private static func containsCohereSpeech(_ url: URL) async throws -> Bool {
-        let vad = try await VadManager()
+    static func containsCohereSpeech(_ url: URL) async throws -> Bool {
+        let vad = try await GemmaNativeAudioModels.loadVAD()
+        return try await containsCohereSpeech(url, vad: vad)
+    }
+
+    static func containsCohereSpeech(_ url: URL, vad: VadManager) async throws -> Bool {
         // Reuse the bounded PCM reader so even long silent inputs don't need
         // to be loaded into a single in-memory sample array for this guard.
         let reader = try DiarizationPCMWindowReader(url: url)
@@ -132,13 +151,22 @@ public enum NativeFileTranscriber {
         infer: @escaping @Sendable (URL) async throws -> String
     ) async throws -> String {
         let result = try await MeetingRecordingTranscriber().transcribe(url: wavURL, infer: { chunk in
-            let samples = try AudioConverter().resampleAudioFile(chunk)
-            let pcmURL = try WavWriter.writeTemporaryWAV(samples: samples)
-            defer { try? FileManager.default.removeItem(at: pcmURL) }
-            try Task.checkCancellation()
-            return SpeechTranscriptionResult(text: try await infer(pcmURL), segments: [])
+            let text = try await transcribeGemmaWindow(wavURL: chunk, infer: infer)
+            return SpeechTranscriptionResult(text: text, segments: [])
         }, progress: { _, _ in })
         return result.text
+    }
+
+    /// Convert one bounded replay window to PCM16 without splitting it again.
+    static func transcribeGemmaWindow(
+        wavURL: URL,
+        infer: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> String {
+        let samples = try AudioConverter().resampleAudioFile(wavURL)
+        let pcmURL = try WavWriter.writeTemporaryWAV(samples: samples)
+        defer { try? FileManager.default.removeItem(at: pcmURL) }
+        try Task.checkCancellation()
+        return try await infer(pcmURL)
     }
 
     private static func unsupported(_ model: NativeFileTranscriptionModel) -> NativeFileTranscriptionError {

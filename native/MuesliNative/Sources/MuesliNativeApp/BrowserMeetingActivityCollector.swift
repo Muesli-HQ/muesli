@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ScriptingBridge
+import os.log
 
 struct RunningAppSnapshot: Sendable {
     let bundleID: String
@@ -12,6 +13,7 @@ struct RunningAppSnapshot: Sendable {
 
 // Not thread-safe; MeetingSignalCollector owns this collector from a single actor context.
 final class BrowserMeetingActivityCollector {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
     private let browserBundleIDs = Set(MeetingCandidateResolver.browserApps.keys)
     private let cachedMeetingTTL: TimeInterval
     private let focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)?
@@ -22,6 +24,7 @@ final class BrowserMeetingActivityCollector {
     private let allTabURLsProvider: ((RunningAppSnapshot) -> [String]?)?
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
     private var activeTabFallbacksAwaitingFreshResult: Set<String> = []
+    private var loggedAutomationFailures: Set<String> = []
 
     init(
         cachedMeetingTTL: TimeInterval = 30,
@@ -143,11 +146,14 @@ final class BrowserMeetingActivityCollector {
             // The result's case only: an unrelated tab's URL can carry tokens or private search text.
             fputs("[meeting-monitor] browser_probe_slow app=\(app.bundleID) ax_ms=\(axMilliseconds) tab_ms=\(tabMilliseconds) result=\(activeTabResult.logLabel)\n", stderr)
         }
+        logAutomationFailureOnce(activeTabResult, for: app)
         switch activeTabResult {
         case .timedOut:
             // An ordinary focused page rules out a call only when background tabs are not
             // searched; otherwise the timeout skipped the scan that could have found it.
             return observedFocusedNonMeetingDocumentURL && !scansAllTabs ? .noMeeting : .inconclusive
+        case .failed:
+            return .noMeeting
         case .noURL:
             // A front tab with no URL (a Start Page, say) says nothing about the other tabs.
             return await backgroundTabProbe(for: app, scansAllTabs: scansAllTabs)
@@ -159,6 +165,13 @@ final class BrowserMeetingActivityCollector {
             }
             return .meeting(normalized, isFocused: app.isActive)
         }
+    }
+
+    private func logAutomationFailureOnce(_ result: BrowserActiveTabProbeResult, for app: RunningAppSnapshot) {
+        guard case .failed(let code) = result else { return }
+        let key = "\(app.bundleID):\(code)"
+        guard loggedAutomationFailures.insert(key).inserted else { return }
+        Self.logger.notice("Browser active-tab lookup failed for \(app.bundleID, privacy: .public), error code \(code, privacy: .public)")
     }
 
     private func backgroundTabProbe(for app: RunningAppSnapshot, scansAllTabs: Bool) async -> BrowserMeetingURLProbeResult {
@@ -331,8 +344,7 @@ final class BrowserMeetingActivityCollector {
         await withCheckedContinuation { continuation in
             let completion = BrowserActiveTabProbeCompletion(continuation)
             DispatchQueue.global(qos: .utility).async {
-                let url = Self.activeTabURLViaScriptingBridgeSync(for: app)
-                completion.resume(url.map(BrowserActiveTabProbeResult.url) ?? .noURL)
+                completion.resume(Self.activeTabURLViaScriptingBridgeSync(for: app))
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + deadline) {
                 completion.resume(.timedOut)
@@ -356,7 +368,8 @@ final class BrowserMeetingActivityCollector {
     }
 
     private static func allTabURLsViaScriptingBridgeSync(for app: RunningAppSnapshot) -> [String] {
-        guard let browser = scriptingBridgeBrowser(for: app, timeoutTicks: allTabsTimeoutTicks),
+        let errorDelegate = BrowserScriptingBridgeErrorDelegate()
+        guard let browser = scriptingBridgeBrowser(for: app, timeoutTicks: allTabsTimeoutTicks, errorDelegate: errorDelegate),
               let windows = browser.value(forKey: "windows") as? SBElementArray else {
             return []
         }
@@ -370,30 +383,36 @@ final class BrowserMeetingActivityCollector {
         return urls
     }
 
-    private static func activeTabURLViaScriptingBridgeSync(for app: RunningAppSnapshot) -> String? {
+    private static func activeTabURLViaScriptingBridgeSync(for app: RunningAppSnapshot) -> BrowserActiveTabProbeResult {
         // SBApplication.timeout is in Apple Event ticks (1/60 s). Keep the
         // ScriptingBridge timeout slightly above the 1.8 s outer deadline so
         // the async fallback reports .timedOut before a stalled Apple Event
         // can return nil and clear cache state.
-        guard let browser = scriptingBridgeBrowser(for: app, timeoutTicks: Self.scriptingBridgeTimeoutTicks) else {
-            return nil
+        let errorDelegate = BrowserScriptingBridgeErrorDelegate()
+        guard let browser = scriptingBridgeBrowser(for: app, timeoutTicks: Self.scriptingBridgeTimeoutTicks, errorDelegate: errorDelegate) else {
+            return .noURL
         }
 
         guard let windows = browser.value(forKey: "windows") as? SBElementArray,
               let frontWindow = windows.firstObject as? NSObject else {
-            return nil
+            return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
         }
 
         let tabKey = app.bundleID == "com.apple.Safari" ? "currentTab" : "activeTab"
         guard let activeTab = frontWindow.value(forKey: tabKey) as? NSObject else {
-            return nil
+            return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
         }
 
-        return activeTab.value(forKey: "URL") as? String
+        if let url = activeTab.value(forKey: "URL") as? String { return .url(url) }
+        return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
     }
 
     /// The running browser as a scripting target, or nil when it cannot be asked yet.
-    private static func scriptingBridgeBrowser(for app: RunningAppSnapshot, timeoutTicks: Int) -> SBApplication? {
+    private static func scriptingBridgeBrowser(
+        for app: RunningAppSnapshot,
+        timeoutTicks: Int,
+        errorDelegate: BrowserScriptingBridgeErrorDelegate
+    ) -> SBApplication? {
         // Target the existing process by PID. Bundle-id targets can relaunch a
         // browser after the user quits it, which passive detection must avoid.
         guard browserSupportsScriptingBridgeActiveTab(app.bundleID),
@@ -414,7 +433,7 @@ final class BrowserMeetingActivityCollector {
             return nil
         }
 
-        browser.delegate = BrowserScriptingBridgeErrorDelegate()
+        browser.delegate = errorDelegate
         browser.timeout = timeoutTicks
         return browser
     }
@@ -453,6 +472,7 @@ enum BrowserActiveTabProbeResult {
     case url(String)
     case noURL
     case timedOut
+    case failed(Int)
 
     /// The case name without the URL, safe to write to a log.
     var logLabel: String {
@@ -460,6 +480,7 @@ enum BrowserActiveTabProbeResult {
         case .url: "url"
         case .noURL: "noURL"
         case .timedOut: "timedOut"
+        case .failed: "failed"
         }
     }
 }
@@ -477,8 +498,10 @@ private struct CachedBrowserMeeting {
 }
 
 private final class BrowserScriptingBridgeErrorDelegate: NSObject, SBApplicationDelegate {
+    private(set) var errorCode: Int?
     func eventDidFail(_ event: UnsafePointer<AppleEvent>, withError error: Error) -> Any? {
-        nil
+        errorCode = (error as NSError).code
+        return nil
     }
 }
 

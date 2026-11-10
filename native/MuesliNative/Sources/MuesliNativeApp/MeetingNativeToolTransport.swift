@@ -6,6 +6,9 @@ struct MeetingNativeToolRequest {
     let inputItems: Data
     let tools: Data
     let allowTools: Bool
+    var requiresMeetingAnswerFormat: Bool = true
+    var allowedAnswerStatuses: [String] = ["conversation", "answered", "insufficient_evidence"]
+    var maximumArgumentBytes: Int = MeetingNativeToolTransport.defaultMaximumArgumentBytes
 }
 
 struct MeetingNativeToolCall: Sendable {
@@ -37,13 +40,19 @@ enum MeetingNativeToolTransportError: Error, LocalizedError {
 
 enum MeetingNativeToolTransport {
     static let maximumResponseBytes = 2_097_152
+    static let defaultMaximumArgumentBytes = 16_384
 
     static func requestBody(_ request: MeetingNativeToolRequest, stream: Bool) throws -> [String: Any] {
-        guard request.inputItems.count <= maximumResponseBytes,
+        guard request.inputItems.count <= ChatFileReader.maximumRequestBytes,
               request.tools.count <= 32_768,
-              let input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
+              var input = try JSONSerialization.jsonObject(with: request.inputItems) as? [[String: Any]],
               let tools = try JSONSerialization.jsonObject(with: request.tools) as? [[String: Any]] else {
             throw MeetingTextGenerationError.emptyResponse
+        }
+        if !request.base.images.isEmpty, let index = input.firstIndex(where: { $0["role"] as? String == "user" }) {
+            var content = input[index]["content"] as? [[String: Any]] ?? (input[index]["content"] as? String).map { [["type": "input_text", "text": $0]] } ?? []
+            content += request.base.images.map(\.responsesContent)
+            input[index]["content"] = content
         }
         let model = MeetingTextGenerationClient.model(request.base.config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
@@ -62,10 +71,11 @@ enum MeetingNativeToolTransport {
             "include": ["reasoning.encrypted_content"],
             "text": ["format": ["type": "json_schema", "name": "meeting_answer", "strict": true,
                 "schema": ["type": "object", "properties": [
-                    "status": ["type": "string", "enum": ["conversation", "answered", "insufficient_evidence"]],
+                    "status": ["type": "string", "enum": request.allowedAnswerStatuses],
                     "markdown": ["type": "string"]
                 ], "required": ["status", "markdown"], "additionalProperties": false]]]
         ]
+        if !request.requiresMeetingAnswerFormat { body.removeValue(forKey: "text") }
         if let effort {
             var reasoning = ["effort": effort]
             if request.base.onReasoningSummary != nil, effort != "none" { reasoning["summary"] = "auto" }
@@ -74,15 +84,15 @@ enum MeetingNativeToolTransport {
         return body
     }
 
-    static func parseResponse(_ data: Data) throws -> MeetingNativeToolResponse {
+    static func parseResponse(_ data: Data, maximumArgumentBytes: Int = defaultMaximumArgumentBytes) throws -> MeetingNativeToolResponse {
         guard data.count <= maximumResponseBytes else { throw MeetingNativeToolTransportError.responseTooLarge }
         guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MeetingNativeToolTransportError.invalidResponse
         }
-        return try parseResponse(payload)
+        return try parseResponse(payload, maximumArgumentBytes: maximumArgumentBytes)
     }
 
-    static func parseResponse(_ payload: [String: Any]) throws -> MeetingNativeToolResponse {
+    static func parseResponse(_ payload: [String: Any], maximumArgumentBytes: Int = defaultMaximumArgumentBytes) throws -> MeetingNativeToolResponse {
         guard payload["status"] as? String == "completed",
               payload["error"] == nil || payload["error"] is NSNull else { throw MeetingNativeToolTransportError.incompleteResponse }
         guard let output = payload["output"] as? [[String: Any]] else { throw MeetingNativeToolTransportError.invalidResponse }
@@ -95,7 +105,7 @@ enum MeetingNativeToolTransport {
             guard item["type"] as? String == "function_call" else { continue }
             guard let id = item["call_id"] as? String, !id.isEmpty, id.utf8.count <= 256,
                   let name = item["name"] as? String, !name.isEmpty, name.utf8.count <= 256,
-                  let arguments = item["arguments"] as? String, arguments.utf8.count <= 16_384,
+                  let arguments = item["arguments"] as? String, arguments.utf8.count <= maximumArgumentBytes,
                   seen.insert(id).inserted else { throw MeetingNativeToolTransportError.malformedToolCall }
             calls.append(.init(id: id, name: name, arguments: arguments))
         }
@@ -113,6 +123,11 @@ struct MeetingNativeResponseAccumulator {
         var value: [String: Any]
     }
     private var items: [Item] = []
+    private let maximumArgumentBytes: Int
+
+    init(maximumArgumentBytes: Int = MeetingNativeToolTransport.defaultMaximumArgumentBytes) {
+        self.maximumArgumentBytes = maximumArgumentBytes
+    }
 
     mutating func apply(_ payload: [String: Any]) throws -> MeetingNativeToolResponse? {
         switch payload["type"] as? String {
@@ -130,7 +145,7 @@ struct MeetingNativeResponseAccumulator {
                 for (index, item) in output.enumerated() { try merge(item, index: index) }
             }
             response["output"] = orderedOutput()
-            return try MeetingNativeToolTransport.parseResponse(response)
+            return try MeetingNativeToolTransport.parseResponse(response, maximumArgumentBytes: maximumArgumentBytes)
         case "response.failed", "response.incomplete", "error":
             throw MeetingNativeToolTransportError.incompleteResponse
         default:

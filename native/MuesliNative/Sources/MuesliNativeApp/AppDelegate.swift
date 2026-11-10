@@ -15,14 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installStandardEditMenu()
 
-        let runtimeTelemetry = TelemetryRuntimeConfiguration.current()
-        let telemetryConfig = TelemetryDeck.Config(appID: runtimeTelemetry.sdkAppID)
-        telemetryConfig.analyticsDisabled = !runtimeTelemetry.isEnabled
-        telemetryConfig.defaultParameters = { runtimeTelemetry.defaultParameters }
-        TelemetryDeck.initialize(config: telemetryConfig)
-        if runtimeTelemetry.isEnabled {
-            TelemetryDeck.signal("app.launched")
-        }
+        MuesliTelemetry.initialize()
         // Always drain a pending marker. TelemetryDeck's global privacy gate
         // suppresses the signal when analytics are disabled.
         DiarizerPreloadDiagnostics().reportInterruptedAttemptIfNeeded()
@@ -47,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             self.controller = controller
             controller.start()
+            if controller.appState.config.hasCompletedOnboarding,
+               let destination = PermissionRestartResumeStore.shared.consume(
+                   fallbackToPermissions: ProcessInfo.processInfo.arguments.contains(ApplicationRelaunch.permissionsArgument)
+               ) {
+                controller.restorePermissionRestartDestination(destination)
+            }
             NSApplication.shared.registerForRemoteNotifications()
         } catch {
             let alert = NSAlert()
@@ -83,8 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if terminationTask != nil {
             return .terminateLater
         }
-        if controller?.shouldTerminateApplication() == false {
-            return .terminateCancel
+        if let controller {
+            if controller.isRelaunchRequested {
+                guard controller.prepareRequestedRelaunch() else { return .terminateCancel }
+            } else if !controller.shouldTerminateApplication() {
+                return .terminateCancel
+            }
         }
         guard let controller else { return .terminateNow }
 
@@ -206,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         settingsItem.target = self
         appMenu.addItem(settingsItem)
         let whatsNewItem = NSMenuItem(
-            title: "What's New in Muesli",
+            title: "What's New in muesli",
             action: #selector(AppDelegate.showWhatsNew(_:)),
             keyEquivalent: ""
         )
@@ -511,9 +514,9 @@ enum UpdateFailureGuidance {
     static let downloadPageURLString = "https://muesli-hq.github.io/muesli/"
 
     static let message = """
-    Please quit Muesli, reopen it from Applications, and try the update once more.
+    Please quit muesli, reopen it from Applications, and try the update once more.
 
-    If this keeps happening, download the latest DMG and replace Muesli manually. This can happen when the local updater cannot finish preparing or replacing the app.
+    If this keeps happening, download the latest DMG and replace muesli manually. This can happen when the local updater cannot finish preparing or replacing the app.
     """
 
     static func isNoUpdateError(_ error: NSError) -> Bool {

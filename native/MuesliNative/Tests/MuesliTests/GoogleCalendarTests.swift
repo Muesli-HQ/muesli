@@ -4,6 +4,26 @@ import Foundation
 import MuesliCore
 @testable import MuesliNativeApp
 
+private final class CalendarVideoCallFixture: NSObject {
+    @objc var conferenceURL: NSURL?
+    init(_ url: String?) { conferenceURL = url.flatMap { NSURL(string: $0) } }
+}
+private final class CalendarVideoCallWrongSignatureFixture: NSObject {
+    @objc func conferenceURL() -> Int { 1 }
+}
+private final class CalendarJoinMethodFixture: NSObject {
+    @objc(URL) var url: NSURL?
+    init(_ value: String?) { url = value.flatMap { NSURL(string: $0) } }
+}
+private final class CalendarConferenceFixture: NSObject {
+    @objc var joinMethods: [NSObject]
+    init(_ methods: [NSObject]) { joinMethods = methods }
+}
+private final class CalendarVirtualEventFixture: NSObject {
+    @objc var virtualConference: NSObject?
+    init(_ conference: NSObject?) { virtualConference = conference }
+}
+
 @Suite("Google Calendar integration")
 @MainActor
 struct GoogleCalendarTests {
@@ -337,6 +357,40 @@ struct GoogleCalendarTests {
         #expect(url?.absoluteString == "https://teams.live.com/meet/9312345678901?p=XyZ123")
     }
 
+    @Test("Calendar video-call links accept supported meeting URLs and reject other links")
+    func calendarVideoCallURL() throws {
+        let meeting = CalendarVideoCallFixture("https://meet.google.com/abc-defg-hij")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(meeting)?.host == "meet.google.com")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallFixture("https://example.com/")) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallFixture(nil)) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(NSObject()) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVideoCallWrongSignatureFixture()) == nil)
+    }
+
+    @Test("Calendar virtual conference join methods provide the first supported meeting URL")
+    func calendarVirtualConferenceJoinMethods() {
+        let conference = CalendarConferenceFixture([
+            CalendarJoinMethodFixture("https://example.com/"),
+            CalendarJoinMethodFixture("https://meet.google.com/abc-defg-hij"),
+            CalendarJoinMethodFixture("https://zoom.us/j/123456789")
+        ])
+        let event = CalendarVirtualEventFixture(conference)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(event)?.host == "meet.google.com")
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVirtualEventFixture(nil)) == nil)
+        #expect(CalendarMonitor.meetingURLFromCalendarVideoCall(CalendarVirtualEventFixture(CalendarConferenceFixture([]))) == nil)
+    }
+
+    @Test("EventKit video-call field is used when the standard URL is absent")
+    func eventKitVideoCallField() throws {
+        let event = EKEvent(eventStore: EKEventStore())
+        let setter = NSSelectorFromString("setConferenceURL:")
+        guard event.responds(to: setter) else { return }
+        _ = event.perform(setter, with: NSURL(string: "https://meet.google.com/abc-defg-hij"))
+        #expect(CalendarMonitor.extractMeetingURL(from: event)?.absoluteString == "https://meet.google.com/abc-defg-hij")
+        event.url = URL(string: "https://zoom.us/j/123456789")
+        #expect(CalendarMonitor.extractMeetingURL(from: event)?.absoluteString == "https://zoom.us/j/123456789")
+    }
+
     @Test("EventKit event URL ignores non-meeting Teams free pages and lookalike hosts")
     func eventKitURLRejectsNonMeetingTeamsLivePages() {
         for nonMeetingURL in [
@@ -474,6 +528,25 @@ struct GoogleCalendarTests {
     }
 
     // MARK: - Cached meeting detection event selection
+
+    @Test("detected call associates only with its matching nearby calendar room")
+    func detectedCallSelectsMatchingCalendarRoom() throws {
+        let now = date("2026-04-10T10:00:00Z")
+        let events = [
+            UnifiedCalendarEvent(id: "zoom", title: "Zoom", startDate: now, endDate: now.addingTimeInterval(1800), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/111111111")),
+            UnifiedCalendarEvent(id: "meet", title: "Meet", startDate: now.addingTimeInterval(120), endDate: now.addingTimeInterval(1800), isAllDay: false, source: .eventKit, meetingURL: URL(string: "https://meet.google.com/abc-defg-hij")),
+        ]
+        let google = MeetingCandidate(id: "meet", platform: .googleMeet, appName: "Chrome",
+            url: "meet.google.com/meet/abc-defg-hij?authuser=0", evidence: [.browserURL], startedAt: now, meetingTitle: nil)
+        #expect(selectMatchingCalendarEvent(for: google, from: events, now: now)?.id == "meet")
+        let urlLessZoom = MeetingCandidate(id: "zoom", platform: .zoom, appName: "Zoom", url: nil,
+            evidence: [.audioInputProcess], startedAt: now, meetingTitle: nil, sourceBundleID: "us.zoom.xos")
+        #expect(selectMatchingCalendarEvent(for: urlLessZoom, from: events, now: now) == nil)
+        let otherZoom = MeetingCandidate(id: "other", platform: .zoom, appName: "Zoom", url: "zoom.us/j/222222222",
+            evidence: [.browserURL], startedAt: now, meetingTitle: nil)
+        #expect(selectMatchingCalendarEvent(for: otherZoom, from: events, now: now) == nil)
+        #expect(selectMatchingCalendarEvent(for: google, from: events, now: now.addingTimeInterval(1801)) == nil)
+    }
 
     @Test("Calendar link filtering shares visibility with detection and preserves the raw cache")
     func calendarMeetingLinkVisibility() {
@@ -630,7 +703,8 @@ struct GoogleCalendarTests {
                 appIcon: nil,
                 bundlePath: nil
             ),
-            dictationStore: store
+            dictationStore: store,
+            configStore: makeTestConfigStore()
         )
         let firstStart = date("2026-04-10T14:00:00Z")
         let firstOccurrence = CalendarOccurrenceReference(

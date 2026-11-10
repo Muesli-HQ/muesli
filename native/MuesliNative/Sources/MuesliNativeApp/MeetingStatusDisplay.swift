@@ -31,4 +31,20 @@ extension MeetingStatus {
             return MuesliTheme.transcribing
         }
     }
+
+    /// Status pill text; `displayColor` remains the dot and tint color.
+    var displayTextColor: Color {
+        switch self {
+        case .recording:
+            return MuesliTheme.destructiveText
+        case .processing:
+            return MuesliTheme.accentText
+        case .completed:
+            return MuesliTheme.successText
+        case .noteOnly:
+            return MuesliTheme.textTertiary
+        case .failed:
+            return MuesliTheme.warningText
+        }
+    }
 }

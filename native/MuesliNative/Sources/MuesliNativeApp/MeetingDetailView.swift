@@ -166,10 +166,10 @@ struct MeetingDetailView: View {
 
                     if let target = appState.meetingChatDocumentTarget, target.citation.meetingID == meeting.id {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Referenced passage · \(target.citation.kind.label)").font(.caption).foregroundStyle(.secondary)
+                            Text("Referenced passage · \(target.citation.kind.label)").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
                             Text(target.citation.excerpt).textSelection(.enabled)
                             if target.locate(in: citationText(meeting, kind: target.citation.kind)) == nil {
-                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(.caption).foregroundStyle(.orange)
+                                Text("The exact passage has changed. This is the original excerpt from the answer.").font(MuesliTheme.font(.caption)).foregroundStyle(.orange)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(16).background(MuesliTheme.surfaceSelected)
                     }
@@ -182,12 +182,6 @@ struct MeetingDetailView: View {
                         .clipped()
                 }
                 .background(MuesliTheme.backgroundBase)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if meeting.status != .recording && meeting.status != .processing {
-                        MeetingChatView(appState: appState, controller: controller,
-                                        coordinator: controller.meetingChatCoordinator, embeddedMeetingID: meeting.id)
-                    }
-                }
                 .onAppear {
                     threadContext = controller.meetingThreadContext(for: meeting.id)
                     if controller.canUseSummaryProvider(.openRouter) {
@@ -245,7 +239,7 @@ struct MeetingDetailView: View {
             }
             Button("Cancel", role: .cancel) { pendingRetranscriptionBackend = nil }
         } message: {
-            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting Muesli.")
+            Text("Replaces the transcript and regenerates notes from the saved audio. Written notes are retained. A resumed meeting's recording may cover only its latest session; audio that was not saved cannot be recovered. Processing continues while you navigate elsewhere, but not after quitting muesli.")
         }
         .alert("Couldn't Re-transcribe Meeting", isPresented: retranscriptionErrorBinding) {
             Button("OK", role: .cancel) {
@@ -310,8 +304,11 @@ struct MeetingDetailView: View {
                             .font(MuesliTheme.callout())
                     }
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
             }
 
             responsiveTitleAndActions(for: meeting, appliedTemplate: appliedTemplate)
@@ -633,7 +630,7 @@ struct MeetingDetailView: View {
                             .overlay(alignment: .bottomLeading) {
                                 if manualNotesSaveStatus == .saving {
                                     Text(manualNotesSaveStatus.label)
-                                        .font(.caption).foregroundStyle(MuesliTheme.textTertiary)
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
                                 }
                             }
                             .overlay(alignment: .topTrailing) {
@@ -766,7 +763,8 @@ struct MeetingDetailView: View {
 
                 ZStack(alignment: .topLeading) {
                     MeetingNotesView(markdown: Self.notesContent(for: meeting, citation: sourceTarget?.citation),
-                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) })
+                        highlightedRange: sourceTarget.flatMap { $0.showsTranscript || $0.citation.kind == .title ? nil : $0.locate(in: citationText(meeting, kind: $0.citation.kind)) },
+                        footer: AnyView(RelatedMeetingsSection(meetingID: meeting.id, controller: controller)))
                         .opacity(documentMode == .notes ? 1 : 0)
                         .allowsHitTesting(documentMode == .notes)
                         .accessibilityHidden(documentMode != .notes)
@@ -798,7 +796,7 @@ struct MeetingDetailView: View {
     }
 
     private func citationText(_ meeting: MeetingRecord, kind: MeetingChatSourceKind) -> String {
-        switch kind { case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
+        switch kind { case .title: meeting.title; case .transcript: meeting.rawTranscript; case .manualNotes: meeting.manualNotes; case .generatedNotes: meeting.formattedNotes }
     }
 
     private func citationTarget(for meeting: MeetingRecord) -> MeetingChatDocumentTarget? {
@@ -816,6 +814,7 @@ struct MeetingDetailView: View {
                         .overlay(alignment: .bottom) {
                             if recordingMode == mode { Rectangle().fill(MuesliTheme.accent).frame(height: 2) }
                         }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(recordingMode == mode ? .isSelected : [])
@@ -971,7 +970,7 @@ struct MeetingDetailView: View {
                 HStack {
                     if let job = appState.meetingRetranscriptions[meeting.id] {
                         if job.isRunning { ProgressView().controlSize(.small) }
-                        Text(job.message).font(.callout)
+                        Text(job.message).font(MuesliTheme.font(.callout))
                         Spacer()
                         if job.isRunning {
                             Button("Cancel") { controller.cancelMeetingRetranscription(id: meeting.id) }
@@ -983,12 +982,12 @@ struct MeetingDetailView: View {
                 if let job = appState.meetingRetranscriptions[meeting.id], job.isRunning {
                     if job.phase == .transcribing || job.phase == .diarizing { ProgressView(value: job.fraction) }
                     if !job.preview.isEmpty {
-                        Text(job.preview).font(.callout).lineLimit(3).foregroundStyle(.secondary)
+                        Text(job.preview).font(MuesliTheme.font(.callout)).lineLimit(3).foregroundStyle(.secondary)
                     }
                 }
                 if let warning = appState.meetingRetranscriptions[meeting.id]?.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
+                        .font(MuesliTheme.font(.callout))
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("meeting.retranscription.diarizationWarning")
                 }
@@ -1016,7 +1015,7 @@ struct MeetingDetailView: View {
                 Text("Recording")
             }
         }
-        .font(.system(size: 12))
+        .font(MuesliTheme.font(size: 12))
         .foregroundStyle(MuesliTheme.textSecondary)
         .accessibilityLabel(appState.isMeetingRecordingPaused ? "Recording paused" : "Recording")
     }
@@ -1030,8 +1029,11 @@ struct MeetingDetailView: View {
                     Image(systemName: "chevron.down").font(.system(size: 9))
                 }
                 .foregroundStyle(MuesliTheme.textSecondary)
+                .padding(.horizontal, 6)
+                .frame(minHeight: 28)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .popover(isPresented: $showRecordingDetails) {
                 VStack(alignment: .leading, spacing: 16) {
                     folderPill(for: meeting)
@@ -1147,7 +1149,7 @@ struct MeetingDetailView: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                     Text(copyButtonLabel)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
@@ -1171,7 +1173,7 @@ struct MeetingDetailView: View {
         HStack(spacing: MuesliTheme.spacing8) {
             if canEditManualNotes(for: meeting) {
                 Text(manualNotesSaveStatus.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(MuesliTheme.font(size: 12, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
 
@@ -1204,7 +1206,7 @@ struct MeetingDetailView: View {
                 .fill(color)
                 .frame(width: 7, height: 7)
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
         }
         .padding(.horizontal, MuesliTheme.spacing8)
@@ -1327,7 +1329,7 @@ struct MeetingDetailView: View {
                 Image(systemName: "square.and.arrow.up")
                     .font(.system(size: 10, weight: .semibold))
                 Text("Export")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
             .foregroundStyle(MuesliTheme.textPrimary)
             .padding(.horizontal, MuesliTheme.spacing12)
@@ -1460,7 +1462,7 @@ struct MeetingDetailView: View {
                 Image(systemName: systemImage)
                     .font(.system(size: 10))
                 Text(label)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
@@ -1491,7 +1493,7 @@ struct MeetingDetailView: View {
                 .frame(width: 14, height: 14)
                 .accessibilityLabel("Preparing transcription")
             Text(appState.meetingStartStatus ?? "Meeting transcription will start shortly.")
-                .font(.system(size: 12, weight: .semibold))
+                .font(MuesliTheme.font(size: 12, weight: .semibold))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .lineLimit(1)
         }
@@ -1514,26 +1516,9 @@ struct MeetingDetailView: View {
 
     private var pauseResumeRecordingButton: some View {
         let isPaused = appState.isMeetingRecordingPaused
-        return Button {
+        return RecordingPauseButton(isPaused: isPaused) {
             controller.toggleMeetingRecordingPause()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(isPaused ? "Resume" : "Pause")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(isPaused ? Color.white : MuesliTheme.textPrimary)
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 7)
-            .background(isPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(isPaused ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
         .disabled(!appState.isMeetingRecording)
         .help(isPaused ? "Resume recording" : "Pause recording")
     }
@@ -1553,9 +1538,9 @@ struct MeetingDetailView: View {
                     Image(systemName: "record.circle")
                         .font(.system(size: 10, weight: .semibold))
                     Text("Resume")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(Color.white)
+                .foregroundStyle(MuesliTheme.onAccent)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 7)
                 .background(MuesliTheme.accent)
@@ -1577,7 +1562,7 @@ struct MeetingDetailView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(MuesliTheme.onAccent)
                     .padding(.horizontal, 8)
                     .frame(maxHeight: .infinity)
                     .background(MuesliTheme.accent)
@@ -1586,6 +1571,7 @@ struct MeetingDetailView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
             .help("Resume recording, or start a follow-up meeting")
+            .accessibilityLabel("More resume options")
         }
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
@@ -1602,19 +1588,9 @@ struct MeetingDetailView: View {
             }
             controller.stopMeetingRecording()
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text("Stop")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, MuesliTheme.spacing12)
-            .padding(.vertical, 7)
-            .background(MuesliTheme.recording)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+            RecordingControlLabel(title: "Stop", systemImage: "stop.fill")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.recording))
         .disabled(!appState.isMeetingRecording)
         .help("Stop recording")
     }
@@ -1648,7 +1624,7 @@ struct MeetingDetailView: View {
                     )
                 }
                 Text("Thread \u{00B7} \(threadContext.count) meetings")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .foregroundStyle(MuesliTheme.textTertiary)
                 switch threadContext.successors.count {
                 case 0:
@@ -1664,7 +1640,7 @@ struct MeetingDetailView: View {
                 default:
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Follow-ups (\(threadContext.successors.count))")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(MuesliTheme.font(size: 11, weight: .medium))
                             .foregroundStyle(MuesliTheme.textTertiary)
                         ForEach(threadContext.successors) { successor in
                             threadLink(
@@ -1691,10 +1667,12 @@ struct MeetingDetailView: View {
                 Image(systemName: icon)
                     .font(.system(size: 9, weight: .semibold))
                 Text(text)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(MuesliTheme.accent)
+            .foregroundStyle(MuesliTheme.accentText)
+            // Stacked links sit 3pt apart, so only close the icon/text gap rather than grow them.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Open this meeting")
@@ -1713,21 +1691,14 @@ struct MeetingDetailView: View {
                 Image(systemName: hasFolder ? "folder.fill" : "folder.badge.plus")
                     .font(.system(size: 10))
                 Text(currentFolder?.name ?? "Add to folder")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MuesliTheme.font(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .foregroundStyle(hasFolder ? MuesliTheme.accent : MuesliTheme.textSecondary)
             .padding(.horizontal, MuesliTheme.spacing8)
             .frame(height: MeetingHeaderLayout.contextControlHeight)
-            .background(hasFolder ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            .overlay(
-                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                    .strokeBorder(hasFolder ? Color.clear : MuesliTheme.surfaceBorder, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(hasFolder ? .tinted : .secondary))
         .help(hasFolder ? "Change folder" : "Add to folder")
         .popover(isPresented: $showFolderPopover, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 0) {
@@ -1776,14 +1747,14 @@ struct MeetingDetailView: View {
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     private var transcriptCTA: some View {
@@ -1804,8 +1775,8 @@ struct MeetingDetailView: View {
                 Button("Open Settings") {
                     controller.openHistoryWindow(tab: .settings)
                 }
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(MuesliTheme.accent)
+                .font(MuesliTheme.font(size: 12, weight: .medium))
+                .foregroundStyle(MuesliTheme.accentText)
                 .buttonStyle(.plain)
             }
         }
@@ -2238,6 +2209,7 @@ struct MarqueeTitleTextField: View {
     let onSubmit: () -> Void
     let onTextChange: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @State private var contentWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
@@ -2245,41 +2217,39 @@ struct MarqueeTitleTextField: View {
     @State private var marqueeRunID = UUID()
     @FocusState private var isTitleFocused: Bool
 
-    private var titleFont: Font { .system(size: titleSize, weight: .bold) }
+    private var titleFont: Font { MuesliTheme.font(size: titleSize, weight: .bold) }
 
     var body: some View {
-        // The row's size comes from the clear base. The full-width marquee text lives in an
-        // overlay: inside the row it made a title wider than the pane widen the whole page.
-        Color.clear
-            .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+        // AppKit clips the custom font in the unfocused field cell, while its
+        // focused editor renders correctly. Use SwiftUI text for presentation
+        // and keep the native field mounted for focus, selection, and undo.
+        TextField("Meeting Title", text: $text)
+            .font(titleFont)
+            .foregroundStyle(isTitleFocused ? MuesliTheme.textPrimary : Color.clear)
+            .textFieldStyle(.plain)
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+            .focused($isTitleFocused)
+            .onSubmit(onSubmit)
+            .onChange(of: text) { _, _ in
+                onTextChange()
+                restartMarqueeIfNeeded()
+            }
+            .onChange(of: isTitleFocused) { _, _ in
+                restartMarqueeIfNeeded()
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .leading) {
-                ZStack(alignment: .leading) {
-                    TextField("Meeting Title", text: $text)
-                        .font(titleFont)
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1)
-                        .opacity(shouldShowMarquee ? 0 : 1)
-                        .focused($isTitleFocused)
-                        .onSubmit(onSubmit)
-                        .onChange(of: text) { _, _ in
-                            onTextChange()
-                            restartMarqueeIfNeeded()
-                        }
-                        .onChange(of: isTitleFocused) { _, _ in
-                            restartMarqueeIfNeeded()
-                        }
-
-                    Text(text.isEmpty ? "Meeting Title" : text)
-                        .font(titleFont)
-                        .fontWeight(.bold)
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .offset(x: marqueeOffset)
-                        .opacity(shouldShowMarquee ? 1 : 0)
-                        .allowsHitTesting(false)
-                }
+                Text(text.isEmpty ? "Meeting Title" : text)
+                    .font(titleFont)
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: shouldShowMarquee, vertical: true)
+                    .offset(x: marqueeOffset)
+                    .opacity(isTitleFocused ? 0 : 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
             .clipped()
         .contentShape(Rectangle())
@@ -2319,14 +2289,18 @@ struct MarqueeTitleTextField: View {
             isHovering = hovering
             restartMarqueeIfNeeded()
         }
+        .onChange(of: reduceMotion) { _, _ in
+            restartMarqueeIfNeeded()
+        }
     }
 
     private var overflowDistance: CGFloat {
         max(contentWidth - containerWidth, 0)
     }
 
+    /// Reduce Motion keeps the truncated, editable title instead of scrolling it.
     private var shouldShowMarquee: Bool {
-        containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
+        !reduceMotion && containerWidth > 0 && isHovering && !isTitleFocused && overflowDistance > 24
     }
 
     private func restartMarqueeIfNeeded() {
@@ -2334,7 +2308,7 @@ struct MarqueeTitleTextField: View {
             if marqueeOffset != 0 {
                 let runID = UUID()
                 marqueeRunID = runID
-                withAnimation(.easeOut(duration: 0.18)) {
+                withAnimation(MuesliMotion.animation(.easeOut(duration: 0.18), reduceMotion: reduceMotion)) {
                     marqueeOffset = 0
                 }
             }
@@ -2456,6 +2430,75 @@ struct TranscriptChatMessage: Identifiable, Equatable {
     }
 }
 
+private struct RelatedMeetingsSection: View {
+    let meetingID: Int64
+    let controller: MuesliController
+    @State private var meetings: [RelatedMeeting] = []
+    @State private var limit = 5
+    @State private var requestID = UUID()
+    @State private var navigationTask: Task<Void, Never>?
+    @State private var hasMore = false
+    @State private var loadingMore = false
+
+    var body: some View {
+        Group {
+            if !meetings.isEmpty {
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    Text("Meetings with shared people").font(MuesliTheme.title3())
+                    ForEach(meetings.prefix(limit)) { meeting in
+                        Button {
+                            navigationTask?.cancel()
+                            navigationTask = Task { await controller.showRelatedMeeting(id: meeting.meetingID, from: meetingID) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(meeting.title).font(MuesliTheme.body())
+                                Text(meeting.sharedNames.joined(separator: ", ") + " · " + MeetingBrowserLogic.formatStartTime(meeting.startTime))
+                                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                    if meetings.count > limit || hasMore {
+                        Button("Show more") {
+                            if meetings.count > limit { limit += 10 }
+                            else { Task { await loadMore() } }
+                        }.buttonStyle(.plain).disabled(loadingMore)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .task(id: meetingID) { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { _ in
+            Task { await reload() }
+        }
+        .onDisappear { requestID = UUID(); navigationTask?.cancel() }
+    }
+
+    private func reload() async {
+        let token = UUID()
+        requestID = token
+        do {
+            let found = try await controller.relatedMeetings(meetingID: meetingID, limit: 100)
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings = found; hasMore = found.count == 100; limit = 5
+        } catch {
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings = []
+        }
+    }
+
+    private func loadMore() async {
+        guard !loadingMore else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        let token = requestID
+        do {
+            let found = try await controller.relatedMeetings(meetingID: meetingID, limit: 100, offset: meetings.count)
+            guard requestID == token, !Task.isCancelled else { return }
+            meetings.append(contentsOf: found); hasMore = found.count == 100; limit += 10
+        } catch { hasMore = false }
+    }
+}
+
 private struct MeetingTranscriptView: View {
     let transcript: String
     var highlightedRange: NSRange? = nil
@@ -2515,7 +2558,7 @@ struct TranscriptChatBubble: View {
             VStack(alignment: .leading, spacing: 4) {
                 if let metadata = metadata {
                     Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MuesliTheme.font(size: 10, weight: .medium))
                         .foregroundStyle(MuesliTheme.textTertiary)
                         .textSelection(.enabled)
                 }

@@ -41,7 +41,7 @@ enum MeetingChatExporter {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "Meeting answer.md"; panel.allowedContentTypes = [MeetingExporter.mdType]
         let picker = ExportFormatAccessory(panel: panel); panel.accessoryView = picker.view
         MeetingExporter.presentSavePanel(panel) { destination in
-            do { try save(markdown: content, destination: destination, pdf: picker.selectedFormat == .pdf); NSWorkspace.shared.open(destination) }
+            do { try save(markdown: content, destination: destination, pdf: picker.selectedFormat == .pdf); ProductAnalytics.event(.chat, .result_action, fields: [.action: .export]); NSWorkspace.shared.open(destination) }
             catch { let alert = NSAlert(); alert.messageText = "Export failed"; alert.informativeText = error.localizedDescription; alert.runModal() }
         }
     }

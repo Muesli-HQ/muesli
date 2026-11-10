@@ -26,6 +26,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let resumeProgress: OnboardingProgress?
     private var window: NSWindow?
 
+    var presentationWindow: NSWindow? { window }
+
     init(controller: MuesliController, resumeProgress: OnboardingProgress? = nil) {
         self.controller = controller
         self.resumeProgress = resumeProgress
@@ -115,7 +117,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Welcome to Muesli"
+        window.title = "Welcome to muesli"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.titlebarAppearsTransparent = true

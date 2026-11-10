@@ -125,6 +125,13 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let medASR = BackendOption(
+        backend: "medasr", model: MedASRModel.id,
+        label: "MedASR", sizeLabel: "~212 MB",
+        description: "English medical dictation from Google, running locally.",
+        recommended: false
+    )
+
     static let cohereTranscribe = BackendOption(
         backend: "cohere",
         model: "Muesli-HQ/cohere-transcribe-coreml-mixed-precision",
@@ -242,7 +249,7 @@ struct BackendOption: Equatable {
         let all = systemManaged
             + parakeetFamily
             + whisperFamily
-            + [.phonon25, .cohereTranscribe]
+            + [.phonon25, .medASR, .cohereTranscribe]
             + streaming
             + bodhanFamily
             + experimental
@@ -481,6 +488,14 @@ struct BackendOption: Equatable {
     }
 
     /// Check if this model's files exist on disk.
+    static func feedbackCaptureBackend(preferred: BackendOption?, installed: [BackendOption]) -> BackendOption? {
+        // Measured families first, then the remaining local catalog in catalog order.
+        let ordered = parakeetFamily.filter { $0.backend == "fluidaudio" } + whisperFamily + [appleSpeechAnalyzer] + all
+        let candidates = ordered.filter { installed.contains($0) }
+        return resolveDownloaded(backend: preferred?.backend ?? "", model: preferred?.model ?? "",
+            fallback: nil, downloadedOptions: candidates)
+    }
+
     var isDownloaded: Bool {
         let fm = FileManager.default
         switch backend {
@@ -495,6 +510,8 @@ struct BackendOption: Equatable {
             return Qwen3AsrModelStore.isModelDownloaded(fileManager: fm)
         case "nemotron35":
             return Nemotron35ModelStore.isModelDownloaded(fileManager: fm)
+        case "medasr":
+            return MedASRModel.plan().isAvailableLocally(fileManager: fm)
         case "cohere":
             return CohereTranscribeModelStore.isAvailableLocally()
         case "bodhan":
@@ -1190,27 +1207,29 @@ struct SummaryModelPreset {
     let id: String
     let label: String
     var contextWindowTokens: Int? = nil
+    var maximumInputTokens: Int? = nil
 
+    // Verified model metadata; see docs/meeting-chat-architecture.md.
     static let openAIModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
-        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
-        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
-        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
+        SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna", contextWindowTokens: 1_050_000, maximumInputTokens: 922_000),
         SummaryModelPreset(id: "chat-latest", label: "Chat Latest (Instant)"),
     ]
 
     static let chatGPTModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)"),
+        SummaryModelPreset(id: "gpt-6.1-sol", label: "GPT-6.1 Sol (default)", contextWindowTokens: 500_000),
         SummaryModelPreset(id: "gpt-6-astra", label: "GPT-6 Astra"),
         SummaryModelPreset(id: "gpt-6-sol", label: "GPT-6 Sol"),
         SummaryModelPreset(id: "gpt-6-luna", label: "GPT-6 Luna"),
     ]
 
     static let anthropicModels: [SummaryModelPreset] = [
-        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)"),
-        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5"),
-        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1"),
-        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5"),
+        SummaryModelPreset(id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5 (default)", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-opus-5-5", label: "Claude Opus 5.5", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-fable-5-1", label: "Claude Fable 5.1", contextWindowTokens: 1000000),
+        SummaryModelPreset(id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", contextWindowTokens: 200000),
     ]
 
     static let claudeCodeModels: [SummaryModelPreset] = [
@@ -1402,6 +1421,7 @@ extension MeetingSummaryBackendOption {
         case .openRouter: return \.openRouterModel
         case .ollama: return \.ollamaModel
         case .lmStudio: return \.lmStudioModel
+        case .gemmaMLX: return \.gemmaChatModel
         case .claudeCode: return \.claudeCodeModel
         default: return \.customLLMModel
         }
@@ -1421,6 +1441,7 @@ extension MeetingSummaryBackendOption {
         case .chatGPT: presets = SummaryModelPreset.chatGPTModels
         case .openAI: presets = SummaryModelPreset.openAIModels
         case .anthropic: presets = SummaryModelPreset.anthropicModels
+        case .gemmaMLX: presets = Gemma4LiteRTModel.generalPurpose.map { SummaryModelPreset(id: $0.nativeChatModelID, label: $0.label, contextWindowTokens: 131_072) }
         case .claudeCode: presets = SummaryModelPreset.claudeCodeModels
         case .openRouter:
             presets = [SummaryModelPreset.openRouterModels[0]]
@@ -1476,10 +1497,12 @@ struct MeetingSummaryBackendOption: Equatable {
         label: "Custom LLM"
     )
 
-    static let all: [MeetingSummaryBackendOption] = [.chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+    static let gemmaMLX = MeetingSummaryBackendOption(backend: "gemma_mlx", label: "Gemma 4 (on-device)")
 
-    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil) -> [MeetingSummaryBackendOption] {
-        guard ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) == nil,
+    static let all: [MeetingSummaryBackendOption] = [.gemmaMLX, .chatGPT, .openAI, .anthropic, .claudeCode, .openRouter, .ollama, .lmStudio, .customLLM]
+
+    static func selectable(config: AppConfig, selected: MeetingSummaryBackendOption? = nil, claudeCodeAvailable: Bool? = nil) -> [MeetingSummaryBackendOption] {
+        guard !(claudeCodeAvailable ?? (ClaudeCodeSummarizer.executableURL(configuredPath: config.claudeCodeExecutablePath) != nil)),
               selected != .claudeCode else { return all }
         return all.filter { $0 != .claudeCode }
     }
@@ -1558,16 +1581,15 @@ struct PostProcessorOption: Identifiable, Equatable {
     }
 
     var isDownloaded: Bool {
-        managedModel?.isPresent(at: cacheDirectory) ?? FileManager.default.fileExists(atPath: modelURL.path)
+        cleanupSlot == nil ? FileManager.default.fileExists(atPath: modelURL.path) : installedRelease != nil
     }
 
-    var managedModel: ManagedCleanupModel? {
-        switch inputFormat {
-        case .muesliTrainedV12LFM: .lfm
-        case .muesliTrainedV12Qwen: .qwenMLX
-        case .muesliTrainedV12Qwen08: .qwen08MLX
-        default: nil
-        }
+    /// Muesli-published models update independently of the app; see `CleanupModelCatalog`.
+    var cleanupSlot: CleanupModelSlot? { CleanupModelSlot.slot(id: id) }
+
+    /// The complete, identified build in `cacheDirectory`. Reads a small marker file.
+    var installedRelease: CleanupModelRelease? {
+        cleanupSlot.flatMap { CleanupModelInstallation.installedRelease(for: $0, in: cacheDirectory) }
     }
 
     var logoResourceName: String {
@@ -1596,7 +1618,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     /// Saved selections now resolve to the current Cleanup Lite model.
     static let legacyV2 = PostProcessorOption(
         id: "qwen3-postproc-v2",
-        label: "Muesli Cleanup Lite (Legacy)",
+        label: "muesli Cleanup Lite (Legacy)",
         sizeLabel: "~390 MB",
         description: "Fine-tuned from Qwen3. An earlier lightweight model for filler words, corrections, and spoken lists.",
         downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
@@ -1617,7 +1639,7 @@ struct PostProcessorOption: Identifiable, Equatable {
     // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
     static let finetunedV3 = PostProcessorOption(
         id: "qwen35-postproc-v3",
-        label: "Muesli Cleanup Lite",
+        label: "muesli Cleanup Lite",
         sizeLabel: "~505 MB",
         description: "Fine-tuned from Qwen3.5-0.8B. Small and fast for everyday cleanup, with lighter correction and context capabilities than Pro.",
         downloadURL: URL(string: "https://huggingface.co/Muesli-HQ/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
@@ -1626,11 +1648,11 @@ struct PostProcessorOption: Identifiable, Equatable {
 
     static let finetunedV4 = PostProcessorOption(
         id: "qwen35-postproc-v4",
-        label: "Muesli Cleanup Lite",
-        sizeLabel: ManagedCleanupModel.qwen08MLX.downloadSizeLabel,
+        label: "muesli Cleanup Lite",
+        sizeLabel: CleanupModelRelease.qwen08V14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-0.8B with extended training. Small and fast for everyday cleanup, with improved app and screen context.",
-        downloadURL: ManagedCleanupModel.qwen08MLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwen08MLX.modelFilename,
+        downloadURL: CleanupModelRelease.qwen08V14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen08V14.artifact.modelFilename,
         inputFormat: .muesliTrainedV12Qwen08
     )
 
@@ -1645,15 +1667,15 @@ struct PostProcessorOption: Identifiable, Equatable {
     )
 
     static let lfmV12 = PostProcessorOption(
-        id: "lfm25-cleanup-v12", label: "Muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
+        id: "lfm25-cleanup-v12", label: "muesli Pro Cleanup — LFM 2.5", sizeLabel: ManagedCleanupModel.lfm.sizeLabel,
         description: "Fine-tuned from LFM2.5-1.2B. More capable cleanup with app and screen context. LFM Open License v1.0.",
         downloadURL: ManagedCleanupModel.lfm.files[0].remoteURL,
         filename: ManagedCleanupModel.lfm.modelFilename, inputFormat: .muesliTrainedV12LFM)
     static let qwenV12 = PostProcessorOption(
-        id: "qwen35-2b-cleanup-v12", label: "Muesli Pro Cleanup — Qwen 3.5", sizeLabel: ManagedCleanupModel.qwenMLX.downloadSizeLabel,
+        id: "qwen35-2b-cleanup-v12", label: "muesli Pro Cleanup — Qwen 3.5", sizeLabel: CleanupModelRelease.qwen2BV14.artifact.downloadSizeLabel,
         description: "Fine-tuned from Qwen3.5-2B. More capable cleanup with app and screen context.",
-        downloadURL: ManagedCleanupModel.qwenMLX.files[0].remoteURL,
-        filename: ManagedCleanupModel.qwenMLX.modelFilename, inputFormat: .muesliTrainedV12Qwen)
+        downloadURL: CleanupModelRelease.qwen2BV14.artifact.files[0].remoteURL,
+        filename: CleanupModelRelease.qwen2BV14.artifact.modelFilename, inputFormat: .muesliTrainedV12Qwen)
     static let all: [PostProcessorOption] = [.finetunedV4, .lfmV12, .qwenV12, .s1Mini, .qwen35_0_8b]
 
     static let defaultOption: PostProcessorOption = .finetunedV4
@@ -2037,6 +2059,7 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
     static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+    static let feedbackCaptureDefault = HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 1)
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
         label: "⌘⇧R",
@@ -2143,13 +2166,16 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
 }
 
 enum AppAppearanceMode: String, CaseIterable {
-    case light, system, dark
+    case light, system, dark, ultraDark = "ultra_dark"
+
+    static let quickChoices: [Self] = [.light, .system, .dark]
 
     var label: String {
         switch self {
         case .light: "Light"
         case .system: "Follow System"
         case .dark: "Dark"
+        case .ultraDark: "Ultra Dark"
         }
     }
 
@@ -2158,6 +2184,7 @@ enum AppAppearanceMode: String, CaseIterable {
         case .light: "sun.max"
         case .system: "desktopcomputer"
         case .dark: "moon"
+        case .ultraDark: "moon.fill"
         }
     }
 
@@ -2166,6 +2193,7 @@ enum AppAppearanceMode: String, CaseIterable {
         case .light: .aqua
         case .system: nil
         case .dark: .darkAqua
+        case .ultraDark: .darkAqua
         }
     }
 }
@@ -2225,7 +2253,11 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
-struct AppConfig: Codable {
+private enum LegacyAutoStopCodingKey: String, CodingKey {
+    case zoomMeetingAutoStopEnabled = "zoom_meeting_auto_stop_enabled"
+}
+
+struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
     var quilHotkey: HotkeyConfig = .quilDefault
@@ -2234,6 +2266,9 @@ struct AppConfig: Codable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var feedbackCaptureHotkey: HotkeyConfig = .feedbackCaptureDefault
+    var enableFeedbackCapture: Bool = false
+    var feedbackCaptureDrawModifier: FeedbackCaptureDrawModifier = .shift
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -2270,6 +2305,7 @@ struct AppConfig: Codable {
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
+    var meetingAutoStopEnabled: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -2278,12 +2314,14 @@ struct AppConfig: Codable {
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var followSystemAppearance: Bool = false
+    var ultraDarkAppearance: Bool = false
     // Retain dark_mode for older configurations; following the system is opt-in.
     var appearanceMode: AppAppearanceMode {
-        get { followSystemAppearance ? .system : (darkMode ? .dark : .light) }
+        get { followSystemAppearance ? .system : (ultraDarkAppearance ? .ultraDark : (darkMode ? .dark : .light)) }
         set {
             followSystemAppearance = newValue == .system
-            if newValue != .system { darkMode = newValue == .dark }
+            ultraDarkAppearance = newValue == .ultraDark
+            if newValue != .system { darkMode = newValue == .dark || newValue == .ultraDark }
         }
     }
     var enableDoubleTapDictation: Bool = true
@@ -2320,6 +2358,7 @@ struct AppConfig: Codable {
     var anthropicModel: String = ""
     var openRouterModel: String = ""
     var chatGPTModel: String = ""
+    var gemmaChatModel: String = Gemma4LiteRTModel.e2b.nativeChatModelID
     var claudeCodeModel: String = ""
     var claudeCodeExecutablePath: String = ""
     var meetingSummaryReasoningEffort: ReasoningEffort?
@@ -2365,8 +2404,8 @@ struct AppConfig: Codable {
     var disabledCalendarIDs: [String] = []
     var calendarMeetingLinksOnly: Bool = true
     var enablePostProcessor: Bool = false
-    var quilBackend: String = TranscriptCleanupBackendOption.local.backend
-    var quilModel: String = PostProcessorOption.defaultQuilOption.id
+    var quilBackend: String = TranscriptCleanupBackendOption.gemma4LiteRT.backend
+    var quilModel: String = Gemma4LiteRTModel.e2b.repoID
     var postProcessorBackend: String = TranscriptCleanupBackendOption.local.backend
     var postProcessorGemmaModel: String = Gemma4LiteRTModel.e2b.repoID
     var activePostProcessorId: String = PostProcessorOption.defaultOption.id
@@ -2384,6 +2423,23 @@ struct AppConfig: Codable {
     var dictationFormattingTemplates: [DictationFormattingTemplate] = []
     var dictationFormattingSetupDismissed: Bool = false
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    var timeTurnerEnabled: Bool = false
+    var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerInterval: String = "10"
+    var timeTurnerBudget: String = "10"
+    var timeTurnerScreenshotRetention: String = "7"
+    var timeTurnerHistoryRetention: String = "30"
+    var recapModelSelection: FeatureTextModelSelection? = nil
+    var recapSchedule: String = "off"
+    var recapScheduleHour: String = "8"
+    var recapIncludeMeetings: Bool = true
+    var recapIncludeDictations: Bool = false
+    var recapIncludeCommands: Bool = false
+    var recapIncludeQuill: Bool = false
+    var recapIncludeCotypist: Bool = false
+    var recapIncludeChat: Bool = false
+    var recapIncludeVidshots: Bool = false
+    var timeTurnerExcludedApps: String = ""
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
     var cotypistSuggestionLength: CotypistSuggestionLength = .sentence
@@ -2427,6 +2483,9 @@ struct AppConfig: Codable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case feedbackCaptureHotkey = "feedback_capture_hotkey"
+        case enableFeedbackCapture = "feedback_capture"
+        case feedbackCaptureDrawModifier = "feedback_capture_draw_modifier"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -2461,6 +2520,7 @@ struct AppConfig: Codable {
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case meetingAutoStopEnabled = "meeting_auto_stop_enabled"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -2468,6 +2528,7 @@ struct AppConfig: Codable {
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case followSystemAppearance = "follow_system_appearance"
+        case ultraDarkAppearance = "ultra_dark_appearance"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case enableBufferedLiveDictation = "enable_buffered_live_dictation"
         case dictationCombinationActivation = "dictation_combination_activation"
@@ -2493,6 +2554,7 @@ struct AppConfig: Codable {
         case anthropicModel = "anthropic_model"
         case openRouterModel = "openrouter_model"
         case chatGPTModel = "chatgpt_model"
+        case gemmaChatModel = "gemma_chat_model"
         case claudeCodeModel = "claude_code_model"
         case claudeCodeExecutablePath = "claude_code_executable_path"
         case meetingSummaryReasoningEffort = "meeting_summary_reasoning_effort"
@@ -2555,6 +2617,23 @@ struct AppConfig: Codable {
         case dictationFormattingTemplates = "dictation_formatting_templates"
         case dictationFormattingSetupDismissed = "dictation_formatting_setup_dismissed"
         case postProcessorSystemPrompt = "post_processor_system_prompt"
+        case timeTurnerEnabled = "time_turner_enabled"
+        case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerInterval = "time_turner_interval"
+        case timeTurnerBudget = "time_turner_budget"
+        case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
+        case timeTurnerHistoryRetention = "time_turner_history_retention"
+        case recapModelSelection = "recap_model_selection"
+        case recapSchedule = "recap_schedule"
+        case recapScheduleHour = "recap_schedule_hour"
+        case recapIncludeMeetings = "recap_include_meetings"
+        case recapIncludeDictations = "recap_include_dictations"
+        case recapIncludeCommands = "recap_include_commands"
+        case recapIncludeQuill = "recap_include_quill"
+        case recapIncludeCotypist = "recap_include_cotypist"
+        case recapIncludeChat = "recap_include_chat"
+        case recapIncludeVidshots = "recap_include_vidshots"
+        case timeTurnerExcludedApps = "time_turner_excluded_apps"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
         case cotypistSuggestionLength = "cotypist_suggestion_length"
@@ -2593,6 +2672,9 @@ struct AppConfig: Codable {
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
             .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
+        feedbackCaptureHotkey = (try? c.decode(HotkeyConfig.self, forKey: .feedbackCaptureHotkey)) ?? defaults.feedbackCaptureHotkey
+        feedbackCaptureDrawModifier = (try? c.decode(FeedbackCaptureDrawModifier.self, forKey: .feedbackCaptureDrawModifier)) ?? .shift
+        enableFeedbackCapture = (try? c.decode(Bool.self, forKey: .enableFeedbackCapture)) ?? defaults.enableFeedbackCapture
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
@@ -2663,6 +2745,10 @@ struct AppConfig: Codable {
             (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
             ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        let legacyAutoStop = try? decoder.container(keyedBy: LegacyAutoStopCodingKey.self)
+            .decode(Bool.self, forKey: .zoomMeetingAutoStopEnabled)
+        meetingAutoStopEnabled = (try? c.decode(Bool.self, forKey: .meetingAutoStopEnabled))
+            ?? legacyAutoStop ?? defaults.meetingAutoStopEnabled
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))
@@ -2675,6 +2761,7 @@ struct AppConfig: Codable {
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         followSystemAppearance = (try? c.decode(Bool.self, forKey: .followSystemAppearance)) ?? defaults.followSystemAppearance
+        ultraDarkAppearance = (try? c.decode(Bool.self, forKey: .ultraDarkAppearance)) ?? defaults.ultraDarkAppearance
         iCloudSyncEnabled = (try? c.decode(Bool.self, forKey: .iCloudSyncEnabled)) ?? defaults.iCloudSyncEnabled
         showIOSCompanionPrompt = (try? c.decode(Bool.self, forKey: .showIOSCompanionPrompt)) ?? defaults.showIOSCompanionPrompt
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
@@ -2728,6 +2815,7 @@ struct AppConfig: Codable {
                 (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
             )
         )
+        gemmaChatModel = (try? c.decode(String.self, forKey: .gemmaChatModel)) ?? defaults.gemmaChatModel
         claudeCodeModel = (try? c.decode(String.self, forKey: .claudeCodeModel)) ?? defaults.claudeCodeModel
         claudeCodeExecutablePath = (try? c.decode(String.self, forKey: .claudeCodeExecutablePath)) ?? defaults.claudeCodeExecutablePath
         meetingSummaryReasoningEffort = try? c.decode(
@@ -2797,7 +2885,7 @@ struct AppConfig: Codable {
         calendarMeetingLinksOnly = (try? c.decode(Bool.self, forKey: .calendarMeetingLinksOnly)) ?? defaults.calendarMeetingLinksOnly
         enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
         quilBackend = TranscriptCleanupBackendOption
-            .resolved(try? c.decode(String.self, forKey: .quilBackend))
+            .resolved((try? c.decode(String.self, forKey: .quilBackend)) ?? defaults.quilBackend)
             .backend
         let decodedQuilModel = (try? c.decode(String.self, forKey: .quilModel)) ?? defaults.quilModel
         quilModel = quilBackend == TranscriptCleanupBackendOption.local.backend
@@ -2841,6 +2929,23 @@ struct AppConfig: Codable {
             activeTranscriptCleanupPromptId = defaults.activeTranscriptCleanupPromptId
             postProcessorSystemPrompt = defaults.postProcessorSystemPrompt
         }
+        timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
+        timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
+        timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
+        timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
+        timeTurnerHistoryRetention = (try? c.decode(String.self, forKey: .timeTurnerHistoryRetention)) ?? "30"
+        recapModelSelection = try? c.decode(FeatureTextModelSelection.self, forKey: .recapModelSelection)
+        recapSchedule = (try? c.decode(String.self, forKey: .recapSchedule)) ?? "off"
+        recapScheduleHour = (try? c.decode(String.self, forKey: .recapScheduleHour)) ?? "8"
+        recapIncludeMeetings = (try? c.decode(Bool.self, forKey: .recapIncludeMeetings)) ?? true
+        recapIncludeDictations = (try? c.decode(Bool.self, forKey: .recapIncludeDictations)) ?? false
+        recapIncludeCommands = (try? c.decode(Bool.self, forKey: .recapIncludeCommands)) ?? false
+        recapIncludeQuill = (try? c.decode(Bool.self, forKey: .recapIncludeQuill)) ?? false
+        recapIncludeCotypist = (try? c.decode(Bool.self, forKey: .recapIncludeCotypist)) ?? false
+        recapIncludeChat = (try? c.decode(Bool.self, forKey: .recapIncludeChat)) ?? false
+        recapIncludeVidshots = (try? c.decode(Bool.self, forKey: .recapIncludeVidshots)) ?? false
+        timeTurnerExcludedApps = (try? c.decode(String.self, forKey: .timeTurnerExcludedApps)) ?? ""
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext
         cotypistSuggestionLength = (try? c.decode(CotypistSuggestionLength.self, forKey: .cotypistSuggestionLength)) ?? defaults.cotypistSuggestionLength
@@ -2928,14 +3033,14 @@ struct AppConfig: Codable {
     }
 }
 
-struct WindowFrame: Codable {
+struct WindowFrame: Codable, Equatable {
     let x: Double
     let y: Double
     let width: Double
     let height: Double
 }
 
-struct CGPointCodable: Codable {
+struct CGPointCodable: Codable, Equatable {
     let x: Double
     let y: Double
 
@@ -2974,4 +3079,12 @@ enum DictationState: String {
     case preparing
     case recording
     case transcribing
+}
+
+extension AppConfig {
+    var timeTurnerRetentionPolicy: VisualMemoryRetentionPolicy {
+        VisualMemoryRetentionPolicy(screenshotDays: timeTurnerScreenshotRetention == "forever" ? nil : (Int(timeTurnerScreenshotRetention) ?? 7),
+            historyDays: timeTurnerHistoryRetention == "forever" ? nil : (Int(timeTurnerHistoryRetention) ?? 30),
+            mediaBudgetBytes: min(max(Int64(timeTurnerBudget) ?? 10, 0), Int64.max / 1_000_000_000) * 1_000_000_000)
+    }
 }

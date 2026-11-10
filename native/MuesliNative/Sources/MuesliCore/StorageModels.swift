@@ -282,10 +282,35 @@ public struct CotypistSessionRecord: Identifiable, Sendable, Equatable {
     }
 }
 
+public struct QuillHistoryTurn: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var question: String?
+    public let answer: String
+    public let timestamp: String
+    public let backend: String
+    public let model: String
+
+    public init(id: UUID, question: String?, answer: String, timestamp: String, backend: String, model: String) {
+        self.id = id; self.question = question; self.answer = answer
+        self.timestamp = timestamp; self.backend = backend; self.model = model
+    }
+}
+
+public struct QuillConversationRecord: Identifiable, Sendable {
+    public let id: Int64
+    public let sessionID: UUID
+    public let timestamp: String
+    public let turns: [QuillHistoryTurn]
+    /// Total stored turns; Timeline previews contain only the endpoints.
+    public let turnCount: Int
+}
+
 public enum TimelineEntry: Identifiable, Sendable {
     case dictation(DictationRecord)
     case meeting(MeetingRecord)
     case cotypist(CotypistSessionRecord)
+    case quill(QuillConversationRecord)
+    case vidshot(FeedbackCaptureRecord)
 
     public var id: String {
         switch self {
@@ -295,6 +320,10 @@ public enum TimelineEntry: Identifiable, Sendable {
             return "meeting:\(record.id)"
         case .cotypist(let record):
             return "cotypist:\(record.id)"
+        case .quill(let record):
+            return "quill:\(record.id)"
+        case .vidshot(let record):
+            return "vidshot:\(record.id)"
         }
     }
 
@@ -306,6 +335,10 @@ public enum TimelineEntry: Identifiable, Sendable {
             return record.startTime
         case .cotypist(let record):
             return record.timestamp
+        case .quill(let record):
+            return record.timestamp
+        case .vidshot(let record):
+            return Date(timeIntervalSince1970: record.createdAt).ISO8601Format()
         }
     }
 }
@@ -607,15 +640,58 @@ public struct MeetingParticipantDraft: Equatable, Sendable {
     public let participantIdentifier: String
     public let displayName: String
     public let emailAddress: String?
+    public let emailAddresses: [String]
+    public let personID: String?
 
     public init(
         participantIdentifier: String,
         displayName: String,
-        emailAddress: String? = nil
+        emailAddress: String? = nil,
+        emailAddresses: [String] = [],
+        personID: String? = nil
     ) {
         self.participantIdentifier = participantIdentifier
         self.displayName = displayName
         self.emailAddress = emailAddress
+        self.emailAddresses = emailAddresses
+        self.personID = personID
+    }
+}
+
+public struct DuplicateMeetingPeople: Identifiable, Sendable, Equatable {
+    public let first: MeetingParticipantDraft
+    public let second: MeetingParticipantDraft
+    public let evidence: String
+    public var id: String { first.participantIdentifier + "|" + second.participantIdentifier }
+    public init(first: MeetingParticipantDraft, second: MeetingParticipantDraft, evidence: String) {
+        self.first = first; self.second = second; self.evidence = evidence
+    }
+}
+
+public struct MeetingPeopleMerge: Identifiable, Sendable, Equatable {
+    public let id: String
+    public let targetName: String
+    public let sourceName: String
+    public init(id: String, targetName: String, sourceName: String) {
+        self.id = id; self.targetName = targetName; self.sourceName = sourceName
+    }
+}
+
+public struct RelatedMeeting: Identifiable, Sendable, Equatable {
+    public let meetingID: Int64
+    public let title: String
+    public let startTime: String
+    public let sharedNames: [String]
+    public var id: Int64 { meetingID }
+}
+
+public struct MeetingParticipantSuggestion: Identifiable, Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let source: String
+    public let excerpt: String
+    public init(id: String, name: String, source: String, excerpt: String) {
+        self.id = id; self.name = name; self.source = source; self.excerpt = excerpt
     }
 }
 

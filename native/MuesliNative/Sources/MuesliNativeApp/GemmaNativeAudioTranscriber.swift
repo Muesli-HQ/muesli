@@ -76,6 +76,7 @@ actor GemmaNativeAudioTranscriber {
         let audioTokenID: Int?
     }
     private var loaded: Loaded?
+    private var chatGrammarTokenizer: (model: Gemma4LiteRTModel, tokenizer: GrammarTokenizer, size: Int)?
     private var warmedAudio = false
     private var warmedText = false
     private var vad: VadManager?
@@ -128,6 +129,7 @@ actor GemmaNativeAudioTranscriber {
     func shutdown() async {
         await acquire(); defer { release() }
         loaded = nil
+        chatGrammarTokenizer = nil
         warmedAudio = false; warmedText = false
         drafter = nil
         vad = nil
@@ -174,6 +176,7 @@ actor GemmaNativeAudioTranscriber {
         if loaded?.model == model { return }
         // Release the old model before materializing the other multi-GB checkpoint.
         loaded = nil
+        chatGrammarTokenizer = nil
         warmedAudio = false; warmedText = false
         drafter = nil
         let start = Date()
@@ -182,7 +185,7 @@ actor GemmaNativeAudioTranscriber {
         guard descriptor.isPresent(at: directory) else { throw GemmaNativeAudioError.modelMissing(path: directory.path) }
         try descriptor.validate(modelURL: directory.appendingPathComponent(descriptor.modelFilename))
         try Task.checkCancellation()
-        if !model.isCleanupOnly, vad == nil { vad = try await VadManager() }
+        if !model.isCleanupOnly, vad == nil { vad = try await GemmaNativeAudioModels.loadVAD() }
         let data = try Data(contentsOf: directory.appendingPathComponent("config.json"))
         var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let audioConfig: GemmaAudioEncoder.Configuration? = try model.isCleanupOnly ? nil : JSONDecoder().decode(GemmaAudioEncoder.Configuration.self,
@@ -214,7 +217,84 @@ actor GemmaNativeAudioTranscriber {
         let block = try await effectiveBlock(model: model, requested: mtpBlock)
         log("engine_ready model=\(model.label) runtime=mlx-swift-lm mtp=\(block > 1) block=\(block) load_seconds=\(Date().timeIntervalSince(start))")
     }
-    func transcribe(wavURL: URL, model: Gemma4LiteRTModel, mtpBlockOverride: Int? = nil, systemPrompt: String? = nil, userPrompt: String? = nil, maxOutputTokens: Int = Int(Gemma4LiteRTTranscriber.maxOutputTokens)) async throws -> Result {
+    /// Reuses the resident target and its serialization gate. The SDK owns native
+    /// Gemma4 tool parsing; rejected/partial output never reaches tool execution.
+    func generateChat(_ request: MeetingNativeToolRequest, capabilities: GemmaChatCapabilities) async throws -> MeetingNativeToolResponse {
+        await acquire(); defer { release() }
+        try Task.checkCancellation()
+        try await prepareLocked(model: capabilities.model)
+        let context = loaded!.context
+        let prompt = try GemmaChatCodec.prompt(request)
+        let ids = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
+        guard ids.count + request.base.maxOutputTokens <= capabilities.contextTokens else { throw MeetingChatError.promptTooLarge }
+        let tools = request.allowTools ? try GemmaChatCodec.schemas(request.tools, forPrompt: false) : []
+        // JSON decoding below produces only Foundation scalar/array/map values.
+        func sendable(_ value: Any) throws -> any Sendable {
+            if let value = value as? String { return value }
+            if value is NSNull { return NSNull() }
+            if let value = value as? NSNumber { return value }
+            if let value = value as? [Any] { return try value.map(sendable) }
+            if let value = value as? [String: Any] { return try value.mapValues(sendable) }
+            throw MeetingChatHarnessError.toolProtocol
+        }
+        let specs = try tools.map { try $0.mapValues(sendable) }
+        let parameters = GenerateParameters(maxTokens: request.base.maxOutputTokens, temperature: 0, topK: 1,
+            prefill: .init(stepSize: 2048, chunking: .remainder),
+            toolCallPolicy: .init(recovery: .disabled, validation: .strict))
+        var modelConfiguration = context.configuration
+        modelConfiguration.toolCallFormat = .gemma4
+        modelConfiguration.extraEOSTokens.formUnion(["<|tool_response>", "<turn|>", "<eos>"])
+        var processor: GemmaToolGrammarProcessor?
+        if request.requiresMeetingAnswerFormat {
+            if chatGrammarTokenizer?.model != capabilities.model {
+                let data = try Data(contentsOf: GemmaNativeAudioModels.directory(for: capabilities.model).appendingPathComponent("config.json"))
+                let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                guard let textConfig = config?["text_config"] as? [String: Any], let size = textConfig["vocab_size"] as? Int,
+                      size > 0, size <= 500_000 else { throw GemmaMeetingChatError.unsupportedModel }
+                let vocabulary = (0..<size).map { context.tokenizer.convertIdToToken($0) ?? "" }
+                let tokenizer = try GrammarTokenizer(vocab: vocabulary, vocabType: .byteFallback,
+                    eosTokenId: Int32(context.tokenizer.eosTokenId ?? 1))
+                chatGrammarTokenizer = (capabilities.model, tokenizer, size)
+            }
+            let grammar = try GemmaChatCodec.grammar(request)
+            let constraint = try GrammarConstraint(tokenizer: chatGrammarTokenizer!.tokenizer, grammar: grammar,
+                fastForward: true, hostTokenizer: context.tokenizer)
+            processor = GemmaToolGrammarProcessor(constraint: constraint, vocabSize: chatGrammarTokenizer!.size,
+                eos: context.tokenizer.eosTokenId ?? 1)
+        }
+        let components = processor.map { value in GenerationComponents(logitProcessorFactory: { value }) } ?? .init()
+        let iterator = try TokenIterator(input: LMInput(tokens: MLXArray(ids)), model: context.model,
+            parameters: parameters, components: components)
+        let (stream, producer) = MLXLMCommon.generateTask(promptTokenCount: ids.count,
+            modelConfiguration: modelConfiguration, tokenizer: context.tokenizer, iterator: iterator,
+            tools: specs, toolCallPolicy: parameters.toolCallPolicy)
+        var text = ""; var calls: [ToolCall] = []; var completion: GenerateCompletionInfo?
+        var rejected = false; var timedOut = false
+        let deadline = Date().addingTimeInterval(180)
+        await withTaskCancellationHandler {
+            for await event in stream {
+                if Task.isCancelled { producer.cancel() }
+                if Date() >= deadline { timedOut = true; producer.cancel() }
+                switch event {
+                case .chunk(let chunk):
+                    if text.utf8.count + chunk.utf8.count <= 64_000 { text += chunk }
+                    else { rejected = true; producer.cancel() }
+                case .toolCall(let call):
+                    if calls.count < MeetingChatNativeHarness.maximumToolCalls { calls.append(call) }
+                    else { rejected = true; producer.cancel() }
+                case .rejectedToolCall: rejected = true; producer.cancel()
+                case .info(let info): completion = info
+                }
+            }
+            await producer.value // Drain before releasing mutable model state.
+        } onCancel: { producer.cancel() }
+        try Task.checkCancellation()
+        if timedOut { throw GemmaMeetingChatError.timedOut }
+        guard !rejected, processor?.failure == nil, processor?.terminated ?? true, completion?.stopReason == .stop else { throw GemmaNativeAudioError.invalidResponse }
+        return try GemmaChatCodec.response(text: text, calls: calls, allowTools: request.allowTools)
+    }
+
+    func transcribe(wavURL: URL, model: Gemma4LiteRTModel, mtpBlockOverride: Int? = nil, systemPrompt: String? = nil, userPrompt: String? = nil, maxOutputTokens: Int = Int(Gemma4LiteRTTranscriber.maxOutputTokens), toolsJSON: String? = nil) async throws -> Result {
         await acquire(); defer { release() }
         try Task.checkCancellation()
         let start = Date()
@@ -232,7 +312,7 @@ actor GemmaNativeAudioTranscriber {
         }
         // Run the already-used Silero detector even when meeting helpers have not
         // been loaded. A failed detector is an error, never permission to hallucinate.
-        if vad == nil { vad = try await VadManager() }
+        if vad == nil { vad = try await GemmaNativeAudioModels.loadVAD() }
         let vadStart = Date()
         let speech = try await vad!.process(wav.samples)
         let vadSeconds = Date().timeIntervalSince(vadStart)
@@ -255,11 +335,21 @@ actor GemmaNativeAudioTranscriber {
         let encoderSeconds = Date().timeIntervalSince(encoderStart)
         try Task.checkCancellation()
         let count = mask.asType(.int32).sum().item(Int.self)
-        let prompt = Self.framed(system: systemPrompt, user: (userPrompt ?? Gemma4LiteRTModelStore.resolvedPrompt())
-            + "<|audio>" + String(repeating: "<|audio|>", count: count) + "<audio|>")
+        let audioUser = (userPrompt ?? Gemma4LiteRTModelStore.resolvedPrompt())
+            + "<|audio>" + String(repeating: "<|audio|>", count: count) + "<audio|>"
+        let prompt = try toolsJSON.map { try GemmaToolCalling.prompt(system: systemPrompt ?? "", user: audioUser, toolsJSON: $0) }
+            ?? Self.framed(system: systemPrompt, user: audioUser)
         let ids = state.context.tokenizer.encode(text: prompt, addSpecialTokens: false)
         guard ids.filter({ $0 == audioTokenID }).count == count else { throw GemmaNativeAudioError.invalidResponse }
         let input = LMInput(text: .init(tokens: MLXArray(ids).reshaped(1, -1)), audio: .init(features: encoded, mask: mask.reshaped(1, -1)))
+        if let toolsJSON {
+            try Gemma4LiteRTTranscriber.validatePlannerTokenBudget(ids.count)
+            let generationStart = Date()
+            let response = try await generateConstrainedTool(input: input, model: model, toolsJSON: toolsJSON, maxTokens: maxOutputTokens)
+            return Result(text: response, processingTime: Date().timeIntervalSince(start),
+                frontendSeconds: frontendSeconds, encoderSeconds: encoderSeconds, prefillSeconds: 0,
+                decodeSeconds: Date().timeIntervalSince(generationStart), vadSeconds: vadSeconds, skippedSilence: false)
+        }
         let block = try await effectiveBlock(model: model, requested: mtpBlockOverride ?? mtpBlock)
         let (raw, info, tokenCount) = try await generateRaw(input: input, model: model, context: state.context, block: block, maxTokens: maxOutputTokens)
         let text: String
@@ -363,7 +453,7 @@ actor GemmaNativeAudioTranscriber {
         return TextResult(raw: raw, seconds: seconds, completed: info.stopReason == .stop,
             proposed: info.proposedDraftTokens, accepted: info.acceptedDraftTokens, fallback: info.passthroughReason)
     }
-    func generateToolResponse(systemPrompt: String, userPrompt: String, model: Gemma4LiteRTModel, toolsJSON: String) async throws -> String {
+    func generateToolResponse(systemPrompt: String, userPrompt: String, model: Gemma4LiteRTModel, toolsJSON: String, maxOutputTokens: Int = 768) async throws -> String {
         guard !model.isCleanupOnly else { throw GemmaToolCalling.invalid() }
         await acquire(); defer { release() }
         try Task.checkCancellation()
@@ -372,6 +462,11 @@ actor GemmaNativeAudioTranscriber {
         let prompt = try GemmaToolCalling.prompt(system: systemPrompt, user: userPrompt, toolsJSON: toolsJSON)
         let ids = context.tokenizer.encode(text: prompt, addSpecialTokens: false)
         try Gemma4LiteRTTranscriber.validatePlannerTokenBudget(ids.count)
+        return try await generateConstrainedTool(input: LMInput(tokens: MLXArray(ids)), model: model, toolsJSON: toolsJSON, maxTokens: maxOutputTokens)
+    }
+
+    private func generateConstrainedTool(input: LMInput, model: Gemma4LiteRTModel, toolsJSON: String, maxTokens: Int) async throws -> String {
+        let context = loaded!.context
         // Gemma has unused token IDs: do not stop at the first vocabulary gap.
         let configData = try Data(contentsOf: GemmaNativeAudioModels.directory(for: model).appendingPathComponent("config.json"))
         let config = try JSONSerialization.jsonObject(with: configData) as? [String: Any]
@@ -394,8 +489,8 @@ actor GemmaNativeAudioTranscriber {
                 vocabSize: size, eos: context.tokenizer.eosTokenId ?? 1)
             let hybridDrafter = GemmaGrammarDrafter(base: drafter!.value, processor: processor)
             var iterator = try MTPSpeculativeTokenIterator(
-                input: LMInput(tokens: MLXArray(ids)), mainModel: context.model,
-                drafter: hybridDrafter, parameters: GenerateParameters(maxTokens: 768, temperature: 0, topK: 1),
+                input: input, mainModel: context.model,
+                drafter: hybridDrafter, parameters: GenerateParameters(maxTokens: maxTokens, temperature: 0, topK: 1),
                 blockSize: block, components: GenerationComponents(logitProcessorFactory: { processor }))
             var output = [Int]()
             var ended = false
@@ -409,15 +504,15 @@ actor GemmaNativeAudioTranscriber {
             raw = context.tokenizer.decode(tokenIds: output, skipSpecialTokens: false)
             log("tool_mtp hybrid=true forced=\(processor.forcedCount) skipped_drafter_blocks=\(hybridDrafter.skippedBlocks) proposed=\(iterator.proposedCount) accepted=\(iterator.acceptedCount) prefill_seconds=\(iterator.promptPrefillTime) passthrough=\(iterator.passthroughReason ?? "none")")
         } else {
-            try GuidedGenerationLoop.run(input: LMInput(tokens: MLXArray(ids)), context: context,
-                constraint: constraint, maxTokens: 768, vocabSize: tokenizer.vocabSize) { delta in
+            try GuidedGenerationLoop.run(input: input, context: context,
+                constraint: constraint, maxTokens: maxTokens, vocabSize: tokenizer.vocabSize) { delta in
                 if Task.isCancelled { return false }
                 raw += delta
                 return true
             }
         }
         try Task.checkCancellation()
-        if ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_TEST"] == "1" { print("MLX_TOOL_RAW model=\(model.label) output=\(raw)") }
+        if ContentPrivacy.shared.mayLogContent && ProcessInfo.processInfo.environment["MUESLI_GEMMA_TOOL_TEST"] == "1" { print("MLX_TOOL_RAW model=\(model.label) output=\(raw)") }
         let response = try GemmaToolCalling.response(raw)
         log("tool_completed model=\(model.label) runtime=mlx-swift-lm constrained=true mtp=\(toolMTP) total_seconds=\(Date().timeIntervalSince(start))")
         return response

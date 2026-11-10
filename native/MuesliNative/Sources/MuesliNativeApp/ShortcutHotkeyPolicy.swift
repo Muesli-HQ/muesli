@@ -37,7 +37,7 @@ struct ShortcutHotkeyPolicy {
             return hotkey.isValidDictationShortcut
         case .quil:
             return isValidQuilShortcut(hotkey)
-        case .meetingRecording:
+        case .meetingRecording, .feedbackCapture:
             return hotkey.combinationKeyCode.flatMap(HotkeyConfig.letterLabel(for:)) != nil
         case .computerUse:
             return false
@@ -62,10 +62,10 @@ struct ShortcutHotkeyPolicy {
     private static func conflict(with action: String, hotkey: HotkeyConfig) -> ShortcutHotkeyUpdateResult {
         .conflict(message: conflictMessage(with: action, hotkey: hotkey))
     }
-    static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. Muesli listens globally, so choose a less common combination if it conflicts with your workflow."
+    static let commonGlobalShortcutWarning = "This shortcut is commonly used by other apps. muesli listens globally, so choose a less common combination if it conflicts with your workflow."
     static let commandSpaceWarning = "Command-Space may already open Spotlight or switch input sources. Choose another shortcut, or change the conflicting shortcut in System Settings > Keyboard > Keyboard Shortcuts."
     static let quilKeyCountMessage = "Quill supports one key or a two-key shortcut."
-    static let pasteConflictMessage = "Muesli uses this shortcut to paste. Choose a different shortcut."
+    static let pasteConflictMessage = "muesli uses this shortcut to paste. Choose a different shortcut."
     static let dictationShortcutMessage = "Use a modifier key, or add Control, Option, or Shift. Command alone works only with digits, Space, arrows, and function keys."
 
     static func isValidQuilShortcut(_ hotkey: HotkeyConfig) -> Bool {
@@ -96,6 +96,30 @@ struct ShortcutHotkeyPolicy {
             return conflict(with: "Meeting Recording", hotkey: meetingRecordingHotkey)
         }
         return .updated(notice: commonGlobalShortcutWarning(for: hotkey))
+    }
+
+    /// Bare modifiers start only when pressed alone: HotkeyMonitor rejects other
+    /// held modifiers and cancels pending holds on later modifiers or keys;
+    /// feedback admission refuses active dictation. Keep the shared overlap rule unchanged.
+    static func feedbackCaptureHotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {
+        a.isCombination && b.isCombination && hotkeysConflict(a, b)
+    }
+
+    static func validateFeedbackCaptureHotkey(_ hotkey: HotkeyConfig, config: AppConfig) -> ShortcutHotkeyUpdateResult {
+        guard hotkey.isCombination, let modifiers = hotkey.resolvedCombinationModifiers, !modifiers.isEmpty,
+              allowsCombination(hotkey, action: .feedbackCapture) else {
+            return .conflict(message: "Choose a modifier and letter chord.")
+        }
+        let others: [(String, HotkeyConfig, Bool)] = [
+            ("Dictation", config.dictationHotkey, true),
+            ("Computer Use Command", config.computerUseHotkey, config.enableComputerUseHotkey),
+            ("Quill", config.quilHotkey, config.enableQuilMode),
+            ("Meeting Recording", config.meetingRecordingHotkey, config.enableMeetingRecordingHotkey)
+        ]
+        for (name, key, enabled) in others where enabled && feedbackCaptureHotkeysConflict(hotkey, key) {
+            return conflict(with: name, hotkey: key)
+        }
+        return .updated
     }
 
     static func hotkeysConflict(_ a: HotkeyConfig, _ b: HotkeyConfig) -> Bool {

@@ -245,6 +245,9 @@ struct MeetingsView: View {
     @State private var isGranolaImportPresented = false
     @State private var selectedFilter: MeetingBrowserFilter = .all
     @State private var selectedSort: MeetingBrowserSort = .newestFirst
+    @State private var showsPeople = false
+    @State private var newMeetingHovered = false
+    @FocusState private var newMeetingFocused: Bool
     // Bumped when the system locale changes so cached start-time labels redraw.
     @State private var localeChangeVersion = 0
 
@@ -288,7 +291,7 @@ struct MeetingsView: View {
                         if appState.meetingChatDocumentTarget != nil { controller.returnToMeetingChat() }
                         else { controller.showMeetingsHome(folderID: appState.selectedFolderID) }
                     },
-                    backLabel: appState.meetingChatDocumentTarget != nil ? "Back to Chat" : "Back to Meetings"
+                    backLabel: appState.meetingChatDocumentTarget != nil ? (appState.meetingSourceReturnsToTimeTurner ? "Back to Time Turner" : "Back to Chat") : "Back to Meetings"
                 )
                 .id(meeting.id)
             } else {
@@ -325,6 +328,19 @@ struct MeetingsView: View {
                     controller: controller
                 )
 
+                Picker("Meetings view", selection: $showsPeople) {
+                    Text("Meetings").tag(false)
+                    Text("People").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Meetings view")
+                .frame(maxWidth: 240)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+                if showsPeople {
+                    MeetingPeopleDirectory(controller: controller)
+                } else {
                 if !appState.visibleUpcomingCalendarEvents.isEmpty {
                     comingUpSection
                 }
@@ -368,12 +384,19 @@ struct MeetingsView: View {
                         }
                     }
                 }
+                }
             }
             .frame(maxWidth: 960, alignment: .leading)
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, MuesliTheme.pageTop)
-            .padding(.bottom, 32)
+            // Leave the last row accessible above the floating action.
+            .padding(.bottom, 96)
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            newMeetingButton
+                .padding(.trailing, MuesliTheme.pageInset)
+                .padding(.bottom, 20)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
             localeChangeVersion &+= 1
@@ -392,6 +415,61 @@ struct MeetingsView: View {
             }
             return true
         }
+    }
+
+    private var newMeetingButton: some View {
+        let disabled = appState.isMeetingRecording || appState.isMeetingStarting
+        let highlighted = newMeetingHovered && !disabled
+        let fill = highlighted ? MuesliTheme.joinAction : MuesliTheme.accent
+        let ink = highlighted ? MuesliTheme.onJoinAction : MuesliTheme.onAccent
+        return Button {
+            controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
+        } label: {
+            Image(systemName: "person.wave.2")
+                .font(.system(size: 22, weight: .semibold))
+                .frame(width: 56, height: 56)
+                .foregroundStyle(ink)
+                .background(fill, in: Circle())
+                .overlay(alignment: .bottomTrailing) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(ink)
+                        .padding(3)
+                        .background(fill, in: Circle())
+                        .offset(x: -7, y: -7)
+                        .allowsHitTesting(false)
+                }
+                .overlay {
+                    Circle().strokeBorder(newMeetingFocused ? MuesliTheme.textPrimary : MuesliTheme.surfaceBorder,
+                                          lineWidth: newMeetingFocused ? 2 : 1)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Circle())
+                .opacity(disabled ? 0.5 : 1)
+        }
+        .buttonStyle(.plain)
+        .focused($newMeetingFocused)
+        .disabled(disabled)
+        .onHover { newMeetingHovered = $0 }
+        .overlay(alignment: .trailing) {
+            if highlighted || newMeetingFocused {
+                Text("Quick Note")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(MuesliTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                    }
+                    .fixedSize()
+                    .offset(x: -68)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityLabel("Start a new meeting")
     }
 
     // MARK: - Coming Up
@@ -468,7 +546,7 @@ struct MeetingsView: View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Coming Up")
-                    .font(.custom("Cormorant Garamond", size: 22).weight(.medium))
+                    .font(MuesliTheme.title2())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
             }
@@ -481,13 +559,13 @@ struct MeetingsView: View {
                     // Date column
                     VStack(alignment: .center, spacing: 2) {
                         Text(group.dayNumber)
-                            .font(.system(size: 24, weight: .light, design: .default))
-                            .foregroundStyle(group.isToday ? MuesliTheme.accent : MuesliTheme.textPrimary)
+                            .font(MuesliTheme.font(size: 24))
+                            .foregroundStyle(group.isToday ? MuesliTheme.accentText : MuesliTheme.textPrimary)
                         Text(group.dayLabel)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(group.isToday ? MuesliTheme.accent : MuesliTheme.textSecondary)
+                            .font(MuesliTheme.font(size: 11, weight: .medium))
+                            .foregroundStyle(group.isToday ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                         Text(group.dayOfWeek)
-                            .font(.system(size: 10))
+                            .font(MuesliTheme.font(size: 10))
                             .foregroundStyle(MuesliTheme.textSecondary)
                     }
                     .frame(width: 60)
@@ -502,12 +580,12 @@ struct MeetingsView: View {
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(event.title)
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(MuesliTheme.font(size: 13, weight: .medium))
                                         .foregroundStyle(MuesliTheme.textPrimary)
                                         .lineLimit(1)
 
                                     Text(formatTimeRange(event))
-                                        .font(.system(size: 11))
+                                        .font(MuesliTheme.font(size: 11))
                                         .foregroundStyle(MuesliTheme.textSecondary)
                                 }
 
@@ -531,7 +609,7 @@ struct MeetingsView: View {
                                     }
                                 } label: {
                                     Text("Add to folder")
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(MuesliTheme.font(size: 10, weight: .medium))
                                         .foregroundStyle(MuesliTheme.textSecondary)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
@@ -575,9 +653,6 @@ struct MeetingsView: View {
         return "\(f.string(from: event.startDate)) – \(f.string(from: event.endDate))"
     }
 
-    private static let joinActionGreen = Color(nsColor: NSColor(red: 0.20, green: 0.72, blue: 0.53, alpha: 1.0))
-    private static let joinActionGreenDarker = Color(nsColor: NSColor(red: 0.15, green: 0.58, blue: 0.42, alpha: 1.0))
-
     /// Split control mirroring the meeting notification panel: the primary segment runs
     /// the default action from Settings, the chevron offers the other two.
     /// (Not `Menu(primaryAction:)` — with a plain custom label on macOS the chevron
@@ -596,12 +671,12 @@ struct MeetingsView: View {
                     Image(systemName: armed.symbolName)
                         .font(.system(size: 9))
                     Text(armed.buttonLabel)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MuesliTheme.font(size: 10, weight: .medium))
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(MuesliTheme.onJoinAction)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Self.joinActionGreen)
+                .background(MuesliTheme.joinAction)
             }
             .buttonStyle(.plain)
 
@@ -616,15 +691,16 @@ struct MeetingsView: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(MuesliTheme.onJoinAction)
                     .padding(.horizontal, 5)
                     .frame(maxHeight: .infinity)
-                    .background(Self.joinActionGreenDarker)
+                    .background(MuesliTheme.joinActionSecondary)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize(horizontal: true, vertical: false)
             .help(alternatives.map(\.buttonLabel).joined(separator: " · "))
+            .accessibilityLabel("More join options")
         }
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -661,17 +737,18 @@ struct MeetingsView: View {
 
     private func hideEventButton(_ event: UnifiedCalendarEvent) -> some View {
         Button {
-            withAnimation(.easeOut(duration: 0.2)) {
+            MuesliMotion.perform(.easeOut(duration: 0.2)) {
                 controller.hideCalendarEvent(event)
             }
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(MuesliTheme.textSecondary.opacity(0.6))
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .frame(width: 20, height: 20)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet, shape: .circle))
         .help("Hide from Coming Up")
+        .accessibilityLabel("Hide \(event.title) from Coming Up")
     }
 
     @ViewBuilder
@@ -695,10 +772,19 @@ struct MeetingsView: View {
 
             browserHeaderMeta(meetingCount: meetingCount)
 
-            RecordOriginPicker(selection: Binding(
-                get: { appState.meetingOriginFilter },
-                set: { controller.filterMeetings(origin: $0) }
-            ))
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: MuesliTheme.spacing12) {
+                    browserOriginPicker
+                    Spacer(minLength: MuesliTheme.spacing12)
+                    browserSortAndFilter
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    browserOriginPicker
+                    browserSortAndFilter
+                }
+            }
         }
     }
 
@@ -710,60 +796,47 @@ struct MeetingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func browserHeaderMeta(meetingCount: Int) -> some View {
-        HStack(spacing: MuesliTheme.spacing8) {
-            Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textSecondary)
-                .fixedSize()
+        Text("\(meetingCount) meeting\(meetingCount == 1 ? "" : "s")")
+            .font(MuesliTheme.callout())
+            .foregroundStyle(MuesliTheme.textSecondary)
+    }
 
-            Text("\u{2022}")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textTertiary)
-                .fixedSize()
-
-            Text("Open a meeting to review notes, transcript, and template-driven summaries")
-                .font(MuesliTheme.callout())
-                .foregroundStyle(MuesliTheme.textTertiary)
+    @ViewBuilder
+    private var browserOriginPicker: some View {
+        if appState.showsDeviceOriginFilter {
+            RecordOriginPicker(selection: Binding(
+                get: { appState.meetingOriginFilter },
+                set: { controller.filterMeetings(origin: $0) }
+            ))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var browserSortAndFilter: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            sortButton
+            dateFilterButton
+        }
+        .fixedSize()
     }
 
     @ViewBuilder
     private var browserHeaderActions: some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            Button {
-                controller.startQuickNoteMeeting(folderID: appState.selectedFolderID)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Quick Note")
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(MuesliTheme.backgroundBase)
-                .padding(.horizontal, MuesliTheme.spacing12)
-                .padding(.vertical, 8)
-                .background(appState.isMeetingRecording || appState.isMeetingStarting ? MuesliTheme.surfacePrimary : MuesliTheme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-            }
-            .buttonStyle(.plain)
-            .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
-            .help("Start a quick meeting note")
-            .fixedSize()
-
             Menu {
                 Button("Audio file…") { controller.importAudioFile(folderID: appState.selectedFolderID) }
-                Button("Granola…") { isGranolaImportPresented = true }
+                Button("Granola…") {
+                    NewFeatureDiscovery.shared.markUsed(.granolaImport)
+                    isGranolaImportPresented = true
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.down")
                         .font(.system(size: 11, weight: .semibold))
                     Text("Import")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
+                    NewFeatureBadge(feature: .granolaImport)
                 }
                 .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
@@ -779,9 +852,7 @@ struct MeetingsView: View {
             .disabled(appState.isMeetingRecording || appState.isMeetingStarting)
             .help("Import audio or meeting notes from Granola")
             .fixedSize()
-
-            sortButton
-            dateFilterButton
+            .featureTourTarget(.granolaImport)
 
             Button {
                 controller.showMeetingTemplatesManager()
@@ -789,21 +860,14 @@ struct MeetingsView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Manage Templates")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text("Templates")
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                         .lineLimit(1)
                 }
-                .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                .overlay(
-                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.secondary))
             .fixedSize()
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -818,7 +882,7 @@ struct MeetingsView: View {
                     .frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(meeting.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(MuesliTheme.font(size: 13, weight: .semibold))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .lineLimit(1)
                     Text(activeMeetingStatusText(for: meeting))
@@ -836,15 +900,12 @@ struct MeetingsView: View {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 11, weight: .semibold))
                     Text("Open Notes")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MuesliTheme.font(size: 12, weight: .semibold))
                 }
-                .foregroundStyle(MuesliTheme.textPrimary)
                 .padding(.horizontal, MuesliTheme.spacing12)
                 .padding(.vertical, 8)
-                .background(MuesliTheme.surfacePrimary)
-                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.secondary, bordered: false))
 
             if meeting.status == .recording {
                 Button {
@@ -854,19 +915,12 @@ struct MeetingsView: View {
                         Image(systemName: appState.isMeetingRecordingPaused ? "play.fill" : "pause.fill")
                             .font(.system(size: 10, weight: .semibold))
                         Text(appState.isMeetingRecordingPaused ? "Resume" : "Pause")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(MuesliTheme.font(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(appState.isMeetingRecordingPaused ? MuesliTheme.backgroundBase : MuesliTheme.textPrimary)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 8)
-                    .background(appState.isMeetingRecordingPaused ? MuesliTheme.accent : MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(appState.isMeetingRecordingPaused ? MuesliTheme.accent.opacity(0.35) : MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(appState.isMeetingRecordingPaused ? .primary : .secondary))
                 .disabled(!appState.isMeetingRecording)
 
                 Button {
@@ -876,15 +930,12 @@ struct MeetingsView: View {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 10, weight: .semibold))
                         Text("Stop")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(MuesliTheme.font(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(.white)
                     .padding(.horizontal, MuesliTheme.spacing12)
                     .padding(.vertical, 8)
-                    .background(MuesliTheme.recording)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.recording))
                 .disabled(!appState.isMeetingRecording)
             }
         }
@@ -930,9 +981,9 @@ struct MeetingsView: View {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.system(size: 11))
                 Text(selectedSort.label)
-                    .font(.system(size: 11))
+                    .font(MuesliTheme.font(size: 11))
             }
-            .foregroundStyle(selectedSort != .newestFirst ? MuesliTheme.accent : MuesliTheme.textSecondary)
+            .foregroundStyle(selectedSort != .newestFirst ? MuesliTheme.accentText : MuesliTheme.textSecondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(selectedSort != .newestFirst ? MuesliTheme.accent.opacity(0.12) : MuesliTheme.surfacePrimary.opacity(0.5))
@@ -963,15 +1014,18 @@ struct MeetingsView: View {
                     .font(.system(size: 11))
                 if selectedFilter != .all {
                     Text(selectedFilter.label)
-                        .font(.system(size: 11))
+                        .font(MuesliTheme.font(size: 11))
                 }
             }
-            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accent : MuesliTheme.textTertiary)
-            .padding(.horizontal, selectedFilter != .all ? 8 : 0)
-            .padding(.vertical, 3)
-            .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear)
-            .clipShape(Capsule())
+            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accentText : MuesliTheme.textTertiary)
+            // Same target in both states: the "All" icon is no longer the only clickable area.
+            .padding(.horizontal, 8)
+            .frame(minWidth: 28, minHeight: 28)
+            .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear, in: Capsule())
+            .contentShape(Capsule())
         }
+        .help("Filter meetings by date")
+        .accessibilityLabel("Filter meetings by date")
         .menuStyle(.borderlessButton)
         .fixedSize()
     }
@@ -1024,5 +1078,245 @@ struct MeetingsView: View {
         return appState.selectedFolderID == nil
             ? "Start a recording from the menu bar to create your first meeting note."
             : "Choose another folder or move a meeting here from the browser."
+    }
+}
+
+
+/// The meeting directory uses the same bounded indexed queries as global search.
+private struct MeetingPeopleDirectory: View {
+    let controller: MuesliController
+    @State private var query = ""
+    @State private var people: [MeetingParticipantDraft] = []
+    @State private var selected: MeetingParticipantDraft?
+    @State private var meetings: [GlobalSearchResult] = []
+    @State private var moreMeetings = false
+    @State private var displayedMeetingsRevision: [Int64]?
+    @State private var meetingPageGeneration = UUID()
+    @State private var duplicates: [DuplicateMeetingPeople] = []
+    @State private var history: [MeetingPeopleMerge] = []
+    @State private var candidate: DuplicateMeetingPeople?
+    @State private var peopleError: String?
+    @State private var meetingsError: String?
+    @State private var reviewError: String?
+    @State private var actionError: String?
+    @State private var busy = false
+    @State private var revision = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let selected {
+                Button { self.selected = nil; meetings = [] } label: {
+                    Label("People", systemImage: "chevron.left")
+                }.buttonStyle(.muesli(.quiet))
+                Text(selected.displayName).font(MuesliTheme.title2())
+                if let email = selected.emailAddress { Text(email).foregroundStyle(MuesliTheme.textSecondary) }
+                if meetings.isEmpty { Text("No meetings found.").foregroundStyle(MuesliTheme.textSecondary) }
+                ForEach(meetings) { meeting in
+                    Button {
+                        if let id = Int64(meeting.sourceID) { controller.showMeetingDocument(id: id) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(meeting.title).font(MuesliTheme.headline())
+                                Text(meeting.date.formatted(date: .abbreviated, time: .shortened))
+                                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(MuesliTheme.textSecondary)
+                        }.padding(12).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+                if moreMeetings {
+                    Button("Show more meetings") { Task { await loadMeetings(selected, append: true) } }
+                        .buttonStyle(.muesli(.quiet)).disabled(busy)
+                }
+            } else {
+                TextField("Search people…", text: $query)
+                    .textFieldStyle(.roundedBorder).accessibilityLabel("Search people")
+                if !duplicates.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Possible duplicates", systemImage: "person.2.fill")
+                            .font(MuesliTheme.headline())
+                            .foregroundStyle(MuesliTheme.warningText)
+                        if duplicates.count == 100 {
+                            Text("Showing the first 100 pairs.").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                        }
+                        ForEach(duplicates) { pair in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(pair.first.displayName) · \(pair.second.displayName)")
+                                    Text(pair.evidence.hasPrefix("contact:") ? "Same contact" : "Same email: \(pair.evidence)")
+                                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.warningText)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                Button { candidate = pair } label: {
+                                    Text("Review")
+                                        .font(MuesliTheme.callout())
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.muesli(.secondary))
+                                .fixedSize()
+                                .disabled(busy)
+                            }
+                            .padding(16)
+                            .background {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(MuesliTheme.backgroundRaised)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(MuesliTheme.warningText.opacity(0.10))
+                                    }
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder(MuesliTheme.warningText.opacity(0.35), lineWidth: 1)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                }
+                if !history.isEmpty {
+                    DisclosureGroup("Merged people") {
+                        ForEach(history) { merge in
+                            HStack {
+                                Text("\(merge.sourceName) → \(merge.targetName)")
+                                Spacer()
+                                Button("Undo") { Task { await undo(merge) } }.disabled(busy)
+                            }.padding(.vertical, 5)
+                        }
+                    }
+                }
+                if people.isEmpty {
+                    Text("No people found.").foregroundStyle(MuesliTheme.textSecondary)
+                } else {
+                    if people.count == 100 {
+                        Text("Showing the first 100 people. Search to narrow the list.").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                    }
+                    LazyVStack(spacing: 0) {
+                        ForEach(people, id: \.participantIdentifier) { person in
+                            Button { selected = person } label: {
+                                HStack {
+                                    Image(systemName: "person.crop.circle").foregroundStyle(MuesliTheme.accentText)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(person.displayName).font(MuesliTheme.headline())
+                                        if let email = person.emailAddress {
+                                            Text(email).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(MuesliTheme.textSecondary)
+                                }.padding(12).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            Group {
+                if let peopleError { Text(peopleError) }
+                if let meetingsError { Text(meetingsError) }
+                if let reviewError { Text(reviewError) }
+                if let actionError { Text(actionError) }
+            }.font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+        }
+        .task(id: "\(query)|\(revision)") {
+            do {
+                try await Task.sleep(for: .milliseconds(200))
+                let result = try await controller.globalSearchWorker.people(matching: query)
+                guard !Task.isCancelled else { return }
+                people = result
+                peopleError = nil
+            } catch is CancellationError {} catch {
+                guard !Task.isCancelled else { return }
+                peopleError = "People couldn’t load. Try again."
+            }
+        }
+        .task(id: selected?.personID) {
+            meetingPageGeneration = UUID()
+            meetings = []; moreMeetings = false; displayedMeetingsRevision = nil; meetingsError = nil
+            if let selected { await loadMeetings(selected, append: false) }
+        }
+        .task(id: revision) { await refreshReview() }
+        .onReceive(NotificationCenter.default.publisher(for: .meetingParticipantsDidChange)) { _ in revision += 1 }
+        .confirmationDialog("Merge these people?", isPresented: Binding(get: { candidate != nil }, set: { if !$0 { candidate = nil } }), titleVisibility: .visible, presenting: candidate) { pair in
+            Button("Merge as \(pair.first.displayName)") { Task { await merge(pair, keep: pair.first) } }
+            Button("Merge as \(pair.second.displayName)") { Task { await merge(pair, keep: pair.second) } }
+            Button("Cancel", role: .cancel) { candidate = nil }
+        } message: { pair in
+            Text("Choose a name for the merged person. Their meetings and email addresses will be combined. You can undo this from Merged people.")
+        }
+    }
+
+    private func refreshReview() async {
+        do {
+            duplicates = try await controller.globalSearchWorker.duplicatePeople()
+            history = try await controller.globalSearchWorker.peopleMergeHistory()
+            guard !Task.isCancelled else { return }
+            reviewError = nil
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled else { return }
+            reviewError = "Duplicate review couldn’t load."
+        }
+    }
+
+    private func merge(_ pair: DuplicateMeetingPeople, keep: MeetingParticipantDraft) async {
+        guard let target = keep.personID else { return }
+        let other = pair.first.personID == target ? pair.second.personID : pair.first.personID
+        guard let other else { return }
+        busy = true; defer { busy = false }
+        do {
+            try await controller.globalSearchWorker.mergePeople(targetID: target, sourceID: other)
+            candidate = nil; actionError = nil; revision += 1
+        } catch { actionError = error.localizedDescription; revision += 1 }
+    }
+
+    private func undo(_ merge: MeetingPeopleMerge) async {
+        busy = true; defer { busy = false }
+        do {
+            try await controller.globalSearchWorker.undoPeopleMerge(id: merge.id)
+            actionError = nil; revision += 1
+        } catch { actionError = error.localizedDescription }
+    }
+
+    private func loadMeetings(_ person: MeetingParticipantDraft, append: Bool) async {
+        guard !append || !busy else { return }
+        if !append { meetingPageGeneration = UUID() }
+        let generation = meetingPageGeneration
+        if append { busy = true }
+        defer { if append { busy = false } }
+        do {
+            var token = try await controller.globalSearchWorker.changeToken()
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            if append, displayedMeetingsRevision != token {
+                await loadMeetings(person, append: false)
+                return
+            }
+            var request = GlobalSearchQuery(text: "", kinds: [.meeting], person: person, limit: 101)
+            if append { request.offset = meetings.count }
+            var found = try await controller.globalSearchWorker.search(request)
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            var latest = try await controller.globalSearchWorker.changeToken()
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            if !append && latest != token {
+                token = latest
+                found = try await controller.globalSearchWorker.search(request)
+                latest = try await controller.globalSearchWorker.changeToken()
+                guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            }
+            if latest != token {
+                if append { await loadMeetings(person, append: false) }
+                else { meetingsError = "Meetings changed. Try again." }
+                return
+            }
+            if append { meetings.append(contentsOf: found.prefix(100)) }
+            else { meetings = Array(found.prefix(100)) }
+            moreMeetings = found.count > 100
+            displayedMeetingsRevision = latest
+            meetingsError = nil
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled, meetingPageGeneration == generation, selected?.participantIdentifier == person.participantIdentifier else { return }
+            meetingsError = "Meetings couldn’t load."
+        }
     }
 }

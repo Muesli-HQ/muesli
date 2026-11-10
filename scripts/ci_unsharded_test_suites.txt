@@ -2,15 +2,12 @@
 # executed by a required PR shard. New suites must be assigned in
 # run_ci_test_shard.sh instead of being added here.
 AppConfigAppearanceTests
-AppScopedDictationRecorderTests
 AudioDuckingControllerTests
 AudioRouteClassifierTests
-BrowserMeetingActivityCollectorTests
 CohereTranscribeLanguageTests
 CohereTranscribeUtilsTests
 ControlCenterSensorAttributionMonitorTests
 DiagnosticIncidentReporterTests
-DictationAudioSessionManagerTests
 DictationBackendReadinessTests
 DictionaryCorrectionDetectorTests
 DictionaryCorrectionSnapshotStabilizerTests
@@ -25,8 +22,6 @@ ICloudSyncCallbackDeadlineTests
 InferenceGateTests
 LaunchAtLoginManagerTests
 MediaPlaybackControllerTests
-MeetingAutoStopPolicyTests
-MeetingCandidateResolverTests
 MeetingChunkTimingTrackerTests
 MeetingExporterTests
 MeetingHookRunnerTests
@@ -34,7 +29,6 @@ MeetingMarkdownAutoExporterTests
 MeetingMediaSessionTrackerTests
 MeetingMediaSignalFilterTests
 MeetingNeuralAecTests
-MeetingNotificationControllerTests
 MeetingPreviewTextTests
 MeetingPromptStateMachineTests
 MeetingSessionDiagnosticsTests
@@ -49,7 +43,6 @@ MuesliBridgeDeviceRefreshPolicyTests
 PCMChunkRecorderTests
 PostProcessorOptionTests
 Qwen3PostProcessingOutputCleanerTests
-RouteAwareDictationRecorderTests
 SenseVoiceTranscriberTests
 SidebarHitAreaTests
 SoundControllerTests
