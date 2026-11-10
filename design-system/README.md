@@ -525,3 +525,8 @@ Your notes reuses the live note editor and its inline save status; generated
 summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
 After that, Saved notes holds the current source, and a collapsed Previous notes
 disclosure in Summary exposes the other pre-upgrade document when present.
+
+Time Turner Capture settings and onboarding share the canonical Capture menu:
+Focused window or All displays. Whole-display history shows a display symbol and
+display/app label instead of attributing the image to a single app. All displays
+keeps one compact scrubber; each monitor's sample remains independently selectable.

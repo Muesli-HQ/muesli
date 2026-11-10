@@ -337,6 +337,8 @@ extension MuesliController {
             toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
         }
 
+        textMenu("time_turner_capture_scope", "Capture", [Choice(id: "focused", label: "Focused window"),
+            Choice(id: "all_displays", label: "All displays")], \.timeTurnerCaptureScope)
         textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
             Choice(id: $0, label: "\($0) seconds")
         }, \.timeTurnerInterval)

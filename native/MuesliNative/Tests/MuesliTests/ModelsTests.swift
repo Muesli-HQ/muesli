@@ -1126,6 +1126,17 @@ struct MeetingSummaryBackendTests {
 
 @Suite("AppConfig")
 struct AppConfigTests {
+    @Test func displayCaptureScopeDefaultsToFocusedAndRoundTrips() throws {
+        let old = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(old.timeTurnerCaptureScope == "focused")
+        var config = old
+        config.timeTurnerCaptureScope = "all_displays"
+        let data = try JSONEncoder().encode(config)
+        let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(fields["time_turner_capture_scope"] as? String == "all_displays")
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).timeTurnerCaptureScope == "all_displays")
+    }
+
 
     @Test("Scrawl defaults off with Option-Shift-S and round-trips old configs")
     func feedbackCaptureDefaults() throws {

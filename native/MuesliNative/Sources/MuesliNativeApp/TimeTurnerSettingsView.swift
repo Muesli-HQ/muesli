@@ -37,6 +37,9 @@ struct TimeTurnerSettingsView: View {
                     SettingsRow(label: "Pause on inactivity", description: "Pause after 1 minute without keyboard or mouse input. Resume when you return.", controlWidth: nil) {
                         MuesliSettingControl(controller: controller, id: "time_turner_pause_on_inactivity")
                     }
+                    SettingsRow(label: "Capture") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_capture_scope")
+                    }
                     SettingsRow(label: "Check screen every") {
                         MuesliSettingControl(controller: controller, id: "time_turner_interval")
                     }
@@ -160,7 +163,8 @@ struct TimeTurnerSettingsView: View {
     private var estimate: String {
         guard let average = memory.averageImageBytes else { return "Storage estimate available after capture." }
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
-        let size = ByteCountFormatter.string(fromByteCount: average * 28_800 / interval, countStyle: .file)
+        let displays = appState.config.timeTurnerCaptureScope == "all_displays" ? max(1, NSScreen.screens.count) : 1
+        let size = ByteCountFormatter.string(fromByteCount: average * Int64(displays) * 28_800 / interval, countStyle: .file)
         return "Estimated \(size) per 8 active hours, before compression."
     }
 }
@@ -199,14 +203,14 @@ struct TimeTurnerSetupView: View {
             if step == 0 {
                 Text("Your first turn through time").font(MuesliTheme.font(.largeTitle).bold())
                 Text("Find the page, conversation or idea you saw earlier—without remembering where it was.").font(MuesliTheme.font(.title3)).foregroundStyle(.secondary)
-                Label("Snapshots of your focused window, with searchable text", systemImage: "macwindow")
+                Label("Snapshots of your windows or displays, with searchable text", systemImage: "macwindow")
                 Label("Stored on this Mac, with a storage limit", systemImage: "internaldrive")
                 Label("Pause anytime and choose apps to exclude", systemImage: "hand.raised")
                 Text("This enables ongoing screen history, separate from dictation context or meeting recordings. Nothing is captured until you choose Start Time Turner.").font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
             } else if step == 1 {
                 Text(ready ? "You're already set" : "A couple of permissions").font(MuesliTheme.font(.title).bold())
                 Text(ready ? "Muesli already has the permissions Time Turner needs. No need to grant them again." : "Allow the missing permissions below, then return here. We'll check again automatically.").foregroundStyle(.secondary)
-                permissionRow(.screenRecording, detail: "Save an image of the focused window.", granted: screen) {
+                permissionRow(.screenRecording, detail: "Save images of your selected capture scope.", granted: screen) {
                     PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
                     FeaturePermission.screenRecording.request()
                     refresh()
@@ -228,6 +232,9 @@ struct TimeTurnerSetupView: View {
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 VStack(spacing: MuesliTheme.spacing8) {
+                    SettingsRow(label: "Capture") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_capture_scope")
+                    }
                     SettingsRow(label: "Check screen every") {
                         MuesliSettingControl(controller: controller, id: "time_turner_interval")
                     }

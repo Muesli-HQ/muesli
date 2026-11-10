@@ -86,6 +86,7 @@ final class VisualMemoryController {
     var locked: Bool { ambientPauseState.systemSuspended }
     @ObservationIgnored private var ambientConfig: AppConfig?
     @ObservationIgnored private var ambientGeneration = UUID()
+    @ObservationIgnored private var displayChanges = VisualMemoryDisplayChanges()
     @ObservationIgnored private var lastFingerprint: Data?
     @ObservationIgnored private var lastText = ""
     @ObservationIgnored private var lastSource = ""
@@ -451,6 +452,7 @@ final class VisualMemoryController {
         self.audioFallbackActive = audioFallbackActive
         let changed = ambientConfig?.timeTurnerEnabled != config.timeTurnerEnabled
             || ambientConfig?.timeTurnerPauseOnInactivity != config.timeTurnerPauseOnInactivity
+            || ambientConfig?.timeTurnerCaptureScope != config.timeTurnerCaptureScope
             || ambientConfig?.timeTurnerInterval != config.timeTurnerInterval
             || ambientConfig?.timeTurnerBudget != config.timeTurnerBudget
             || ambientConfig?.timeTurnerExcludedApps != config.timeTurnerExcludedApps
@@ -466,6 +468,7 @@ final class VisualMemoryController {
             ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
             ambientStatus = "Paused — Privacy mode"
             lastFingerprint = nil; lastText = ""; lastSource = ""
+            displayChanges = VisualMemoryDisplayChanges()
             return
         }
         if !config.timeTurnerEnabled || audioFallbackActive {
@@ -473,7 +476,7 @@ final class VisualMemoryController {
             ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
             return
         }
-        if changed { ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID() }
+        if changed { displayChanges = VisualMemoryDisplayChanges(); ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID() }
         guard ambientTask == nil else { return }
         ambientStatus = "Starting"
         let generation = ambientGeneration
@@ -491,6 +494,7 @@ final class VisualMemoryController {
         ambientPauseState.userPaused.toggle(); ambientGeneration = UUID()
         ambientTask?.cancel(); ambientTask = nil
         lastFingerprint = nil
+        displayChanges = VisualMemoryDisplayChanges()
         if let config = ambientConfig { configureAmbient(config, audioFallbackActive: audioFallbackActive) }
     }
 
@@ -502,13 +506,27 @@ final class VisualMemoryController {
     private nonisolated static func ambientWindow(processID: pid_t) async -> (secure: Bool, window: DictationContextCapture.FocusedWindowSnapshot?) {
         await Task.detached(priority: .utility) {
             guard let app = NSRunningApplication(processIdentifier: processID) else { return (true, nil) }
-            var secure = false
-            if let element = DictationContextCapture.focusedUIElement(for: app, messagingTimeout: 0.5) {
-                AXUIElementSetMessagingTimeout(element, 0.5)
-                secure = DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
-            }
-            return (secure, DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false, messagingTimeout: 0.5))
+            return (hasSecureField(in: app), DictationContextCapture.focusedWindowSnapshot(for: app, allowTitleFallback: false, messagingTimeout: 0.5))
         }.value
+    }
+
+    private nonisolated static func hasSecureField(in app: NSRunningApplication) -> Bool {
+        guard let element = DictationContextCapture.focusedUIElement(for: app, messagingTimeout: 0.5) else { return false }
+        AXUIElementSetMessagingTimeout(element, 0.5)
+        return DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
+    }
+
+    private nonisolated static func ambientAppIsSecure(processID: pid_t) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard let app = NSRunningApplication(processIdentifier: processID) else { return true }
+            return hasSecureField(in: app)
+        }.value
+    }
+
+    private var excludedAmbientApps: Set<String> {
+        var excluded = Set([Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"])
+        excluded.formUnion((ambientConfig?.timeTurnerExcludedApps ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return excluded
     }
 
     private func captureMoment(generation: UUID) async {
@@ -535,11 +553,13 @@ final class VisualMemoryController {
             lastFingerprint = nil
             return
         }
+        if ambientConfig?.timeTurnerCaptureScope == "all_displays" {
+            await captureDisplays(generation: generation)
+            return
+        }
         guard let store, let app = NSWorkspace.shared.frontmostApplication,
               let bundle = app.bundleIdentifier else { return }
-        let excluded = [Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"]
-        let customExcluded = (ambientConfig?.timeTurnerExcludedApps ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard !customExcluded.contains(bundle), !excluded.contains(bundle) else { ambientStatus = "Skipping this app"; lastFingerprint = nil; return }
+        guard !excludedAmbientApps.contains(bundle) else { ambientStatus = "Skipping this app"; lastFingerprint = nil; return }
         let pid = app.processIdentifier
         let before = await Self.ambientWindow(processID: pid)
         guard generation == ambientGeneration, !Task.isCancelled else { return }
@@ -605,6 +625,136 @@ final class VisualMemoryController {
             lastFingerprint = result.fingerprint; lastText = result.text; lastSource = source
             await refreshCatalog(); ambientStatus = "On · this Mac"
             await compactAmbientIfNeeded()
+        } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
+    }
+
+    private struct DisplayWindowState: Equatable {
+        let id: CGWindowID
+        let processID: pid_t
+        let bundleID: String
+        let title: String
+        let frame: CGRect
+        init(_ window: SCWindow) {
+            id = window.windowID; processID = window.owningApplication?.processID ?? 0
+            bundleID = window.owningApplication?.bundleIdentifier ?? ""
+            title = window.title ?? ""; frame = window.frame
+        }
+    }
+
+    private func displayIdentity(_ display: SCDisplay) -> VisualMemoryDisplay {
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display.displayID).map {
+            CFUUIDCreateString(nil, $0.takeRetainedValue()) as String
+        } ?? "display-\(display.displayID)"
+        let name = NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID
+        }?.localizedName ?? "Display \(display.displayID)"
+        return .init(id: display.displayID, uuid: uuid, name: name)
+    }
+
+    private var permitsDisplayCapture: Bool {
+        !Task.isCancelled && !ambientPaused && !locked && !isInactive && recordingMeetingID == nil && !audioFallbackActive
+    }
+
+    /// Sequential acquisition bounds image/OCR memory to one display. Filters contain
+    /// only approved windows; desktop, notifications and excluded apps are not included.
+    private func captureDisplays(generation: UUID) async {
+        guard let store else { return }
+        let privacy = ContentPrivacy.shared.capture()
+        do {
+            await refreshSpace()
+            guard freeBytes > 2_000_000_000 else { ambientStatus = "Paused — disk space low"; return }
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            let displays = content.displays.filter { CGDisplayMirrorsDisplay($0.displayID) == kCGNullDirectDisplay }
+            displayChanges.retain(displays: Set(displays.map { displayIdentity($0).uuid }))
+            var excluded = excludedAmbientApps
+            // Auxiliary/system surfaces (widgets, notifications, capture helpers) are
+            // not normal app windows, even when WindowServer reports layer zero.
+            excluded.formUnion(content.applications.filter {
+                NSRunningApplication(processIdentifier: $0.processID)?.activationPolicy != .regular
+            }.map(\.bundleIdentifier))
+            // Private/secure content in any window excludes its entire app for this cycle.
+            for window in content.windows where VisualMemoryDisplayPolicy.isPrivate(window.title ?? "") {
+                if let bundle = window.owningApplication?.bundleIdentifier { excluded.insert(bundle) }
+            }
+            let eligiblePIDs = Set(content.windows.filter { window in
+                displays.contains { display in VisualMemoryDisplayPolicy.includes(window: window.frame, layer: Int(window.windowLayer),
+                    display: display.frame, bundleID: window.owningApplication?.bundleIdentifier ?? "",
+                    title: window.title ?? "", excluded: excluded) }
+            }.compactMap { $0.owningApplication?.processID })
+            for app in content.applications where eligiblePIDs.contains(app.processID) {
+                if await Self.ambientAppIsSecure(processID: app.processID) { excluded.insert(app.bundleIdentifier) }
+            }
+            var savedAny = false
+            var capturedAny = false
+            var failedAny = false
+            for display in displays {
+                guard generation == ambientGeneration, permitsDisplayCapture, ContentPrivacy.shared.permits(privacy) else { return }
+                let identity = displayIdentity(display)
+                let windows = content.windows.filter {
+                    VisualMemoryDisplayPolicy.includes(window: $0.frame, layer: Int($0.windowLayer), display: display.frame,
+                        bundleID: $0.owningApplication?.bundleIdentifier ?? "", title: $0.title ?? "", excluded: excluded)
+                }
+                guard !windows.isEmpty else { continue }
+                do {
+                    let filter = SCContentFilter(display: display, including: windows)
+                    filter.includeMenuBar = false
+                    let configuration = SCStreamConfiguration()
+                    configuration.width = max(2, Int(filter.contentRect.width * CGFloat(filter.pointPixelScale)))
+                    configuration.height = max(2, Int(filter.contentRect.height * CGFloat(filter.pointPixelScale)))
+                    configuration.showsCursor = false
+                    configuration.scalesToFit = true
+                    let captured = Date()
+                    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+                    let completed = Date()
+                    guard image.width == configuration.width, image.height == configuration.height else {
+                        throw ScreenVideoRecorder.error("Display capture returned unexpected dimensions.")
+                    }
+                    let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
+                    // A display can disconnect or a window become private while acquisition/OCR runs.
+                    let current = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                    guard current.displays.contains(where: { $0.displayID == display.displayID && $0.frame == display.frame }),
+                          windows.allSatisfy({ old in current.windows.contains { DisplayWindowState($0) == DisplayWindowState(old) } }) else { continue }
+                    var secure = false
+                    for pid in Set(windows.compactMap { $0.owningApplication?.processID }) {
+                        if await Self.ambientAppIsSecure(processID: pid) { secure = true; break }
+                    }
+                    guard !secure, generation == ambientGeneration, permitsDisplayCapture,
+                          ContentPrivacy.shared.permits(privacy) else { continue }
+                    let apps = Array(Set(windows.compactMap { window -> VisualMemoryApp? in
+                        guard let app = window.owningApplication else { return nil }
+                        return .init(bundleID: app.bundleIdentifier, name: app.applicationName)
+                    })).sorted { $0.bundleID < $1.bundleID }
+                    let source = ([identity.name] + apps.map(\.name)).joined(separator: " · ")
+                    capturedAny = true
+                    ambientStatus = "On · all displays"
+                    onAmbientCaptureActivity?(true)
+                    if displayChanges.isUnchanged(display: identity.uuid, fingerprint: result.fingerprint, text: result.text, source: source) { continue }
+                    let item = VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, text: result.text,
+                        path: UUID().uuidString + ".heic", bytes: Int64(result.data.count), captureCompletedAt: completed,
+                        pixelWidth: image.width, pixelHeight: image.height, display: identity, includedApps: apps)
+                    try await Task.detached(priority: .utility) {
+                        try ContentPrivacy.shared.beginWrite(privacy)
+                        defer { ContentPrivacy.shared.endWrite() }
+                        let url = try store.url(for: item.path)
+                        try result.data.write(to: url, options: .atomic)
+                        do { try store.save([item]) }
+                        catch { try? FileManager.default.removeItem(at: url); throw error }
+                    }.value
+                    guard generation == ambientGeneration, permitsDisplayCapture, ContentPrivacy.shared.permits(privacy) else {
+                        try await Task.detached(priority: .utility) { try store.delete(ids: [item.id]) }.value
+                        return
+                    }
+                    displayChanges.record(display: identity.uuid, fingerprint: result.fingerprint, text: result.text, source: source)
+                    savedAny = true
+                } catch {
+                    // A missing/unavailable display must not prevent the remaining ones from saving.
+                    failedAny = true; message = "A display could not be captured: \(error.localizedDescription)"
+                }
+            }
+            guard generation == ambientGeneration, permitsDisplayCapture else { return }
+            ambientStatus = capturedAny ? (failedAny ? "On · some displays unavailable" : "On · all displays")
+                : (failedAny ? "Capture unavailable" : "No eligible windows")
+            if savedAny { await refreshCatalog(); await compactAmbientIfNeeded() }
         } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
     }
 

@@ -8,6 +8,100 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+    private func removeDisplaySchema(_ db: OpaquePointer?) throws {
+        #expect(sqlite3_exec(db, """
+            DROP TRIGGER capture_display_insert;
+            DROP TRIGGER capture_apps_delete;
+            DROP TABLE time_turner_capture_apps;
+            ALTER TABLE time_turner_captures DROP COLUMN display_uuid;
+            ALTER TABLE time_turner_captures DROP COLUMN display_name;
+            ALTER TABLE time_turner_captures DROP COLUMN display_id;
+            PRAGMA user_version=3;
+            """, nil, nil, nil) == SQLITE_OK)
+    }
+
+    @Test func displayPolicyHandlesExternalCoordinatesAndExclusions() {
+        let left = CGRect(x: -1920, y: -200, width: 1920, height: 1080)
+        let laptop = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let spanning = CGRect(x: -300, y: 100, width: 600, height: 500)
+        for display in [left, laptop] {
+            #expect(VisualMemoryDisplayPolicy.includes(window: spanning, layer: 0, display: display,
+                bundleID: "editor", title: "Work", excluded: []))
+        }
+        #expect(!VisualMemoryDisplayPolicy.includes(window: CGRect(x: 300, y: 0, width: 600, height: 500),
+            layer: 0, display: left, bundleID: "editor", title: "Work", excluded: []))
+        for (bundle, title, layer) in [("private", "Work", 0), ("editor", "Incognito", 0), ("editor", "Work", 25)] {
+            #expect(!VisualMemoryDisplayPolicy.includes(window: spanning, layer: layer, display: left,
+                bundleID: bundle, title: title, excluded: ["private"]))
+        }
+    }
+
+    @Test func displaysDeduplicateIndependentlyAndReconnectFresh() {
+        var changes = VisualMemoryDisplayChanges()
+        let fingerprint = Data([1, 2])
+        changes.record(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(changes.isUnchanged(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor"))
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+        changes.record(display: "external", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(!changes.isUnchanged(display: "external", fingerprint: Data([3]), text: "same", source: "Editor"))
+        changes.retain(displays: ["laptop"])
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+    }
+
+    @Test func displayMetadataAndAppSearchSurviveRetentionAndReopening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date()
+        var item = VisualMemoryItem(kind: .moment, capturedAt: now, source: "External · Browser · Editor", text: "planning", path: "a.heic",
+            display: .init(id: 2, uuid: "external-uuid", name: "External"),
+            includedApps: [.init(bundleID: "browser", name: "Browser"), .init(bundleID: "editor", name: "Editor")])
+        try store.save([item])
+        #expect(try store.searchMoments(app: "EDITOR").map(\.id) == [item.id])
+        #expect(try store.searchMoments(app: "Browser").map(\.id) == [item.id])
+        #expect(try store.summary().apps["editor"] == "Editor")
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.moment(id: item.id)?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").count == 1)
+        // Archive updates must preserve display attribution and remove obsolete app rows.
+        item.path = "archive.mp4"; item.frameIndex = 0
+        item.includedApps = [.init(bundleID: "editor", name: "Editor")]
+        try store.save([item])
+        #expect(try store.searchMoments(app: "browser").isEmpty)
+        try store.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try reader.searchMoments(app: "editor").first?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").first?.mediaDeletedAt != nil)
+        try store.delete(ids: [item.id])
+        #expect(try store.summary().apps.isEmpty)
+        #expect(try reader.searchMoments(app: "editor").isEmpty)
+    }
+
+    @Test func versionThreeMigrationBackfillsFocusedAndDisplayApps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "old", kind: .moment, source: "Editor", bundleID: "editor", path: "old.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", path: "display.heic",
+            display: .init(id: 42, uuid: "monitor", name: "External"), includedApps: [.init(bundleID: "browser", name: "Browser")])
+        do { let store = try VisualMemoryStore(root: root); try store.save([item, display]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        let legacyReader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try legacyReader.searchMoments(app: "editor").count == 1)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(app: "editor").count == 1)
+        #expect(try upgraded.moment(id: "old")?.display == nil)
+        #expect(try upgraded.summary().apps["editor"] == "Editor")
+        #expect(try upgraded.searchMoments(app: "browser").map(\.id) == [display.id])
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT display_uuid,display_id,app_name FROM time_turner_captures WHERE id='display'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(statement, 0)) == "monitor")
+        #expect(sqlite3_column_int(statement, 1) == 42)
+        #expect(String(cString: sqlite3_column_text(statement, 2)) == "")
+    }
+
     @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -151,6 +245,7 @@ struct VisualMemoryStoreTests {
         do { let writer = try VisualMemoryStore(root: root); try writer.save([item]) }
         var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
         defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "UPDATE evidence_search SET rowid=99; PRAGMA user_version=2", nil, nil, nil) == SQLITE_OK)
         let upgraded = try VisualMemoryStore(root: root)
         #expect(try upgraded.searchMoments(text: "before").count == 1)
@@ -256,6 +351,7 @@ struct VisualMemoryStoreTests {
             #expect(sqlite3_exec(db, "DROP TRIGGER " + name, nil, nil, nil) == SQLITE_OK)
             #expect(sqlite3_exec(db, sql.replacingOccurrences(of: columns, with: ""), nil, nil, nil) == SQLITE_OK)
         }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "DROP TRIGGER capture_retention_insert; ALTER TABLE time_turner_captures DROP COLUMN media_deleted_at_unix; DROP TABLE pending_capture_deletions; DROP TABLE pending_media_deletions; PRAGMA user_version=1;", nil, nil, nil) == SQLITE_OK)
         sqlite3_close(db)
         let upgraded = try VisualMemoryStore(root: root)

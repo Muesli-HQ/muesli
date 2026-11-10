@@ -237,15 +237,20 @@ struct MemoryExplorerView: View {
     private var dayInterval: DateInterval { Calendar.current.dateInterval(of: .day, for: day)! }
     private var scrubInterval: DateInterval { VisualMemoryDayTimeline.captureInterval(in: ordered) ?? DateInterval(start: dayInterval.start, duration: 1) }
     @State private var scrubScale = VisualMemoryScrubScale(dates: [])
-    private var appNames: [String] { Array(Set(ordered.map(\.bundleID))).sorted() }
+    private var appNames: [String] { Array(Set(ordered.flatMap { $0.includedApps?.map(\.bundleID) ?? [$0.bundleID] }.filter { !$0.isEmpty })).sorted() }
     private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt }
     private var earliestDay: Date { Calendar.current.startOfDay(for: min(memory.captureReadyAt ?? Date(), Date())) }
     private func moveDay(_ amount: Int) {
         if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = max(earliestDay, min(Date(), next)) }
     }
-    private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
-        TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
-            .accessibilityLabel(item.source).help(item.source)
+    @ViewBuilder private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
+        if let display = item.display {
+            Image(systemName: "display").font(.system(size: size)).frame(width: size, height: size)
+                .accessibilityLabel(display.name).help(item.source)
+        } else {
+            TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
+                .accessibilityLabel(item.source).help(item.source)
+        }
     }
     @State private var trackWidth: CGFloat = 800
     private struct AppMarker: Identifiable {
@@ -261,8 +266,8 @@ struct MemoryExplorerView: View {
         var markers: [AppMarker] = []
         var previousBundle: String?
         for item in ordered {
-            defer { previousBundle = item.bundleID }
-            guard item.bundleID != previousBundle else { continue }
+            defer { previousBundle = item.display?.uuid ?? item.bundleID }
+            guard (item.display?.uuid ?? item.bundleID) != previousBundle else { continue }
             let x = min(max(14, width - 14), max(14, scale.fraction(for: item.capturedAt) * width))
             guard markers.last.map({ x - $0.x >= 30 }) ?? true else { continue }
             markers.append(AppMarker(item: item, x: x, lane: 0))

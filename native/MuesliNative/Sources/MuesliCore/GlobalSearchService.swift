@@ -98,7 +98,7 @@ public final class GlobalSearchService: @unchecked Sendable {
                 results += captures.map { item in
                     GlobalSearchResult(kind: .screenHistory, sourceID: item.id, date: item.capturedAt,
                         title: item.source, excerpt: Self.excerpt(item.text, matching: text),
-                        appName: item.appName ?? item.source.components(separatedBy: " · ").first ?? "",
+                        appName: item.includedApps?.map(\.name).joined(separator: ", ") ?? item.appName ?? item.source.components(separatedBy: " · ").first ?? "",
                         bundleID: item.bundleID, mediaAvailable: item.mediaDeletedAt == nil && (try? screenHistory.url(for: item.path)).map { FileManager.default.fileExists(atPath: $0.path) } == true)
                 }
             }

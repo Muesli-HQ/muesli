@@ -15,6 +15,9 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public var text: String
     public var appName: String?
     public var windowTitle: String?
+    /// Present for whole-display captures; legacy/focused-window captures omit it.
+    public var display: VisualMemoryDisplay?
+    public var includedApps: [VisualMemoryApp]?
     public var path: String
     public var duration: Double
     public var meetingOffset: Double
@@ -29,7 +32,9 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public init(id: String = UUID().uuidString, kind: Kind, meetingID: Int64? = nil,
                 capturedAt: Date = Date(), source: String, bundleID: String = "", text: String = "",
                 path: String, duration: Double = 0, meetingOffset: Double = 0, frameIndex: Int? = nil, bytes: Int64 = 0,
-                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil, appName: String? = nil, windowTitle: String? = nil) {
+                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil, appName: String? = nil, windowTitle: String? = nil,
+                display: VisualMemoryDisplay? = nil, includedApps: [VisualMemoryApp]? = nil) {
+        self.display = display; self.includedApps = includedApps
         self.appName = appName; self.windowTitle = windowTitle
         self.id = id; self.kind = kind; self.meetingID = meetingID; self.capturedAt = capturedAt
         self.source = source; self.bundleID = bundleID; self.text = text; self.path = path
@@ -44,6 +49,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSRecursiveLock()
     private var hasCaptureTable = false
+    private var hasCaptureApps = false
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(root: URL, readOnly: Bool = false) throws {
@@ -55,6 +61,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         }
         sqlite3_busy_timeout(db, 5_000)
         hasCaptureTable = try scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='time_turner_captures'") > 0
+        hasCaptureApps = try scalar("SELECT count(*) FROM sqlite_master WHERE name='time_turner_capture_apps'") > 0
         if readOnly {
             if try scalar("SELECT count(*) FROM sqlite_master WHERE name='evidence_search'") == 0 {
                 try execute("PRAGMA temp_store=MEMORY")
@@ -71,6 +78,8 @@ public final class VisualMemoryStore: @unchecked Sendable {
         try migrateCaptureTable()
         try migrateRetention()
         try migrateSearchRowIDs()
+        try migrateDisplays()
+        hasCaptureApps = true
         try execute("CREATE TABLE IF NOT EXISTS time_turner_lifecycle(id INTEGER PRIMARY KEY CHECK(id=1), capture_ready_at REAL NOT NULL)")
         // Existing captures prove capture was ready before this version was installed.
         try execute("INSERT OR IGNORE INTO time_turner_lifecycle SELECT 1,captured FROM evidence WHERE kind='moment' ORDER BY captured LIMIT 1")
@@ -136,7 +145,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// compatibility record; triggers keep typed columns in sync even for older writers.
     private func migrateCaptureTable() throws {
         let version = try scalar("PRAGMA user_version")
-        guard version <= 3 else { throw NSError(domain: "VisualMemoryStore", code: 1,
+        guard version <= 4 else { throw NSError(domain: "VisualMemoryStore", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Screen history was created by a newer Muesli version."]) }
         guard version < 1 else { return }
         try execute("BEGIN IMMEDIATE")
@@ -242,6 +251,59 @@ public final class VisualMemoryStore: @unchecked Sendable {
                     INSERT INTO evidence_search(rowid,id,text)
                         SELECT rowid,id,json_extract(body,'$.source') || ' ' || json_extract(body,'$.text') FROM evidence;
                     PRAGMA user_version=3;
+                    """)
+            }
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    /// Additive projection: each screenshot owns one OCR body and zero or more apps.
+    /// App rows survive screenshot expiry and disappear with their observation.
+    private func migrateDisplays() throws {
+        guard try scalar("PRAGMA user_version") < 4 else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if try scalar("PRAGMA user_version") < 4 {
+                try execute("""
+                    ALTER TABLE time_turner_captures ADD COLUMN display_uuid TEXT;
+                    ALTER TABLE time_turner_captures ADD COLUMN display_name TEXT;
+                    ALTER TABLE time_turner_captures ADD COLUMN display_id INTEGER;
+                    CREATE TABLE time_turner_capture_apps (
+                        capture_id TEXT NOT NULL, bundle_id TEXT NOT NULL COLLATE NOCASE,
+                        app_name TEXT NOT NULL COLLATE NOCASE,
+                        PRIMARY KEY(capture_id,bundle_id)
+                    );
+                    CREATE INDEX capture_apps_bundle ON time_turner_capture_apps(bundle_id,capture_id);
+                    CREATE INDEX capture_apps_name ON time_turner_capture_apps(app_name,capture_id);
+                    CREATE TRIGGER capture_apps_delete AFTER DELETE ON time_turner_captures BEGIN
+                        DELETE FROM time_turner_capture_apps WHERE capture_id=OLD.id;
+                    END;
+                    """)
+                let projection = """
+                    UPDATE time_turner_captures SET
+                        display_uuid=json_extract(e.body,'$.display.uuid'),
+                        display_name=json_extract(e.body,'$.display.name'),
+                        display_id=json_extract(e.body,'$.display.id'),
+                        app_name=CASE WHEN json_type(e.body,'$.display')='object' THEN '' ELSE app_name END
+                    FROM evidence e WHERE e.id=time_turner_captures.id
+                    """
+                let apps = """
+                    SELECT e.id,json_extract(a.value,'$.bundleID'),json_extract(a.value,'$.name')
+                    FROM evidence e, json_each(e.body,'$.includedApps') a WHERE e.kind='moment'
+                    """
+                let focused = """
+                    SELECT id,bundle_id,app_name FROM time_turner_captures WHERE (bundle_id!='' OR app_name!='')
+                    """
+                try execute(projection)
+                try execute("INSERT OR IGNORE INTO time_turner_capture_apps " + apps)
+                try execute("INSERT OR IGNORE INTO time_turner_capture_apps " + focused)
+                try execute("""
+                    CREATE TRIGGER capture_display_insert AFTER INSERT ON time_turner_captures BEGIN
+                        \(projection) AND e.id=NEW.id;
+                        INSERT OR IGNORE INTO time_turner_capture_apps \(apps) AND e.id=NEW.id;
+                        INSERT OR IGNORE INTO time_turner_capture_apps \(focused) AND id=NEW.id;
+                    END;
+                    PRAGMA user_version=4;
                     """)
             }
             try execute("COMMIT")
@@ -475,7 +537,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         if let cachedSummary, cachedSummary.revision == revision { return cachedSummary }
         var apps: [String: String] = [:]
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT bundle_id,MAX(COALESCE(app_name,bundle_id)) FROM time_turner_captures WHERE bundle_id!='' GROUP BY bundle_id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        guard sqlite3_prepare_v2(db, hasCaptureApps ? "SELECT bundle_id,MAX(app_name) FROM time_turner_capture_apps WHERE bundle_id!='' GROUP BY bundle_id" : "SELECT bundle_id,MAX(COALESCE(app_name,bundle_id)) FROM time_turner_captures WHERE bundle_id!='' GROUP BY bundle_id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(statement) }
         var status = sqlite3_step(statement)
         while status == SQLITE_ROW {
@@ -561,7 +623,9 @@ public final class VisualMemoryStore: @unchecked Sendable {
         let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchClause = phrase.isEmpty ? "" : " AND id IN (SELECT id FROM evidence_search WHERE evidence_search MATCH ?)"
         let legacyAppClause = app == nil ? "" : " AND (lower(json_extract(body,'$.bundleID'))=lower(?) OR lower(CASE WHEN instr(json_extract(body,'$.source'),' · ')>0 THEN substr(json_extract(body,'$.source'),1,instr(json_extract(body,'$.source'),' · ')-1) ELSE json_extract(body,'$.source') END)=lower(?))"
-        let appClause = app == nil ? "" : (hasCaptureTable
+        let appClause = app == nil ? "" : (hasCaptureApps
+            ? " AND id IN (SELECT capture_id FROM time_turner_capture_apps WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
+            : hasCaptureTable
             ? " AND id IN (SELECT id FROM time_turner_captures WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
             : legacyAppClause)
         let comparison = chronological ? ">" : "<"
