@@ -2036,7 +2036,37 @@ struct MeetingsNavigationTests {
             formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this\n\(reference)",
             status: .completed, manualNotes: "- User typed this")
         let context = MuesliController.notesContextForResummary(meeting)
-        #expect(context == "## Summary\n- Decision captured\n\n\(reference)")
+        let currentNotes = MuesliController.manualNotesForResummary(meeting)
+        #expect(context == "## Summary\n- Decision captured")
+        #expect(currentNotes.contains(reference))
+    }
+
+    @Test("resummary uses the edited completed notes instead of stale manual images")
+    func resummaryUsesCurrentCompletedNotes() {
+        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let kept = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let added = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 911, title: "Resummarize",
+            formattedNotes: "## Summary\n\(added)\n\n### Written notes\n\nUpdated note \(kept)",
+            status: .completed, manualNotes: "Old note \(removed) \(kept)")
+        let manual = MuesliController.manualNotesForResummary(meeting)
+        let context = MuesliController.notesContextForResummary(meeting) ?? ""
+        #expect(manual == "Updated note \(kept)")
+        #expect(context.contains(added))
+        #expect(!manual.contains(removed) && !context.contains(removed))
+    }
+
+    @Test("removing the completed written-notes section does not restore it")
+    func deletedWrittenSectionStaysDeleted() {
+        let meeting = makeMeeting(id: 912, title: "Resummarize", formattedNotes: "## Summary\nCurrent notes",
+            status: .completed, manualNotes: "Old note ![Image](muesli-note-image:\(UUID().uuidString))")
+        #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
+    }
+
+    @Test("unfinished meeting resummary retains current manual notes")
+    func unfinishedMeetingUsesManualNotes() {
+        let meeting = makeMeeting(id: 913, title: "Draft", formattedNotes: "", status: .failed, manualNotes: "Current draft")
+        #expect(MuesliController.manualNotesForResummary(meeting) == "Current draft")
     }
 
     @Test("startup recovery preserves stale live meetings with notes")

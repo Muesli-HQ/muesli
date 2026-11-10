@@ -7001,7 +7001,7 @@ public final class MuesliController: NSObject {
                 config: summaryConfig,
                 template: templateSnapshot,
                 existingNotes: notesContextForResummary(meeting),
-                manualNotesToRetain: meeting.manualNotes,
+                manualNotesToRetain: Self.manualNotesForResummary(meeting),
                 participantNames: participantNames,
                 openRouterAPIKeyOverride: openRouterKey
             )
@@ -7203,7 +7203,7 @@ public final class MuesliController: NSObject {
                         config: snapshot,
                         template: templateSnapshot,
                         existingNotes: self.notesContextForResummary(meeting),
-                        manualNotesToRetain: meeting.manualNotes,
+                        manualNotesToRetain: Self.manualNotesForResummary(meeting),
                         participantNames: participantNames
                     )
                 } catch {
@@ -7487,7 +7487,7 @@ public final class MuesliController: NSObject {
         // Images added while editing a completed summary can be inside the
         // generated Written notes section, which is normally stripped here.
         // Keep those references even when they are absent from manual_notes.
-        var included = Set(MeetingNoteImages.references(in: trimmed + "\n" + meeting.manualNotes).map(\.id))
+        var included = Set(MeetingNoteImages.references(in: trimmed + "\n" + manualNotesForResummary(meeting)).map(\.id))
         let additional = MeetingNoteImages.references(in: meeting.formattedNotes)
             .filter { included.insert($0.id).inserted }.map(\.markdown)
         if !additional.isEmpty {
@@ -7495,6 +7495,22 @@ public final class MuesliController: NSObject {
             trimmed += additional.joined(separator: "\n")
         }
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// After completion, the editable summary is the current source of truth.
+    /// The separately stored live notes are a historical snapshot and may
+    /// contain content the user has since removed from the displayed notes.
+    static func manualNotesForResummary(_ meeting: MeetingRecord) -> String {
+        guard meeting.status == .completed, meeting.notesState == .structuredNotes else {
+            return meeting.manualNotes
+        }
+        for marker in ["### Written notes\n\n", "## Manual Notes\n\n"] {
+            if let range = meeting.formattedNotes.range(of: marker, options: [.backwards]),
+               range.lowerBound == meeting.formattedNotes.startIndex || meeting.formattedNotes[meeting.formattedNotes.index(before: range.lowerBound)] == "\n" {
+                return String(meeting.formattedNotes[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return ""
     }
 
     static func stripManualNotesSection(from notes: String) -> String {
