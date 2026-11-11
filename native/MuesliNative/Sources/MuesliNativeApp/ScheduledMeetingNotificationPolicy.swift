@@ -33,8 +33,10 @@ enum ScheduledMeetingNotificationPolicy {
         return .waitForJoin
     }
 
-    static func joinedCallAction(showsDetection: Bool, autoRecordMeetings: Bool, hasCalendarEvent: Bool) -> JoinedCallAction {
-        if autoRecordMeetings && hasCalendarEvent { return .record }
+    static func joinedCallAction(
+        showsDetection: Bool, autoRecordMeetings: Bool, hasCalendarEvent: Bool, hasLiveMedia: Bool
+    ) -> JoinedCallAction {
+        if autoRecordMeetings && hasCalendarEvent && hasLiveMedia { return .record }
         return showsDetection ? .showToast : .ignore
     }
 
@@ -139,5 +141,11 @@ enum ScheduledMeetingNotificationPolicy {
         event.meetingURL != nil
             && !event.isAllDay
             && !hiddenEventIDs.contains(event.id)
+    }
+}
+
+extension MeetingCandidate {
+    var hasLiveMediaEvidence: Bool {
+        !evidence.isDisjoint(with: [.micActive, .cameraActive, .audioInputProcess])
     }
 }

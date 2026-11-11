@@ -28,27 +28,50 @@ struct MeetingNotificationControllerTests {
     }
 
     struct JoinedCallRow: Sendable, CustomTestStringConvertible {
-        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, action: ScheduledMeetingNotificationPolicy.JoinedCallAction
-        var testDescription: String { "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) -> \(action)" }
+        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, live: Bool
+        let action: ScheduledMeetingNotificationPolicy.JoinedCallAction
+        var testDescription: String { "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) live=\(live) -> \(action)" }
     }
 
     static let joinedCallRows: [JoinedCallRow] = [
-        .init(toasts: true, autoRecord: true, hasEvent: true, action: .record),
-        .init(toasts: true, autoRecord: true, hasEvent: false, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: true, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: false, action: .showToast),
-        .init(toasts: false, autoRecord: true, hasEvent: true, action: .record),
-        .init(toasts: false, autoRecord: true, hasEvent: false, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: true, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: false, action: .ignore),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, action: .record),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, action: .showToast),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, action: .record),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, action: .ignore),
     ]
 
-    @Test("a joined call records only when calendar auto-record covers it, and prompts only with toasts on",
+    @Test("a call records only with auto-record on, a calendar match and live media, and prompts only with toasts on",
           arguments: joinedCallRows)
     func joinedCallAction(row: JoinedCallRow) {
         #expect(ScheduledMeetingNotificationPolicy.joinedCallAction(
-            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord, hasCalendarEvent: row.hasEvent
+            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord,
+            hasCalendarEvent: row.hasEvent, hasLiveMedia: row.live
         ) == row.action)
+    }
+
+    @Test("only mic, camera or an audio-input process count as a live call, not a focused meeting URL")
+    func liveMediaEvidence() {
+        func candidate(_ evidence: Set<MeetingCandidate.Evidence>) -> MeetingCandidate {
+            MeetingCandidate(id: "meet", platform: .googleMeet, appName: "Chrome", url: "meet.google.com/aaa-bbbb-ccc",
+                evidence: evidence, startedAt: Date(), meetingTitle: nil, sourceBundleID: nil)
+        }
+        #expect(candidate([.micActive]).hasLiveMediaEvidence)
+        #expect(candidate([.cameraActive]).hasLiveMediaEvidence)
+        #expect(candidate([.audioInputProcess, .browserURL]).hasLiveMediaEvidence)
+        #expect(!candidate([.browserURL, .foregroundApp, .calendarEvent]).hasLiveMediaEvidence)
+        #expect(!candidate([]).hasLiveMediaEvidence)
     }
 
     @Test("auto-record tries a live call once, so a failed or stopped recording is not restarted until the call ends")

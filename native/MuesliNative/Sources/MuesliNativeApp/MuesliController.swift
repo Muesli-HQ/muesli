@@ -11385,7 +11385,8 @@ public final class MuesliController: NSObject {
         switch ScheduledMeetingNotificationPolicy.joinedCallAction(
             showsDetection: config.showMeetingDetectionNotification,
             autoRecordMeetings: config.autoRecordMeetings,
-            hasCalendarEvent: matchingEvent != nil
+            hasCalendarEvent: matchingEvent != nil,
+            hasLiveMedia: candidate.hasLiveMediaEvidence
         ) {
         case .ignore:
             return
