@@ -6,6 +6,18 @@ import Observation
 import ImageIO
 import MuesliCore
 
+extension AppConfig {
+    func hasSameAmbientCaptureSettings(as other: AppConfig) -> Bool {
+        timeTurnerEnabled == other.timeTurnerEnabled
+            && timeTurnerPauseOnInactivity == other.timeTurnerPauseOnInactivity
+            && timeTurnerCaptureScope == other.timeTurnerCaptureScope
+            && timeTurnerSelectedDisplays == other.timeTurnerSelectedDisplays
+            && timeTurnerInterval == other.timeTurnerInterval
+            && timeTurnerBudget == other.timeTurnerBudget
+            && timeTurnerExcludedApps == other.timeTurnerExcludedApps
+    }
+}
+
 /// System suspension is independent of the user's explicit pause choice.
 struct TimeTurnerPauseState {
     var userPaused = false
@@ -38,7 +50,13 @@ final class VisualMemoryController {
     @ObservationIgnored private var initializationTask: Task<Void, Never>?
     @ObservationIgnored private var spaceTask: Task<Int64, Never>?
     @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
-    var recordingMeetingID: Int64?
+    var recordingMeetingID: Int64? {
+        didSet {
+            if (oldValue == nil) != (recordingMeetingID == nil), let config = ambientConfig {
+                configureAmbient(config, audioFallbackActive: audioFallbackActive)
+            }
+        }
+    }
     var isAwaitingConfirmation = false
     var isPreparing = false
     var isFinalizing = false
@@ -85,7 +103,7 @@ final class VisualMemoryController {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     var locked: Bool { ambientPauseState.systemSuspended }
     @ObservationIgnored private var ambientConfig: AppConfig?
-    @ObservationIgnored private var ambientGeneration = UUID()
+    @ObservationIgnored private(set) var ambientGeneration = UUID()
     @ObservationIgnored private var displayChanges = VisualMemoryDisplayChanges()
     @ObservationIgnored private var lastFingerprint: Data?
     @ObservationIgnored private var lastText = ""
@@ -450,13 +468,7 @@ final class VisualMemoryController {
     }
     func configureAmbient(_ config: AppConfig, audioFallbackActive: Bool) {
         self.audioFallbackActive = audioFallbackActive
-        let changed = ambientConfig?.timeTurnerEnabled != config.timeTurnerEnabled
-            || ambientConfig?.timeTurnerPauseOnInactivity != config.timeTurnerPauseOnInactivity
-            || ambientConfig?.timeTurnerCaptureScope != config.timeTurnerCaptureScope
-            || ambientConfig?.timeTurnerSelectedDisplays != config.timeTurnerSelectedDisplays
-            || ambientConfig?.timeTurnerInterval != config.timeTurnerInterval
-            || ambientConfig?.timeTurnerBudget != config.timeTurnerBudget
-            || ambientConfig?.timeTurnerExcludedApps != config.timeTurnerExcludedApps
+        let changed = ambientConfig?.hasSameAmbientCaptureSettings(as: config) != true
         let retentionChanged = ambientConfig?.timeTurnerRetentionPolicy != config.timeTurnerRetentionPolicy
         ambientConfig = config
         if retentionChanged {
@@ -472,9 +484,10 @@ final class VisualMemoryController {
             displayChanges = VisualMemoryDisplayChanges()
             return
         }
-        if !config.timeTurnerEnabled || audioFallbackActive {
+        if !config.timeTurnerEnabled || audioFallbackActive || recordingMeetingID != nil {
             ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
-            ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
+            if !config.timeTurnerEnabled { ambientStatus = "Off" }
+            else { ambientStatus = audioFallbackActive ? "Paused during meeting audio capture" : "Paused during screen recording" }
             return
         }
         if changed { displayChanges = VisualMemoryDisplayChanges(); ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID() }
@@ -501,7 +514,11 @@ final class VisualMemoryController {
 
     private var isInactive: Bool {
         guard ambientConfig?.timeTurnerPauseOnInactivity != false else { return false }
-        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) >= 60
+        return Self.inputIsIdle
+    }
+
+    private nonisolated static var inputIsIdle: Bool {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) >= 60
     }
 
     private nonisolated static func ambientWindow(processID: pid_t) async -> (secure: Bool, window: DictationContextCapture.FocusedWindowSnapshot?) {
@@ -597,7 +614,7 @@ final class VisualMemoryController {
             }
             let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
             let after = await Self.ambientWindow(processID: pid)
-            guard !after.secure, generation == ambientGeneration, !Task.isCancelled, !ambientPaused, !locked, !isInactive,
+            guard !after.secure, generation == ambientGeneration, permitsAmbientCapture,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
                   after.window?.frame == frame,
                   after.window?.title == focused.title else { return }
@@ -611,22 +628,32 @@ final class VisualMemoryController {
             let item = VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, bundleID: bundle,
                 text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted,
                 pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)
-            try await Task.detached(priority: .utility) {
-                try ContentPrivacy.shared.beginWrite(privacy)
-                defer { ContentPrivacy.shared.endWrite() }
-                let url = try store.url(for: path)
-                try result.data.write(to: url, options: .atomic)
-                do { try store.save([item]) }
-                catch { try? FileManager.default.removeItem(at: url); throw error }
-            }.value
-            guard generation == ambientGeneration, !Task.isCancelled, !locked, !ambientPaused else {
-                try await Task.detached(priority: .utility) { try store.delete(ids: [item.id]) }.value
-                return
-            }
+            try await persistCapture(item, data: result.data, store: store, privacy: privacy)
+            guard generation == ambientGeneration, permitsAmbientCapture else { return }
             lastFingerprint = result.fingerprint; lastText = result.text; lastSource = source
             await refreshCatalog(); ambientStatus = "On · this Mac"
             await compactAmbientIfNeeded()
-        } catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
+        } catch is CancellationError { return }
+        catch { ambientStatus = "Capture unavailable"; message = error.localizedDescription }
+    }
+
+    private func persistCapture(_ item: VisualMemoryItem, data: Data, store: VisualMemoryStore,
+                                privacy: ContentPrivacy.Session) async throws {
+        let pauseOnInactivity = ambientConfig?.timeTurnerPauseOnInactivity != false
+        // A structured child inherits cancellation even while waiting for SQLite's writer.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask(priority: .utility) {
+                try ContentPrivacy.shared.beginWrite(privacy)
+                defer { ContentPrivacy.shared.endWrite() }
+                try store.saveCapture(item, media: data) {
+                    try Task.checkCancellation()
+                    guard ContentPrivacy.shared.permits(privacy), !(pauseOnInactivity && Self.inputIsIdle) else {
+                        throw CancellationError()
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
     }
 
     private struct DisplayWindowState: Equatable {
@@ -646,12 +673,17 @@ final class VisualMemoryController {
         TimeTurnerDisplayIdentity.metadata(display)
     }
 
-    private var permitsDisplayCapture: Bool {
+    private var permitsAmbientCapture: Bool {
         !Task.isCancelled && !ambientPaused && !locked && !isInactive && recordingMeetingID == nil && !audioFallbackActive
     }
 
-    /// Sequential acquisition bounds image/OCR memory to one display. Filters contain
-    /// only approved windows; desktop, notifications and excluded apps are not included.
+    func selectsDisplay(uuid: String) -> Bool {
+        guard let config = ambientConfig else { return false }
+        return VisualMemoryDisplayPolicy.selects(uuid: uuid, scope: config.timeTurnerCaptureScope,
+            selected: Set(config.timeTurnerSelectedDisplays.keys))
+    }
+
+    /// Sequential acquisition bounds image/OCR memory to one display.
     private func captureDisplays(generation: UUID) async {
         guard let store else { return }
         let privacy = ContentPrivacy.shared.capture()
@@ -661,11 +693,9 @@ final class VisualMemoryController {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             let displays = content.displays.filter {
                 CGDisplayMirrorsDisplay($0.displayID) == kCGNullDirectDisplay
-                    && VisualMemoryDisplayPolicy.selects(uuid: displayIdentity($0).uuid,
-                        scope: ambientConfig?.timeTurnerCaptureScope ?? "focused",
-                        selected: Set(ambientConfig?.timeTurnerSelectedDisplays.keys.map { $0 } ?? []))
+                    && selectsDisplay(uuid: displayIdentity($0).uuid)
             }
-            guard generation == ambientGeneration, permitsDisplayCapture else { return }
+            guard generation == ambientGeneration, permitsAmbientCapture else { return }
             displayChanges.retain(displays: Set(displays.map { displayIdentity($0).uuid }))
             guard !displays.isEmpty else {
                 ambientStatus = "Waiting for selected displays"
@@ -693,7 +723,7 @@ final class VisualMemoryController {
             var capturedAny = false
             var failedAny = false
             for display in displays {
-                guard generation == ambientGeneration, permitsDisplayCapture, ContentPrivacy.shared.permits(privacy) else { return }
+                guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
                 let identity = displayIdentity(display)
                 let windows = content.windows.filter {
                     VisualMemoryDisplayPolicy.includes(window: $0.frame, layer: Int($0.windowLayer), display: display.frame,
@@ -723,7 +753,7 @@ final class VisualMemoryController {
                     for pid in Set(windows.compactMap { $0.owningApplication?.processID }) {
                         if await Self.ambientAppIsSecure(processID: pid) { secure = true; break }
                     }
-                    guard !secure, generation == ambientGeneration, permitsDisplayCapture,
+                    guard !secure, generation == ambientGeneration, permitsAmbientCapture,
                           ContentPrivacy.shared.permits(privacy) else { continue }
                     let apps = Array(Set(windows.compactMap { window -> VisualMemoryApp? in
                         guard let app = window.owningApplication else { return nil }
@@ -737,26 +767,17 @@ final class VisualMemoryController {
                     let item = VisualMemoryItem(kind: .moment, capturedAt: captured, source: source, text: result.text,
                         path: UUID().uuidString + ".heic", bytes: Int64(result.data.count), captureCompletedAt: completed,
                         pixelWidth: image.width, pixelHeight: image.height, display: identity, includedApps: apps)
-                    try await Task.detached(priority: .utility) {
-                        try ContentPrivacy.shared.beginWrite(privacy)
-                        defer { ContentPrivacy.shared.endWrite() }
-                        let url = try store.url(for: item.path)
-                        try result.data.write(to: url, options: .atomic)
-                        do { try store.save([item]) }
-                        catch { try? FileManager.default.removeItem(at: url); throw error }
-                    }.value
-                    guard generation == ambientGeneration, permitsDisplayCapture, ContentPrivacy.shared.permits(privacy) else {
-                        try await Task.detached(priority: .utility) { try store.delete(ids: [item.id]) }.value
-                        return
-                    }
+                    try await persistCapture(item, data: result.data, store: store, privacy: privacy)
+                    guard generation == ambientGeneration, permitsAmbientCapture else { return }
                     displayChanges.record(display: identity.uuid, fingerprint: result.fingerprint, text: result.text, source: source)
                     savedAny = true
-                } catch {
+                } catch is CancellationError { return }
+                catch {
                     // A missing/unavailable display must not prevent the remaining ones from saving.
                     failedAny = true; message = "A display could not be captured: \(error.localizedDescription)"
                 }
             }
-            guard generation == ambientGeneration, permitsDisplayCapture else { return }
+            guard generation == ambientGeneration, permitsAmbientCapture else { return }
             ambientStatus = capturedAny ? (failedAny ? "On · some displays unavailable" : "On · displays")
                 : (failedAny ? "Capture unavailable" : "No eligible windows")
             if savedAny { await refreshCatalog(); await compactAmbientIfNeeded() }

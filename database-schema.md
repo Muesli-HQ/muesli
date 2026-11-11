@@ -897,6 +897,12 @@ configs. Setup previews connected monitors and saves the chosen set at Finish;
 settings offers the same picker. Disconnected selections persist across restarts.
 New monitors are not implicitly selected; an empty or disconnected selection never
 falls back to another monitor. Selection changes invalidate in-flight capture.
+Permission recovery preserves the existing capture scope and monitor selection.
+Before writing a new screenshot the store records its path in
+`pending_media_deletions`. The observation, OCR index and removal of that
+cleanup entry commit together after the final capture authorization check.
+Cancellation or a failed write leaves the capture unpublished. Maintenance
+retries removal of unreferenced media, including after restart.
 Preview images are transient and never saved to the history catalog.
 All displays captures each non-mirrored connected display
 separately and sequentially, with its actual acquisition timestamp and pixel size.

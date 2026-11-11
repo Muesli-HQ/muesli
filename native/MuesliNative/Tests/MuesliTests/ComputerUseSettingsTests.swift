@@ -16,15 +16,40 @@ struct ComputerUseSettingsTests {
                 try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
             }
             #expect(controller.config.timeTurnerCaptureScope == "focused")
+            // Exercise the enabled scheduler without taking any real screenshots.
+            controller.visualMemory.toggleAmbientPause()
+            controller.updateConfig { $0.timeTurnerEnabled = true }
+            defer { controller.updateConfig { $0.timeTurnerEnabled = false } }
             controller.saveTimeTurnerDisplays(["external-uuid": "External monitor"])
             #expect(configStore.load().timeTurnerCaptureScope == "selected_displays")
             #expect(configStore.load().timeTurnerSelectedDisplays == ["external-uuid": "External monitor"])
+            #expect(controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
+            let previousGeneration = controller.visualMemory.ambientGeneration
+            controller.saveTimeTurnerDisplays(["laptop": "Built-in"])
+            #expect(controller.visualMemory.ambientGeneration != previousGeneration)
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
+            #expect(controller.visualMemory.selectsDisplay(uuid: "laptop"))
             // Empty selection cannot erase the saved set or silently enable all monitors.
             controller.saveTimeTurnerDisplays([:])
             #expect(configStore.load().timeTurnerSelectedDisplays.count == 1)
             try await controller.applySetting("time_turner_capture_scope", value: "focused")
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "laptop"))
             try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
             #expect(controller.config.timeTurnerSelectedDisplays.count == 1)
+        }
+    }
+
+    @Test("Permission recovery preserves every existing capture scope and skips monitor selection")
+    func timeTurnerPermissionRecovery() {
+        var config = AppConfig()
+        #expect(TimeTurnerSetupStep.entry(for: config, requested: .introduction) == .introduction)
+        #expect(TimeTurnerSetupStep.entry(for: config, requested: .permissions) == .permissions)
+        config.timeTurnerEnabled = true
+        for scope in ["focused", "all_displays", "selected_displays"] {
+            config.timeTurnerCaptureScope = scope
+            for entry in [TimeTurnerSetupStep.introduction, .permissions] {
+                #expect(TimeTurnerSetupStep.entry(for: config, requested: entry) == .reviewAccess)
+            }
         }
     }
 

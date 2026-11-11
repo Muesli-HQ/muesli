@@ -342,18 +342,22 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
     public func finishMediaDeletions() throws {
         lock.lock(); defer { lock.unlock() }
-        let pending = try strings("SELECT path FROM pending_media_deletions")
-        guard !pending.isEmpty else { return }
-        let active = Set(try strings("""
-            SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
-            UNION SELECT json_extract(body,'$.path') FROM evidence
-                WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
-            """))
-        for path in pending {
-            guard !active.contains(path) else { continue }
-            let file = try url(for: path)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-            try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: path)
+        guard try scalar("SELECT EXISTS(SELECT 1 FROM pending_media_deletions)") != 0 else { return }
+        // Serialize the reference check and unlink with capture publication, including
+        // writers using a different connection to this catalog.
+        try transaction {
+            let pending = try strings("SELECT path FROM pending_media_deletions")
+            let active = Set(try strings("""
+                SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
+                UNION SELECT json_extract(body,'$.path') FROM evidence
+                    WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
+                """))
+            for path in pending {
+                guard !active.contains(path) else { continue }
+                let file = try url(for: path)
+                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+                try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: path)
+            }
         }
     }
 
@@ -424,37 +428,76 @@ public final class VisualMemoryStore: @unchecked Sendable {
         }
         return resolved
     }
-    public func save(_ items: [VisualMemoryItem]) throws {
-        lock.lock(); defer { lock.unlock() }
+    private func transaction(_ body: () throws -> Void) throws {
         try execute("BEGIN IMMEDIATE")
         do {
-            for item in items {
-                _ = try url(for: item.path)
-                let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT INTO evidence VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,meeting_id=excluded.meeting_id,captured=excluded.captured,body=excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, item.id, -1, transient)
-                sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
-                if let id = item.meetingID { sqlite3_bind_int64(stmt, 3, id) } else { sqlite3_bind_null(stmt, 3) }
-                sqlite3_bind_double(stmt, 4, item.capturedAt.timeIntervalSince1970)
-                sqlite3_bind_text(stmt, 5, body, -1, transient)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
-                try removeSearch(item.id)
-                var search: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search(rowid,id,text) SELECT rowid,?,? FROM evidence WHERE id=?", -1, &search, nil) == SQLITE_OK else { throw failure() }
-                defer { sqlite3_finalize(search) }
-                sqlite3_bind_text(search, 1, item.id, -1, transient)
-                sqlite3_bind_text(search, 2, item.source + " " + item.text, -1, transient)
-                sqlite3_bind_text(search, 3, item.id, -1, transient)
-                guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
-            }
-            if let first = items.filter({ $0.kind == .moment }).map(\.capturedAt).min() {
-                try markCaptureReady(at: first)
-            }
+            try body()
             try execute("COMMIT")
-        } catch { try? execute("ROLLBACK"); throw error }
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
+
+    public func save(_ items: [VisualMemoryItem]) throws {
+        lock.lock(); defer { lock.unlock() }
+        try transaction { try writeEvidence(items) }
+    }
+
+    /// Publish a newly acquired screenshot and its searchable evidence together.
+    /// The caller owns a fresh media path. Its cleanup obligation survives process
+    /// exit, SQLite rollback, or a transient failure to unlink the rejected file.
+    public func saveCapture(_ item: VisualMemoryItem, media: Data, validate: () throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        let file = try url(for: item.path)
+        guard item.kind == .moment, !FileManager.default.fileExists(atPath: file.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        try validate()
+        try bindAndRun("INSERT INTO pending_media_deletions(path) VALUES(?)", value: item.path)
+        do {
+            try transaction {
+                // A cleanup on another connection may have claimed this path first.
+                try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: item.path)
+                guard sqlite3_changes(db) == 1 else { throw CancellationError() }
+                try validate()
+                try media.write(to: file, options: .withoutOverwriting)
+                try writeEvidence([item])
+                try validate()
+            }
+        } catch {
+            try finishMediaDeletions()
+            throw error
+        }
+    }
+
+    private func writeEvidence(_ items: [VisualMemoryItem]) throws {
+        for item in items {
+            _ = try url(for: item.path)
+            let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT INTO evidence VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,meeting_id=excluded.meeting_id,captured=excluded.captured,body=excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, item.id, -1, transient)
+            sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
+            if let id = item.meetingID { sqlite3_bind_int64(stmt, 3, id) } else { sqlite3_bind_null(stmt, 3) }
+            sqlite3_bind_double(stmt, 4, item.capturedAt.timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 5, body, -1, transient)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+            try removeSearch(item.id)
+            var search: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search(rowid,id,text) SELECT rowid,?,? FROM evidence WHERE id=?", -1, &search, nil) == SQLITE_OK else { throw failure() }
+            defer { sqlite3_finalize(search) }
+            sqlite3_bind_text(search, 1, item.id, -1, transient)
+            sqlite3_bind_text(search, 2, item.source + " " + item.text, -1, transient)
+            sqlite3_bind_text(search, 3, item.id, -1, transient)
+            guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
+        }
+        if let first = items.filter({ $0.kind == .moment }).map(\.capturedAt).min() {
+            try markCaptureReady(at: first)
+        }
+    }
+
     /// Do not let background compaction restore media or records removed by retention.
     public func replaceMedia(_ replacements: [VisualMemoryItem], ifUnchanged expected: [VisualMemoryItem]) throws -> Bool {
         lock.lock(); defer { lock.unlock() }

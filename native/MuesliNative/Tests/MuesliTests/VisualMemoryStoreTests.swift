@@ -90,6 +90,47 @@ struct VisualMemoryStoreTests {
         #expect(try reader.searchMoments(app: "editor").isEmpty)
     }
 
+    @Test func rejectedCaptureStaysUnsearchableWhenCleanupFailsAndRetriesAfterReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(kind: .moment, source: "Monitor", text: "private excerpt", path: "candidate.heic",
+            display: .init(id: 2, uuid: "external", name: "External"), includedApps: [.init(bundleID: "editor", name: "Editor")])
+        let media = Data([1, 2, 3])
+        let file = root.appendingPathComponent(item.path)
+        do {
+            let store = try VisualMemoryStore(root: root)
+            let reader = try VisualMemoryStore(root: root, readOnly: true)
+            let privacy = ContentPrivacy()
+            let session = privacy.capture()
+            #expect(throws: (any Error).self) {
+                try store.saveCapture(item, media: media) {
+                    if FileManager.default.fileExists(atPath: file.path) {
+                        // Revoke after the file and index rows were written but before COMMIT.
+                        #expect(try reader.searchMoments(text: "private").isEmpty)
+                        privacy.setEnabled(true)
+                        // Force the immediate unlink to fail the store's path-safety check.
+                        try FileManager.default.removeItem(at: file)
+                        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: root.deletingLastPathComponent())
+                    }
+                    guard privacy.permits(session) else { throw CancellationError() }
+                }
+            }
+            #expect(try reader.moment(id: item.id) == nil)
+            #expect(try reader.searchMoments(app: "editor").isEmpty)
+            #expect(try reader.searchMoments(text: "private").isEmpty)
+            #expect(try reader.captureReadyAt() == nil)
+            try FileManager.default.removeItem(at: file)
+            try media.write(to: file)
+        }
+        let reopened = try VisualMemoryStore(root: root)
+        try reopened.finishMediaDeletions()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        try reopened.saveCapture(item, media: media) {}
+        try reopened.finishMediaDeletions()
+        #expect(try Data(contentsOf: file) == media)
+        #expect(try reopened.searchMoments(text: "private").map(\.id) == [item.id])
+    }
+
     @Test func versionThreeMigrationBackfillsFocusedAndDisplayApps() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

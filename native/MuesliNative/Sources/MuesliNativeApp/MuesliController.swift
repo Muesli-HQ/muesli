@@ -2278,7 +2278,13 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousConfig = config
         mutate(&config)
+        if !previousConfig.hasSameAmbientCaptureSettings(as: config)
+            || previousConfig.timeTurnerRetentionPolicy != config.timeTurnerRetentionPolicy
+            || previousConfig.useCoreAudioTap != config.useCoreAudioTap {
+            visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
+        }
         if previousFeedbackCaptureEnabled && !config.enableFeedbackCapture { storedFeedbackCapture?.finish() }
         if previousFeedbackCaptureEnabled != config.enableFeedbackCapture || previousFeedbackCaptureHotkey != config.feedbackCaptureHotkey {
             configureFeedbackCaptureHotkeyMonitor()
