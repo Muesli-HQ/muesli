@@ -455,10 +455,14 @@ final class ComputerUseReferenceDriver: ObservableObject {
             proxy = client; input = toDriver.fileHandleForWriting; output = fromDriver.fileHandleForReading
             let fd = fromDriver.fileHandleForReading.fileDescriptor
             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) != -1 else { throw failure("Cannot configure MCP read pipe") }
+            let protocolVersion = "2025-06-18"
             let initialized = try await request(method: "initialize", params: [
-                "protocolVersion": "2024-11-05", "capabilities": [:],
+                "protocolVersion": protocolVersion, "capabilities": [:],
                 "clientInfo": ["name": "MuesliReferenceBenchmark", "version": "1"]])
             let initializationResult = initialized["result"] as? [String: Any]
+            guard initializationResult?["protocolVersion"] as? String == protocolVersion else {
+                throw failure("Reference driver did not negotiate MCP \(protocolVersion)")
+            }
             serverVersion = (initializationResult?["serverInfo"] as? [String: Any])?["version"] as? String ?? "unknown"
             try save(initialized, name: "initialize.json")
             try send(["jsonrpc": "2.0", "method": "notifications/initialized"])

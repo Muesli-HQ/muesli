@@ -4,8 +4,7 @@ Base: `cua-driver-rs-v0.36.0`, commit
 `6d6c734c127025fb39ad5d585a10382808b39dc1` in https://github.com/trycua/cua.
 
 Apply `trycua-036-background-context.patch` from the upstream repository root.
-It is a complete patch against the pristine release; do not also apply the
-older `trycua-05d1494-*` patches. Those remain historical references.
+It applies directly to the pristine release.
 
 ```sh
 git checkout 6d6c734c127025fb39ad5d585a10382808b39dc1

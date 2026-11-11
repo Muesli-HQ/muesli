@@ -21,8 +21,8 @@ visibility on an off-Space window. Native Swift background rendering is separate
 - Local benchmark branch: `codex/cua-trycua-benchmark` (this branch).
 - Common application baseline: `ca66d8ec8d1414c28f9a954ec69b218a99a1fd53` (main fetched October 14).
 - Shared checkout: `/Users/pranavhari/.codex/worktrees/b617/muesli`.
-- Upstream reference: `https://github.com/trycua/cua`, commit
-  `05d14942609e907e3d3a3e09bf1886adeffacb9b`, driver 0.35.4.
+- Original October 14 reference: `https://github.com/trycua/cua`, commit
+  `05d14942609e907e3d3a3e09bf1886adeffacb9b`, driver 0.35.4. The [current benchmark build instructions](../../scripts/patches/trycua-036-background-context.md) use the consolidated 0.36.0 patch.
 
 This branch is explicitly authorized to use the real upstream runtime locally.
 The native shipping branch remains Swift. Do not push this branch, open a PR
