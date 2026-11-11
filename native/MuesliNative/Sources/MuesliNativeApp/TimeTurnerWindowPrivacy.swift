@@ -1,11 +1,37 @@
 import ApplicationServices
 import Foundation
 
+/// One allowance for AX work across every app, display and revalidation in a sampling cycle.
+/// OCR and screenshot acquisition do not spend the allowance.
+struct TimeTurnerAXBudget {
+    private(set) var remaining: TimeInterval
+    let revalidationReserve: TimeInterval
+    private let uptime: () -> TimeInterval
+
+    init(interval: TimeInterval, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        remaining = min(2, max(0, interval / 2))
+        revalidationReserve = remaining / 2
+        self.uptime = uptime
+    }
+
+    @MainActor
+    mutating func permits(reserving reserve: TimeInterval = 0, _ inspect: (TimeInterval) async -> Bool) async -> Bool {
+        let available = remaining - reserve
+        guard available > 0, !Task.isCancelled else { return false }
+        let start = uptime()
+        let deadline = start + min(available, 1)
+        let permitted = await inspect(deadline)
+        let end = uptime()
+        remaining = max(0, remaining - (end - start))
+        return permitted && end < deadline && !Task.isCancelled
+    }
+}
+
 /// ScreenCaptureKit and AX both expose window bounds in global screen coordinates.
 /// Only allow pixels from windows whose accessibility trees could be inspected.
 enum TimeTurnerWindowPrivacy {
-    static func permits(processID: pid_t, frames: [CGRect]) -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + 1
+    static func permits(processID: pid_t, frames: [CGRect], deadline: TimeInterval) -> Bool {
+        guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
         let app = AXUIElementCreateApplication(processID)
         AXUIElementSetMessagingTimeout(app, 0.15)
         guard let windows = elements(app, kAXWindowsAttribute, limit: 64) else { return false }

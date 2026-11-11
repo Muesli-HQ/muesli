@@ -152,6 +152,8 @@ struct TimeTurnerDisplaySelectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selection: [String: String]
     @State private var initialized: Bool
+    @State private var saving = false
+    @State private var saveError: String?
 
     init(controller: MuesliController, selection: [String: String]) {
         self.controller = controller
@@ -162,15 +164,23 @@ struct TimeTurnerDisplaySelectionSheet: View {
     var body: some View {
         VStack(spacing: 20) {
             TimeTurnerDisplayPicker(selection: $selection, initialized: $initialized)
+            if let saveError { SettingsNote(saveError, tone: .warning) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Save") {
-                    controller.saveTimeTurnerDisplays(selection)
-                    dismiss()
+                    saving = true
+                    Task { @MainActor in
+                        defer { saving = false }
+                        do {
+                            try await controller.applySetting("time_turner_capture_scope", value: TimeTurnerCaptureScope.selected.rawValue,
+                                                              selectedDisplays: selection)
+                            dismiss()
+                        } catch { saveError = error.localizedDescription }
+                    }
                 }.buttonStyle(.borderedProminent).disabled(selection.isEmpty)
             }
-        }.padding(24).frame(width: 560, height: 470)
+        }.disabled(saving).padding(24).frame(width: 560, height: 470)
             .font(MuesliTheme.body())
     }
 }
@@ -179,24 +189,10 @@ extension MuesliController {
     func finishTimeTurnerSetup(choice: TimeTurnerCaptureChoice, original: TimeTurnerCaptureChoice) async throws {
         guard !config.timeTurnerEnabled else { return }
         guard choice.isValid else { throw MuesliSettings.Failure.rejected("Choose at least one display.") }
-        if choice != original { saveTimeTurnerCaptureChoice(choice) }
-        try await applySetting("time_turner_enabled", value: "on")
-    }
-
-    /// Explicit resource selection is saved atomically with the capture mode.
-    /// configureAmbient invalidates any in-flight sample using the previous selection.
-    func saveTimeTurnerDisplays(_ selection: [String: String]) {
-        var choice = TimeTurnerCaptureChoice(config: config)
-        choice.scope = .selected
-        choice.displays = selection
-        saveTimeTurnerCaptureChoice(choice)
-    }
-
-    func saveTimeTurnerCaptureChoice(_ choice: TimeTurnerCaptureChoice) {
-        guard choice.isValid else { return }
-        updateConfig {
-            $0.timeTurnerCaptureScope = choice.scope.rawValue
-            if choice.scope == .selected { $0.timeTurnerSelectedDisplays = choice.displays }
+        if choice != original {
+            try await applySetting("time_turner_capture_scope", value: choice.scope.rawValue,
+                                   selectedDisplays: choice.scope == .selected ? choice.displays : nil)
         }
+        try await applySetting("time_turner_enabled", value: "on")
     }
 }

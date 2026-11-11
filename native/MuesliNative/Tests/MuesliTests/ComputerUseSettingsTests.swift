@@ -20,22 +20,65 @@ struct ComputerUseSettingsTests {
             controller.visualMemory.toggleAmbientPause()
             controller.updateConfig { $0.timeTurnerEnabled = true }
             defer { controller.updateConfig { $0.timeTurnerEnabled = false } }
-            controller.saveTimeTurnerDisplays(["external-uuid": "External monitor"])
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: ["external-uuid": "External monitor"])
             #expect(configStore.load().timeTurnerCaptureScope == "selected_displays")
             #expect(configStore.load().timeTurnerSelectedDisplays == ["external-uuid": "External monitor"])
             #expect(controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
             let previousGeneration = controller.visualMemory.ambientGeneration
-            controller.saveTimeTurnerDisplays(["laptop": "Built-in"])
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: ["laptop": "Built-in"])
             #expect(controller.visualMemory.ambientGeneration != previousGeneration)
             #expect(!controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
             #expect(controller.visualMemory.selectsDisplay(uuid: "laptop"))
             // Empty selection cannot erase the saved set or silently enable all monitors.
-            controller.saveTimeTurnerDisplays([:])
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: [:])
+            }
             #expect(configStore.load().timeTurnerSelectedDisplays.count == 1)
             try await controller.applySetting("time_turner_capture_scope", value: "focused")
             #expect(!controller.visualMemory.selectsDisplay(uuid: "laptop"))
             try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
             #expect(controller.config.timeTurnerSelectedDisplays.count == 1)
+        }
+    }
+
+    @Test("A failed display save preserves the effective capture scope and supports retry")
+    func timeTurnerDisplaySaveFailure() async throws {
+        try await withShortcutSettings { controller, store in
+            controller.visualMemory.toggleAmbientPause()
+            controller.updateConfig { $0.timeTurnerEnabled = true }
+            defer { controller.updateConfig { $0.timeTurnerEnabled = false } }
+            let generation = controller.visualMemory.ambientGeneration
+            let original = TimeTurnerCaptureChoice(config: controller.config)
+            let file = store.configPath()
+            let backup = file.appendingPathExtension("backup")
+            try FileManager.default.moveItem(at: file, to: backup)
+            try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+            let selected = ["external": "External"]
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: selected)
+            }
+            #expect(TimeTurnerCaptureChoice(config: controller.config) == original)
+            #expect(TimeTurnerCaptureChoice(config: controller.appState.config) == original)
+            #expect(controller.visualMemory.ambientGeneration == generation)
+            // Stop remains immediate on a broken disk, but setup cannot start capture without a durable save.
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_enabled", value: "off")
+            }
+            #expect(!controller.config.timeTurnerEnabled)
+            controller.timeTurnerPermissionsAreGranted = { true }
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.finishTimeTurnerSetup(choice: original, original: original)
+            }
+            #expect(!controller.config.timeTurnerEnabled)
+            try FileManager.default.removeItem(at: file)
+            try FileManager.default.moveItem(at: backup, to: file)
+            try await controller.finishTimeTurnerSetup(choice: original, original: original)
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: selected)
+            #expect(store.load().timeTurnerSelectedDisplays == selected)
+            #expect(controller.visualMemory.selectsDisplay(uuid: "external"))
+            try await controller.applySetting("time_turner_capture_scope", value: "focused")
+            #expect(store.load().timeTurnerCaptureScope == "focused")
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "external"))
         }
     }
 

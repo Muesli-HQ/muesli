@@ -180,7 +180,8 @@ extension MuesliController {
     }
 
     func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil,
-                             manualRecordingMinutes: Int? = nil) -> [MuesliSetting] {
+                             manualRecordingMinutes: Int? = nil,
+                             selectedDisplays: [String: String]? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -289,8 +290,11 @@ extension MuesliController {
                     guard self.timeTurnerPermissionsAreGranted() else {
                         throw MuesliSettings.Failure.rejected("Complete Time Turner setup: Screen Recording and Accessibility are required.")
                     }
+                    try self.persistTimeTurnerCaptureSettings { $0.timeTurnerEnabled = true }
+                } else {
+                    // Stop a live capture immediately, even when persistence fails.
+                    self.updateConfig { $0.timeTurnerEnabled = false }
                 }
-                self.updateConfig { $0.timeTurnerEnabled = value == "on" }
             }
         toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
         let recapConfig = config.timeTurnerGenerationConfig
@@ -339,9 +343,14 @@ extension MuesliController {
 
         add("time_turner_capture_scope", "Capture", TimeTurnerCaptureScope.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
             read: { $0.timeTurnerCaptureScope }, unavailable: { value in
-                value == "selected_displays" && self.config.timeTurnerSelectedDisplays.isEmpty
+                value == "selected_displays" && (selectedDisplays ?? self.config.timeTurnerSelectedDisplays).isEmpty
                     ? "Choose displays in Time Turner settings first." : nil
-            }) { value in self.updateConfig { $0.timeTurnerCaptureScope = value } }
+            }) { value in
+                try self.persistTimeTurnerCaptureSettings {
+                    $0.timeTurnerCaptureScope = value
+                    if let selectedDisplays { $0.timeTurnerSelectedDisplays = selectedDisplays }
+                }
+            }
         textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
             Choice(id: $0, label: "\($0) seconds")
         }, \.timeTurnerInterval)

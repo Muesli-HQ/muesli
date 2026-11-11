@@ -40,6 +40,49 @@ struct VisualMemoryStoreTests {
             frame: { _ in focused }, inspect: { _, _ in (nil, []) }, withinBudget: { true }))
     }
 
+    @Test @MainActor func displayPrivacyBudgetSpansAppsAndRevalidation() async {
+        var now: TimeInterval = 0
+        var budget = TimeTurnerAXBudget(interval: 2, uptime: { now })
+        let firstApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.5
+            return true
+        }
+        #expect(firstApp)
+        let secondApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.25
+            return true
+        }
+        #expect(secondApp)
+        now += 20 // Image acquisition and OCR happen between the two AX passes.
+        let revalidated = await budget.permits { deadline in
+            #expect(deadline == 21)
+            now += 0.5 // Good AX data arriving too late must be discarded.
+            return true
+        }
+        #expect(!revalidated)
+        let anotherDisplay = await budget.permits { _ in
+            Issue.record("An exhausted cycle started another AX call")
+            return true
+        }
+        #expect(!anotherDisplay)
+        var nextCycle = TimeTurnerAXBudget(interval: 60, uptime: { now })
+        #expect(nextCycle.remaining == 2)
+        let slowApp = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { deadline in
+            now = deadline
+            return true
+        }
+        #expect(!slowApp)
+        let unchecked = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { _ in
+            Issue.record("Preflight used the time reserved for revalidation")
+            return true
+        }
+        #expect(!unchecked)
+        let eligible = await nextCycle.permits { deadline in deadline == now + 1 }
+        #expect(eligible)
+    }
+
     @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
         let selected: Set<String> = ["external-a", "external-b"]
         #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))
@@ -186,6 +229,36 @@ struct VisualMemoryStoreTests {
         #expect(String(cString: sqlite3_column_text(statement, 0)) == "monitor")
         #expect(sqlite3_column_int(statement, 1) == 42)
         #expect(String(cString: sqlite3_column_text(statement, 2)) == "")
+    }
+
+    @Test func migrationKeepsOCRAndValidAppsWhenIncludedAppsIsMalformed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let focused = VisualMemoryItem(id: "focused", kind: .moment, source: "Editor", bundleID: "editor",
+                                      text: "focused evidence", path: "focused.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", text: "display evidence",
+                                      path: "display.heic", display: .init(id: 2, uuid: "external", name: "External"))
+        do { let store = try VisualMemoryStore(root: root); try store.save([focused, display]) }
+        var db: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        try #require(sqlite3_exec(db, """
+            UPDATE evidence SET body=json_set(body,'$.includedApps','invalid') WHERE id='focused';
+            UPDATE evidence SET body=json_set(body,'$.includedApps',json_array(
+                'broken',null,7,json_object('name','missing ID'),json_object('bundleID',3,'name','wrong type'),
+                json_object('bundleID','browser','name','Browser'))) WHERE id='display';
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "focused", app: "editor") == [focused])
+        let apps = [VisualMemoryApp(bundleID: "browser", name: "Browser")]
+        var recovered = try #require(store.searchMoments(text: "display", app: "Browser").first)
+        #expect(recovered.includedApps == apps)
+        #expect(recovered.display == display.display)
+        recovered.text = "updated evidence"
+        try store.save([recovered])
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "updated", app: "browser") == [recovered])
     }
 
     @Test func reopeningSearchHitPreservesWholeDaySnapshot() {

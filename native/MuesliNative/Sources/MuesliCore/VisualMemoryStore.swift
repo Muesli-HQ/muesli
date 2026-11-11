@@ -287,9 +287,26 @@ public final class VisualMemoryStore: @unchecked Sendable {
                         app_name=CASE WHEN json_type(e.body,'$.display')='object' THEN '' ELSE app_name END
                     FROM evidence e WHERE e.id=time_turner_captures.id
                     """
+                // Scalar strings from json_each are plain SQL text, not JSON documents.
+                let validApp = """
+                    CASE WHEN a.type='object' THEN
+                        json_type(a.value,'$.bundleID') IS 'text' AND json_type(a.value,'$.name') IS 'text'
+                    ELSE 0 END
+                    """
+                // Keep the Codable body readable too. Preserve valid siblings, OCR and other fields.
+                try execute("""
+                    UPDATE evidence SET body=json_remove(body,'$.includedApps')
+                    WHERE kind='moment' AND json_type(body,'$.includedApps') NOT IN ('array','null');
+                    UPDATE evidence SET body=json_set(body,'$.includedApps',(
+                        SELECT json_group_array(json(a.value)) FROM json_each(evidence.body,'$.includedApps') a
+                        WHERE \(validApp)))
+                    WHERE kind='moment' AND json_type(body,'$.includedApps')='array'
+                      AND EXISTS (SELECT 1 FROM json_each(evidence.body,'$.includedApps') a WHERE NOT (\(validApp)));
+                    """)
                 let apps = """
                     SELECT e.id,json_extract(a.value,'$.bundleID'),json_extract(a.value,'$.name')
-                    FROM evidence e, json_each(e.body,'$.includedApps') a WHERE e.kind='moment'
+                    FROM evidence e, json_each(e.body,'$.includedApps') a
+                    WHERE e.kind='moment' AND json_type(e.body,'$.includedApps')='array' AND (\(validApp))
                     """
                 let focused = """
                     SELECT id,bundle_id,app_name FROM time_turner_captures WHERE (bundle_id!='' OR app_name!='')

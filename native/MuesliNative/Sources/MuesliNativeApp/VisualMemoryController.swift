@@ -528,16 +528,18 @@ final class VisualMemoryController {
         }.value
     }
 
-    private nonisolated static func hasSecureField(in app: NSRunningApplication) -> Bool {
-        guard let element = DictationContextCapture.focusedUIElement(for: app, messagingTimeout: 0.5) else { return false }
-        AXUIElementSetMessagingTimeout(element, 0.5)
+    private nonisolated static func hasSecureField(in app: NSRunningApplication, timeout: Float = 0.5) -> Bool {
+        guard let element = DictationContextCapture.focusedUIElement(for: app, messagingTimeout: timeout) else { return false }
+        AXUIElementSetMessagingTimeout(element, timeout)
         return DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
     }
 
-    private nonisolated static func permitsDisplayWindows(processID: pid_t, frames: [CGRect]) async -> Bool {
+    private nonisolated static func permitsDisplayWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval) async -> Bool {
         await Task.detached(priority: .utility) {
-            guard let app = NSRunningApplication(processIdentifier: processID), !hasSecureField(in: app) else { return false }
-            return TimeTurnerWindowPrivacy.permits(processID: processID, frames: frames)
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0, let app = NSRunningApplication(processIdentifier: processID),
+                  !hasSecureField(in: app, timeout: Float(min(remaining, 0.15))) else { return false }
+            return TimeTurnerWindowPrivacy.permits(processID: processID, frames: frames, deadline: deadline)
         }.value
     }
 
@@ -717,8 +719,12 @@ final class VisualMemoryController {
                     title: window.title ?? "", excluded: excluded) }
             }
             let candidates = Dictionary(grouping: eligibleWindows, by: { $0.owningApplication?.processID })
+            var axBudget = TimeTurnerAXBudget(interval: Double(ambientConfig?.timeTurnerInterval ?? "10") ?? 10)
             for (pid, windows) in candidates {
-                guard let pid, await Self.permitsDisplayWindows(processID: pid, frames: windows.map(\.frame)) else {
+                guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
+                guard let pid, await axBudget.permits(reserving: axBudget.revalidationReserve, { deadline in
+                    await Self.permitsDisplayWindows(processID: pid, frames: windows.map(\.frame), deadline: deadline)
+                }) else {
                     excluded.formUnion(windows.compactMap { $0.owningApplication?.bundleIdentifier })
                     continue
                 }
@@ -727,6 +733,7 @@ final class VisualMemoryController {
             var capturedAny = false
             var failedAny = false
             for display in displays {
+                guard axBudget.remaining > 0 else { break }
                 guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
                 let identity = displayIdentity(display)
                 let windows = content.windows.filter {
@@ -755,7 +762,9 @@ final class VisualMemoryController {
                           windows.allSatisfy({ old in current.windows.contains { DisplayWindowState($0) == DisplayWindowState(old) } }) else { continue }
                     var secure = false
                     for (pid, included) in Dictionary(grouping: windows, by: { $0.owningApplication?.processID }) {
-                        guard let pid, await Self.permitsDisplayWindows(processID: pid, frames: included.map(\.frame)) else {
+                        guard let pid, await axBudget.permits({ deadline in
+                            await Self.permitsDisplayWindows(processID: pid, frames: included.map(\.frame), deadline: deadline)
+                        }) else {
                             secure = true; break
                         }
                     }

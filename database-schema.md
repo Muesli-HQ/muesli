@@ -884,7 +884,9 @@ included-window metadata, so this is not a measure of attention or app usage tim
 The JSON compatibility record adds optional `display: {id, uuid, name}` and
 `includedApps: [{bundleID, name}]`; older records decode with both absent.
 Version 4 backfills focused capture apps and maintains display/app projections
-through triggers on every store write, including compaction and retention.
+through triggers on every store write, including compaction and retention. During
+upgrade, malformed optional app entries are removed from the stored observation;
+valid app entries, focused-window attribution and OCR remain available.
 Screenshot expiry keeps app rows; history/explicit deletion removes them.
 CLI history/search/get expose these optional fields. The internal chat `screens`
 projection lists included app names in `app` and the display in `title`.
