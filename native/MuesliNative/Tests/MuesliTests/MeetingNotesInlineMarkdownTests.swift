@@ -1,8 +1,18 @@
 import Foundation
 import AppKit
+import MuesliCore
 import SwiftUI
 import Testing
 @testable import MuesliNativeApp
+
+// Exercise AppKit's copy/cut actions without changing the system clipboard.
+private final class ClipboardNoteView: PlaceholderTextView {
+    let board = NSPasteboard.withUniqueName()
+    override var selectionPasteboard: NSPasteboard { board }
+    override func writeSelection(to pasteboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        super.writeSelection(to: board, types: types)
+    }
+}
 
 @Suite("MeetingNotesView inline markdown")
 struct MeetingNotesInlineMarkdownTests {
@@ -446,6 +456,51 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(blocks[1].count == 3)
         #expect(blocks[1].table == [["Model", "Score"], ["**A**", "42"]])
         #expect(blocks.dropFirst(2).allSatisfy { $0.table == nil })
+    }
+
+    @Test("copy and cut preserve inline images through saving and reopening", arguments: [false, true])
+    @MainActor
+    func clipboardImageRoundTrip(cut: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let bytes = try #require(bitmap.representation(using: .png, properties: [:]))
+        var image = try MeetingNoteImages.save(bytes, supportDirectory: root)
+        image.width = 320
+        let fragment = "before \(image.markdown)\nafter"
+        let source = "[\(fragment)]"
+        let view = ClipboardNoteView()
+        defer { view.board.releaseGlobally() }
+        let coordinator = MarkdownRichTextEditor.Coordinator(text: .constant(source), command: .constant(nil), onTextChange: nil)
+        view.delegate = coordinator
+        coordinator.apply(markdown: source, to: view)
+        view.setSelectedRange(NSRange(location: 1, length: (view.string as NSString).length - 2))
+        if cut { view.cut(nil) } else { view.copy(nil) }
+        let remaining = cut ? "[]" : source
+        #expect(coordinator.serializedMarkdown(from: view) == remaining)
+        try #require(view.board.string(forType: PlaceholderTextView.noteSelectionType) == fragment)
+        view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+        view.paste(nil)
+
+        let store = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        let id = try store.createLiveMeeting(title: "Clipboard test", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: id, manualNotes: coordinator.currentMarkdown)
+        let saved = try #require(try DictationStore(databaseURL: store.resolvedDatabaseURL).meeting(id: id)?.manualNotes)
+        #expect(saved == remaining + fragment)
+        let reopened = NSTextView()
+        let reader = MarkdownRichTextEditor.Coordinator(text: .constant(saved), command: .constant(nil), onTextChange: nil)
+        reader.apply(markdown: saved, to: reopened)
+        #expect(reader.serializedMarkdown(from: reopened) == saved)
+        let storage = try #require(reopened.textStorage)
+        var count = 0
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, run, _ in
+            if value is NSTextAttachment { count += run.length }
+        }
+        #expect(count == (cut ? 1 : 2))
+        #expect(try MeetingNoteImages.inputs(in: saved, supportDirectory: root).map(\.data) == [bytes])
     }
 
     @Test("note assets are validated, resolved, and exported with relative paths")

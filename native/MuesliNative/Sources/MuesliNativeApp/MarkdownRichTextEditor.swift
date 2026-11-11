@@ -165,12 +165,16 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             self.renderMarkdownFormatting = renderMarkdownFormatting
         }
 
+        private func showImageLimit(in view: NSTextView) {
+            let alert = NSAlert()
+            alert.messageText = "Could not add image"
+            alert.informativeText = MeetingNoteImageError.tooMany.localizedDescription
+            if let window = view.window { alert.beginSheetModal(for: window) }
+        }
+
         fileprivate func insertImage(_ source: NoteImageSource, into view: NSTextView) {
             guard MeetingNoteImages.references(in: serializedMarkdown(from: view)).count + pendingImageCount < MeetingNoteImages.maximumImageCount else {
-                let alert = NSAlert()
-                alert.messageText = "Could not add image"
-                alert.informativeText = MeetingNoteImageError.tooMany.localizedDescription
-                if let window = view.window { alert.beginSheetModal(for: window) }
+                showImageLimit(in: view)
                 return
             }
             pendingImageCount += 1
@@ -219,16 +223,38 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         func insertImageReference(_ reference: MeetingNoteImages.Reference, into view: NSTextView, replacing range: NSRange) {
             guard let storage = view.textStorage, range.location != NSNotFound,
                   range.upperBound <= storage.length else { return }
-            let attachment = inlineAttributedString(from: reference.markdown, attributes: bodyAttributes())
+            replaceWithImageContent(in: view, range: range,
+                                    content: inlineAttributedString(from: reference.markdown, attributes: bodyAttributes()))
+        }
+
+        fileprivate func pasteMarkdown(_ markdown: String, into view: NSTextView) -> Bool {
+            let range = view.selectedRange()
+            guard view.isEditable, let storage = view.textStorage, range.upperBound <= storage.length else { return false }
+            let references = MeetingNoteImages.references(in: markdown)
+            guard !references.isEmpty else { return false }
+            var remaining = pendingImageCount + references.count
+            storage.enumerateAttribute(.muesliMarkdownImage, in: NSRange(location: 0, length: storage.length)) { value, run, _ in
+                if value != nil { remaining += run.length - NSIntersectionRange(run, range).length }
+            }
+            guard remaining <= MeetingNoteImages.maximumImageCount else {
+                showImageLimit(in: view)
+                return false
+            }
+            return replaceWithImageContent(in: view, range: range, content: attributedString(from: markdown))
+        }
+
+        @discardableResult
+        private func replaceWithImageContent(in view: NSTextView, range: NSRange, content: NSAttributedString) -> Bool {
             usesMarkdownStyling = true
             view.breakUndoCoalescing()
             view.undoManager?.beginUndoGrouping()
-            _ = NoteImageMove.replace(in: view, range: range, with: attachment,
-                                      selection: NSRange(location: range.location + attachment.length, length: 0),
+            let changed = NoteImageMove.replace(in: view, range: range, with: content,
+                                      selection: NSRange(location: range.location + content.length, length: 0),
                                       undoSelection: range)
             view.undoManager?.setActionName("Paste Image")
             view.undoManager?.endUndoGrouping()
             view.breakUndoCoalescing()
+            return changed
         }
 
         private func loadImage(_ id: UUID) {
@@ -737,6 +763,10 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
 
         func serializedMarkdown(from textView: NSTextView) -> String {
             guard let storage = textView.textStorage else { return textView.string }
+            return serializedMarkdown(from: storage)
+        }
+
+        fileprivate func serializedMarkdown(from storage: NSTextStorage) -> String {
             var lines: [String] = []
             let full = storage.string as NSString
             let fullRange = NSRange(location: 0, length: full.length)
@@ -943,12 +973,41 @@ enum NoteImageMove {
     }
 }
 
-private final class PlaceholderTextView: NSTextView {
-    var imageHandler: ((NoteImageSource) -> Void)?
+class PlaceholderTextView: NSTextView {
+    fileprivate var imageHandler: ((NoteImageSource) -> Void)?
+
+    // Different dev lanes have separate image stores.
+    static let noteSelectionType = NSPasteboard.PasteboardType("com.muesli." + AppIdentity.supportDirectoryName.lowercased() + ".note-selection-markdown")
+
+    override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        guard selectedRanges.count == 1, let storage = textStorage else { return super.writablePasteboardTypes }
+        var hasImage = false
+        storage.enumerateAttribute(.muesliMarkdownImage, in: selectedRange()) { value, _, stop in
+            if value != nil {
+                hasImage = true
+                stop.pointee = true
+            }
+        }
+        return hasImage ? [Self.noteSelectionType] + super.writablePasteboardTypes : super.writablePasteboardTypes
+    }
+
+    override func writeSelection(to board: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == Self.noteSelectionType else { return super.writeSelection(to: board, type: type) }
+        guard let coordinator = delegate as? MarkdownRichTextEditor.Coordinator, let storage = textStorage else { return false }
+        let selection = NSTextStorage(attributedString: storage.attributedSubstring(from: selectedRange()))
+        return board.setString(coordinator.serializedMarkdown(from: selection), forType: type)
+    }
+
+    override func readSelection(from board: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == Self.noteSelectionType else { return super.readSelection(from: board, type: type) }
+        guard let coordinator = delegate as? MarkdownRichTextEditor.Coordinator,
+              let markdown = board.string(forType: type) else { return false }
+        return coordinator.pasteMarkdown(markdown, into: self)
+    }
 
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(paste(_:)), isEditable,
-           NSPasteboard.general.availableType(from: [.png, .tiff, .fileURL]) != nil {
+           NSPasteboard.general.availableType(from: [Self.noteSelectionType, .png, .tiff, .fileURL]) != nil {
             return true
         }
         return super.validateMenuItem(menuItem)
@@ -1019,8 +1078,13 @@ private final class PlaceholderTextView: NSTextView {
         }
     }
 
+    var selectionPasteboard: NSPasteboard { .general }
+
     override func paste(_ sender: Any?) {
-        if isEditable, let source = Self.imageSource(from: .general) {
+        let board = selectionPasteboard
+        if isEditable, board.types?.contains(Self.noteSelectionType) == true {
+            _ = readSelection(from: board, type: Self.noteSelectionType)
+        } else if isEditable, let source = Self.imageSource(from: board) {
             imageHandler?(source)
         } else {
             super.paste(sender)
