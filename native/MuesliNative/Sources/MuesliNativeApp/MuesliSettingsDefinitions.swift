@@ -286,7 +286,7 @@ extension MuesliController {
             read: { $0.timeTurnerEnabled ? "on" : "off" },
             voiceRestriction: "Enable continuous screen history manually in Timeline.") { value in
                 if value == "on" {
-                    guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
+                    guard self.timeTurnerPermissionsAreGranted() else {
                         throw MuesliSettings.Failure.rejected("Complete Time Turner setup: Screen Recording and Accessibility are required.")
                     }
                 }
@@ -337,8 +337,7 @@ extension MuesliController {
             toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
         }
 
-        add("time_turner_capture_scope", "Capture", [Choice(id: "focused", label: "Focused window"),
-            Choice(id: "all_displays", label: "All displays"), Choice(id: "selected_displays", label: "Selected displays")],
+        add("time_turner_capture_scope", "Capture", TimeTurnerCaptureScope.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
             read: { $0.timeTurnerCaptureScope }, unavailable: { value in
                 value == "selected_displays" && self.config.timeTurnerSelectedDisplays.isEmpty
                     ? "Choose displays in Time Turner settings first." : nil

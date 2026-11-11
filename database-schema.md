@@ -893,7 +893,8 @@ Settings stores `time_turner_capture_scope` as `focused` (the compatible default
 or `all_displays`, plus `selected_displays` for an explicit monitor selection.
 `time_turner_selected_displays` is a local config dictionary of stable CoreGraphics
 display UUIDs to last-known display names, decoding to an empty dictionary in older
-configs. Setup previews connected monitors and saves the chosen set at Finish;
+configs. Setup restores the saved scope. Selected displays previews connected monitors
+and saves an explicitly edited selection at Finish;
 settings offers the same picker. Disconnected selections persist across restarts.
 New monitors are not implicitly selected; an empty or disconnected selection never
 falls back to another monitor. Selection changes invalidate in-flight capture.

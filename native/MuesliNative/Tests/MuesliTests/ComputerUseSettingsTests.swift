@@ -39,6 +39,36 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("Re-enabling capture retains its scope until the user explicitly changes it")
+    func timeTurnerReenable() async throws {
+        try await withShortcutSettings { controller, configStore in
+            controller.timeTurnerPermissionsAreGranted = { true }
+            controller.visualMemory.toggleAmbientPause()
+            let saved = ["offline-display": "External"]
+            for scope in TimeTurnerCaptureScope.allCases {
+                controller.updateConfig {
+                    $0.timeTurnerEnabled = true
+                    $0.timeTurnerCaptureScope = scope.rawValue
+                    $0.timeTurnerSelectedDisplays = saved
+                }
+                try await controller.applySetting("time_turner_enabled", value: "off")
+                let original = TimeTurnerCaptureChoice(config: controller.config)
+                try await controller.finishTimeTurnerSetup(choice: original, original: original)
+                let reopened = configStore.load()
+                #expect(reopened.timeTurnerEnabled)
+                #expect(reopened.timeTurnerCaptureScope == scope.rawValue)
+                #expect(reopened.timeTurnerSelectedDisplays == saved)
+            }
+            try await controller.applySetting("time_turner_enabled", value: "off")
+            let original = TimeTurnerCaptureChoice(config: controller.config)
+            var edited = original
+            edited.scope = .focused
+            try await controller.finishTimeTurnerSetup(choice: edited, original: original)
+            #expect(configStore.load().timeTurnerCaptureScope == "focused")
+            try await controller.applySetting("time_turner_enabled", value: "off")
+        }
+    }
+
     @Test("Permission recovery preserves every existing capture scope and skips monitor selection")
     func timeTurnerPermissionRecovery() {
         var config = AppConfig()

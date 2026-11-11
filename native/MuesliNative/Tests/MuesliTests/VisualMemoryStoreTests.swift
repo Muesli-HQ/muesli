@@ -9,6 +9,37 @@ import ImageIO
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
 
+    @Test func displayPrivacyChecksSecureFieldsInTheSecondWindow() {
+        let focused = CGRect(x: 10, y: 10, width: 400, height: 240)
+        let other = focused.offsetBy(dx: 420, dy: 0)
+        let bounds = [0: focused, 1: other]
+        // Both AX roots belong to one app. Only the second has a nested password field.
+        let children = [0: [2], 1: [3], 3: [4]]
+        var secureNode: Int?
+        var unreadableNode: Int?
+        func permits(_ frames: [CGRect], budget: Int = 512) -> Bool {
+            TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 1], frame: { bounds[$0] },
+                inspect: { node, _ in
+                    guard node != unreadableNode else { return nil }
+                    return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
+                },
+                withinBudget: { true }, nodeLimit: budget)
+        }
+        #expect(permits([focused, other]))
+        secureNode = 4 // Secure control appears between capture and the second check.
+        #expect(permits([focused]))
+        #expect(!permits([focused, other]))
+        #expect(!permits([other]))
+        secureNode = nil
+        unreadableNode = 3
+        #expect(!permits([focused, other]))
+        unreadableNode = nil
+        #expect(!permits([focused, other], budget: 3))
+        #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
+        #expect(!TimeTurnerWindowPrivacy.permits(frames: [focused], windows: [0, 1],
+            frame: { _ in focused }, inspect: { _, _ in (nil, []) }, withinBudget: { true }))
+    }
+
     @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
         let selected: Set<String> = ["external-a", "external-b"]
         #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))

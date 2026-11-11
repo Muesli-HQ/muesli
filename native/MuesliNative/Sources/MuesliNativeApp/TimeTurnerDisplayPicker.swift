@@ -18,6 +18,30 @@ enum TimeTurnerDisplayIdentity {
     }
 }
 
+enum TimeTurnerCaptureScope: String, CaseIterable {
+    case focused, all = "all_displays", selected = "selected_displays"
+
+    var label: String {
+        switch self {
+        case .focused: "Focused window"
+        case .all: "All displays"
+        case .selected: "Selected displays"
+        }
+    }
+}
+
+struct TimeTurnerCaptureChoice: Equatable {
+    var scope: TimeTurnerCaptureScope
+    var displays: [String: String]
+
+    init(config: AppConfig) {
+        scope = TimeTurnerCaptureScope(rawValue: config.timeTurnerCaptureScope) ?? .focused
+        displays = config.timeTurnerSelectedDisplays
+    }
+
+    var isValid: Bool { scope != .selected || !displays.isEmpty }
+}
+
 /// A resource picker, like app exclusions. Changes stay in a draft until Finish/Save.
 /// Preview frames live only in memory and are not added to screen history.
 struct TimeTurnerDisplayPicker: View {
@@ -152,13 +176,27 @@ struct TimeTurnerDisplaySelectionSheet: View {
 }
 
 extension MuesliController {
+    func finishTimeTurnerSetup(choice: TimeTurnerCaptureChoice, original: TimeTurnerCaptureChoice) async throws {
+        guard !config.timeTurnerEnabled else { return }
+        guard choice.isValid else { throw MuesliSettings.Failure.rejected("Choose at least one display.") }
+        if choice != original { saveTimeTurnerCaptureChoice(choice) }
+        try await applySetting("time_turner_enabled", value: "on")
+    }
+
     /// Explicit resource selection is saved atomically with the capture mode.
     /// configureAmbient invalidates any in-flight sample using the previous selection.
     func saveTimeTurnerDisplays(_ selection: [String: String]) {
-        guard !selection.isEmpty else { return }
+        var choice = TimeTurnerCaptureChoice(config: config)
+        choice.scope = .selected
+        choice.displays = selection
+        saveTimeTurnerCaptureChoice(choice)
+    }
+
+    func saveTimeTurnerCaptureChoice(_ choice: TimeTurnerCaptureChoice) {
+        guard choice.isValid else { return }
         updateConfig {
-            $0.timeTurnerSelectedDisplays = selection
-            $0.timeTurnerCaptureScope = "selected_displays"
+            $0.timeTurnerCaptureScope = choice.scope.rawValue
+            if choice.scope == .selected { $0.timeTurnerSelectedDisplays = choice.displays }
         }
     }
 }

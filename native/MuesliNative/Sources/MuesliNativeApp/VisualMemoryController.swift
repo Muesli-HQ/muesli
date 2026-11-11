@@ -534,10 +534,10 @@ final class VisualMemoryController {
         return DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
     }
 
-    private nonisolated static func ambientAppIsSecure(processID: pid_t) async -> Bool {
+    private nonisolated static func permitsDisplayWindows(processID: pid_t, frames: [CGRect]) async -> Bool {
         await Task.detached(priority: .utility) {
-            guard let app = NSRunningApplication(processIdentifier: processID) else { return true }
-            return hasSecureField(in: app)
+            guard let app = NSRunningApplication(processIdentifier: processID), !hasSecureField(in: app) else { return false }
+            return TimeTurnerWindowPrivacy.permits(processID: processID, frames: frames)
         }.value
     }
 
@@ -711,13 +711,17 @@ final class VisualMemoryController {
             for window in content.windows where VisualMemoryDisplayPolicy.isPrivate(window.title ?? "") {
                 if let bundle = window.owningApplication?.bundleIdentifier { excluded.insert(bundle) }
             }
-            let eligiblePIDs = Set(content.windows.filter { window in
+            let eligibleWindows = content.windows.filter { window in
                 displays.contains { display in VisualMemoryDisplayPolicy.includes(window: window.frame, layer: Int(window.windowLayer),
                     display: display.frame, bundleID: window.owningApplication?.bundleIdentifier ?? "",
                     title: window.title ?? "", excluded: excluded) }
-            }.compactMap { $0.owningApplication?.processID })
-            for app in content.applications where eligiblePIDs.contains(app.processID) {
-                if await Self.ambientAppIsSecure(processID: app.processID) { excluded.insert(app.bundleIdentifier) }
+            }
+            let candidates = Dictionary(grouping: eligibleWindows, by: { $0.owningApplication?.processID })
+            for (pid, windows) in candidates {
+                guard let pid, await Self.permitsDisplayWindows(processID: pid, frames: windows.map(\.frame)) else {
+                    excluded.formUnion(windows.compactMap { $0.owningApplication?.bundleIdentifier })
+                    continue
+                }
             }
             var savedAny = false
             var capturedAny = false
@@ -750,8 +754,10 @@ final class VisualMemoryController {
                     guard current.displays.contains(where: { $0.displayID == display.displayID && $0.frame == display.frame }),
                           windows.allSatisfy({ old in current.windows.contains { DisplayWindowState($0) == DisplayWindowState(old) } }) else { continue }
                     var secure = false
-                    for pid in Set(windows.compactMap { $0.owningApplication?.processID }) {
-                        if await Self.ambientAppIsSecure(processID: pid) { secure = true; break }
+                    for (pid, included) in Dictionary(grouping: windows, by: { $0.owningApplication?.processID }) {
+                        guard let pid, await Self.permitsDisplayWindows(processID: pid, frames: included.map(\.frame)) else {
+                            secure = true; break
+                        }
                     }
                     guard !secure, generation == ambientGeneration, permitsAmbientCapture,
                           ContentPrivacy.shared.permits(privacy) else { continue }

@@ -3683,6 +3683,8 @@ public final class MuesliController: NSObject {
         ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .formatting])
     }
 
+    var timeTurnerPermissionsAreGranted: () -> Bool = { CGPreflightScreenCaptureAccess() && AXIsProcessTrusted() }
+
     func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
         if let feature = NewFeature.setting(id) {
             NewFeatureDiscovery.shared.markUsed(feature)

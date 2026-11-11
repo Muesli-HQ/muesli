@@ -192,7 +192,8 @@ struct TimeTurnerSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var presentationCatalog = SettingsPresentationCatalog()
     @State private var step = 0
-    @State private var selectedDisplays: [String: String]
+    @State private var captureChoice: TimeTurnerCaptureChoice
+    @State private var originalChoice: TimeTurnerCaptureChoice
     @State private var displaysInitialized: Bool
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
@@ -205,8 +206,10 @@ struct TimeTurnerSetupView: View {
         self.controller = controller
         self.appState = appState
         _step = State(initialValue: TimeTurnerSetupStep.entry(for: appState.config, requested: initialStep).rawValue)
-        _selectedDisplays = State(initialValue: appState.config.timeTurnerSelectedDisplays)
-        _displaysInitialized = State(initialValue: !appState.config.timeTurnerSelectedDisplays.isEmpty)
+        let choice = TimeTurnerCaptureChoice(config: appState.config)
+        _captureChoice = State(initialValue: choice)
+        _originalChoice = State(initialValue: choice)
+        _displaysInitialized = State(initialValue: choice.scope == .selected || !choice.displays.isEmpty)
     }
 
     private var reviewingAccess: Bool { step == TimeTurnerSetupStep.reviewAccess.rawValue }
@@ -251,7 +254,19 @@ struct TimeTurnerSetupView: View {
                     }
                 }
             } else if step == TimeTurnerSetupStep.displays.rawValue {
-                TimeTurnerDisplayPicker(selection: $selectedDisplays, initialized: $displaysInitialized)
+                Picker("Capture", selection: $captureChoice.scope) {
+                    ForEach(TimeTurnerCaptureScope.allCases, id: \.self) { scope in
+                        Text(scope.label).tag(scope)
+                    }
+                }.pickerStyle(.segmented)
+                switch captureChoice.scope {
+                case .focused:
+                    SettingsNote("Save the focused window on whichever display you’re using.")
+                case .all:
+                    SettingsNote("Save eligible windows on every connected display, including displays you connect later.")
+                case .selected:
+                    TimeTurnerDisplayPicker(selection: $captureChoice.displays, initialized: $displaysInitialized)
+                }
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -289,10 +304,10 @@ struct TimeTurnerSetupView: View {
                             PermissionRestartResumeStore.shared.clear()
                         }
                         step += 1
-                    }.buttonStyle(.borderedProminent).disabled((step == 1 && !ready) || (step == TimeTurnerSetupStep.displays.rawValue && selectedDisplays.isEmpty))
+                    }.buttonStyle(.borderedProminent).disabled((step == 1 && !ready) || (step == TimeTurnerSetupStep.displays.rawValue && !captureChoice.isValid))
                 } else {
                     Button("Start Time Turner") { enable() }
-                        .buttonStyle(.borderedProminent).disabled(!ready || enabling || selectedDisplays.isEmpty)
+                        .buttonStyle(.borderedProminent).disabled(!ready || enabling || !captureChoice.isValid)
                 }
             }
         }.padding(28).frame(width: 560, height: 540).font(MuesliTheme.body())
@@ -322,13 +337,12 @@ struct TimeTurnerSetupView: View {
             ProductAnalytics.event(.time_turner, .activation_finished, outcome: .blocked, fields: [.stage: .permission])
             step = 1; return
         }
-        guard !selectedDisplays.isEmpty else { step = TimeTurnerSetupStep.displays.rawValue; return }
-        controller.saveTimeTurnerDisplays(selectedDisplays)
+        guard captureChoice.isValid else { step = TimeTurnerSetupStep.displays.rawValue; return }
         enabling = true
         Task { @MainActor in
             defer { enabling = false }
             do {
-                try await controller.applySetting("time_turner_enabled", value: "on")
+                try await controller.finishTimeTurnerSetup(choice: captureChoice, original: originalChoice)
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .success)
                 PermissionRestartResumeStore.shared.clear()
                 dismiss()
