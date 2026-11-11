@@ -28,36 +28,54 @@ struct MeetingNotificationControllerTests {
     }
 
     struct JoinedCallRow: Sendable, CustomTestStringConvertible {
-        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, live: Bool
+        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, live: Bool, tried: Bool
         let action: ScheduledMeetingNotificationPolicy.JoinedCallAction
-        var testDescription: String { "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) live=\(live) -> \(action)" }
+        var testDescription: String {
+            "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) live=\(live) tried=\(tried) -> \(action)"
+        }
     }
 
     static let joinedCallRows: [JoinedCallRow] = [
-        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, action: .record),
-        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, action: .showToast),
-        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, action: .showToast),
-        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, action: .showToast),
-        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, action: .showToast),
-        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, action: .record),
-        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, action: .ignore),
-        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, action: .ignore),
-        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, action: .ignore),
-        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, action: .ignore),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, tried: false, action: .record),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, tried: true, action: .showToast),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, tried: false, action: .record),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, tried: true, action: .ignore),
     ]
 
-    @Test("a call records only with auto-record on, a calendar match and live media, and prompts only with toasts on",
+    @Test("a call records once per event with auto-record, a calendar match and live media, else it toasts if toasts are on",
           arguments: joinedCallRows)
     func joinedCallAction(row: JoinedCallRow) {
         #expect(ScheduledMeetingNotificationPolicy.joinedCallAction(
-            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord,
-            hasCalendarEvent: row.hasEvent, hasLiveMedia: row.live
+            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord, hasCalendarEvent: row.hasEvent,
+            hasLiveMedia: row.live, alreadyAttempted: row.tried
         ) == row.action)
     }
 

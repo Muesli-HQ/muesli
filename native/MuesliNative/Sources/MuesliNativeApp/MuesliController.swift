@@ -11382,19 +11382,19 @@ public final class MuesliController: NSObject {
         }
 
         let matchingEvent = matchingCalendarEvent(for: candidate)
+        let eventKey = matchingEvent?.calendarOccurrence?.identityKey ?? matchingEvent?.id
         switch ScheduledMeetingNotificationPolicy.joinedCallAction(
             showsDetection: config.showMeetingDetectionNotification,
             autoRecordMeetings: config.autoRecordMeetings,
             hasCalendarEvent: matchingEvent != nil,
-            hasLiveMedia: candidate.hasLiveMediaEvidence
+            hasLiveMedia: candidate.hasLiveMediaEvidence,
+            alreadyAttempted: eventKey.map(autoRecordAttempt.hasClaimed) ?? false
         ) {
         case .ignore:
             return
         case .record:
-            if let key = matchingEvent?.calendarOccurrence?.identityKey ?? matchingEvent?.id,
-               autoRecordAttempt.claim(key) {
-                startRecordingDetectedCall(candidate, endingAtEventEnd: true)
-            }
+            if let eventKey { autoRecordAttempt.claim(eventKey) }
+            startRecordingDetectedCall(candidate, endingAtEventEnd: true)
             return
         case .showToast:
             break

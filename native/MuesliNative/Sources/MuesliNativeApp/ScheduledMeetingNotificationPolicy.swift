@@ -3,6 +3,10 @@ import Foundation
 struct AutoRecordAttemptGuard {
     private var claimedKeys = Set<String>()
 
+    func hasClaimed(_ key: String) -> Bool {
+        claimedKeys.contains(key)
+    }
+
     @discardableResult
     mutating func claim(_ key: String) -> Bool {
         claimedKeys.insert(key).inserted
@@ -29,9 +33,9 @@ enum ScheduledMeetingNotificationPolicy {
     }
 
     static func joinedCallAction(
-        showsDetection: Bool, autoRecordMeetings: Bool, hasCalendarEvent: Bool, hasLiveMedia: Bool
+        showsDetection: Bool, autoRecordMeetings: Bool, hasCalendarEvent: Bool, hasLiveMedia: Bool, alreadyAttempted: Bool
     ) -> JoinedCallAction {
-        if autoRecordMeetings && hasCalendarEvent && hasLiveMedia { return .record }
+        if autoRecordMeetings && hasCalendarEvent && hasLiveMedia && !alreadyAttempted { return .record }
         return showsDetection ? .showToast : .ignore
     }
 
