@@ -145,10 +145,11 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private var bindingPublishWorkItem: DispatchWorkItem?
         private var scheduledCommandID: UUID?
         private var imageCache: [UUID: NSImage] = [:]
-        private var imageAttachments: [UUID: NSTextAttachment] = [:]
+        private var imageAttachments: [String: NSTextAttachment] = [:]
         private var loadingImages: Set<UUID> = []
         private var missingImages: Set<UUID> = []
         private var pendingImageCount = 0
+        private let imageSupportDirectory: URL
         private let renderMarkdownFormatting: Bool
 
         private let bodyFont = AppFonts.font(size: 16)
@@ -158,7 +159,8 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private let secondaryColor = NSColor.secondaryLabelColor
 
         init(text: Binding<String>, command: Binding<MarkdownEditorCommand?>, onTextChange: ((String) -> Void)?,
-             renderMarkdownFormatting: Bool = true) {
+             renderMarkdownFormatting: Bool = true, imageSupportDirectory: URL = AppIdentity.supportDirectoryURL) {
+            self.imageSupportDirectory = imageSupportDirectory
             _text = text
             _command = command
             self.onTextChange = onTextChange
@@ -260,8 +262,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private func loadImage(_ id: UUID) {
             guard !loadingImages.contains(id), !missingImages.contains(id) else { return }
             loadingImages.insert(id)
+            let directory = imageSupportDirectory
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                let url = MeetingNoteImages.url(for: id)
+                let url = MeetingNoteImages.url(for: id, supportDirectory: directory)
                 let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
                 let image = source.flatMap { CGImageSourceCreateThumbnailAtIndex($0, 0,
                     [kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -274,21 +277,18 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                     let loaded = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
                     self.imageCache[id] = loaded
                     guard let view = self.textView, let storage = view.textStorage else { return }
-                    var ranges: [NSRange] = []
+                    var placements: [(NSRange, MeetingNoteImages.Reference)] = []
                     storage.enumerateAttribute(.muesliMarkdownImage, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                        if let marker = value as? String, MeetingNoteImages.references(in: marker).first?.id == id { ranges.append(range) }
+                        if let marker = value as? String, let reference = MeetingNoteImages.references(in: marker).first, reference.id == id {
+                            placements.append((range, reference))
+                        }
                     }
                     self.isApplying = true
-                    let attachment = self.imageAttachments[id] ?? NSTextAttachment()
-                    attachment.image = loaded
-                    let marker = ranges.first.flatMap { storage.attribute(.muesliMarkdownImage, at: $0.location, effectiveRange: nil) as? String }
-                    let desiredWidth = marker.flatMap { MeetingNoteImages.references(in: $0).first?.width }.map(CGFloat.init) ?? 500
-                    let scale = min(1, desiredWidth / max(loaded.size.width, 1))
-                    attachment.bounds = NSRect(x: 0, y: 0, width: loaded.size.width * scale, height: loaded.size.height * scale)
-                    self.imageAttachments[id] = attachment
-                    for range in ranges {
-                        storage.addAttribute(.attachment, value: attachment, range: range)
+                    storage.beginEditing()
+                    for (range, reference) in placements {
+                        storage.addAttribute(.attachment, value: self.attachment(for: reference), range: range)
                     }
+                    storage.endEditing()
                     self.isApplying = false
                 }
             }
@@ -298,9 +298,11 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             guard !isApplying, let textView = notification.object as? NSTextView else { return }
             applyInlineFormattingIfNeeded(in: textView)
             let markdown = markdownForLiveEdit(from: textView)
-            if imageAttachments.count > 6 {
-                let liveIDs = Set(MeetingNoteImages.references(in: markdown).map(\.id))
-                imageAttachments = imageAttachments.filter { liveIDs.contains($0.key) }
+            if imageAttachments.count > 6 || imageCache.count > 6 || missingImages.count > 6 {
+                let references = MeetingNoteImages.references(in: markdown)
+                let liveIDs = Set(references.map(\.id))
+                let markers = Set(references.map(\.markdown))
+                imageAttachments = imageAttachments.filter { markers.contains($0.key) }
                 imageCache = imageCache.filter { liveIDs.contains($0.key) }
                 missingImages.formIntersection(liveIDs)
             }
@@ -562,6 +564,26 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             return (line, bodyAttributes())
         }
 
+        private func attachment(for reference: MeetingNoteImages.Reference) -> NSTextAttachment {
+            let marker = reference.markdown
+            let loaded = imageCache[reference.id]
+            if let cached = imageAttachments[marker], loaded == nil || cached.image === loaded {
+                return cached
+            }
+            let attachment = NSTextAttachment()
+            if let loaded {
+                let scale = min(1, CGFloat(reference.width ?? 500) / max(loaded.size.width, 1))
+                attachment.image = loaded
+                attachment.bounds = NSRect(x: 0, y: 0, width: loaded.size.width * scale, height: loaded.size.height * scale)
+            } else {
+                attachment.image = NSImage(systemSymbolName: "photo", accessibilityDescription: "Image unavailable")
+                attachment.bounds = NSRect(x: 0, y: 0, width: 32, height: 32)
+                loadImage(reference.id)
+            }
+            imageAttachments[marker] = attachment
+            return attachment
+        }
+
         private func inlineAttributedString(
             from markdown: String,
             attributes: [NSAttributedString.Key: Any]
@@ -575,31 +597,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                     if reference.range.location > offset {
                         result.append(inlineAttributedString(from: source.substring(with: NSRange(location: offset, length: reference.range.location - offset)), attributes: attributes))
                     }
-                    let attachment: NSTextAttachment
-                    if let cached = imageAttachments[reference.id] {
-                        if let image = imageCache[reference.id] {
-                            let scale = min(1, CGFloat(reference.width ?? 500) / max(image.size.width, 1))
-                            let desired = NSRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale)
-                            if cached.bounds != desired {
-                                let resized = NSTextAttachment()
-                                resized.image = image
-                                resized.bounds = desired
-                                imageAttachments[reference.id] = resized
-                                attachment = resized
-                            } else { attachment = cached }
-                        } else { attachment = cached }
-                    } else {
-                        attachment = NSTextAttachment()
-                        attachment.image = imageCache[reference.id] ?? NSImage(systemSymbolName: "photo", accessibilityDescription: "Image unavailable")
-                        if let image = imageCache[reference.id] {
-                            let scale = min(1, CGFloat(reference.width ?? 500) / max(image.size.width, 1))
-                            attachment.bounds = NSRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale)
-                        } else {
-                            attachment.bounds = NSRect(x: 0, y: 0, width: 32, height: 32)
-                            loadImage(reference.id)
-                        }
-                        imageAttachments[reference.id] = attachment
-                    }
+                    let attachment = attachment(for: reference)
                     let imageText = NSMutableAttributedString(attachment: attachment)
                     imageText.addAttributes(attributes, range: NSRange(location: 0, length: imageText.length))
                     imageText.addAttribute(.muesliMarkdownImage, value: reference.markdown, range: NSRange(location: 0, length: imageText.length))

@@ -1263,13 +1263,16 @@ final class FloatingIndicatorController: NSObject {
         }
 
         Self.applyTransitionGeometry(restoresTranscript: restoresMeetingTranscript, geometry: { animated, completion in
+            // A meeting notice can expand and collapse in the same run-loop turn.
+            // Keep the panel and its child in sync before another update reads their screen frame.
+            let animateFrame = animated && !(isMeetingRecording && !hasDictationOverlap && state == .recording)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = restoresMeetingTranscript ? 0 : duration
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                context.allowsImplicitAnimation = animated
-                (animated ? panel.animator() : panel).setFrame(targetFrame, display: true)
+                context.allowsImplicitAnimation = animateFrame
+                (animateFrame ? panel.animator() : panel).setFrame(targetFrame, display: true)
                 (animated ? panel.animator() : panel).alphaValue = style.alpha
-                (animated ? contentView.animator() : contentView).frame = NSRect(origin: .zero, size: targetFrame.size)
+                (animateFrame ? contentView.animator() : contentView).frame = NSRect(origin: .zero, size: targetFrame.size)
             } completionHandler: { completion() }
             layoutMeetingControls(in: targetFrame.size)
             layoutDictationOverlap(in: targetFrame.size)

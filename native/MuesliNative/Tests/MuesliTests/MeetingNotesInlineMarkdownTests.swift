@@ -503,6 +503,46 @@ struct MeetingNotesInlineMarkdownTests {
         #expect(try MeetingNoteImages.inputs(in: saved, supportDirectory: root).map(\.data) == [bytes])
     }
 
+    @Test("reopening independently sized copies loads one shared image at both widths")
+    @MainActor
+    func reopenedCopiesHaveSavedWidths() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640, pixelsHigh: 320,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let bytes = try #require(bitmap.representation(using: .png, properties: [:]))
+        var image = try MeetingNoteImages.save(bytes, supportDirectory: root)
+        let original = image.markdown
+        image.width = 160
+        let notes = original + "\n" + image.markdown
+        let store = DictationStore(databaseURL: root.appendingPathComponent("meeting.db"))
+        try store.migrateIfNeeded()
+        let id = try store.createLiveMeeting(title: "Image widths", calendarEventID: nil, startTime: Date())
+        try store.updateMeetingManualNotes(id: id, manualNotes: notes)
+        let saved = try #require(try DictationStore(databaseURL: store.resolvedDatabaseURL).meeting(id: id)?.manualNotes)
+        let reader = MarkdownRichTextEditor.Coordinator(text: .constant(saved), command: .constant(nil),
+            onTextChange: nil, imageSupportDirectory: root)
+        let view = NSTextView()
+        reader.textView = view
+        reader.apply(markdown: saved, to: view)
+        let storage = try #require(view.textStorage)
+        func attachment(at index: Int) -> NSTextAttachment? {
+            storage.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while attachment(at: 0)?.bounds.width == 32 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let first = try #require(attachment(at: 0))
+        let second = try #require(attachment(at: 2))
+        #expect(first.bounds.size == NSSize(width: 500, height: 250))
+        #expect(second.bounds.size == NSSize(width: 160, height: 80))
+        #expect(first.image === second.image)
+        #expect(reader.serializedMarkdown(from: view) == notes)
+        #expect(try MeetingNoteImages.inputs(in: saved, supportDirectory: root).map(\.data) == [bytes])
+    }
+
     @Test("note assets are validated, resolved, and exported with relative paths")
     @MainActor
     func imageStorageAndExport() throws {

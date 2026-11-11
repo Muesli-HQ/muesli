@@ -1070,10 +1070,13 @@ struct FloatingIndicatorPointerInteractionTests {
         }
         indicator.powerProvider = { -24 }
         indicator.setMeetingRecording(true, config: config)
-        indicator.showLoading("Warming up dictation")
-        indicator.hideLoading()
-        try await Task.sleep(for: .milliseconds(350))
         let originalFrame = try #require(indicator.currentFrame)
+        indicator.showLoading("Warming up dictation")
+        let notice = try #require(indicator.currentFrame)
+        #expect(notice.width > originalFrame.width)
+        #expect(abs(notice.midX - originalFrame.midX) < 1)
+        indicator.hideLoading()
+        #expect(indicator.currentFrame == originalFrame)
         for _ in 0..<6 {
             indicator.setHovered(true)
             let pill = try #require(NSApp.windows.flatMap { $0.contentView?.subviews ?? [] }
