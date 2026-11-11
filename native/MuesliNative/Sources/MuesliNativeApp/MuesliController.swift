@@ -10901,7 +10901,6 @@ public final class MuesliController: NSObject {
     }
 
     private func dismissPresentedMeetingDetection() {
-        autoRecordAttempt.reset()
         guard let candidate = presentedMeetingCandidate else { return }
         presentedMeetingCandidate = nil
         meetingMonitor.markPromptClosed(candidate)
@@ -11163,6 +11162,7 @@ public final class MuesliController: NSObject {
     }
 
     private func handleMeetingActivityCandidate(_ candidate: MeetingCandidate?) {
+        if candidate == nil { autoRecordAttempt.reset() }
         if !activeMeetingAutoStop.isArmed,
            !isMeetingRecording(),
            !isStartingMeetingRecording {
@@ -11350,7 +11350,9 @@ public final class MuesliController: NSObject {
         let calendarEvent = matchingCalendarEvent(for: candidate)
         let recordingTitle = calendarEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
         let endDate = calendarEvent.flatMap { event in
-            endingAtEventEnd ? appState.visibleUpcomingCalendarEvents.first { $0.id == event.id }?.endDate : nil
+            endingAtEventEnd
+                ? appState.visibleUpcomingCalendarEvents.first { $0.resolvedCalendarOccurrence == event.calendarOccurrence }?.endDate
+                : nil
         }
         if startMeetingRecordingFromEntryPoint(
             title: recordingTitle,
