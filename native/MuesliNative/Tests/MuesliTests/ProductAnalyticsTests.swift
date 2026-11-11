@@ -51,26 +51,18 @@ struct ProductAnalyticsTests {
         // One already-entered sink may finish; queued work is dropped after opt-out.
         #expect(recorder.events.count == 1)
     }
-    @Test func submittingWithCapturedConsentReturnsWhileWorkerIsStalled() {
-        let entered = DispatchSemaphore(value: 0)
-        let unblock = DispatchSemaphore(value: 0)
-        let returned = DispatchSemaphore(value: 0)
+    @Test func submittingWithCapturedConsentChecksConsentOffTheCallingQueue() {
+        let caller = DispatchQueue(label: "test.analytics.caller")
+        let callerKey = DispatchSpecificKey<Bool>()
+        caller.setSpecific(key: callerKey, value: true)
+        let recorder = Recorder()
         let emitter = ProductAnalyticsEmitter(consent: {
-            entered.signal()
-            unblock.wait()
+            #expect(DispatchQueue.getSpecific(key: callerKey) == nil)
             return "initial"
-        }) { _, _ in }
-        DispatchQueue.global().async {
-            emitter.emit(.init(feature: .vidshot, kind: .started), token: "initial")
-            returned.signal()
-        }
-        let workerStarted = entered.wait(timeout: .now() + 5)
-        let callerReturned = returned.wait(timeout: .now() + 1)
-        unblock.signal()
-        unblock.signal() // Also releases the worker if a regression checked consent twice.
+        }) { event, _ in recorder.record(event) }
+        caller.sync { emitter.emit(.init(feature: .vidshot, kind: .started), token: "initial") }
         emitter.drain()
-        #expect(workerStarted == .success)
-        #expect(callerReturned == .success)
+        #expect(recorder.events.map(\.name) == ["vidshot.started"])
     }
 
     @Test func chatCountsEachSourceOnceWithinTheOriginalConsentGeneration() {

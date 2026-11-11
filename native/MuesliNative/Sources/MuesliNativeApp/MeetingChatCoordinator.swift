@@ -896,7 +896,7 @@ final class MeetingChatCoordinator {
                 attachments = try await worker.inheritedDocuments(attachments, turn: turn)
                 let documentTools = ChatDocumentTools(files: attachments.documents,
                     supportsVision: [.chatGPT, .openAI, .openRouter, .anthropic].contains(MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)),
-                    maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)))
+                    maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)), analytics: analytics)
                 let (evidence, history) = try await worker.evidence(for: turn)
                 if !evidence.passages.isEmpty { analytics.usedChatSource(.meeting) }
                 let savedSummary = try await worker.rollingSummary(for: turn)

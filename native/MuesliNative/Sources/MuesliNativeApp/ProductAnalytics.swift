@@ -1,5 +1,4 @@
 import Foundation
-import MuesliCore
 
 /// Product events accept finite fields only. Content, IDs, paths and raw errors
 /// cannot be passed through this API. SDK work runs on a bounded utility queue.
@@ -37,29 +36,6 @@ struct AnalyticsModel: Sendable, Equatable {
 enum ChatAnalyticsSource: String, Hashable, Sendable {
     case meeting, dictation, command, quill, cotypist, screen_history, chat, recap, vidshot
     case image, pdf, markdown, text
-
-    init(_ kind: GlobalSearchKind) {
-        switch kind {
-        case .meeting: self = .meeting
-        case .dictation: self = .dictation
-        case .command: self = .command
-        case .quill: self = .quill
-        case .cotypist: self = .cotypist
-        case .screenHistory: self = .screen_history
-        case .chat: self = .chat
-        case .recap: self = .recap
-        case .vidshot: self = .vidshot
-        }
-    }
-
-    init(_ kind: ChatFileReference.Kind) {
-        switch kind {
-        case .image: self = .image
-        case .pdf: self = .pdf
-        case .markdown: self = .markdown
-        case .text: self = .text
-        }
-    }
 
     // Keys come from the validated SQL plan, never from raw model arguments.
     static let sqlTables: [String: Self] = [
