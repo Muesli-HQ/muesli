@@ -1,16 +1,17 @@
 import Foundation
+import MuesliCore
 
 struct AutoRecordAttemptGuard {
-    private var claimedCandidateID: String?
+    private var claimedKeys = Set<String>()
 
-    mutating func claim(_ candidateID: String) -> Bool {
-        guard claimedCandidateID != candidateID else { return false }
-        claimedCandidateID = candidateID
-        return true
+    mutating func claim(_ key: String) -> Bool {
+        claimedKeys.insert(key).inserted
     }
+}
 
-    mutating func reset() {
-        claimedCandidateID = nil
+extension CalendarOccurrenceReference {
+    var attemptKey: String {
+        "\(provider.rawValue)|\(calendarID ?? "")|\(eventID)|\(originalStartTime.timeIntervalSince1970)"
     }
 }
 
@@ -146,6 +147,6 @@ enum ScheduledMeetingNotificationPolicy {
 
 extension MeetingCandidate {
     var hasLiveMediaEvidence: Bool {
-        !evidence.isDisjoint(with: [.micActive, .cameraActive, .audioInputProcess])
+        evidence.contains(.audioInputProcess)
     }
 }

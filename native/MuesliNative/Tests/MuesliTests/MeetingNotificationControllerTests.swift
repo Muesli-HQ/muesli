@@ -61,29 +61,31 @@ struct MeetingNotificationControllerTests {
         ) == row.action)
     }
 
-    @Test("only mic, camera or an audio-input process count as a live call, not a focused meeting URL")
+    @Test("only an audio-input process attributed to the app counts as a live call, not global mic or camera, or a focused URL")
     func liveMediaEvidence() {
         func candidate(_ evidence: Set<MeetingCandidate.Evidence>) -> MeetingCandidate {
             MeetingCandidate(id: "meet", platform: .googleMeet, appName: "Chrome", url: "meet.google.com/aaa-bbbb-ccc",
                 evidence: evidence, startedAt: Date(), meetingTitle: nil, sourceBundleID: nil)
         }
-        #expect(candidate([.micActive]).hasLiveMediaEvidence)
-        #expect(candidate([.cameraActive]).hasLiveMediaEvidence)
         #expect(candidate([.audioInputProcess, .browserURL]).hasLiveMediaEvidence)
+        #expect(!candidate([.micActive]).hasLiveMediaEvidence)
+        #expect(!candidate([.cameraActive, .micActive, .browserURL]).hasLiveMediaEvidence)
         #expect(!candidate([.browserURL, .foregroundApp, .calendarEvent]).hasLiveMediaEvidence)
         #expect(!candidate([]).hasLiveMediaEvidence)
     }
 
-    @Test("auto-record tries a live call once, so a failed or stopped recording is not restarted until the call ends")
-    func autoRecordAttemptsEachCallOnce() {
+    @Test("auto-record tries each calendar event once, however the call restarts")
+    func autoRecordAttemptsEachEventOnce() {
         var attempts = AutoRecordAttemptGuard()
-        let firstMeet = attempts.claim("meet.google.com/aaa")
-        let repeatMeet = attempts.claim("meet.google.com/aaa")
-        let firstZoom = attempts.claim("zoom.us/j/1")
-        let repeatZoom = attempts.claim("zoom.us/j/1")
-        attempts.reset()
-        let zoomAfterReset = attempts.claim("zoom.us/j/1")
-        #expect([firstMeet, repeatMeet, firstZoom, repeatZoom, zoomAfterReset] == [true, false, true, false, true])
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func occurrence(_ id: String, _ at: Date) -> String {
+            CalendarOccurrenceReference(provider: .eventKit, calendarID: "cal", eventID: id, originalStartTime: at).attemptKey
+        }
+        let first = attempts.claim(occurrence("standup", start))
+        let repeatClaim = attempts.claim(occurrence("standup", start))
+        let nextDay = attempts.claim(occurrence("standup", start.addingTimeInterval(86_400)))
+        let otherEvent = attempts.claim(occurrence("review", start))
+        #expect([first, repeatClaim, nextDay, otherEvent] == [true, false, true, true])
     }
 
     @Test("calendar auto-record preserves recordings, asks when a call may be active, and never starts without one")

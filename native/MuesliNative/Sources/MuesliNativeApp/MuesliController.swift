@@ -11162,7 +11162,6 @@ public final class MuesliController: NSObject {
     }
 
     private func handleMeetingActivityCandidate(_ candidate: MeetingCandidate?) {
-        if candidate == nil { autoRecordAttempt.reset() }
         if !activeMeetingAutoStop.isArmed,
            !isMeetingRecording(),
            !isStartingMeetingRecording {
@@ -11391,7 +11390,8 @@ public final class MuesliController: NSObject {
         case .ignore:
             return
         case .record:
-            if autoRecordAttempt.claim(candidate.id) {
+            if let key = matchingEvent?.calendarOccurrence?.attemptKey ?? matchingEvent?.id,
+               autoRecordAttempt.claim(key) {
                 startRecordingDetectedCall(candidate, endingAtEventEnd: true)
             }
             return
