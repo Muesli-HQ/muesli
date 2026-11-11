@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 public enum ClaudeCodeAuthenticationStatus: Equatable {
     case unavailable
@@ -128,6 +130,7 @@ public enum ClaudeCodeSummarizer {
     public static func run(
         instructions: String,
         input: String,
+        images: [Data] = [],
         model: String = "",
         executablePath: String = "",
         timeout: TimeInterval = 300
@@ -135,8 +138,15 @@ public enum ClaudeCodeSummarizer {
         guard let executable = executableURL(configuredPath: executablePath) else {
             throw ClaudeCodeSummaryError.unavailable
         }
-        guard input.utf8.count <= maximumInputBytes else { throw ClaudeCodeSummaryError.inputTooLarge }
         guard instructions.utf8.count <= maximumInstructionBytes else { throw ClaudeCodeSummaryError.instructionsTooLarge }
+        guard input.utf8.count <= maximumInputBytes else { throw ClaudeCodeSummaryError.inputTooLarge }
+        var remainingImageBytes = maximumInputBytes
+        for image in images {
+            guard image.count <= remainingImageBytes else { throw ClaudeCodeSummaryError.inputTooLarge }
+            remainingImageBytes -= image.count
+        }
+        let standardInput = try inputData(instructions: instructions, input: input, images: images)
+        guard standardInput.count <= maximumInputBytes else { throw ClaudeCodeSummaryError.inputTooLarge }
         try Task.checkCancellation()
 
         let process = Process()
@@ -145,7 +155,8 @@ public enum ClaudeCodeSummarizer {
                 process,
                 executable: executable,
                 instructions: instructions,
-                input: input,
+                input: standardInput,
+                structuredInput: !images.isEmpty,
                 model: model,
                 timeout: timeout
             )
@@ -156,6 +167,22 @@ public enum ClaudeCodeSummarizer {
             task.cancel()
             stopProcess(process)
         }
+    }
+
+    static func inputData(instructions: String = "", input: String, images: [Data]) throws -> Data {
+        guard !images.isEmpty else { return Data(input.utf8) }
+        // Claude Code ignores the positional print prompt with stream-json
+        // input, so send the summary instructions in the user message itself.
+        let prompt = instructions.isEmpty ? input : instructions + "\n\n" + input
+        let blocks: [[String: Any]] = [["type": "text", "text": prompt]] + images.map {
+            let source = CGImageSourceCreateWithData($0 as CFData, nil)
+            let mediaType = source.flatMap { CGImageSourceGetType($0) }.flatMap { UTType($0 as String) }?.preferredMIMEType ?? "image/jpeg"
+            return ["type": "image", "source": ["type": "base64", "media_type": mediaType, "data": $0.base64EncodedString()]]
+        }
+        let message: [String: Any] = ["type": "user", "message": ["role": "user", "content": blocks]]
+        var data = try JSONSerialization.data(withJSONObject: message)
+        data.append(0x0a)
+        return data
     }
 
     private static func stopProcess(_ process: Process) {
@@ -175,7 +202,8 @@ public enum ClaudeCodeSummarizer {
         _ process: Process,
         executable: URL,
         instructions: String,
-        input: String,
+        input: Data,
+        structuredInput: Bool,
         model: String,
         timeout: TimeInterval
     ) throws -> String {
@@ -187,7 +215,7 @@ public enum ClaudeCodeSummarizer {
         let inputURL = directory.appendingPathComponent("input.txt")
         let outputURL = directory.appendingPathComponent("output.json")
         let errorURL = directory.appendingPathComponent("error.txt")
-        try Data(input.utf8).write(to: inputURL)
+        try input.write(to: inputURL)
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         FileManager.default.createFile(atPath: errorURL.path, contents: nil)
         let inputHandle = try FileHandle(forReadingFrom: inputURL)
@@ -204,8 +232,9 @@ public enum ClaudeCodeSummarizer {
         process.standardInput = inputHandle
         process.standardOutput = outputHandle
         process.standardError = errorHandle
-        var arguments = ["-p", instructions, "--output-format", "json", "--no-session-persistence",
+        var arguments = ["-p", instructions, "--output-format", structuredInput ? "stream-json" : "json", "--no-session-persistence",
                          "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "user"]
+        if structuredInput { arguments += ["--input-format", "stream-json", "--verbose"] }
         let selectedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         if !selectedModel.isEmpty { arguments += ["--model", selectedModel] }
         arguments += ["--tools", ""]
@@ -256,7 +285,19 @@ public enum ClaudeCodeSummarizer {
     /// `json` returns one result object, or a message array when the user's viewMode is verbose.
     /// Only a final result is usable: assistant messages may be partial output or error text.
     static func result(from output: Data, diagnostic: String, exitCode: Int32) throws -> String {
-        let json = try? JSONSerialization.jsonObject(with: output, options: [.fragmentsAllowed])
+        let singleJSON = try? JSONSerialization.jsonObject(with: output, options: [.fragmentsAllowed])
+        // stream-json emits newline-delimited messages, including the final
+        // result. Preserve the same final-result validation as JSON mode.
+        let json: Any?
+        if let singleJSON {
+            json = singleJSON
+        } else {
+            let messages = String(decoding: output, as: UTF8.self)
+                .split(separator: "\n").compactMap { line in
+                    try? JSONSerialization.jsonObject(with: Data(line.utf8))
+                }
+            json = messages.isEmpty ? nil : messages
+        }
         let payload: [String: Any]?
         let shape: String
         if let object = json as? [String: Any] {

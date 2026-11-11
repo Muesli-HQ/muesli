@@ -519,3 +519,9 @@ the compact header sync control and Settings → General sync setup, status and
 recovery actions available. Background sync behavior and saved preferences are
 unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
 never use the raw saved accent as a label color on a neutral surface.
+
+New completed meetings show a segmented Summary / Your notes / Transcript control.
+Your notes reuses the live note editor and its inline save status; generated
+summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
+After that, Saved notes holds the current source, and a collapsed Previous notes
+disclosure in Summary exposes the other pre-upgrade document when present.

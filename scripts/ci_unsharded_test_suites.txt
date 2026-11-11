@@ -25,7 +25,6 @@ MediaPlaybackControllerTests
 MeetingChunkTimingTrackerTests
 MeetingExporterTests
 MeetingHookRunnerTests
-MeetingMarkdownAutoExporterTests
 MeetingMediaSessionTrackerTests
 MeetingMediaSignalFilterTests
 MeetingNeuralAecTests

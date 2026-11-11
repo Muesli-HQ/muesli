@@ -52,6 +52,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var speakerTranscript: String?
     public var summaryText: String?
     public var manualNotes: String?
+    public var previousNotes: String?
+    public var notesLayoutVersion: Int?
     public var source: String?
     /// Platform origin for UI badges lives in `source`; this preserves the
     /// local capture subtype such as dictation, cua, meeting, or audio_import.
@@ -71,6 +73,37 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
     public var cloudSystemFields: Data?
     public var followUpToRecordName: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, title, text, speakerTranscript, summaryText, manualNotes, previousNotes, notesLayoutVersion, source, localSource, meetingStatus, engineIdentifier, createdAt, updatedAt, startedAt, endedAt, durationSeconds, wordCount, isDeleted, cloudChangeTag, cloudSystemFields, followUpToRecordName
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.kind = try c.decode(SyncTextRecordKind.self, forKey: .kind)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
+        self.text = try c.decode(String.self, forKey: .text)
+        self.speakerTranscript = try c.decodeIfPresent(String.self, forKey: .speakerTranscript)
+        self.summaryText = try c.decodeIfPresent(String.self, forKey: .summaryText)
+        self.manualNotes = try c.decodeIfPresent(String.self, forKey: .manualNotes)
+        self.previousNotes = try c.decodeIfPresent(String.self, forKey: .previousNotes)
+        self.notesLayoutVersion = (try? c.decode(Int.self, forKey: .notesLayoutVersion))
+        self.source = try c.decodeIfPresent(String.self, forKey: .source)
+        self.localSource = try c.decodeIfPresent(String.self, forKey: .localSource)
+        self.meetingStatus = try c.decodeIfPresent(MeetingStatus.self, forKey: .meetingStatus)
+        self.engineIdentifier = try c.decodeIfPresent(String.self, forKey: .engineIdentifier)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        self.startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        self.endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        self.durationSeconds = try c.decode(Double.self, forKey: .durationSeconds)
+        self.wordCount = try c.decode(Int.self, forKey: .wordCount)
+        self.isDeleted = try c.decode(Bool.self, forKey: .isDeleted)
+        self.cloudChangeTag = try c.decodeIfPresent(String.self, forKey: .cloudChangeTag)
+        self.cloudSystemFields = try c.decodeIfPresent(Data.self, forKey: .cloudSystemFields)
+        self.followUpToRecordName = try c.decodeIfPresent(String.self, forKey: .followUpToRecordName)
+    }
+
     public init(
         id: String,
         kind: SyncTextRecordKind,
@@ -79,6 +112,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         speakerTranscript: String? = nil,
         summaryText: String? = nil,
         manualNotes: String? = nil,
+        previousNotes: String? = nil,
+        notesLayoutVersion: Int? = nil,
         source: String? = nil,
         localSource: String? = nil,
         meetingStatus: MeetingStatus? = nil,
@@ -101,6 +136,8 @@ public struct SyncTextRecord: Identifiable, Codable, Sendable, Equatable {
         self.speakerTranscript = speakerTranscript
         self.summaryText = summaryText
         self.manualNotes = manualNotes
+        self.previousNotes = previousNotes
+        self.notesLayoutVersion = notesLayoutVersion
         self.source = source
         self.localSource = localSource
         self.meetingStatus = meetingStatus
@@ -459,6 +496,11 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let savedRecordingPath: String?
     public let status: MeetingStatus
     public let manualNotes: String
+    /// Inactive legacy document retained on first generation, never used as provider input.
+    public let previousNotes: String?
+    /// 0 preserves legacy combined notes; 1 keeps user notes separate from summaries.
+    public let notesLayoutVersion: Int
+    public var hasSeparateUserNotes: Bool { notesLayoutVersion == 1 }
     public let selectedTemplateID: String?
     public let selectedTemplateName: String?
     public let selectedTemplateKind: MeetingTemplateKind?
@@ -490,6 +532,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         savedRecordingPath: String? = nil,
         status: MeetingStatus = .completed,
         manualNotes: String = "",
+        previousNotes: String? = nil,
+        notesLayoutVersion: Int = 0,
         selectedTemplateID: String? = nil,
         selectedTemplateName: String? = nil,
         selectedTemplateKind: MeetingTemplateKind? = nil,
@@ -514,6 +558,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.savedRecordingPath = savedRecordingPath
         self.status = status
         self.manualNotes = manualNotes
+        self.previousNotes = previousNotes
+        self.notesLayoutVersion = notesLayoutVersion
         self.selectedTemplateID = selectedTemplateID
         self.selectedTemplateName = selectedTemplateName
         self.selectedTemplateKind = selectedTemplateKind
@@ -540,6 +586,7 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         case savedRecordingPath
         case status
         case manualNotes
+        case previousNotes, notesLayoutVersion
         case selectedTemplateID
         case selectedTemplateName
         case selectedTemplateKind
@@ -568,6 +615,8 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
             savedRecordingPath: try c.decodeIfPresent(String.self, forKey: .savedRecordingPath),
             status: (try? c.decode(MeetingStatus.self, forKey: .status)) ?? .completed,
             manualNotes: (try? c.decode(String.self, forKey: .manualNotes)) ?? "",
+            previousNotes: try c.decodeIfPresent(String.self, forKey: .previousNotes),
+            notesLayoutVersion: (try? c.decode(Int.self, forKey: .notesLayoutVersion)) ?? 0,
             selectedTemplateID: try c.decodeIfPresent(String.self, forKey: .selectedTemplateID),
             selectedTemplateName: try c.decodeIfPresent(String.self, forKey: .selectedTemplateName),
             selectedTemplateKind: try c.decodeIfPresent(MeetingTemplateKind.self, forKey: .selectedTemplateKind),

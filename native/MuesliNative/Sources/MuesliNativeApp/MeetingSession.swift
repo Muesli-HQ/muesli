@@ -1078,8 +1078,7 @@ final class MeetingSession {
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: rawTranscript,
                 meetingTitle: generatedTitle,
-                error: error,
-                manualNotes: manualNotes
+                error: error
             )
         }
 

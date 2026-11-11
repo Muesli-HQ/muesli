@@ -2,6 +2,7 @@ import SwiftUI
 import MuesliCore
 
 enum MeetingDocumentMode: Hashable {
+    case userNotes
     case notes
     case transcript
 }
@@ -391,7 +392,7 @@ struct MeetingDetailView: View {
                 }
                 .layoutPriority(1)
 
-                if showsManualNotesEditor(for: meeting) {
+                if showsManualNotesEditor(for: meeting), meeting.status != .completed {
                     recordingRecoveryHeaderAction(for: meeting)
                     compactRecordingControls(for: meeting)
                 } else {
@@ -439,6 +440,7 @@ struct MeetingDetailView: View {
 
     private var compactFormattingToolbar: some View {
         HStack(spacing: 4) {
+            manualNotesSaveIndicator
             markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
                 manualEditorCommand = MarkdownEditorCommand(kind: .heading)
             }
@@ -489,7 +491,7 @@ struct MeetingDetailView: View {
         for meeting: MeetingRecord,
         appliedTemplate: MeetingTemplateSnapshot
     ) -> some View {
-        if showsManualNotesEditor(for: meeting) {
+        if showsManualNotesEditor(for: meeting), meeting.status != .completed {
             HStack(spacing: MuesliTheme.spacing8) {
                 recordingRecoveryHeaderAction(for: meeting)
                 recordingControlGroup(for: meeting)
@@ -586,7 +588,7 @@ struct MeetingDetailView: View {
     private func detailModePicker(for meeting: MeetingRecord) -> some View {
         if meeting.status == .recording, showsManualNotesEditor(for: meeting) {
             recordingModePicker
-        } else if !showsManualNotesEditor(for: meeting) {
+        } else if meeting.status == .completed || !showsManualNotesEditor(for: meeting) {
             documentModePicker
         }
     }
@@ -627,18 +629,14 @@ struct MeetingDetailView: View {
                             .background(MuesliTheme.backgroundBase)
                             .frame(maxHeight: hasPersistedNotes ? 260 : .infinity)
                             .manualNotesEditorChrome(compact: false)
-                            .overlay(alignment: .bottomLeading) {
-                                if manualNotesSaveStatus == .saving {
-                                    Text(manualNotesSaveStatus.label)
-                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textTertiary)
-                                }
-                            }
                             .overlay(alignment: .topTrailing) {
                                 if isManualNotesEditable {
                                     Group {
                                         if hasNotesSelection {
                                             compactFormattingToolbar
                                         } else {
+                                            HStack(spacing: 6) {
+                                            manualNotesSaveIndicator
                                             Menu {
                                                 Button("Heading") { manualEditorCommand = MarkdownEditorCommand(kind: .heading) }
                                                 Button("Bold") { manualEditorCommand = MarkdownEditorCommand(kind: .bold) }
@@ -651,6 +649,7 @@ struct MeetingDetailView: View {
                                             .fixedSize()
                                             .help("Format notes")
                                             .accessibilityLabel("Format notes")
+                                            }
                                         }
                                     }
                                     .padding(6)
@@ -707,16 +706,14 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                TextEditor(text: $editableNotes)
-                    .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(MuesliTheme.spacing24)
+                MarkdownRichTextEditor(text: $editableNotes, command: $manualEditorCommand,
+                                       renderMarkdownFormatting: false,
+                                       onTextChange: { notes in
+                                           editableNotes = notes
+                                           debounceSaveNotes(for: meeting)
+                                       })
                     .background(MuesliTheme.backgroundBase)
                     .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
-                    .onChange(of: editableNotes) { _, _ in
-                        debounceSaveNotes(for: meeting)
-                    }
             }
             .padding(.horizontal, MuesliTheme.pageInset)
             .padding(.top, 12)
@@ -746,7 +743,13 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
                 contentToolbar(for: meeting)
 
-                if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
+                if documentMode == .notes, let previous = meeting.previousNotes, !previous.isEmpty {
+                    DisclosureGroup("Previous notes") {
+                        MeetingNotesView(markdown: previous)
+                            .frame(height: 200)
+                    }
+                }
+                if !meeting.hasSeparateUserNotes, meeting.source == .granolaImport, !meeting.manualNotes.isEmpty, !meeting.usesImportedManualNotes {
                     DisclosureGroup("Original manual notes from Granola") {
                         MeetingNotesView(markdown: meeting.manualNotes)
                             .frame(height: 200)
@@ -786,12 +789,15 @@ struct MeetingDetailView: View {
 
     private var documentModePicker: some View {
         Picker("", selection: $documentMode) {
-            Text("Notes").tag(MeetingDocumentMode.notes)
+            Text(meeting?.hasSeparateUserNotes == true ? "Summary" : "Notes").tag(MeetingDocumentMode.notes)
+            if meeting?.hasSeparateUserNotes == true {
+                Text(meeting?.previousNotes == nil ? "Your notes" : "Saved notes").tag(MeetingDocumentMode.userNotes)
+            }
             Text("Transcript").tag(MeetingDocumentMode.transcript)
         }
         .pickerStyle(.segmented)
         .tint(MuesliTheme.accent)
-        .frame(width: 220)
+        .frame(width: meeting?.hasSeparateUserNotes == true ? 330 : 220)
         .disabled(isEditingNotes || isEditingTranscript)
     }
 
@@ -829,12 +835,12 @@ struct MeetingDetailView: View {
         case .recording, .processing, .noteOnly, .failed:
             return true
         case .completed:
-            return false
+            return meeting.hasSeparateUserNotes && documentMode == .userNotes
         }
     }
 
     private func canEditManualNotes(for meeting: MeetingRecord) -> Bool {
-        meeting.status == .recording || meeting.status == .noteOnly || meeting.status == .failed
+        meeting.status == .recording || meeting.status == .noteOnly || meeting.status == .failed || (meeting.status == .completed && meeting.hasSeparateUserNotes)
     }
 
     private func isPreparingThisMeeting(_ meeting: MeetingRecord) -> Bool {
@@ -896,10 +902,11 @@ struct MeetingDetailView: View {
         ) {
             toggleEditing(for: meeting)
         }
-        .disabled(isRetranscribing && !isEditingNotes && !isEditingTranscript)
+        .disabled(documentMode == .userNotes || (isRetranscribing && !isEditingNotes && !isEditingTranscript))
     }
 
     private func toggleEditing(for meeting: MeetingRecord) {
+        guard documentMode != .userNotes else { return }
         if isEditingNotes {
             notesSaveTask?.cancel()
             notesSaveTask = nil
@@ -1171,13 +1178,9 @@ struct MeetingDetailView: View {
     @ViewBuilder
     private func manualNotesToolbar(for meeting: MeetingRecord) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
-            if canEditManualNotes(for: meeting) {
-                Text(manualNotesSaveStatus.label)
-                    .font(MuesliTheme.font(size: 12, weight: .medium))
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-
             Spacer()
+
+            if canEditManualNotes(for: meeting) { manualNotesSaveIndicator }
 
             markdownToolbarButton(systemImage: "textformat.size", label: "Heading") {
                 manualEditorCommand = MarkdownEditorCommand(kind: .heading)
@@ -1193,6 +1196,14 @@ struct MeetingDetailView: View {
             }
         }
         .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    private var manualNotesSaveIndicator: some View {
+        Label(manualNotesSaveStatus.label, systemImage: "arrow.triangle.2.circlepath")
+            .font(MuesliTheme.font(size: 12, weight: .medium))
+            .foregroundStyle(MuesliTheme.textTertiary)
+            .help(manualNotesSaveStatus.label)
+            .accessibilityLabel(manualNotesSaveStatus.label)
     }
 
     @ViewBuilder
@@ -1315,7 +1326,7 @@ struct MeetingDetailView: View {
         Menu {
             Button {
                 MeetingExporter.export(meeting: meeting, content: currentContent,
-                    notesOverride: Self.notesExportOverride(for: meeting, citation: citationTarget(for: meeting)?.citation))
+                    notesOverride: documentMode == .userNotes ? editableManualNotes : Self.notesExportOverride(for: meeting, citation: citationTarget(for: meeting)?.citation))
             } label: {
                 Label(currentLabel, systemImage: documentMode == .transcript ? "text.quote" : "doc.text")
             }
@@ -1409,7 +1420,7 @@ struct MeetingDetailView: View {
             } label: {
                 Label(editButtonLabel, systemImage: "pencil")
             }
-            .disabled(isRetranscribing)
+            .disabled(isRetranscribing || documentMode == .userNotes)
 
             if meeting.savedRecordingPath != nil || controller.canDeleteMeeting(meeting) {
                 Divider()
@@ -1835,6 +1846,8 @@ struct MeetingDetailView: View {
 
     private func activeCopyText(for meeting: MeetingRecord) -> String {
         switch documentMode {
+        case .userNotes:
+            return Self.copyContent(for: meeting, content: .userNotes, editedText: editableManualNotes)
         case .notes:
             return Self.copyContent(for: meeting, content: .notes,
                                     editedText: isEditingNotes ? editableNotes : nil,
@@ -1854,6 +1867,8 @@ struct MeetingDetailView: View {
     ) -> String {
         var body: String
         switch content {
+        case .userNotes:
+            body = editedText ?? meeting.manualNotes
         case .notes:
             body = editedText ?? notesCopyContent(for: meeting, citation: citation)
             // The raw-notes editor includes a display-only title. Remove only

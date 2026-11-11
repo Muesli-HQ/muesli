@@ -6,6 +6,47 @@ import Testing
 
 @Suite("Claude Code summarizer")
 struct ClaudeCodeSummarizerTests {
+    @Test("Claude Code receives images in structured stdin")
+    func structuredImageInput() throws {
+        let data = try ClaudeCodeSummarizer.inputData(instructions: "Synthetic instructions", input: "synthetic", images: [Data([1, 2, 3])])
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let message = try #require(object["message"] as? [String: Any])
+        let blocks = try #require(message["content"] as? [[String: Any]])
+        #expect(blocks.count == 2)
+        #expect(blocks[0]["text"] as? String == "Synthetic instructions\n\nsynthetic")
+        let source = try #require(blocks[1]["source"] as? [String: String])
+        #expect(source["media_type"] == "image/jpeg")
+        #expect(source["data"] == Data([1, 2, 3]).base64EncodedString())
+    }
+
+    @Test("Claude Code streaming output uses its final result")
+    func streamingResult() throws {
+        let output = "{\"type\":\"system\"}\n{\"type\":\"assistant\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Done\"}\n"
+        #expect(try ClaudeCodeSummarizer.result(from: Data(output.utf8), diagnostic: "", exitCode: 0) == "Done")
+    }
+
+    @Test("Claude Code image requests use the streaming CLI protocol")
+    func structuredImageProcess() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("claude")
+        let script = """
+        #!/bin/sh
+        case " $* " in *" --input-format stream-json "*) ;; *) exit 10 ;; esac
+        case " $* " in *" --output-format stream-json "*) ;; *) exit 11 ;; esac
+        input=$(cat)
+        case "$input" in *"AQID"*) ;; *) exit 12 ;; esac
+        case "$input" in *"Summarize"*) ;; *) exit 13 ;; esac
+        printf '%s\\n' '{"type":"system"}' '{"type":"result","subtype":"success","result":"Done"}'
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let result = try await ClaudeCodeSummarizer.run(instructions: "Summarize", input: "synthetic",
+            images: [Data([1, 2, 3])], executablePath: executable.path, timeout: 5)
+        #expect(result == "Done")
+    }
+
     @Test("Claude Code sign-in quotes unusual executable paths for Terminal")
     func signInCommandQuoting() throws {
         let path = "/tmp/Claude Code's `test` $HOME; echo unsafe"

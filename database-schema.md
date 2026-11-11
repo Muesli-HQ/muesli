@@ -334,6 +334,48 @@ meeting, or iPhone meeting record.
 - Sync/tombstone bookkeeping: `updated_at`, `deleted_at`, `cloud_*`,
   `last_synced_at`, `sync_dirty`
 
+
+New locally created meetings use `notes_layout_version = 1`: `manual_notes`
+is the editable user document (including inline image references), and
+`formatted_notes` is independently editable generated output. Summary requests
+read current user notes plus the transcript; they never reconstruct user notes
+from generated output or feed a previous summary back into a new-layout request.
+Saving a summary must not modify user notes. Completed meetings expose Summary,
+Your notes, and Transcript; full exports include both note documents.
+
+The layout column defaults to 0. Installing the update or opening an existing
+meeting does not rewrite either document. On the first replacement summary,
+the same SQLite update saves the new summary and switches the row to layout 1.
+For an ordinary completed legacy record, the old visible combined document
+becomes editable Saved notes; the historical manual document is retained
+verbatim in nullable `previous_notes`. When finishing a recording/resume or
+regenerating a Granola import, the live/imported manual document remains the
+editable source and the old formatted document becomes Previous notes. Neither
+path attempts to infer authorship. Later generations never append or replace
+Previous notes; it is available in the summary disclosure and full export,
+but is not provider input. Template selection alone does not convert a record.
+
+Missing layout metadata defaults to legacy. Sync carries `notesLayoutVersion`
+and the optional `previousNotes` text; older clients omitting these fields
+must not downgrade the layout or erase the preserved document. Tombstones
+clear note text, including the previous document. Image bytes stay local.
+
+Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
+optionally with `?width=<points>` for the displayed size. The width does not
+change the image sent to a summary provider. Summary requests use a temporary,
+bounded JPEG representation for unsupported formats or large images; the
+stored original remains unchanged. Original image files are stored locally under `Meeting Note Images/`
+in the active Application Support directory. Image bytes do not enter SQLite,
+CloudKit, retrieval indexes, or telemetry. Synced note text can therefore refer
+to an image unavailable on another device; views show an unavailable image and
+summary generation fails visibly instead of silently omitting that context.
+Markdown export copies available referenced files into a sibling assets folder
+and marks unavailable images in the exported document. Image
+references are opaque identifiers, not paths or permission to read arbitrary files.
+Unreferenced image files are retained for now, including after an image or its
+meeting is deleted; undo and shared Markdown references must be accounted for
+before introducing garbage collection.
+
 Calendar IDs are lookup metadata, not unique meeting identities. A calendar
 occurrence can be recorded more than once.
 
