@@ -74,18 +74,22 @@ struct MeetingNotificationControllerTests {
         #expect(!candidate([]).hasLiveMediaEvidence)
     }
 
-    @Test("auto-record tries each calendar event once, however the call restarts")
+    @Test("auto-record tries each calendar event once, even when a one-off event is rescheduled")
     func autoRecordAttemptsEachEventOnce() {
         var attempts = AutoRecordAttemptGuard()
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        func occurrence(_ id: String, _ at: Date) -> String {
-            CalendarOccurrenceReference(provider: .eventKit, calendarID: "cal", eventID: id, originalStartTime: at).attemptKey
+        func key(_ id: String, series: String? = nil, _ at: Date) -> String {
+            CalendarOccurrenceReference(
+                provider: .eventKit, calendarID: "cal", eventID: id, seriesID: series, originalStartTime: at
+            ).identityKey
         }
-        let first = attempts.claim(occurrence("standup", start))
-        let repeatClaim = attempts.claim(occurrence("standup", start))
-        let nextDay = attempts.claim(occurrence("standup", start.addingTimeInterval(86_400)))
-        let otherEvent = attempts.claim(occurrence("review", start))
-        #expect([first, repeatClaim, nextDay, otherEvent] == [true, false, true, true])
+        let first = attempts.claim(key("standup", start))
+        let rescheduled = attempts.claim(key("standup", start.addingTimeInterval(3_600)))
+        let dayOne = attempts.claim(key("daily", series: "s", start))
+        let dayTwo = attempts.claim(key("daily", series: "s", start.addingTimeInterval(86_400)))
+        let dayOneAgain = attempts.claim(key("daily", series: "s", start))
+        let otherEvent = attempts.claim(key("review", start))
+        #expect([first, rescheduled, dayOne, dayTwo, dayOneAgain, otherEvent] == [true, false, true, true, false, true])
     }
 
     @Test("calendar auto-record preserves recordings, asks when a call may be active, and never starts without one")

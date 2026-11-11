@@ -1,17 +1,11 @@
 import Foundation
-import MuesliCore
 
 struct AutoRecordAttemptGuard {
     private var claimedKeys = Set<String>()
 
+    @discardableResult
     mutating func claim(_ key: String) -> Bool {
         claimedKeys.insert(key).inserted
-    }
-}
-
-extension CalendarOccurrenceReference {
-    var attemptKey: String {
-        "\(provider.rawValue)|\(calendarID ?? "")|\(eventID)|\(originalStartTime.timeIntervalSince1970)"
     }
 }
 
