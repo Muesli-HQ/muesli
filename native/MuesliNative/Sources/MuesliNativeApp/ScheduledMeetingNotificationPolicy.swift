@@ -1,5 +1,19 @@
 import Foundation
 
+struct AutoRecordAttemptGuard {
+    private var claimedCandidateID: String?
+
+    mutating func claim(_ candidateID: String) -> Bool {
+        guard claimedCandidateID != candidateID else { return false }
+        claimedCandidateID = candidateID
+        return true
+    }
+
+    mutating func reset() {
+        claimedCandidateID = nil
+    }
+}
+
 enum ScheduledMeetingNotificationPolicy {
     enum AutoRecordDecision: Equatable {
         case keepCurrentRecording

@@ -51,6 +51,18 @@ struct MeetingNotificationControllerTests {
         ) == row.action)
     }
 
+    @Test("auto-record tries a live call once, so a failed or stopped recording is not restarted until the call ends")
+    func autoRecordAttemptsEachCallOnce() {
+        var attempts = AutoRecordAttemptGuard()
+        let firstMeet = attempts.claim("meet.google.com/aaa")
+        let repeatMeet = attempts.claim("meet.google.com/aaa")
+        let firstZoom = attempts.claim("zoom.us/j/1")
+        let repeatZoom = attempts.claim("zoom.us/j/1")
+        attempts.reset()
+        let zoomAfterReset = attempts.claim("zoom.us/j/1")
+        #expect([firstMeet, repeatMeet, firstZoom, repeatZoom, zoomAfterReset] == [true, false, true, false, true])
+    }
+
     @Test("calendar auto-record preserves recordings, asks when a call may be active, and never starts without one")
     func autoRecordConflictDecision() {
         let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision

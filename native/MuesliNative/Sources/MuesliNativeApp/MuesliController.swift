@@ -950,6 +950,7 @@ public final class MuesliController: NSObject {
     private var meetingStartStatus: String?
     private var isShowingCalendarNotification = false
     private var presentedMeetingCandidate: MeetingCandidate?
+    private var autoRecordAttempt = AutoRecordAttemptGuard()
     private var meetingEndTimer: Timer?
     private var activeMeetingCalendarEndDate: Date?
     private var latestMeetingActivityCandidate: MeetingCandidate?
@@ -10900,6 +10901,7 @@ public final class MuesliController: NSObject {
     }
 
     private func dismissPresentedMeetingDetection() {
+        autoRecordAttempt.reset()
         guard let candidate = presentedMeetingCandidate else { return }
         presentedMeetingCandidate = nil
         meetingMonitor.markPromptClosed(candidate)
@@ -11344,12 +11346,16 @@ public final class MuesliController: NSObject {
         if !didShow { meetingSignalLossPromptState.markAutoDismissed() }
     }
 
-    private func startRecordingDetectedCall(_ candidate: MeetingCandidate) {
+    private func startRecordingDetectedCall(_ candidate: MeetingCandidate, endingAtEventEnd: Bool = false) {
         let calendarEvent = matchingCalendarEvent(for: candidate)
         let recordingTitle = calendarEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
+        let endDate = calendarEvent.flatMap { event in
+            endingAtEventEnd ? appState.visibleUpcomingCalendarEvents.first { $0.id == event.id }?.endDate : nil
+        }
         if startMeetingRecordingFromEntryPoint(
             title: recordingTitle,
             calendarOccurrence: calendarEvent?.calendarOccurrence,
+            endDate: endDate,
             autoStopSource: MeetingAutoStopSource(candidate: candidate),
             presentation: .backgroundPill,
             startOrigin: .detectedPrompt
@@ -11382,7 +11388,9 @@ public final class MuesliController: NSObject {
         case .ignore:
             return
         case .record:
-            startRecordingDetectedCall(candidate)
+            if autoRecordAttempt.claim(candidate.id) {
+                startRecordingDetectedCall(candidate, endingAtEventEnd: true)
+            }
             return
         case .showToast:
             break
