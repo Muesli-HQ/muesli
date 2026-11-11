@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Product analytics")
@@ -50,6 +51,53 @@ struct ProductAnalyticsTests {
         // One already-entered sink may finish; queued work is dropped after opt-out.
         #expect(recorder.events.count == 1)
     }
+    @Test func submittingWithCapturedConsentReturnsWhileWorkerIsStalled() {
+        let entered = DispatchSemaphore(value: 0)
+        let unblock = DispatchSemaphore(value: 0)
+        let returned = DispatchSemaphore(value: 0)
+        let emitter = ProductAnalyticsEmitter(consent: {
+            entered.signal()
+            unblock.wait()
+            return "initial"
+        }) { _, _ in }
+        DispatchQueue.global().async {
+            emitter.emit(.init(feature: .vidshot, kind: .started), token: "initial")
+            returned.signal()
+        }
+        let workerStarted = entered.wait(timeout: .now() + 5)
+        let callerReturned = returned.wait(timeout: .now() + 1)
+        unblock.signal()
+        unblock.signal() // Also releases the worker if a regression checked consent twice.
+        emitter.drain()
+        #expect(workerStarted == .success)
+        #expect(callerReturned == .success)
+    }
+
+    @Test func chatCountsEachSourceOnceWithinTheOriginalConsentGeneration() {
+        let recorder = Recorder()
+        let emitter = ProductAnalyticsEmitter(consent: { recorder.token() }) { event, _ in recorder.record(event) }
+        let attempt = AnalyticsAttempt(.chat, emitter: emitter)
+        DispatchQueue.concurrentPerform(iterations: 64) { _ in attempt.usedChatSource(.pdf) }
+        attempt.usedChatSource(.screen_history)
+        emitter.drain()
+        recorder.setConsent("new")
+        attempt.usedChatSource(.dictation)
+        attempt.finish(.success)
+        attempt.usedChatSource(.image)
+        emitter.drain()
+        let sources = recorder.events.filter { $0.name == "chat.source_used" }
+        #expect(sources.map(\.parameters) == [
+            ["product.schema": "1", "source": "pdf"],
+            ["product.schema": "1", "source": "screen_history"],
+        ])
+    }
+
+    @Test func chatSQLSourcesCoverOnlyThePermittedTables() {
+        #expect(Set(ChatAnalyticsSource.sqlTables.keys) == Set(ChatHistorySQL.tables))
+        #expect(Set(ChatAnalyticsSource.sqlTables.values) == Set(GlobalSearchKind.allCases.map(ChatAnalyticsSource.init)))
+        #expect(ChatAnalyticsSource.sqlTables["private_name"] == nil)
+    }
+
     @Test func abandonedAttemptAndNewAttemptStaySeparate() {
         let recorder = Recorder()
         let emitter = ProductAnalyticsEmitter(consent: { recorder.token() }) { event, _ in recorder.record(event) }

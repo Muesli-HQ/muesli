@@ -58,10 +58,14 @@ struct TelemetryPrivacyTests {
     @Test func reenablingNeverReplaysSuppressedOrOldEvents() throws {
         try withDefaults { defaults throws in
             let gate = TelemetryPrivacyGate(defaults: defaults, configured: true)
+            let initialToken = try #require(gate.bestEffortConsentToken)
             let before = gate.parameters
             gate.setDisabled(true)
+            #expect(gate.bestEffortConsentToken == nil)
             let during = gate.parameters
             gate.setDisabled(false)
+            let newToken = try #require(gate.bestEffortConsentToken)
+            #expect(newToken != initialToken)
             #expect(gate.filter(try batch([before, during, [:]])) == nil)
             let mixed = try #require(gate.filter(batch([before, during, gate.parameters])))
             let signals = try #require(JSONSerialization.jsonObject(with: mixed) as? [[String: Any]])
@@ -93,6 +97,7 @@ struct TelemetryPrivacyTests {
     @Test func failsClosedForUnconfiguredBuildsAndMalformedBatches() throws {
         try withDefaults { defaults throws in
             let gate = TelemetryPrivacyGate(defaults: defaults, configured: false)
+            #expect(gate.bestEffortConsentToken == nil)
             gate.setDisabled(false)
             #expect(gate.filter(try batch([gate.parameters])) == nil)
             let enabled = TelemetryPrivacyGate(defaults: defaults, configured: true)

@@ -12994,7 +12994,8 @@ public final class MuesliController: NSObject {
         if !isDictationTestMode {
             dictationAnalytics?.finish(.cancelled)
             dictationAnalytics = AnalyticsAttempt(.dictation,
-                fields: [.mode: activation, .cleanup: config.enablePostProcessor ? .yes : .no])
+                fields: [.mode: activation, .cleanup: config.enablePostProcessor ? .yes : .no,
+                         .during_meeting: activeMeetingSession?.isRecording == true && !isMeetingRecordingPaused() ? .yes : .no])
         }
         // A previous dictation observer must never interpret live revisions as corrections.
         dictationCorrectionMonitor.cancel()
@@ -13588,6 +13589,12 @@ public final class MuesliController: NSObject {
         let bodhanOutputMode = config.resolvedBodhanOutputMode
         guard let captureApplication = NSWorkspace.shared.frontmostApplication else { return }
         let pendingAudio = BufferedDictationCaptureAudio()
+        let family: AnalyticsValue
+        if BackendOption.parakeetFamily.contains(backend) { family = .parakeet }
+        else if BackendOption.whisperFamily.contains(backend) { family = .whisper }
+        else if BackendOption.bodhanFamily.contains(backend) { family = .bodhan }
+        else { family = .unknown }
+        ProductAnalytics.event(.streaming_dictation, .started, fields: [.mode: .buffered, .route: family])
         bufferedCaptureID = id
         dictationAudioSessionManager.onAudioBuffer = { samples in pendingAudio.append(samples) }
         // Capture runs concurrently with recorder startup. Preserve initial PCM
@@ -14126,6 +14133,9 @@ public final class MuesliController: NSObject {
                 )
                 meetingMonitor.refreshState()
                 fputs("[muesli-native] Nemotron streaming toggle mode active\n", stderr)
+                if !isDictationTestMode {
+                    ProductAnalytics.event(.streaming_dictation, .started, fields: [.mode: .native_stream])
+                }
                 startNemotronStreamingAsync(
                     sessionID: sessionID
                 )

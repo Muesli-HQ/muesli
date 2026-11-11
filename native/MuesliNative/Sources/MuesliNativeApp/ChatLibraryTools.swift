@@ -148,6 +148,7 @@ actor ChatLibraryTools {
         var id: String
         var date: Date
     }
+    private let analytics: AnalyticsAttempt?
     private let turn: MeetingChatTurn
     private let store: MeetingChatStore
     private let root: URL
@@ -158,11 +159,12 @@ actor ChatLibraryTools {
     private struct QuerySnapshotChanged: Error {}
     private let observeQueryVersion: (URL) throws -> (() throws -> Bool)
 
-    init(turn: MeetingChatTurn, databaseURL: URL,
+    init(turn: MeetingChatTurn, databaseURL: URL, analytics: AnalyticsAttempt? = nil,
          observeQueryVersion: @escaping (URL) throws -> (() throws -> Bool) = { url in
              let version = try HistorySQLVersion(url: url)
              return { try version.isCurrent() }
          }) {
+        self.analytics = analytics
         self.observeQueryVersion = observeQueryVersion
         self.turn = turn
         store = MeetingChatStore(databaseURL: databaseURL)
@@ -193,7 +195,9 @@ actor ChatLibraryTools {
     private func perform(_ call: ChatLibraryCall, evidence: MeetingChatEvidence) throws -> MeetingChatToolResult {
         switch call {
         case .sql(let query): return try querySQL(query, evidence: evidence)
-        case .search(let search): return try page(search, after: nil, evidence: evidence)
+        case .search(let search):
+            analytics?.usedChatSource(.init(search.kind))
+            return try page(search, after: nil, evidence: evidence)
         case .more(let token):
             guard let (query, cursor) = cursors[token] else { throw MeetingChatHarnessError.toolProtocol }
             return try page(query, after: cursor, evidence: evidence)
@@ -304,6 +308,9 @@ actor ChatLibraryTools {
         do {
             return try sql.withWork {
             let tables = try sql.plan(query)
+            for table in tables {
+                if let source = ChatAnalyticsSource.sqlTables[table] { analytics?.usedChatSource(source) }
+            }
             let db = store.databaseURL
             let version = try observeQueryVersion(db)
             let catalog = root.appendingPathComponent("catalog.sqlite")

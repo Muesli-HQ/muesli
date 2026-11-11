@@ -254,6 +254,7 @@ final class VisualMemoryController {
 
     func requestRecording(meetingID: Int64, sessionID: UUID, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
         guard recordingMeetingID == nil, !isPreparing, !isFinalizing else { return }
+        ProductAnalytics.event(.meeting_video, .started)
         isPreparing = true; message = nil; messageMeetingID = meetingID; token = UUID()
         recordingNeedsScreenPermission = false
         let attempt = token
