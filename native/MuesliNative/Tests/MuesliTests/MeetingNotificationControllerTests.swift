@@ -27,7 +27,31 @@ struct MeetingNotificationControllerTests {
         #expect(controller.testingRecentMeetingCandidate() == nil)
     }
 
-    @Test("calendar auto-record preserves recordings and asks when a call may already be active")
+    struct JoinedCallRow: Sendable, CustomTestStringConvertible {
+        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, action: ScheduledMeetingNotificationPolicy.JoinedCallAction
+        var testDescription: String { "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) -> \(action)" }
+    }
+
+    static let joinedCallRows: [JoinedCallRow] = [
+        .init(toasts: true, autoRecord: true, hasEvent: true, action: .record),
+        .init(toasts: true, autoRecord: true, hasEvent: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, action: .showToast),
+        .init(toasts: false, autoRecord: true, hasEvent: true, action: .record),
+        .init(toasts: false, autoRecord: true, hasEvent: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, action: .ignore),
+    ]
+
+    @Test("a joined call records only when calendar auto-record covers it, and prompts only with toasts on",
+          arguments: joinedCallRows)
+    func joinedCallAction(row: JoinedCallRow) {
+        #expect(ScheduledMeetingNotificationPolicy.joinedCallAction(
+            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord, hasCalendarEvent: row.hasEvent
+        ) == row.action)
+    }
+
+    @Test("calendar auto-record preserves recordings, asks when a call may be active, and never starts without one")
     func autoRecordConflictDecision() {
         let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision
         #expect(decision(true, true, true) == .keepCurrentRecording)
@@ -35,7 +59,7 @@ struct MeetingNotificationControllerTests {
         #expect(decision(false, true, false) == .askBeforeRecording)
         #expect(decision(false, false, true) == .askBeforeRecording)
         #expect(decision(false, false, nil) == .askBeforeRecording)
-        #expect(decision(false, false, false) == .startRecording)
+        #expect(decision(false, false, false) == .waitForJoin)
         #expect(!ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
             recordingRoom: "meet.google.com/aaa-bbbb-ccc", scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
         ))
