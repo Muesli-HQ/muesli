@@ -234,14 +234,17 @@ final class CalendarMonitor {
         daysAhead: Int = UpcomingMeetingsWindow.defaultDayCount,
         hoursAhead: Int? = nil,
         disabledCalendarIDs: Set<String> = [],
-        now: Date = Date()
+        now: Date = Date(),
+        includeRestOfToday: Bool = false
     ) -> [UnifiedCalendarEvent] {
         // Create a fresh EKEventStore each time to avoid stale cache.
         // EKEventStore instances cache calendar data and don't automatically
         // reflect external changes (e.g., events moved in Google Calendar).
         // Uses a local instance to avoid racing with currentEvent()/currentOrNearbyEvent().
         let freshStore = EKEventStore()
-        guard let future = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead, hourCount: hoursAhead) else { return [] }
+        guard let windowEnd = UpcomingMeetingsWindow.endDate(from: now, dayCount: daysAhead, hourCount: hoursAhead) else { return [] }
+        let todayEnd = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? windowEnd
+        let future = includeRestOfToday ? max(windowEnd, todayEnd) : windowEnd
         let predicate = freshStore.predicateForEvents(withStart: now, end: future, calendars: nil)
         let events = freshStore.events(matching: predicate)
         let unified: [UnifiedCalendarEvent] = events.compactMap { event in
@@ -262,7 +265,9 @@ final class CalendarMonitor {
                     startDate: startDate
                 ),
                 meetingURL: Self.extractMeetingURL(from: event),
-                attendees: Self.attendees(from: event)
+                attendees: Self.attendees(from: event),
+                documents: CalendarInviteDocument.extract(text: event.notes, eventURL: event.url,
+                                                          meetingURL: Self.extractMeetingURL(from: event))
             )
         }
         return UnifiedCalendarEvent
@@ -393,7 +398,7 @@ final class CalendarMonitor {
 
     static func extractMeetingURL(from event: EKEvent) -> URL? {
         // 1. Explicit event URL (set by calendar provider)
-        if let url = event.url, isMeetingURL(url) {
+        if let raw = event.url, let url = CalendarInviteDocument.safeURL(raw.absoluteString), isMeetingURL(url) {
             return url
         }
 
@@ -419,13 +424,15 @@ final class CalendarMonitor {
     /// field. This undocumented accessor is best effort: verify its signature
     /// and return nil when it disappears or returns an unsupported value.
     static func meetingURLFromCalendarVideoCall(_ object: NSObject) -> URL? {
-        if let url = calendarObjectValue(object, selectorName: "conferenceURL") as? URL, isMeetingURL(url) {
+        if let raw = calendarObjectValue(object, selectorName: "conferenceURL") as? URL,
+           let url = CalendarInviteDocument.safeURL(raw.absoluteString), isMeetingURL(url) {
             return url
         }
         guard let conference = calendarObjectValue(object, selectorName: "virtualConference") as? NSObject,
               let methods = calendarObjectValue(conference, selectorName: "joinMethods") as? [NSObject] else { return nil }
         for method in methods {
-            if let url = calendarObjectValue(method, selectorName: "URL") as? URL, isMeetingURL(url) {
+            if let raw = calendarObjectValue(method, selectorName: "URL") as? URL,
+               let url = CalendarInviteDocument.safeURL(raw.absoluteString), isMeetingURL(url) {
                 return url
             }
         }
@@ -441,27 +448,43 @@ final class CalendarMonitor {
         return object.perform(selector)?.takeUnretainedValue()
     }
 
-    private static func isMeetingURL(_ url: URL) -> Bool {
+    static func isMeetingURL(_ url: URL) -> Bool {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil else { return false }
         guard let host = url.host?.lowercased() else { return false }
         // Slack: only huddle URLs are meetings; app.slack.com/client/... etc. are not.
         if host == "app.slack.com" {
             return url.path.hasPrefix("/huddle/")
         }
         // Teams free: only /meet/<id> links are meetings, matching the text patterns.
+        if host == "teams.microsoft.com" {
+            let parts = url.path.split(separator: "/", omittingEmptySubsequences: false)
+            return (parts.count > 2 && parts[1] == "meet" && !parts[2].isEmpty)
+                || (parts.count > 3 && parts[1] == "l" && parts[2] == "meetup-join" && !parts[3].isEmpty)
+        }
         if host == "teams.live.com" {
             let parts = url.path.split(separator: "/", omittingEmptySubsequences: false)
             return parts.count > 2 && parts[1] == "meet" && !parts[2].isEmpty
         }
         let meetingHosts = ["zoom.us", "meet.google.com", "teams.microsoft.com", "webex.com", "chime.aws", "facetime.apple.com"]
-        return meetingHosts.contains(where: { host.hasSuffix($0) })
+        return meetingHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) })
     }
 
     static func findMeetingURL(in text: String) -> URL? {
+        // Resolve provider wrappers locally before classifying the destination.
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                if let raw = match.url, let url = CalendarInviteDocument.safeURL(raw.absoluteString), isMeetingURL(url) {
+                    return url
+                }
+            }
+        }
         guard let regex = meetingURLPattern else { return nil }
         let range = NSRange(text.startIndex..., in: text)
-        guard let match = regex.firstMatch(in: text, range: range) else { return nil }
-        guard let matchRange = Range(match.range, in: text) else { return nil }
-        return URL(string: String(text[matchRange]))
+        for match in regex.matches(in: text, range: range) {
+            if let matchRange = Range(match.range, in: text),
+               let url = CalendarInviteDocument.safeURL(String(text[matchRange])), isMeetingURL(url) { return url }
+        }
+        return nil
     }
 
 }

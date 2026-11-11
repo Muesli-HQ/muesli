@@ -4640,7 +4640,8 @@ public final class MuesliController: NSObject {
                 daysAhead: dayCount,
                 hoursAhead: window.hourCount,
                 disabledCalendarIDs: disabledIDs,
-                now: refreshNow
+                now: refreshNow,
+                includeRestOfToday: true
             )
         }), !Task.isCancelled, calendarEventQuery.isCurrent(result) else { return false }
         let ekEvents = result.events
@@ -4688,7 +4689,7 @@ public final class MuesliController: NSObject {
             }
         }
 
-        statusBarController?.updateMenuBarTitle()
+        statusBarController?.refresh()
         return true
     }
 
@@ -4819,6 +4820,7 @@ public final class MuesliController: NSObject {
 
     private var shouldRunCalendarMonitor: Bool {
         config.resolvedOnboardingUseCase.includesMeetings || shouldRunMeetingFeatureMonitors
+            || config.showNextMeetingInMenuBar
     }
 
     private func syncMeetingDetectionMonitor() {
@@ -8245,6 +8247,20 @@ public final class MuesliController: NSObject {
     @objc func hideCalendarEventFromMenuItem(_ sender: NSMenuItem) {
         guard let payload = sender.representedObject as? CalendarMenuMeetingPayload else { return }
         hideCalendarEvent(payload.event)
+    }
+
+    @objc func joinCalendarMeetingFromMenuItem(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? CalendarMenuMeetingPayload,
+              let url = payload.event.meetingURL, CalendarMonitor.isMeetingURL(url) else { return }
+        joinOnly(meetingURL: url, endDate: payload.endDate)
+    }
+
+    @objc func joinAndRecordCalendarMeetingFromMenuItem(_ sender: NSMenuItem) {
+        guard !isMeetingRecording(), !isStartingMeetingRecording,
+              let payload = sender.representedObject as? CalendarMenuMeetingPayload,
+              let url = payload.event.meetingURL, CalendarMonitor.isMeetingURL(url) else { return }
+        joinAndRecord(title: payload.title, meetingURL: url, endDate: payload.endDate,
+                      calendarOccurrence: payload.calendarOccurrence)
     }
 
     @objc func startMeetingFromCalendarMenuItem(_ sender: NSMenuItem) {

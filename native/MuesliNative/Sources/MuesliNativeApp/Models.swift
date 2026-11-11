@@ -2396,6 +2396,8 @@ struct AppConfig: Codable, Equatable {
     var menuBarIcon: String = "muesli"
     var showHotkeyInMenuBar: Bool = true
     var showNextMeetingInMenuBar: Bool = true
+    var calendarMenuLabelStyle: CalendarMenuLabelStyle = .titleAndTime
+    var showInviteDocuments: Bool = true
     var maraudersMapUnlocked: Bool = false
     var maraudersMapAudioClip: String = "bbc_world_news"
     var maraudersMapCustomAudioPath: String?
@@ -2590,6 +2592,8 @@ struct AppConfig: Codable, Equatable {
         case menuBarIcon = "menu_bar_icon"
         case showHotkeyInMenuBar = "show_hotkey_in_menu_bar"
         case showNextMeetingInMenuBar = "show_next_meeting_in_menu_bar"
+        case calendarMenuLabelStyle = "calendar_menu_label_style"
+        case showInviteDocuments = "show_invite_documents"
         case maraudersMapUnlocked = "marauders_map_unlocked"
         case maraudersMapAudioClip = "marauders_map_audio_clip"
         case maraudersMapCustomAudioPath = "marauders_map_custom_audio_path"
@@ -2873,6 +2877,8 @@ struct AppConfig: Codable, Equatable {
             (try? c.decode(Bool.self, forKey: .showHotkeyInMenuBar))
             ?? defaults.showHotkeyInMenuBar
         showNextMeetingInMenuBar = (try? c.decode(Bool.self, forKey: .showNextMeetingInMenuBar)) ?? defaults.showNextMeetingInMenuBar
+        calendarMenuLabelStyle = (try? c.decode(CalendarMenuLabelStyle.self, forKey: .calendarMenuLabelStyle)) ?? defaults.calendarMenuLabelStyle
+        showInviteDocuments = (try? c.decode(Bool.self, forKey: .showInviteDocuments)) ?? defaults.showInviteDocuments
         maraudersMapUnlocked = (try? c.decode(Bool.self, forKey: .maraudersMapUnlocked)) ?? defaults.maraudersMapUnlocked
         maraudersMapAudioClip = (try? c.decode(String.self, forKey: .maraudersMapAudioClip)) ?? defaults.maraudersMapAudioClip
         maraudersMapCustomAudioPath = try? c.decode(String.self, forKey: .maraudersMapCustomAudioPath)

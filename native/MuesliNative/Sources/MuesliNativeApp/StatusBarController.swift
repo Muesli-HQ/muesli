@@ -33,18 +33,32 @@ final class CleanupMenuSelection: NSObject {
 }
 
 @MainActor
-final class StatusBarController: NSObject, NSMenuDelegate {
+final class StatusBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private let controller: MuesliController
     private let runtime: RuntimePaths
     private let statusItem: NSStatusItem
-    private let menu = NSMenu()
+    let menu = NSMenu()
     private var countdownOverride: String?
+    private let documentTitles: CalendarDocumentTitleResolver
+    private var documentTitleTask: Task<Void, Never>?
     private let captureDot = NSView(frame: .zero)
     private var captureIndicatorTimer: Timer?
 
-    deinit { captureIndicatorTimer?.invalidate() }
+    private var calendarTitleTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    private var clockObserver: NSObjectProtocol?
 
-    init(controller: MuesliController, runtime: RuntimePaths) {
+    deinit {
+        captureIndicatorTimer?.invalidate()
+        calendarTitleTimer?.invalidate()
+        documentTitleTask?.cancel()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let clockObserver { NotificationCenter.default.removeObserver(clockObserver) }
+    }
+
+    init(controller: MuesliController, runtime: RuntimePaths,
+         documentTitles: CalendarDocumentTitleResolver? = nil) {
+        self.documentTitles = documentTitles ?? CalendarDocumentTitleResolver()
         self.controller = controller
         self.runtime = runtime
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -52,6 +66,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.delegate = self
         build()
         installCaptureIndicator()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshCalendarAfterWake() }
+        }
+        clockObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSSystemClockDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshCalendarAfterWake() }
+        }
     }
 
     func setStatus(_ text: String) {}
@@ -62,7 +86,40 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        rebuildMenu()
+        refresh()
+        resolveInviteDocumentTitles()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.controller.refreshUpcomingCalendarEvents()
+            self.refresh()
+        }
+    }
+
+    private func resolveInviteDocumentTitles() {
+        guard controller.config.showInviteDocuments, documentTitleTask == nil else { return }
+        let now = Date()
+        var events = CalendarMenuPresentation.ordered(controller.appState.visibleUpcomingCalendarEvents, now: now)
+        if let featured = featuredEvent(now: now) { events.insert(featured, at: 0) }
+        let documents = events.flatMap(\.documents)
+        documentTitleTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.documentTitleTask = nil }
+            if await self.documentTitles.resolve(documents), !Task.isCancelled { self.rebuildMenu() }
+        }
+    }
+
+    private func refreshCalendarAfterWake() {
+        refresh()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.controller.refreshUpcomingCalendarEvents()
+            self.refresh()
+        }
+    }
+
+    private func featuredEvent(now: Date) -> UnifiedCalendarEvent? {
+        CalendarMenuPresentation.featured(controller.appState.visibleMenuBarCalendarEvents, now: now,
+            activeOccurrenceKey: controller.activeLiveMeetingRecord()?.calendarOccurrence?.identityKey)
     }
 
     func setCountdownOverride(_ text: String?) {
@@ -81,22 +138,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             detail = countdownOverride
         } else if controller.config.showNextMeetingInMenuBar {
             let now = Date()
-            let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)) ?? now
-            let nextEvent = controller.appState.visibleUpcomingCalendarEvents
-                .filter { $0.startDate > now && $0.startDate < endOfToday }
-                .sorted { $0.startDate < $1.startDate }
-                .first
-
-            if let event = nextEvent {
-                let minutesUntil = Int(ceil(event.startDate.timeIntervalSince(now) / 60))
-                let truncatedTitle = event.title.count > 20
-                    ? String(event.title.prefix(18)) + "…"
-                    : event.title
-                detail = minutesUntil <= 60
-                    ? "\(truncatedTitle) · \(formatTimeUntil(minutesUntil))"
-                    : truncatedTitle
-            } else {
-                detail = nil
+            detail = featuredEvent(now: now).flatMap {
+                CalendarMenuPresentation.label($0, now: now, style: controller.config.calendarMenuLabelStyle)
             }
         } else {
             detail = nil
@@ -106,6 +149,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             showsHotkey: controller.config.showHotkeyInMenuBar,
             detail: detail
         )
+        calendarTitleTimer?.invalidate()
+        let deadline = CalendarMenuPresentation.nextRefresh(controller.appState.visibleMenuBarCalendarEvents, now: Date())
+        let timer = Timer(fire: deadline, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        calendarTitleTimer = timer
     }
 
     private func build() {
@@ -165,7 +215,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // Upcoming calendar events
         let upcomingEvents = controller.appState.visibleUpcomingCalendarEvents
-        if !upcomingEvents.isEmpty {
+        if !upcomingEvents.isEmpty || featuredEvent(now: Date()) != nil {
             addUpcomingEventsSection(upcomingEvents)
             menu.addItem(.separator())
         }
@@ -428,20 +478,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH:mm"
 
-        let futureEvents = events
-            .filter { $0.startDate > now }
-            .sorted { $0.startDate < $1.startDate }
-        let nextUpEvents = futureEvents.filter { $0.startDate.timeIntervalSince(now) <= 3600 }
-        let laterEvents = futureEvents.filter { $0.startDate.timeIntervalSince(now) > 3600 }
-
-        if !nextUpEvents.isEmpty {
-            let firstEvent = nextUpEvents[0]
-            let minutesUntil = Int(ceil(firstEvent.startDate.timeIntervalSince(now) / 60))
-            addUpcomingEventGroup(
-                title: "Starts in \(formatTimeUntil(minutesUntil))",
-                events: nextUpEvents,
-                timeFormatter: timeFormatter
-            )
+        let featured = featuredEvent(now: now) ?? CalendarMenuPresentation.ordered(events, now: now).first
+        if let featured {
+            let header = NSMenuItem(title: featured.startDate <= now ? "Current meeting" : "Next meeting", action: nil, keyEquivalent: "")
+            menu.addItem(header)
+            let item = NSMenuItem(title: "\(controller.truncate(featured.title, limit: 60)) · \(CalendarMenuPresentation.time(featured, now: now))", action: nil, keyEquivalent: "")
+            item.submenu = meetingActions(featured, includeDocuments: false)
+            menu.addItem(item)
+            // Visible actions and documents belong directly to the featured meeting.
+            let actions = meetingActions(featured, includeDocuments: true, includeHide: false)
+            for action in actions.items {
+                actions.removeItem(action)
+                // AppKit suppresses item images on indented menu rows.
+                action.indentationLevel = action.image == nil ? 1 : 0
+                menu.addItem(action)
+            }
+        }
+        let laterEvents = CalendarMenuPresentation.ordered(events, now: now).filter {
+            $0.resolvedCalendarOccurrence.identityKey != featured?.resolvedCalendarOccurrence.identityKey
         }
 
         let groupedEvents = Dictionary(grouping: laterEvents) { event in
@@ -467,7 +521,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         header.isEnabled = false
         let headerAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .font: AppFonts.medium(11),
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
         header.attributedTitle = NSAttributedString(string: title, attributes: headerAttrs)
@@ -481,23 +535,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 action: nil,
                 keyEquivalent: ""
             )
-            let payload = CalendarMenuMeetingPayload(event: event)
-            let actions = NSMenu()
-            let record = actionItem(title: "Record Meeting", action: #selector(MuesliController.startMeetingFromCalendarMenuItem(_:)))
-            record.representedObject = payload
-            actions.addItem(record)
-            let hide = actionItem(title: "Hide from muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
-            hide.representedObject = payload
-            hide.toolTip = "Hide this occurrence from Coming Up and reminders. The calendar event is not deleted."
-            actions.addItem(hide)
-            item.submenu = actions
+            item.submenu = meetingActions(event)
 
             let titleAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .font: AppFonts.medium(13),
                 .foregroundColor: NSColor.labelColor,
             ]
             let timeAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: AppFonts.regular(11),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]
             let attributed = NSMutableAttributedString(string: event.title, attributes: titleAttrs)
@@ -505,6 +550,69 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             item.attributedTitle = attributed
             menu.addItem(item)
         }
+    }
+
+    func meetingActions(_ event: UnifiedCalendarEvent, includeDocuments: Bool = true,
+                                includeHide: Bool = true) -> NSMenu {
+        let actions = NSMenu()
+        // Explicit availability must survive AppKit menu validation.
+        actions.autoenablesItems = false
+        let payload = CalendarMenuMeetingPayload(event: event)
+        let canRecord = !controller.isMeetingRecording() && !controller.appState.isMeetingStarting
+        if let url = event.meetingURL, CalendarMonitor.isMeetingURL(url) {
+            let join = actionItem(title: "Join", action: #selector(MuesliController.joinCalendarMeetingFromMenuItem(_:)))
+            join.representedObject = payload
+            actions.addItem(join)
+            let record = actionItem(title: "Join & Record", action: #selector(joinAndRecordCalendarMeeting(_:)))
+            record.target = self
+            record.representedObject = payload
+            record.isEnabled = canRecord
+            actions.addItem(record)
+        }
+        let record = actionItem(title: "Record Only", action: #selector(recordCalendarMeeting(_:)))
+        record.target = self
+        record.representedObject = payload
+        record.isEnabled = canRecord
+        actions.addItem(record)
+        if includeDocuments && controller.config.showInviteDocuments {
+            for document in event.documents {
+                let item = NSMenuItem(title: documentTitles.title(for: document), action: #selector(openInviteDocument(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = document.url
+                item.toolTip = document.url.absoluteString
+                item.image = NSImage(systemSymbolName: document.symbol, accessibilityDescription: "Document")
+                actions.addItem(item)
+            }
+        }
+        if includeHide {
+            let hide = actionItem(title: "Hide from muesli", action: #selector(MuesliController.hideCalendarEventFromMenuItem(_:)))
+            hide.representedObject = payload
+            hide.toolTip = "Hide this occurrence from Coming Up and reminders. The calendar event is not deleted."
+            actions.addItem(hide)
+        }
+        return actions
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(recordCalendarMeeting(_:)) || menuItem.action == #selector(joinAndRecordCalendarMeeting(_:)) {
+            return !controller.isMeetingRecording() && !controller.appState.isMeetingStarting
+        }
+        return true
+    }
+
+    @objc private func recordCalendarMeeting(_ sender: NSMenuItem) {
+        controller.startMeetingFromCalendarMenuItem(sender)
+    }
+
+    @objc private func joinAndRecordCalendarMeeting(_ sender: NSMenuItem) {
+        controller.joinAndRecordCalendarMeetingFromMenuItem(sender)
+    }
+
+    @objc private func openInviteDocument(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL,
+              let safe = CalendarInviteDocument.safeURL(url.absoluteString),
+              !CalendarMonitor.isMeetingURL(safe) else { return }
+        NSWorkspace.shared.open(safe)
     }
 
     private func upcomingMenuHeader(for day: Date, calendar: Calendar) -> String {
@@ -517,18 +625,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE, MMM d"
         return formatter.string(from: day)
-    }
-
-    private func formatTimeUntil(_ minutes: Int) -> String {
-        if minutes < 60 {
-            return "\(minutes)m"
-        }
-        let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        if remainingMinutes == 0 {
-            return "\(hours)h"
-        }
-        return "\(hours)h \(remainingMinutes)m"
     }
 
     private func timeTurnerMenuItem() -> NSMenuItem {

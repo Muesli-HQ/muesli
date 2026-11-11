@@ -2670,6 +2670,12 @@ struct SettingsView: View {
                 settingsCompactRow("Show next meeting in menu bar") {
                     settingsControl("show_next_meeting")
                 }
+                settingsRow("Meeting label") {
+                    settingsControl("calendar_menu_label")
+                }
+                settingsCompactRow("Show invite documents") {
+                    settingsControl("show_invite_documents")
+                }
             }
 
             if appState.config.maraudersMapUnlocked {
