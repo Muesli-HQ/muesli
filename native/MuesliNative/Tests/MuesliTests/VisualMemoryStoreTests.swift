@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import Testing
 import SQLite3
 import ImageIO
@@ -38,6 +39,30 @@ struct VisualMemoryStoreTests {
         #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
         #expect(!TimeTurnerWindowPrivacy.permits(frames: [focused], windows: [0, 1],
             frame: { _ in focused }, inspect: { _, _ in (nil, []) }, withinBudget: { true }))
+    }
+
+    @Test func missingAXChildrenRequireAKnownLeaf() {
+        for error in [AXError.attributeUnsupported, .noValue] {
+            for role in ["AXWindow", "AXGroup", "AXWebArea", "AXTextField", "AXUnknown", ""] {
+                #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: role))
+            }
+            #expect(TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: kAXStaticTextRole))
+            #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXWindowsAttribute, role: kAXStaticTextRole))
+        }
+        #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: .cannotComplete, attribute: kAXChildrenAttribute, role: kAXButtonRole))
+    }
+
+    @Test func privacyToggleDuringCaptureRejectsOriginalImageBeforeRecognition() throws {
+        let policy = ContentPrivacy(enabled: false)
+        let session = policy.capture()
+        let bitmap = try #require(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8,
+            bytesPerRow: 512, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let snapshot = try #require(bitmap.makeImage())
+        policy.setEnabled(true)
+        policy.setEnabled(false)
+        #expect(throws: CancellationError.self) {
+            _ = try VisualMemoryEncoding.encode(.init(image: snapshot), privacy: session, policy: policy)
+        }
     }
 
     @Test @MainActor func displayPrivacyBudgetSpansAppsAndRevalidation() async {

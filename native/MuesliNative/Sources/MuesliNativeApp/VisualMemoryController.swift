@@ -534,7 +534,7 @@ final class VisualMemoryController {
         return DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
     }
 
-    private nonisolated static func permitsDisplayWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval) async -> Bool {
+    private nonisolated static func permitsCaptureWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval) async -> Bool {
         await Task.detached(priority: .utility) {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0, let app = NSRunningApplication(processIdentifier: processID),
@@ -574,7 +574,7 @@ final class VisualMemoryController {
             return
         }
         if ["all_displays", "selected_displays"].contains(ambientConfig?.timeTurnerCaptureScope ?? "") {
-            await captureDisplays(generation: generation)
+            await captureDisplays(generation: generation, privacy: privacy)
             return
         }
         guard let store, let app = NSWorkspace.shared.frontmostApplication,
@@ -600,6 +600,12 @@ final class VisualMemoryController {
             guard !["incognito", "private browsing", "inprivate"].contains(where: { title.localizedCaseInsensitiveContains($0) }) else {
                 ambientStatus = "Skipping private window"; return
             }
+            var budget = TimeTurnerAXBudget(interval: Double(ambientConfig?.timeTurnerInterval ?? "10") ?? 10)
+            guard await budget.permits(reserving: budget.revalidationReserve, { deadline in
+                await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
+            }), generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else {
+                return
+            }
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let configuration = SCStreamConfiguration()
             configuration.width = max(2, Int(window.frame.width * CGFloat(filter.pointPixelScale)))
@@ -614,12 +620,18 @@ final class VisualMemoryController {
                   image.width >= 100, image.height >= 100 else {
                 throw ScreenVideoRecorder.error("Screen capture returned unexpected dimensions; no image was saved.")
             }
-            let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
             let after = await Self.ambientWindow(processID: pid)
             guard !after.secure, generation == ambientGeneration, permitsAmbientCapture,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
                   after.window?.frame == frame,
-                  after.window?.title == focused.title else { return }
+                  after.window?.title == focused.title,
+                  await budget.permits({ deadline in
+                      await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
+                  }), generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
+            let result = try await Task.detached(priority: .utility) {
+                try VisualMemoryEncoding.encode(.init(image: image), privacy: privacy)
+            }.value
+            guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
             ambientStatus = "On · this Mac"
             onAmbientCaptureActivity?(true)
             let source = [app.localizedName ?? bundle, title].filter { !$0.isEmpty }.joined(separator: " · ")
@@ -686,9 +698,8 @@ final class VisualMemoryController {
     }
 
     /// Sequential acquisition bounds image/OCR memory to one display.
-    private func captureDisplays(generation: UUID) async {
-        guard let store else { return }
-        let privacy = ContentPrivacy.shared.capture()
+    private func captureDisplays(generation: UUID, privacy: ContentPrivacy.Session) async {
+        guard let store, ContentPrivacy.shared.permits(privacy) else { return }
         do {
             await refreshSpace()
             guard freeBytes > 2_000_000_000 else { ambientStatus = "Paused — disk space low"; return }
@@ -723,7 +734,7 @@ final class VisualMemoryController {
             for (pid, windows) in candidates {
                 guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
                 guard let pid, await axBudget.permits(reserving: axBudget.revalidationReserve, { deadline in
-                    await Self.permitsDisplayWindows(processID: pid, frames: windows.map(\.frame), deadline: deadline)
+                    await Self.permitsCaptureWindows(processID: pid, frames: windows.map(\.frame), deadline: deadline)
                 }) else {
                     excluded.formUnion(windows.compactMap { $0.owningApplication?.bundleIdentifier })
                     continue
@@ -755,21 +766,24 @@ final class VisualMemoryController {
                     guard image.width == configuration.width, image.height == configuration.height else {
                         throw ScreenVideoRecorder.error("Display capture returned unexpected dimensions.")
                     }
-                    let result = try await Task.detached(priority: .utility) { try VisualMemoryEncoding.encode(.init(image: image)) }.value
-                    // A display can disconnect or a window become private while acquisition/OCR runs.
+                    // A display can disconnect or a window become private during acquisition.
                     let current = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
                     guard current.displays.contains(where: { $0.displayID == display.displayID && $0.frame == display.frame }),
                           windows.allSatisfy({ old in current.windows.contains { DisplayWindowState($0) == DisplayWindowState(old) } }) else { continue }
                     var secure = false
                     for (pid, included) in Dictionary(grouping: windows, by: { $0.owningApplication?.processID }) {
                         guard let pid, await axBudget.permits({ deadline in
-                            await Self.permitsDisplayWindows(processID: pid, frames: included.map(\.frame), deadline: deadline)
+                            await Self.permitsCaptureWindows(processID: pid, frames: included.map(\.frame), deadline: deadline)
                         }) else {
                             secure = true; break
                         }
                     }
                     guard !secure, generation == ambientGeneration, permitsAmbientCapture,
                           ContentPrivacy.shared.permits(privacy) else { continue }
+                    let result = try await Task.detached(priority: .utility) {
+                        try VisualMemoryEncoding.encode(.init(image: image), privacy: privacy)
+                    }.value
+                    guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
                     let apps = Array(Set(windows.compactMap { window -> VisualMemoryApp? in
                         guard let app = window.owningApplication else { return nil }
                         return .init(bundleID: app.bundleIdentifier, name: app.applicationName)

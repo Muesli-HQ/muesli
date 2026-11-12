@@ -41,28 +41,42 @@ enum TimeTurnerWindowPrivacy {
         }, inspect: { node, limit in
             AXUIElementSetMessagingTimeout(node, 0.15)
             var subrole: CFTypeRef?
-            let role: String?
+            let nodeSubrole: String?
             switch AXUIElementCopyAttributeValue(node, kAXSubroleAttribute as CFString, &subrole) {
             case .success:
                 guard let value = subrole as? String else { return nil }
-                role = value
-            case .attributeUnsupported, .noValue: role = nil
+                nodeSubrole = value
+            case .attributeUnsupported, .noValue: nodeSubrole = nil
             default: return nil
             }
             guard let children = elements(node, kAXChildrenAttribute, limit: limit) else { return nil }
-            return (role, children)
+            return (nodeSubrole, children)
         }, withinBudget: { ProcessInfo.processInfo.systemUptime < deadline })
     }
 
     private static func elements(_ element: AXUIElement, _ attribute: String, limit: Int) -> [AXUIElement]? {
         var array: CFArray?
-        switch AXUIElementCopyAttributeValues(element, attribute as CFString, 0, limit + 1, &array) {
+        let status = AXUIElementCopyAttributeValues(element, attribute as CFString, 0, limit + 1, &array)
+        switch status {
         case .success:
             guard let array, CFArrayGetCount(array) <= limit,
                   let children = array as? [AXUIElement] else { return nil }
             return children
-        case .attributeUnsupported, .noValue: return []
-        default: return nil
+        default:
+            guard allowsMissingChildren(after: status, attribute: attribute, role: DictationContextCapture.axStringValue(element, attribute: kAXRoleAttribute)) else { return nil }
+            return []
+        }
+    }
+
+    // Only non-editable leaf controls can safely omit AXChildren. An opaque
+    // window, group, text input or unknown role could conceal a secure field.
+    static func allowsMissingChildren(after error: AXError, attribute: String, role: @autoclosure () -> String) -> Bool {
+        guard attribute == kAXChildrenAttribute, error == .attributeUnsupported || error == .noValue else { return false }
+        switch role() {
+        case kAXStaticTextRole, kAXImageRole, kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole, kAXSliderRole:
+            return true
+        default:
+            return false
         }
     }
 
