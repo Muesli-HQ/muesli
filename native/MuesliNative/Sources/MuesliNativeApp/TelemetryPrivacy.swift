@@ -23,6 +23,12 @@ final class TelemetryPrivacyGate: @unchecked Sendable {
     }
 
     var consentToken: String? { lock.withLock { configured && !disabled ? generation : nil } }
+    /// A feature action may drop a signal while opt-out or upload holds the gate.
+    var bestEffortConsentToken: String? {
+        guard lock.try() else { return nil }
+        defer { lock.unlock() }
+        return configured && !disabled ? generation : nil
+    }
     var isDisabled: Bool { lock.withLock { disabled } }
     var parameters: [String: String] {
         lock.withLock { [Self.localMarker: disabled ? "disabled" : generation] }
