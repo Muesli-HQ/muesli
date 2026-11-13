@@ -133,7 +133,8 @@ struct DictationsView: View {
                                             },
                                             onDelete: {
                                                 controller.deleteDictation(id: record.id)
-                                            }
+                                            },
+                                            recordingController: controller
                                         )
                                         .contextMenu {
                                             Button {

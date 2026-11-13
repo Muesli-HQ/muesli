@@ -96,6 +96,18 @@ that has entered Privacy mode. Anonymous finite lifecycle events remain governed
 by the separate analytics switch; unsaved private dictations do not contribute
 to the saved-word baseline or daily word counts.
 
+### Retained long dictations
+
+When enabled in Settings → Dictations, a completed recording longer than the
+chosen threshold (minimum one minute) can be replayed or retranscribed from its
+history row. `dictation_audio(dictation_id PRIMARY KEY, wav BLOB NOT NULL)`
+holds only local WAV data. History queries project existence without reading the
+audio. Local and synced tombstones delete the audio through a trigger. WAV data
+and its availability are excluded from text sync and serialized history records.
+A local retranscription updates text, word count, model identity and sync state
+on the existing live row after successful recognition. Failed-recording recovery
+continues to use its independent archive regardless of this preference.
+
 ### Local word analytics checkpoint outside SQLite
 
 `DictationWordAnalytics` owns `analytics-word-count.json` beside the active
@@ -249,6 +261,7 @@ see [MedASR setup](docs/medasr.md).
 
 ```mermaid
 erDiagram
+    dictations ||--o| dictation_audio : "locally retained WAV"
     dictations ||--o| computer_use_traces : "has optional trace"
 
     meeting_folders ||--o{ meeting_folders : "contains child folders"

@@ -162,6 +162,64 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
+    @Test("Long WAV follows the finished paste to its original history row")
+    @MainActor
+    func retainedAudioAfterClipboardSettles() async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        try await controller.applySetting("retain_long_dictation_audio", value: "on")
+        try await controller.applySetting("dictation_audio_threshold_minutes", value: "7")
+        #expect(controller.appState.config.dictationAudioThresholdMinutes == 7)
+        try await controller.applySetting("dictation_audio_threshold_minutes", value: "1")
+        let url = directory.appendingPathComponent("long.wav")
+        let samples = Data(repeating: 0, count: 61 * 16_000 * 2)
+        let wav = WavWriter.header(dataSize: UInt32(samples.count)) + samples
+        try wav.write(to: url)
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in }, dispatchPaste: { _ in true }, warning: { _ in })
+        await withCheckedContinuation { continuation in
+            controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+            controller.finishStandardFormattingForTesting("Long recording.", duration: 61,
+                recording: DictationRecordingFile(stoppedWAV: url))
+        }
+        let id = try #require(database.recentDictations().first?.id)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while try database.dictation(id: id)?.hasRetainedAudio == false, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(try database.dictationAudio(id: id) == wav)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("Retranscribe a retained WAV with another installed model",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_FIXTURE"] != nil))
+    @MainActor
+    func retranscribeRetainedAudioWithLocalModel() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_FIXTURE"])
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        let audio = try Data(contentsOf: URL(fileURLWithPath: path))
+        let original = "Original synthetic transcript."
+        let id = try database.insertDictation(text: original, durationSeconds: 65, startedAt: Date(), endedAt: Date())
+        try database.saveDictationAudio(audio, id: id)
+        let recording = try #require(try database.dictation(id: id))
+        let defaultBackend = controller.selectedBackend
+        let backend = try #require([BackendOption.parakeetUnified, .parakeetMultilingual].first { $0 != defaultBackend && $0.isDownloaded })
+        controller.updateConfig { $0.enablePostProcessor = false }
+        controller.retranscribeDictation(recording, with: backend)
+        #expect(controller.appState.retranscribingHistoryID == id)
+        let deadline = ContinuousClock.now + .seconds(120)
+        while controller.appState.retranscribingHistoryID != nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(controller.appState.retranscribingHistoryID == nil)
+        let updated = try #require(try database.dictation(id: id))
+        #expect(!updated.rawText.isEmpty && updated.rawText != original)
+        #expect(controller.selectedBackend == defaultBackend)
+        #expect(try database.dictationAudio(id: id) == audio)
+        #expect(try database.recentDictations().count == 1)
+    }
+
     @Test("Privacy keeps paste functional without saving history or monitoring corrections", arguments: [true, false])
     @MainActor
     func privatePasteCompletion(delivered: Bool) async throws {

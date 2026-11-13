@@ -175,6 +175,7 @@ final class AppState {
         didSet { timelineHistoryRevision &+= 1 }
     }
     var dictationRows: [DictationRecord] = []
+    var retranscribingHistoryID: Int64?
     var failedDictations: [FailedDictation] = []
     var recoveringDictationID: UUID?
     var meetingRows: [MeetingRecord] = []

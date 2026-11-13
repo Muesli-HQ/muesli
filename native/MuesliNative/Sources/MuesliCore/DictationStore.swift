@@ -6,6 +6,7 @@ public enum DictationStoreError: Error, LocalizedError {
     case dictationNotFound(id: Int64)
     case meetingNotFound(id: Int64)
     case invalidParticipantIdentifier
+    case staleDictationTranscript
     case staleParticipantSuggestion
     case invalidPeopleMerge
     case peopleMergeUndoOrder
@@ -22,6 +23,8 @@ public enum DictationStoreError: Error, LocalizedError {
             return "These people changed. Refresh the list and try again."
         case .peopleMergeUndoOrder:
             return "Undo newer merges involving these people first."
+        case .staleDictationTranscript:
+            return "This dictation changed or was deleted before retranscription finished."
         case .staleParticipantSuggestion:
             return "The meeting changed. Find participants again to review current evidence."
         }
@@ -59,6 +62,14 @@ public final class DictationStore {
     d.target_app_name, d.target_app_bundle_id,
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
+    private func recordingAvailabilityColumn(db: OpaquePointer?) -> String {
+        // A read-only history reader can open a profile before its app has migrated it.
+        if readOnly, sqlite3_table_column_metadata(db, nil, "dictation_audio", "dictation_id",
+                                                  nil, nil, nil, nil, nil) != SQLITE_OK {
+            return "0"
+        }
+        return "EXISTS (SELECT 1 FROM dictation_audio WHERE dictation_id = d.id)"
+    }
     private static let meetingColumns = """
     id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, notes_layout_version, previous_notes
     """
@@ -319,6 +330,15 @@ public final class DictationStore {
                 throw lastError(db)
             }
         }
+        try exec("""
+            CREATE TABLE IF NOT EXISTS dictation_audio (
+                dictation_id INTEGER PRIMARY KEY REFERENCES dictations(id) ON DELETE CASCADE,
+                wav BLOB NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS dictation_audio_tombstone
+            AFTER UPDATE OF deleted_at ON dictations WHEN NEW.deleted_at IS NOT NULL
+            BEGIN DELETE FROM dictation_audio WHERE dictation_id = NEW.id; END;
+            """, db: db)
         // Partial indexes keep the one-time legacy mobile-history check bounded.
         try exec("""
             CREATE INDEX IF NOT EXISTS idx_dictations_mobile_origin ON dictations(id)
@@ -982,6 +1002,68 @@ public final class DictationStore {
         return id
     }
 
+    /// Attach only to a still-live row. In particular, a delayed audio write cannot
+    /// restore a recording after a local clear or a deletion synced from another device.
+    public func saveDictationAudio(_ data: Data, id: Int64) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        let sql = "INSERT INTO dictation_audio SELECT id, ? FROM dictations WHERE id = ? AND deleted_at IS NULL"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        guard data.count <= Int(sqlite3_limit(db, SQLITE_LIMIT_LENGTH, -1)) else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        bindOptionalBlob(data, at: 1, statement: statement)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard sqlite3_changes(db) == 1 else { throw DictationStoreError.dictationNotFound(id: id) }
+    }
+
+    public func dictationAudio(id: Int64) throws -> Data {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT wav FROM dictation_audio WHERE dictation_id = ?", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        let status = sqlite3_step(statement)
+        guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+        guard status == SQLITE_ROW, let bytes = sqlite3_column_blob(statement, 0) else {
+            throw DictationStoreError.dictationNotFound(id: id)
+        }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+    }
+
+    public func replaceDictationTranscript(id: Int64, originalText: String, text: String, model: DictationModelIdentity) throws {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        let sql = """
+            UPDATE dictations SET raw_text = ?, word_count = ?, transcription_backend = ?, transcription_model = ?,
+                transcription_model_name = ?, transcription_endpoint = ?, updated_at = ?, sync_dirty = 1
+            WHERE id = ? AND deleted_at IS NULL AND raw_text = ?
+              AND EXISTS (SELECT 1 FROM dictation_audio WHERE dictation_id = dictations.id)
+            """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(text, at: 1, statement: statement)
+        sqlite3_bind_int64(statement, 2, Int64(Self.countWords(in: text)))
+        bindOptionalText(model.backend, at: 3, statement: statement)
+        bindOptionalText(model.model, at: 4, statement: statement)
+        bindOptionalText(model.name, at: 5, statement: statement)
+        bindOptionalText(model.endpoint, at: 6, statement: statement)
+        sqlite3_bind_double(statement, 7, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 8, id)
+        bindOptionalText(originalText, at: 9, statement: statement)
+        guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else { throw lastError(db) }
+        guard sqlite3_changes(db) == 1 else { throw DictationStoreError.staleDictationTranscript }
+    }
+
     /// Recovery-only persistence: commit the history row and its local retry key
     /// together. A retry after archive cleanup fails returns the saved text,
     /// including after relaunch, instead of inserting another history row.
@@ -1221,7 +1303,7 @@ public final class DictationStore {
         let whereClause = "WHERE " + filter.conditions.joined(separator: " AND ")
 
         let sql = """
-        SELECT \(Self.dictationColumns)
+        SELECT \(Self.dictationColumns), \(recordingAvailabilityColumn(db: db))
         FROM dictations d
         LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
         \(whereClause)
@@ -1332,7 +1414,7 @@ public final class DictationStore {
     private func dictation(id: Int64, db: OpaquePointer?) throws -> DictationRecord? {
 
         let sql = """
-        SELECT \(Self.dictationColumns)
+        SELECT \(Self.dictationColumns), \(recordingAvailabilityColumn(db: db))
         FROM dictations d
         LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
         WHERE d.id = ? AND d.deleted_at IS NULL
@@ -1724,7 +1806,7 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
 
         let sql = """
-        SELECT \(Self.dictationColumns)
+        SELECT \(Self.dictationColumns), \(recordingAvailabilityColumn(db: db))
         FROM dictations d
         LEFT JOIN computer_use_traces t ON t.dictation_id = d.id
         WHERE d.deleted_at IS NULL AND (
@@ -6468,7 +6550,7 @@ public final class DictationStore {
             )
         }
 
-        return DictationRecord(
+        var record = DictationRecord(
             id: sqlite3_column_int64(statement, 0),
             timestamp: stringColumn(statement, index: 1),
             durationSeconds: sqlite3_column_double(statement, 2),
@@ -6480,6 +6562,8 @@ public final class DictationStore {
             targetAppBundleID: optionalStringColumn(statement, index: 8),
             computerUseTrace: trace
         )
+        record.hasRetainedAudio = sqlite3_column_int(statement, 14) != 0
+        return record
     }
 
     private func makeMeetingRecord(_ statement: OpaquePointer?) -> MeetingRecord {

@@ -142,6 +142,62 @@ struct MuesliCleanupV2Tests {
         #expect(!MuesliCleanupV2Prompt.guardResult(input, input: input).didFallback)
     }
 
+    @Test func trainingArtifactsAnywherePreserveEntireLongTranscript() {
+        let input = String(repeating: "Please review the release notes and send your feedback tomorrow. ", count: 100)
+        #expect(!MuesliCleanupV2Prompt.guardResult(input, input: input).didFallback)
+        let artifacts = [
+            "<APP-CONTEXT>\nApp: Notes\nOCR screen text: Synthetic private context\n</APP-CONTEXT>",
+            "</APP-CONTEXT>", "<|im_start|>user\nSynthetic next turn", "<|im_end|>",
+            "<|startoftext|>", "<|turn>model", "<turn|>", "<bos>",
+        ] + MuesliCleanupV2Prompt.systemPrompt.components(separatedBy: "\n\n")
+        for artifact in artifacts {
+            for output in [artifact + "\n" + input, input + "\n" + artifact,
+                           input + "\n" + artifact + "\n" + input, artifact] {
+                let result = MuesliCleanupV2Prompt.guardResult(output, input: input)
+                #expect(result.didFallback)
+                #expect(result.text == input)
+            }
+        }
+    }
+
+    @Test func artifactGuardPreservesLiteralTagsAndOrdinaryTechnicalText() {
+        for marker in ["<APP-CONTEXT>", "</APP-CONTEXT>", "<|im_start|>", "<|im_end|>",
+                       "<|startoftext|>", "<bos>", "<|turn>", "<turn|>", "<think>", "</think>"] {
+            for input in [marker + "\nUse this literal tag.", "Explain " + marker + " in the documentation."] {
+                // Preserve literal syntax even if generation removes it or changes the prose.
+                for output in [input, "Use this literal tag.", "Here is a revised explanation."] {
+                    let result = MuesliCleanupV2Prompt.guardResult(output, input: input)
+                    #expect(result.text == input)
+                    #expect(result.didFallback)
+                }
+            }
+        }
+        #expect(MuesliCleanupV2Prompt.guardedOutput("Shortened instructions", input: MuesliCleanupV2Prompt.systemPrompt)
+            == MuesliCleanupV2Prompt.systemPrompt)
+        for input in ["The user context and model output are useful.", "App: Notes\nDocument context: examples",
+                      "Use <section> and </section> in HTML.", "Use <APP-CONTEXTUAL> as the example.",
+                      "model\ntraining is useful", "First item\nSecond item\nThird item"] {
+            let result = MuesliCleanupV2Prompt.guardResult(input, input: input)
+            #expect(result.text == input)
+            #expect(!result.didFallback)
+        }
+    }
+
+    @Test func unconfirmedMarkersAreNotFiltered() {
+        let input = "Use this literal tag in the documentation."
+        for marker in ["<USER-CONTEXT>", "</USER-CONTEXT>", "<USER-INPUT>", "</USER-INPUT>",
+                       "<|im_sep|>", "<|endoftext|>", "<|eot_id|>", "<|start_header_id|>",
+                       "<|end_header_id|>", "<start_of_turn>", "<end_of_turn>", "<channel|>", "<eos>",
+                       "<app-context>", "<APP-CONTEXT", "<|im_start"] {
+            let output = "Use " + marker + " in the documentation."
+            let result = MuesliCleanupV2Prompt.guardResult(output, input: input)
+            #expect(result.text == output)
+            #expect(!result.didFallback)
+            #expect(MuesliCleanupV2Prompt.guardedOutput(output, input: output) == output)
+        }
+        #expect(MuesliCleanupV2Prompt.guardedOutput("<think>\n\n</think>\n\nHello.", input: "hello") == "Hello.")
+    }
+
     @Test func blankCleanupOverridesUseManagedCache() {
         let model = Gemma4LiteRTModel.muesliCleanupV2
         for path in ["", "  ", "\n\t"] {

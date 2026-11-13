@@ -315,6 +315,7 @@ private extension Data {
 
 struct MeetingRecordingPlayerView: View {
     let recordingPath: String
+    var cacheWaveform = true
 
     @State private var waveform: RecordingWaveformData?
     @State private var player: AVAudioPlayer?
@@ -423,9 +424,12 @@ struct MeetingRecordingPlayerView: View {
 
         let url = URL(fileURLWithPath: recordingPath)
         do {
+            let shouldCache = cacheWaveform
             let loadedWaveform = try await Task.detached(priority: .utility) {
-                try await RecordingWaveformCache.shared.waveform(for: url)
+                if shouldCache { return try await RecordingWaveformCache.shared.waveform(for: url) }
+                return try RecordingWaveformData.load(from: url)
             }.value
+            try Task.checkCancellation()
             let loadedPlayer = try AVAudioPlayer(contentsOf: url)
             loadedPlayer.prepareToPlay()
             waveform = loadedWaveform

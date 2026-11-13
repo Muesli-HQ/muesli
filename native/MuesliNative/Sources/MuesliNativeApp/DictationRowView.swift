@@ -8,6 +8,8 @@ struct DictationRowView: View {
     var onCopyTrace: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
 
+    var recordingController: MuesliController?
+
     private enum RowAction: Hashable {
         case details, copyTrace, copy, delete
     }
@@ -137,6 +139,10 @@ struct DictationRowView: View {
                                     .foregroundStyle(statusColor(trace.finalStatus))
                             }
                         }
+                    }
+
+                    if record.hasRetainedAudio, let controller = recordingController {
+                        DictationRecordingControls(record: record, controller: controller)
                     }
 
                     if canExpandText {
@@ -346,6 +352,73 @@ struct DictationRowView: View {
             return "Cancelled"
         default:
             return status.capitalized
+        }
+    }
+}
+
+private struct DictationRecordingControls: View {
+    let record: DictationRecord
+    let controller: MuesliController
+    @State private var showPlayer = false
+    @State private var recording: DictationRecordingFile?
+    @State private var loadError: String?
+    @State private var selectedModel: BackendOption?
+
+    var body: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            Button {
+                showPlayer.toggle()
+            } label: {
+                Label("Recording", systemImage: "waveform")
+            }
+            .popover(isPresented: $showPlayer) {
+                Group {
+                    if let recording {
+                        MeetingRecordingPlayerView(recordingPath: recording.url.path, cacheWaveform: false)
+                    } else if let loadError {
+                        Text(loadError)
+                    } else {
+                        ProgressView("Loading recording")
+                    }
+                }
+                .frame(width: 310)
+                .padding()
+                .task(id: record.id) {
+                    do {
+                        let file = try await controller.loadDictationRecording(id: record.id)
+                        try Task.checkCancellation()
+                        recording = file
+                    } catch {
+                        if !Task.isCancelled { loadError = error.localizedDescription }
+                    }
+                }
+                .onDisappear { recording = nil; loadError = nil }
+            }
+            if controller.appState.retranscribingHistoryID == record.id {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { controller.cancelDictationRecovery() }
+            } else {
+                let models = BackendOption.compatibleOptions().filter { controller.appState.settingsModelAvailability.contains($0) }
+                Menu("Retranscribe with…") {
+                    if models.isEmpty { Text("Download a local model in Models") }
+                    ForEach(models, id: \.model) { model in
+                        Button(model.label) { selectedModel = model }
+                    }
+                }
+                .fixedSize()
+                .disabled(controller.appState.dictationState != .idle || controller.appState.activeAudioImportCount > 0
+                    || controller.appState.modelFileMutationCount > 0 || controller.appState.isMeetingRecording
+                    || controller.appState.isMeetingStarting || controller.appState.privateMode)
+            }
+        }
+        .font(MuesliTheme.captionMedium())
+        .confirmationDialog("Replace this transcript?", isPresented: Binding(
+            get: { selectedModel != nil }, set: { if !$0 { selectedModel = nil } }
+        ), presenting: selectedModel) { model in
+            Button("Retranscribe with " + model.label) { controller.retranscribeDictation(record, with: model) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The new transcript replaces this history entry when transcription succeeds. You can replay the original recording again.")
         }
     }
 }

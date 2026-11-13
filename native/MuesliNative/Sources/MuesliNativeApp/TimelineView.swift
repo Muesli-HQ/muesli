@@ -299,7 +299,8 @@ struct TimelineView: View {
                 onCopyTrace: record.computerUseTrace == nil ? nil : {
                     controller.copyToClipboard(ComputerUseTraceFormatter.debugText(for: record))
                 },
-                onDelete: { controller.deleteDictation(id: record.id) }
+                onDelete: { controller.deleteDictation(id: record.id) },
+                recordingController: controller
             )
         case .meeting(let record):
             TimelineMeetingRow(record: record) {

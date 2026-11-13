@@ -19,6 +19,52 @@ struct DictationRecoveryTests {
                        durationSeconds: 12.5, modelName: "Local model", failureMessage: "Recognition failed")
     }
 
+    @Test func longRecordingPreferenceIsOptInWithOneMinuteMinimum() throws {
+        var settings = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(!settings.shouldRetainDictationAudio(duration: 600))
+        settings = try JSONDecoder().decode(AppConfig.self, from: Data(
+            #"{"retain_long_dictation_audio":true,"dictation_audio_threshold_minutes":-1}"#.utf8))
+        #expect(settings.dictationAudioThresholdMinutes == 1)
+        #expect(!settings.shouldRetainDictationAudio(duration: 60))
+        #expect(settings.shouldRetainDictationAudio(duration: 60.01))
+        settings.dictationAudioThresholdMinutes = 3
+        #expect(!settings.shouldRetainDictationAudio(duration: 180))
+        #expect(settings.shouldRetainDictationAudio(duration: 181))
+    }
+
+    @Test func retainedRecordingIsSharedByHistoryViewsAndSurvivesRepeatedTranscription() throws {
+        let (root, source, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("history.db")
+        let store = DictationStore(databaseURL: database)
+        try store.migrateIfNeeded()
+        let id = try store.insertDictation(text: "before", durationSeconds: 100, startedAt: Date(), endedAt: Date())
+        let bytes = try Data(contentsOf: source)
+        try store.saveDictationAudio(bytes, id: id)
+        #expect(try store.recentDictations().first?.hasRetainedAudio == true)
+        guard case .dictation(let row) = try store.timelineEntries().first else {
+            Issue.record("Expected a Timeline dictation"); return
+        }
+        #expect(row.id == id && row.hasRetainedAudio)
+        let file = try DictationRecordingFile(historyID: id, databaseURL: database)
+        #expect(try Data(contentsOf: file.url) == bytes)
+        let model = DictationModelIdentity(backend: "test", model: "other-model", name: "Other model")
+        try store.replaceDictationTranscript(id: id, originalText: "before", text: "second version", model: model)
+        #expect(throws: (any Error).self) {
+            try store.replaceDictationTranscript(id: id, originalText: "before", text: "stale", model: model)
+        }
+        #expect(try store.dictation(id: id)?.wordCount == 2)
+        #expect(try store.dictation(id: id)?.rawText == "second version")
+        #expect(try store.dictationAudio(id: id) == bytes)
+        try store.deleteDictation(id: id)
+        #expect(throws: (any Error).self) { try store.dictationAudio(id: id) }
+        #expect(throws: (any Error).self) { try store.saveDictationAudio(bytes, id: id) }
+        let another = try store.insertDictation(text: "another", durationSeconds: 65, startedAt: Date(), endedAt: Date())
+        try store.saveDictationAudio(bytes, id: another)
+        try store.clearDictations()
+        #expect(throws: (any Error).self) { try store.dictationAudio(id: another) }
+    }
+
     private func permissions(_ url: URL) throws -> Int {
         try #require(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber).intValue & 0o777
     }
