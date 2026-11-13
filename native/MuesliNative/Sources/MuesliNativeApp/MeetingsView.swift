@@ -534,13 +534,8 @@ struct MeetingsView: View {
                                         }
                                     }
                                 } label: {
-<<<<<<< HEAD
                                     Text(plannedFolder?.name ?? "Add to folder")
-                                        .font(.system(size: 10, weight: .medium))
-=======
-                                    Text("Add to folder")
                                         .font(MuesliTheme.font(size: 10, weight: .medium))
->>>>>>> upstream/main
                                         .foregroundStyle(MuesliTheme.textSecondary)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
