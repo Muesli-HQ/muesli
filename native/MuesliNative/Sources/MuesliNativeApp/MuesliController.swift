@@ -7754,6 +7754,36 @@ public final class MuesliController: NSObject {
         statusBarController?.refresh()
     }
 
+    /// Remembers the folder for an upcoming event. No meeting exists until a note or recording
+    /// starts for it, and that meeting then lands in this folder.
+    func planFolder(_ folderID: Int64?, for event: UnifiedCalendarEvent) {
+        let key = event.resolvedCalendarOccurrence.identityKey
+        let currentStarts = Dictionary(
+            appState.upcomingCalendarEvents.map { ($0.resolvedCalendarOccurrence.identityKey, $0.startDate) },
+            uniquingKeysWith: { first, _ in first })
+        updateConfig { $0.planFolder(folderID, for: key, startTime: event.startDate, currentStartTimes: currentStarts) }
+        // A recording of this occurrence already has its meeting row; move it so the label stays true.
+        let active = activeMeetingID.flatMap { try? dictationStore.meeting(id: $0) }
+        if let id = Self.activeMeetingToRefile(active, occurrenceKey: key) {
+            try? dictationStore.moveMeeting(id: id, toFolder: folderID)
+            syncAppState()
+        }
+    }
+
+    nonisolated static func activeMeetingToRefile(_ active: MeetingRecord?, occurrenceKey: String) -> Int64? {
+        guard let active, active.calendarOccurrence?.identityKey == occurrenceKey else { return nil }
+        return active.id
+    }
+
+    /// A folder inherited from a predecessor wins; otherwise the one planned for the calendar event.
+    func folderIDForNewMeeting(inheritedFolderID: Int64?, calendarOccurrence: CalendarOccurrenceReference?) -> Int64? {
+        inheritedFolderID ?? calendarOccurrence.flatMap { plannedFolderID(for: $0) }
+    }
+
+    func plannedFolderID(for occurrence: CalendarOccurrenceReference) -> Int64? {
+        config.plannedFolderID(for: occurrence.identityKey, existingFolderIDs: Set(appState.folders.map(\.id)))
+    }
+
     func createMeetingFromCalendarEvent(_ event: UnifiedCalendarEvent, folderID: Int64?) {
         let occurrence = event.resolvedCalendarOccurrence
         // Calendar placeholders are idempotent per occurrence. Recordings are
@@ -8345,7 +8375,7 @@ public final class MuesliController: NSObject {
                 selectedTemplateName: templateSnapshot.name,
                 selectedTemplateKind: templateSnapshot.kind,
                 selectedTemplatePrompt: templateSnapshot.prompt,
-                folderID: inheritedFolderID,
+                folderID: folderIDForNewMeeting(inheritedFolderID: inheritedFolderID, calendarOccurrence: calendarOccurrence),
                 followUpToID: followUpToID,
                 calendarOccurrence: calendarOccurrence
             )
