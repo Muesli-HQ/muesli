@@ -8317,7 +8317,6 @@ public final class MuesliController: NSObject {
         guard ensureNoMeetingRetranscription() else { return false }
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
         guard ensureRecordingAccess(pastesText: false) else { return false }
-        if let calendarOccurrence { autoRecordAttempt.claim(calendarOccurrence.identityKey) }
         guard let meetingBackend = normalizeMeetingTranscriptionSelectionForAvailability() else {
             presentErrorAlert(
                 title: "Meeting failed to start",
@@ -8360,6 +8359,7 @@ public final class MuesliController: NSObject {
             presentErrorAlert(title: "Meeting failed to start", message: error.localizedDescription)
             return false
         }
+        if let calendarOccurrence { autoRecordAttempt.claim(calendarOccurrence.identityKey) }
         armMeetingAutoStop(
             source: startOrigin.signalLossSource(
                 explicitSource: autoStopSource,
