@@ -714,7 +714,7 @@ struct MuesliCLITests {
 
         let pipeline = MuesliAudioTranscriptionPipeline(
             audioPreparer: FakeAudioPreparer(wavURL: fixture.wavURL, durationSeconds: 3),
-            transcriber: FakeTranscriber(text: "I love museli"),
+            transcriber: FakeTranscriber(text: "I love REDACTED museli"),
             summarizer: SuccessfulSummarizer(notes: "unused"),
             dataChangePoster: {}
         )

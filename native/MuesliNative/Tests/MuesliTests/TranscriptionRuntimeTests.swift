@@ -440,6 +440,29 @@ struct CohereTranscribeUtilsTests {
 
 @Suite("TranscriptionEngineArtifactsFilter")
 struct TranscriptionEngineArtifactsFilterTests {
+    @Test func reportedBodhanArtifactsAreRemovedFromTimestampedSpeech() {
+        let loop = Array(repeating: "ji haan", count: 22).joined(separator: " ")
+        let expected = Array(repeating: "ji haan", count: 8).joined(separator: " ")
+        let segments = TranscriptionEngineArtifactsFilter.apply(to: [
+            SpeechSegment(start: 0, end: 1, text: "REDACTED REDACTED."),
+            SpeechSegment(start: 2, end: 4, text: "हाँ REDACTED \(loop), done.")
+        ])
+        #expect(segments.map(\.text) == ["हाँ \(expected), done."])
+        #expect(segments.map(\.start) == [2])
+        #expect(segments.map(\.end) == [4])
+        #expect(TranscriptionEngineArtifactsFilter.stableRecognitionPrefix(expected + " ji") == expected)
+        #expect(TranscriptionEngineArtifactsFilter.apply(Array(repeating: "accha", count: 94).joined(separator: " "))
+                == Array(repeating: "accha", count: 8).joined(separator: " "))
+    }
+
+    @Test func preservesOrdinaryWordsAndLiteralTags() {
+        let literal = "Redacted, redacted, UNREDACTED, REDACTED_ID, [REDACTED], <REDACTED>, <|user_tag|>, yes yes yes."
+        #expect(TranscriptionEngineArtifactsFilter.apply(literal) == literal)
+        #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout(literal) == literal)
+        #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout("REDACTED") == "REDACTED")
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|0.02|>hi <|30.00|><|30.02|>") == "hi <|30.02|>")
+    }
+
 
     @Test(arguments: ["*crickets*", "*cheers*", "**APPLAUSE**", "[Cheering]", "(laughter)",
                       "<music>", "[background_music]", "*crickets chirping*", "(audience laughing)",

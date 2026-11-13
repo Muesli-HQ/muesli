@@ -13867,11 +13867,29 @@ public final class MuesliController: NSObject {
                 bundleID: targetBundleID, rules: capturedDictationFormattingRules)
     }
 
-    private func receiveNemotronStreamingPartial(_ fullText: String, sessionID: UUID) {
+    private func receiveNemotronStreamingPartial(_ fullText: String, sessionID: UUID, isFinal: Bool = false) {
         guard isNemotron35Streaming, nemotron35StreamingSessionID == sessionID else { return }
-        let delta = String(fullText.dropFirst(previousStreamText.count))
-        previousStreamText = fullText
-        guard !delta.isEmpty, currentDictationOutputMode == .paste, !buffersStreamingDictation else { return }
+        guard currentDictationOutputMode == .paste, !buffersStreamingDictation else {
+            previousStreamText = fullText
+            return
+        }
+        // Typed deltas cannot be recalled. Wait for a word boundary so a partial
+        // placeholder or the ninth copy of a phrase cannot enter the editor.
+        let stable: Substring
+        if isFinal || fullText.last.map({ ".,!?;:।".contains($0) }) == true {
+            stable = fullText[...]
+        } else if let boundary = fullText.lastIndex(where: \.isWhitespace) {
+            stable = fullText[..<boundary]
+        } else {
+            return
+        }
+        let visible = (isFinal ? TranscriptionEngineArtifactsFilter.cleanRecognitionArtifacts(String(stable))
+            : TranscriptionEngineArtifactsFilter.stableRecognitionPrefix(String(stable)))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard visible.hasPrefix(previousStreamText) else { return }
+        let delta = String(visible.dropFirst(previousStreamText.count))
+        previousStreamText = visible
+        guard !delta.isEmpty else { return }
         #if DEBUG
         if let hooks = dictationOutputTestHooks {
             hooks.typeText(delta)
@@ -14347,6 +14365,7 @@ public final class MuesliController: NSObject {
             fputs("[muesli-native] ignoring stale Nemotron stop completion\n", stderr)
             return
         }
+        if let sessionID { receiveNemotronStreamingPartial(finalText, sessionID: sessionID, isFinal: true) }
         let hadStreamingInsertion = currentDictationOutputMode == .paste
             && !buffersStreamingDictation && !previousStreamText.isEmpty
         isNemotron35Streaming = false
@@ -14357,7 +14376,8 @@ public final class MuesliController: NSObject {
         let outputMode = currentDictationOutputMode
         fputs("[muesli-native] Nemotron streaming stop, got \(finalText.count) chars\n", stderr)
         // Preserve every recovered word; a failed session may end mid-phrase.
-        let cleaned = (recoveredAfterFailure ? finalText : FillerWordFilter.apply(finalText))
+        let recognized = TranscriptionEngineArtifactsFilter.cleanRecognitionArtifacts(finalText)
+        let cleaned = (recoveredAfterFailure ? recognized : FillerWordFilter.apply(recognized))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let shouldPersistTargetApp = DictationAttributionPolicy.shouldPersist(
             isPasteOutput: outputMode == .paste,
@@ -14704,7 +14724,7 @@ public final class MuesliController: NSObject {
                         // Hosted transcription models already produce normalized
                         // prose, so hosted success intentionally bypasses cleanup.
                         let result = try await hostedSession.finish(recordedWAVURL: wavURL)
-                        rawText = result.text
+                        rawText = TranscriptionEngineArtifactsFilter.cleanRecognitionArtifacts(result.text)
                         completionModel = DictationModelIdentity(backend: result.backend,
                             model: result.model ?? "", name: result.model ?? "Not recorded", endpoint: result.endpoint)
                         completionBackend = result.backend

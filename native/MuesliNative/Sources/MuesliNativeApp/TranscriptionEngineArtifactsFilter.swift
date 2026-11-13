@@ -2,7 +2,7 @@ import Foundation
 
 /// Removes known model hallucination artifacts emitted on silence or blank input.
 /// Applied as post-processing after ASR, before filler word filtering.
-struct TranscriptionEngineArtifactsFilter {
+public struct TranscriptionEngineArtifactsFilter {
 
     // Only decorated, known non-speech labels are cues. Bare words ("cheers",
     // "music", "crickets") and arbitrary parenthetical/Markdown prose survive.
@@ -58,7 +58,7 @@ struct TranscriptionEngineArtifactsFilter {
     /// aligner. Holding an unfinished cue avoids first inserting then deleting it.
     /// Unlike full cleanup, this cannot strip a newly completed prompt suffix.
     static func applyToCommittedText(_ text: String) -> String {
-        normalizeSpacing(stripCues(text, holdUnfinished: true))
+        normalizeSpacing(stableRecognitionPrefix(stripCues(text, holdUnfinished: true)))
     }
 
     static func applyToPartialText(_ text: String) -> String {
@@ -69,9 +69,63 @@ struct TranscriptionEngineArtifactsFilter {
         #"(?i)\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|silence|inaudible|music|applause|laughter|screaming|cheering)\s*\]"#,
         #"(?i)[\[(<]\s*(?:speaking\s+in\s+)?(?:a\s+)?foreign\s+language\s*[\])>]"#,
         #"(?i)<\s*(?:eou|eob|unk|blank|pad)\s*>"#,
-        // Any `<|...|>` control token (Whisper/Cohere), e.g. `<|nocaptions|>`, `<|nospeech|>`, `<|no|>`.
-        #"<\|[^|<>]*\|>"#,
     ]
+
+    // Named controls from the Cohere and Whisper decoders, including Whisper's
+    // 20 ms timestamps (0.00 through 30.00). Preserve arbitrary pipe-delimited tags.
+    private static let controlTokens: NSRegularExpression = {
+        let controls = ["nospeech", "nocaptions", "startofcontext", "startoftranscript",
+                        "startofprev", "endoftext", "notimestamp", "notimestamps", "nodiarize",
+                        "pnc", "noitn", "emo:undefined", "transcribe", "translate"]
+        let languages = WhisperKitLanguage.allCases.filter { $0 != .auto }.map(\.rawValue)
+        let names = (controls + languages).map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        let pattern = #"<\|(?:"# + names + #"|(?:[0-9]|[12][0-9])\.[0-9][02468]|30\.00)\|>"#
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
+    // Issue #754 reports an ordinary subword sequence, not a reserved token ID.
+    // Only the uppercase standalone spelling is evidence of the placeholder.
+    private static let redacted = try! NSRegularExpression(pattern: #"(?<![\w<>\[\]|/-])REDACTED(?![\w<>\[\]|/-])"#)
+    private static let repeatedWords = try! NSRegularExpression(
+        pattern: #"(?<!\S)([\p{L}\p{M}\p{N}]+(?:[ \t]+[\p{L}\p{M}\p{N}]+){0,2}?)(?:[ \t]+\1){8,}(?=[\s.,!?;:]|$)"#
+    )
+
+    // The first word(s) of a ninth phrase may arrive in a separate streaming
+    // update. Hold them until they complete the loop or diverge from it.
+    static func stableRecognitionPrefix(_ text: String) -> String {
+        let clean = cleanRecognitionArtifacts(text)
+        let words = clean.split(whereSeparator: \.isWhitespace).suffix(26)
+        let tail = Array(words)
+        // The cap is eight phrases of up to three words, plus an unfinished pair.
+        for width in 2...3 {
+            for pending in 1..<width where tail.count >= width * 8 + pending {
+                let start = tail.count - width * 8 - pending
+                let phrase = tail[start..<(start + width)]
+                if tail[start...].enumerated().allSatisfy({ index, word in word == phrase[start + index % width] }) {
+                    return String(clean[..<tail[tail.count - pending].startIndex])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        return clean
+    }
+
+    /// Only run on recognized speech, before user dictionaries or formatting.
+    public static func cleanRecognitionArtifacts(_ text: String) -> String {
+        let withoutControls = removeMatchesPreservingLayout(controlTokens, from: text)
+        let result = removeMatchesPreservingLayout(redacted, from: withoutControls)
+        if result != text && result.allSatisfy({ $0.isWhitespace || $0.isPunctuation }) { return "" }
+        let source = result as NSString
+        let matches = repeatedWords.matches(in: result, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return result }
+        let bounded = NSMutableString(string: result)
+        for match in matches.reversed() {
+            let phrase = source.substring(with: match.range(at: 1))
+            let kept = Array(repeating: phrase, count: 8).joined(separator: " ")
+            bounded.replaceCharacters(in: match.range, with: kept)
+        }
+        return bounded as String
+    }
 
     private static let promptLeakPatterns: [String] = [
         #"(?i)\btranscribe the spoken audio accurately\.?"#,
@@ -81,7 +135,7 @@ struct TranscriptionEngineArtifactsFilter {
     /// Removes known engine control tokens and non-speech annotations, then strips
     /// prompt leakage while preserving ordinary transcript text.
     static func apply(_ text: String) -> String {
-        var stripped = stripCues(text, holdUnfinished: false)
+        var stripped = cleanRecognitionArtifacts(stripCues(text, holdUnfinished: false))
         var removedArtifact = stripped != text
         for pattern in artifactPatterns {
             let filtered = stripped.replacingOccurrences(
@@ -113,6 +167,7 @@ struct TranscriptionEngineArtifactsFilter {
         var result = removeMatchesPreservingLayout(decoratedCue, from: text) {
             cueLabels.contains(cueBody($0))
         }
+        result = removeMatchesPreservingLayout(controlTokens, from: result)
         for pattern in artifactPatterns {
             guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
             result = removeMatchesPreservingLayout(expression, from: result)
@@ -131,8 +186,9 @@ struct TranscriptionEngineArtifactsFilter {
         matching predicate: (String) -> Bool = { _ in true }
     ) -> String {
         let source = text as NSString
-        let result = NSMutableString(string: text)
         let matches = expression.matches(in: text, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return text }
+        let result = NSMutableString(string: text)
         for match in matches.reversed() where predicate(source.substring(with: match.range)) {
             var start = match.range.location
             var end = NSMaxRange(match.range)
