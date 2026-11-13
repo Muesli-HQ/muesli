@@ -8359,7 +8359,6 @@ public final class MuesliController: NSObject {
             presentErrorAlert(title: "Meeting failed to start", message: error.localizedDescription)
             return false
         }
-        if let calendarOccurrence { autoRecordAttempt.claim(calendarOccurrence.identityKey) }
         armMeetingAutoStop(
             source: startOrigin.signalLossSource(
                 explicitSource: autoStopSource,
@@ -8392,6 +8391,7 @@ public final class MuesliController: NSObject {
                     endDate: endDate,
                     previousMeetingNotes: previousMeetingNotes
                 )
+                if let calendarOccurrence { self.autoRecordAttempt.claim(calendarOccurrence.identityKey) }
             } catch is CancellationError {
                 if self.meetingStartAttempt?.owner == attemptOwner {
                     self.meetingCapture?.session.discard()
