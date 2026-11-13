@@ -865,6 +865,7 @@ final class MeetingChatCoordinator {
         case .meetings(let ids): scope = ids.isEmpty ? .none : .selected
         }
         let analytics = AnalyticsAttempt(.chat, fields: [.scope: scope, .attempt_kind: attemptKind], model: .summary(config))
+        for file in turn.fileAttachments ?? [] { analytics.usedChatSource(.init(file.kind)) }
         tasks[requestID] = Task {
             var analyticsOutcome: AnalyticsOutcome = .cancelled
             defer { analytics.finish(analyticsOutcome) }
@@ -895,8 +896,9 @@ final class MeetingChatCoordinator {
                 attachments = try await worker.inheritedDocuments(attachments, turn: turn)
                 let documentTools = ChatDocumentTools(files: attachments.documents,
                     supportsVision: [.chatGPT, .openAI, .openRouter, .anthropic].contains(MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)),
-                    maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)))
+                    maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)), analytics: analytics)
                 let (evidence, history) = try await worker.evidence(for: turn)
+                if !evidence.passages.isEmpty { analytics.usedChatSource(.meeting) }
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
                 var rollingSummary = savedSummary?.text
@@ -920,7 +922,7 @@ final class MeetingChatCoordinator {
                 var nextSourceKey = (evidence.passages.compactMap { Int($0.sourceKey.dropFirst()) }.max() ?? 0) + 1
                 let candidate = turn.scope == MeetingChatScopePolicy.empty && turn.skillRecentMeetingScope?.selection == .all
                 let generalChat = candidate ? try await worker.permitsLibrary(sessionID: turn.sessionID) : false
-                let library = generalChat ? ChatLibraryTools(turn: turn, databaseURL: worker.store.databaseURL) : nil
+                let library = generalChat ? ChatLibraryTools(turn: turn, databaseURL: worker.store.databaseURL, analytics: analytics) : nil
                 var lastHistoryCursor: String?
                 var historyPages = 0
                 let (answer, finalEvidence) = try await MeetingChatClient.run(question: turn.question,
@@ -953,6 +955,7 @@ final class MeetingChatCoordinator {
                             }
                             return MeetingChatToolResult(evidence: current, documentOutput: result.output, images: result.images)
                         }
+                        analytics.usedChatSource(.meeting)
                         let (result, next, count, nextPage) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey, native: generator.supportsNativeTools(config: config))
                         nextSourceKey = next
                         if self.activeRequestID == requestID, let index = self.activities.indices.last {

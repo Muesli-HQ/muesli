@@ -6,6 +6,33 @@ import SQLite3
 
 @Suite("Shared muesli task execution")
 struct MuesliTaskRunnerTests {
+    @Test func vidshotSQLHistoryInvalidatesChatWhenDeleted() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let db = dir.appendingPathComponent("muesli.db")
+        try DictationStore(databaseURL: db).migrateIfNeeded()
+        let captures = try FeedbackCaptureStore(databaseURL: db, support: dir)
+        var capture = try captures.begin(target: feedbackTarget())
+        capture.state = .ready
+        capture.transcript = .init(source: "fixture", text: "Synthetic chart detail", words: [], segments: [], estimated: false)
+        try captures.publish(capture)
+        captures.release(id: capture.id)
+        let chats = MeetingChatStore(databaseURL: db)
+        let scope = MeetingChatScope(selection: .meetings([]))
+        let session = try chats.createSession(scope: scope, title: "Fixture", allowsRequestedMeetingDiscovery: true)
+        let turn = try chats.beginTurn(sessionID: session.id, question: "Find it", scope: scope, provider: "test", model: "test")
+        let library = ChatLibraryTools(turn: turn, databaseURL: db)
+        let evidence = MeetingChatEvidence(scope: scope, passages: [], dependencies: [],
+            coverage: .init(eligibleMeetingCount: 0, evidenceMeetingCount: 0, isPartialRecap: false))
+        let result = try await library.execute(.sql("SELECT text FROM vidshots"), evidence: evidence)
+        #expect(result.documentOutput?.contains("Synthetic chart detail") == true)
+        #expect(try chats.finishTurn(turnID: turn.id, answer: "Synthetic chart detail", citations: [], dependencies: []))
+        try captures.save(capture)
+        #expect(try chats.turns(sessionID: session.id).first?.state == .completed)
+        try captures.delete(id: capture.id)
+        #expect(try chats.turns(sessionID: session.id).first?.state == .sourceDeleted)
+    }
+
     @Test func dependencyMigrationFailurePreservesExistingTrigger() throws {
         var db: OpaquePointer?
         #expect(sqlite3_open(":memory:", &db) == SQLITE_OK)

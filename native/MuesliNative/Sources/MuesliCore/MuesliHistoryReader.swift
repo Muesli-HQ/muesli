@@ -79,6 +79,13 @@ public final class MuesliHistoryReader {
                 FROM cotypist_suggestions e JOIN cotypist_sessions c ON c.id=e.session_id
                 WHERE c.deleted_at IS NULL AND e.accepted_text!=''
                 """
+        case .vidshots:
+            guard try exists("vidshots") else { return nil }
+            return """
+                SELECT id,id AS parent_id,created_at AS event_time,title,
+                    coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.transcript') END,'') AS text
+                FROM vidshots WHERE state IN ('ready','recovered','failed')
+                """
         case .chat:
             guard try exists("meeting_chat_sessions"), try exists("meeting_chat_turns") else { return nil }
             // Chat has no per-turn wall-clock timestamp. Use the conversation's

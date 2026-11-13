@@ -6,6 +6,7 @@ enum DashboardTab: String, CaseIterable {
     case timeline
     case timeTurner
     case dictations
+    case vidshots
     case insights
     case meetings
     case meetingChat
@@ -283,6 +284,17 @@ final class AppState {
             return false
         }
     }
+    /// Synced history also covers upgrades from versions without a device record.
+    var hasMobileOriginHistory = false
+    var showsDeviceOriginFilter: Bool {
+        iCloudBridgeCompanionDeviceName != nil || hasMobileOriginHistory
+    }
+    func clearUnavailableDeviceOriginFilters() {
+        guard !showsDeviceOriginFilter else { return }
+        if timelineOriginFilter != .all { timelineOriginFilter = .all }
+        if dictationOriginFilter != .all { dictationOriginFilter = .all }
+        if meetingOriginFilter != .all { meetingOriginFilter = .all }
+    }
     var iCloudLastSyncSummary: String?
     var iCloudLastSyncedAt: Date?
     var contributionMilestonePrompt: ContributionMilestonePrompt?
@@ -367,6 +379,8 @@ final class AppState {
     }
 
     var selectedTab: DashboardTab = .timeline
+    var selectedVidshotID: String?
+    var vidshotDetailReturnsToTimeline = false
     var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline

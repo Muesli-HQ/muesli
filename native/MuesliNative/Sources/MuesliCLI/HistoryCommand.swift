@@ -20,7 +20,7 @@ struct HistorySample: ParsableCommand {
     @OptionGroup var global: GlobalOptions
     @Option(name: .long, help: "Inclusive ISO-8601 timestamp with timezone.") var from: String
     @Option(name: .long, help: "Exclusive ISO-8601 timestamp with timezone (at most 31 days).") var until: String
-    @Option(name: .long, help: "Comma-separated meetings,dictations,commands,quill,cotypist,chat. Omit for screen history only.") var sources = ""
+    @Option(name: .long, help: "Comma-separated meetings,dictations,commands,quill,cotypist,chat,vidshots. Omit for screen history only.") var sources = ""
     @Option(name: .long, help: "Optional topic; at most 300 UTF-8 bytes. Applied before sampling.") var query = ""
     func run() throws {
         do { try execute() }
@@ -70,7 +70,7 @@ struct HistoryRead: ParsableCommand {
     }
     private func execute() throws {
         guard let kind = MuesliHistoryKind(rawValue: kind), kind != .meetings else {
-            throw CLIError.invalidInput("Choose dictations, commands, quill, cotypist or chat.")
+            throw CLIError.invalidInput("Choose dictations, commands, quill, cotypist, chat or vidshots.")
         }
         let context = CLIContext(options: global)
         guard let source = try MuesliHistoryReader(databaseURL: context.databaseURL).read(kind: kind, id: id) else {

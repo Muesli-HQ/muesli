@@ -276,8 +276,13 @@ per mode, synthetic consent lock and sink, no network. Worst p95 across rounds:
 | Enabled | 6.375 | 1.625 |
 | Saturated queue | 0.208 | 0.458 |
 
-Reproduce by compiling `ProductAnalytics.swift` with
-`scripts/benchmark_product_analytics.swift` using `swiftc -O -whole-module-optimization`.
+Run from the repository root:
+
+```sh
+swiftc -O -whole-module-optimization native/MuesliNative/Sources/MuesliNativeApp/ProductAnalytics.swift scripts/benchmark_product_analytics.swift -o /tmp/muesli-analytics-benchmark
+/tmp/muesli-analytics-benchmark 5000
+```
+
 The slow sink is deliberately blocked and the 256-event queue saturates; callers
 return without awaiting it. This tests queue admission, consent checks and attempt
 ownership. SDK serialization/transport occurs outside the measured caller path.
@@ -383,3 +388,30 @@ Final Privacy-mode DevB executable SHA-256:
 `bdda2a94996018e1dd675e01e1426b8dd3f6e47ab8ae66b5cd97495ade44e58e`.
 The installed bundle passed strict deep signature verification and LocalVQE
 context initialization with its packaged model.
+
+## Feature adoption after 0.8.6
+
+For adoption, count distinct TelemetryDeck users in the production app and filter
+to versions containing the signal. Count a user once per feature across the
+whole reporting window. Older versions have no observations for the new fields. Queue saturation or consent-lock contention can drop an observation, including a user’s only attempt.
+A start is an attempt and can precede cancellation, permission failure or fallback.
+
+| 0.8.6 release feature | Signal and interpretation |
+| --- | --- |
+| Vidshots | `vidshot.started` after a target is selected and recording preparation is accepted. Picker cancellation, recovery and transcription retries do not count. |
+| Meeting video | `meeting_video.started` when a screen-recording request is admitted. Includes permission and picker abandonment. Pausing/resuming a clip does not start a new attempt. |
+| Dictation during a meeting | Existing `dictation.started` with `during_meeting=yes` when accepted during active, unpaused meeting recording. |
+| Live dictation | `streaming_dictation.started` for an admitted native stream or buffered live-preview attempt. Buffered events carry a finite route (Parakeet, Whisper, Bodhan or unknown). Target capture or live delivery can subsequently fail. |
+| Chat across saved history and attached files | `chat.source_used` once per source category per accepted Chat attempt. Counts attached image/PDF/Markdown/text, previously attached documents requested by a follow-up tool, initial meeting evidence, a history search/read or a table selected by a validated history SQL plan. A lookup can return zero results. A retry starts a new attempt. |
+| Global Search and People | Existing `search.session_finished`; `people_viewed=yes` means the People chip was selected at least once before dismissal. No participant, search term or selected-person details. |
+| Meetings → People | `meeting_people.opened` when the user switches the Meetings view to People. No person selection, contact details, directory size or participant actions. |
+| Time Turner and recap | Existing activation outcome and recap request/result events cover setup and recap generation. They do not measure browsing individual captures or to-do use. |
+| Cotypist | Existing session summary distinguishes seeing suggestions and accepting them. |
+| Speech and cleanup models | Existing transcription and cleanup outcomes include allowlisted model IDs. A cleanup slot may span multiple downloaded revisions. |
+| Reliability and polish | Existing setup/permission and recording outcomes cover their respective workflows. Cosmetic changes and Keychain activity have no adoption metric. |
+
+Only fixed categories cross the feature boundary. The existing bounded utility
+queue checks the original consent generation before sending. Chat deduplication
+lives only for the attempt; no new identifiers or local analytics history are
+created. These adoption events contain no names, IDs, text, SQL, media, URLs,
+file paths, window titles, or timestamps taken from the user's history.

@@ -145,8 +145,8 @@ final class VisualMemoryController {
         })
     }
 
-    // Called only on the utility maintenance task, never during UI rendering.
-    nonisolated private static func recoverableDuration(_ url: URL) -> Double? {
+    // Probe on a background task, never during UI rendering.
+    nonisolated static func recoverableDuration(_ url: URL) -> Double? {
         let asset = AVURLAsset(url: url)
         guard asset.isPlayable, !asset.tracks(withMediaType: .video).isEmpty else { return nil }
         let duration = CMTimeGetSeconds(asset.duration)
@@ -254,6 +254,7 @@ final class VisualMemoryController {
 
     func requestRecording(meetingID: Int64, sessionID: UUID, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
         guard recordingMeetingID == nil, !isPreparing, !isFinalizing else { return }
+        ProductAnalytics.event(.meeting_video, .started)
         isPreparing = true; message = nil; messageMeetingID = meetingID; token = UUID()
         recordingNeedsScreenPermission = false
         let attempt = token

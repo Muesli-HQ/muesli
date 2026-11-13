@@ -20,6 +20,7 @@ final class MeetingNotificationController {
     private var onDismiss: (() -> Void)?
     private var onAutoDismiss: (() -> Void)?
     private var splitButtonAlternatives: [MeetingJoinDefaultAction] = []
+    private var splitButtonActionLabels: [MeetingJoinDefaultAction: String] = [:]
     private(set) var isVisible = false
     private(set) var currentPromptID: String?
     private(set) var shownAt: Date?
@@ -69,8 +70,10 @@ final class MeetingNotificationController {
         meetingURL: URL? = nil,
         preferredScreen: NSScreen? = nil,
         platform explicitPlatform: MeetingPlatform? = nil,
+        icon explicitIcon: NSImage? = nil,
         dismissAfter: TimeInterval? = nil,
         defaultAction: MeetingJoinDefaultAction = .fallback,
+        actionLabels: [MeetingJoinDefaultAction: String] = [:],
         onStartRecording: @escaping () -> Void,
         onJoinAndRecord: (() -> Void)? = nil,
         onJoinOnly: (() -> Void)? = nil,
@@ -97,11 +100,12 @@ final class MeetingNotificationController {
             hasJoinAndRecord: hasJoinAndRecord,
             hasJoinOnly: hasJoinOnly
         )
+        splitButtonActionLabels = actionLabels
         // Nothing to drop down (a prompt with no join link, or "Stop Transcribing")
         // keeps the plain single-action button.
         let hasJoinButton = !splitButtonAlternatives.isEmpty
         let platform = explicitPlatform ?? meetingURL.flatMap { MeetingPlatform.detect(from: $0) }
-        let platformIcon = platform?.loadIcon()
+        let platformIcon = explicitIcon ?? platform?.loadIcon()
         let iconSize: CGFloat = 26
         let textX: CGFloat = platformIcon == nil ? 14 : 14 + iconSize + 9
         let titleFont = AppFonts.font(size: 13, weight: .semibold)
@@ -190,6 +194,7 @@ final class MeetingNotificationController {
         // Platform icon + text layout
         if let icon = platformIcon {
             let iconView = NSImageView(image: icon)
+            if explicitIcon != nil { iconView.contentTintColor = .white }
             iconView.imageScaling = .scaleProportionallyUpOrDown
             iconView.frame = NSRect(x: 14, y: (cardHeight - iconSize) / 2 + 1, width: iconSize, height: iconSize)
             cardView.addSubview(iconView)
@@ -226,7 +231,7 @@ final class MeetingNotificationController {
 
             // Main button for the user's default action
             let joinButton = NSButton(
-                title: armedAction.buttonLabel,
+                title: actionLabels[armedAction] ?? armedAction.buttonLabel,
                 target: self,
                 action: Self.selector(for: armedAction)
             )
@@ -250,7 +255,7 @@ final class MeetingNotificationController {
             chevronButton.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
             chevronButton.isBordered = false
             Self.applyTitleColor(joinInk, to: chevronButton)
-            chevronButton.toolTip = splitButtonAlternatives.map(\.buttonLabel).joined(separator: " · ")
+            chevronButton.toolTip = splitButtonAlternatives.map { actionLabels[$0] ?? $0.buttonLabel }.joined(separator: " · ")
             chevronButton.setAccessibilityLabel("More join options")
             cardView.addSubview(chevronButton)
         } else {
@@ -328,11 +333,13 @@ final class MeetingNotificationController {
         onDismiss = nil
         onAutoDismiss = nil
         splitButtonAlternatives = []
+        splitButtonActionLabels = [:]
         isVisible = false
         currentPromptID = nil
         shownAt = nil
-        onClose?()
+        let closed = onClose
         onClose = nil
+        closed?()
     }
 
     private func startDismissCountdown(duration: TimeInterval) {
@@ -472,7 +479,7 @@ final class MeetingNotificationController {
     @objc private func handleChevronClick(_ sender: NSButton) {
         let menu = NSMenu()
         for action in splitButtonAlternatives {
-            let item = NSMenuItem(title: action.buttonLabel, action: Self.selector(for: action), keyEquivalent: "")
+            let item = NSMenuItem(title: splitButtonActionLabels[action] ?? action.buttonLabel, action: Self.selector(for: action), keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }

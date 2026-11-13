@@ -343,12 +343,11 @@ The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary tra
 
 Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
 
-Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. The sidebar icon grid uses locally generated SF Symbols and custom icons based on `TimeTurnerIcon.swift` and `VidshotIcon.swift`. Run `swift design-system/scripts/render-sidebar-symbols.swift` from the repository root to render the locally ignored SF Symbol previews; symbol names remain visible without them. Other browser specimens remain illustrative. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
 
 ### Reorderable sidebar
 
-Only the top six navigation destinations can be reordered in expanded and icon-only
-layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
+The seven navigation destinations (Timeline, Time Turner, Dictations, Vidshots, Meetings, Chat and Dictionary) can be reordered in expanded and icon-only layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
 to the upper or lower half of another row; an accent-colored insertion line marks
 the exact boundary before or after it. Meetings moves with its entire folder tree,
 and the line stays outside that group. Folder drags remain a separate interaction.
@@ -448,6 +447,24 @@ Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
 
+### Meeting people
+
+The Meetings browser uses a floating new-meeting button at the bottom right,
+above the chat composer. It uses the sidebar meeting icon, a small plus badge,
+and the semantic join green on hover, with an adjacent “Quick Note” label shown
+on hover or keyboard focus. The label does not intercept pointer events. Reserve
+scroll space beneath the last row.
+Meetings includes a People tab for browsing people and reviewing possible
+duplicates. Duplicate review uses the adaptive warning color for a subtle amber
+surface, border, and evidence label. Global search also offers People alongside
+the other content categories. Selecting a person opens their associated meetings,
+including with no text query. Meeting notes end with a compact list of other meetings with shared
+people. Calendar associations indicate invitations rather than verified attendance.
+The People popover allows a name to be entered directly and offers an explicit
+Find participants action. Suggestions appear as compact person rows and require
+the user to add or dismiss them. The app validates evidence before suggesting a
+name. Helper text discloses provider sharing and partial meeting coverage.
+
 ## About privacy control
 
 About includes a Privacy card with the canonical “Disable anonymous analytics”
@@ -502,3 +519,9 @@ the compact header sync control and Settings → General sync setup, status and
 recovery actions available. Background sync behavior and saved preferences are
 unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
 never use the raw saved accent as a label color on a neutral surface.
+
+New completed meetings show a segmented Summary / Your notes / Transcript control.
+Your notes reuses the live note editor and its inline save status; generated
+summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
+After that, Saved notes holds the current source, and a collapsed Previous notes
+disclosure in Summary exposes the other pre-upgrade document when present.

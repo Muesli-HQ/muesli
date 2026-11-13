@@ -6,6 +6,26 @@
         <language>en</language>
         <!-- Items are added by scripts/release-preprod.sh -->
         <item>
+            <title>0.8.6-preprod.3</title>
+            <pubDate>Sun, 08 Nov 2026 18:03:58 +0530</pubDate>
+            <description><![CDATA[
+<h2>muesli 0.8.6-preprod.3</h2>
+<ul>
+<li>Meet Vidshots: record a window or screen region with spoken narration, then revisit the recording and transcript. Find it in the updated What's New tour.</li>
+<li>Permission setup now guides you through enabling access and restarting muesli, returning to Time Turner setup afterward. Restart checks protect active work and unsent chat drafts.</li>
+<li>Dictate while a meeting is recording, with improvements to meeting titles and summaries.</li>
+<li>Browse meeting people and improve calendar-linked meeting recording and call detection.</li>
+<li>Summary failure logs omit provider error details while keeping useful errors in the app.</li>
+</ul>
+<p>This preproduction build is for testing the update from 0.8.6-preprod.2. Check update discovery, installation, relaunch, preserved data and the Vidshots tour card before production release.</p>
+]]></description>
+            <sparkle:version>8006003</sparkle:version>
+            <sparkle:shortVersionString>0.8.6-preprod.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Muesli-HQ/muesli/releases/download/v0.8.6-preprod.3/MuesliPreprod-0.8.6-preprod.3.dmg" length="145648493" type="application/octet-stream" sparkle:edSignature="MjL6W4fDyBRedP8qEcci33mpu180ZXNRBWD5TXta16oWd0U5EAHm8lDQVshGzNKhP4pqmlNaiHqJl7rkM3vQCQ=="/>
+        </item>
+        <item>
             <title>0.8.6-preprod.2</title>
             <pubDate>Thu, 05 Nov 2026 19:34:09 +0530</pubDate>
             <description><![CDATA[

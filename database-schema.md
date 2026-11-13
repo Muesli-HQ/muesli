@@ -255,6 +255,9 @@ erDiagram
     meeting_folders ||--o{ meetings : "organizes"
     meetings ||--o{ meetings : "has follow-ups"
     meetings ||--o{ meeting_participants : "has local people"
+    meeting_people ||--o{ meeting_participants : "participates"
+    meeting_people ||--o{ meeting_person_identifiers : "has source identifiers"
+    meeting_people ||--o{ meeting_person_emails : "has sourced email addresses"
     meetings ||--o{ meeting_transcript_checkpoints : "has live checkpoints"
     meetings ||--o| meeting_resume_snapshots : "has resume safety snapshot"
     meetings ||--o{ meeting_video_clips : "owns local video"
@@ -331,25 +334,116 @@ meeting, or iPhone meeting record.
 - Sync/tombstone bookkeeping: `updated_at`, `deleted_at`, `cloud_*`,
   `last_synced_at`, `sync_dirty`
 
+
+New locally created meetings use `notes_layout_version = 1`: `manual_notes`
+is the editable user document (including inline image references), and
+`formatted_notes` is independently editable generated output. Summary requests
+read current user notes plus the transcript; they never reconstruct user notes
+from generated output or feed a previous summary back into a new-layout request.
+Saving a summary must not modify user notes. Completed meetings expose Summary,
+Your notes, and Transcript; full exports include both note documents.
+
+The layout column defaults to 0. Installing the update or opening an existing
+meeting does not rewrite either document. On the first replacement summary,
+the same SQLite update saves the new summary and switches the row to layout 1.
+For an ordinary completed legacy record, the old visible combined document
+becomes editable Saved notes; the historical manual document is retained
+verbatim in nullable `previous_notes`. When finishing a recording/resume or
+regenerating a Granola import, the live/imported manual document remains the
+editable source and the old formatted document becomes Previous notes. Neither
+path attempts to infer authorship. Later generations never append or replace
+Previous notes; it is available in the summary disclosure and full export,
+but is not provider input. Template selection alone does not convert a record.
+
+Missing layout metadata defaults to legacy. Sync carries `notesLayoutVersion`
+and the optional `previousNotes` text; older clients omitting these fields
+must not downgrade the layout or erase the preserved document. Tombstones
+clear note text, including the previous document. Image bytes stay local.
+
+Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
+optionally with `?width=<points>` for the displayed size. The width does not
+change the image sent to a summary provider. Summary requests use a temporary,
+bounded JPEG representation for unsupported formats or large images; the
+stored original remains unchanged. Original image files are stored locally under `Meeting Note Images/`
+in the active Application Support directory. Image bytes do not enter SQLite,
+CloudKit, retrieval indexes, or telemetry. Synced note text can therefore refer
+to an image unavailable on another device; views show an unavailable image and
+summary generation fails visibly instead of silently omitting that context.
+Markdown export copies available referenced files into a sibling assets folder
+and marks unavailable images in the exported document. Image
+references are opaque identifiers, not paths or permission to read arbitrary files.
+Unreferenced image files are retained for now, including after an image or its
+meeting is deleted; undo and shared Markdown references must be accounted for
+before introducing garbage collection.
+
 Calendar IDs are lookup metadata, not unique meeting identities. A calendar
 occurrence can be recorded more than once.
+
+Partial indexes on live iOS-origin meeting and dictation rows support an
+asynchronous legacy-device-history check. This check preserves the source filter
+for existing users whose imported iOS history predates companion-device discovery;
+it does not alter sync state or infer a device from unrelated imported meetings.
 
 ### History-owned local detail
 
 | Table | Purpose | Key and deletion behavior | Sync scope |
 |---|---|---|---|
 | `computer_use_traces` | Final status, message, and JSON event trace for a CUA dictation | Unique `dictation_id`; cascades with its dictation | Local-only |
-| `meeting_participants` | Calendar-attendee or Apple Contact name/email snapshots, including source and calendar suppression state | `(meeting_id, participant_identifier)`; cascades with its meeting | Local-only |
+| `meeting_participants` | Calendar-attendee or Apple Contact snapshots, source, suppression state and canonical `person_id` | `(meeting_id, participant_identifier)`; cascades with its meeting | Local-only |
+| `meeting_people` | Stable local person identity and display name | `id` | Local-only |
+| `meeting_person_identifiers` | Source identifiers associated with a person | `identifier`; references `meeting_people` | Local-only |
+| `meeting_person_emails` | Email addresses and the source identifier that supplied each | `(person_id, email, source_identifier)`; references `meeting_people` | Local-only |
+| `meeting_people_fts` | Derived FTS5 index of person names and sourced email addresses | Rowid matches `meeting_people.rowid`; maintained by triggers | Local-only |
+| `meeting_people_merges` | Confirmed person merges and undo state | `id`; ordered for reversal | Local-only |
+| `meeting_people_merge_identifiers`, `meeting_people_merge_emails`, `meeting_people_merge_participants` | Original ownership needed to reverse a confirmed merge | Merge ID and respective source keys | Local-only |
+| `meeting_participant_suggestions` | Reviewable AI candidate name and quoted transcript or manual-note evidence, source fingerprint, and review state | Meeting, fingerprint and candidate name; cascades with its meeting | Local-only |
 | `meeting_transcript_checkpoints` | Incremental live transcript recovery segments | `id`; cascades with its meeting | Local-only |
 | `meeting_resume_snapshots` | Safety copy used while resuming a finished meeting | One row per `meeting_id`; cascades with its meeting | Local-only |
 
-Participant identifiers describe provenance and identity, while the stored name
-and email are snapshots. Calendar entries normally use a normalized email-based
-identifier; manually selected Contacts use the local Contacts identifier. The
-`source` column distinguishes `calendar` from `manual` rows. Removing a calendar
-attendee sets `is_suppressed` so a later EventKit refresh does not make that row
-visible again; removing a manually added Contact deletes its row. Never put a
-Contacts identifier into CloudKit, telemetry, or export metadata.
+`meeting_people.id` is the canonical local identity. A person may have multiple
+email addresses and source identifiers; neither an email nor a display name is
+the person key. `meeting_person_identifiers` maps the source identifier to that
+identity, while `meeting_person_emails` records each normalized address together
+with the identifier that supplied it. `meeting_participants` preserves the source
+snapshot for each meeting and points to its canonical person. The migration
+backfills exact preexisting source identifiers without merging namesakes. Exact
+email addresses and Contact source identifiers can identify possible duplicates;
+no records are merged without an explicit user confirmation. Confirmed merges
+move source associations to the chosen identity in one transaction and journal
+their original ownership. Undo restores associations that still exist, honors
+subsequent deletions, and requires overlapping merges to be undone newest first.
+New associations under a moved source identifier follow that identifier if the
+merge is undone. Do not modify the merge journal outside the store APIs. Meeting
+search and related meetings join by `person_id`, not by name or address. The People search index
+contains the canonical name and all sourced addresses; its FTS5 rows are derived
+and maintained by database triggers. Keep that index consistent when adding new
+mutation paths.
+
+The `source` column distinguishes `calendar` from `manual` meeting rows. Removing
+a calendar attendee sets `is_suppressed` so a later EventKit refresh does not make
+that row visible again; removing a manually added Contact deletes its row. Only
+unsuppressed associations on undeleted meetings are shown in People or related
+meetings. Clearing meetings also clears local people, identifiers and emails.
+Deleting an individual meeting removes its participant snapshots and suggestions,
+but retains canonical people, source identifiers, email provenance and merge
+journals, including for people with no remaining visible meetings. This preserves
+identity and undo history if the person appears again; clearing meetings removes
+these local records. People with no visible meetings are omitted from the directory.
+Use the store APIs to update these records so identities, provenance, search indexes,
+and meeting-level invalidation stay consistent. People data, Contacts identifiers,
+and suggestion evidence are local-only; do not add them to CloudKit, telemetry,
+exports, or provider prompts without a separately designed and authorized flow.
+Suggestion generation is explicit and uses the configured meeting AI provider.
+Candidates remain separate from participants until confirmed. Source text changes
+and meeting deletion remove suggestions; a transaction checks the source fingerprint
+again when the user acts. Dismissed candidates remain dismissed for unchanged source.
+
+Recording recovery sidecars may also carry an optional pending retention decision.
+System-suspension stops preserve the audio and finalize the meeting before asking;
+the sidecar survives until the user decides and reopens that decision after restart.
+Older sidecars without the field retain their existing recovery behavior.
+An invalid pending-decision value is treated as unresolved so recovery can
+reattach the audio and ask again; required identity fields still fail closed.
 
 Before an EventKit meeting begins, an initial launch refresh and subsequent
 `EKEventStoreChanged` notifications reconcile the calendar-owned participant
@@ -634,6 +728,93 @@ sqlite3 -readonly "/path/to/copied-muesli.db" 'PRAGMA quick_check; PRAGMA foreig
 Use normal store APIs for mutations. Direct SQL writes bypass sync bookkeeping,
 tombstones, cache invalidation, and application-level invariants.
 
+### Vidshot captures (local-only)
+
+`FeedbackCaptureStore.migrate(db:)` runs from `DictationStore.migrateIfNeeded()`.
+The idempotent migration creates `vidshots` and the
+`vidshots_time(created_at)` index. Its seven columns are:
+
+- `id TEXT PRIMARY KEY`, `created_at REAL` (Unix seconds), `duration_ms INTEGER`;
+- `state TEXT`: `recording`, `processing`, `ready`, `recovered`, or `failed`;
+- `bundle_path TEXT`, relative to the support directory;
+- `title TEXT`, the first spoken clause, falling back to the starting app name, never a window title;
+- `body TEXT`, a small JSON projection with `keyframeCount`, `targetApp`, optional `transcriptSource`, and optional `transcript` for local retrieval. Existing manifests backfill this projection during capture recovery.
+
+For development builds that previously used `feedback_captures`, migration
+copies its rows into `vidshots` and removes the old table and index in one
+transaction. Conflicting IDs or invalid legacy data fail the migration without
+removing either table. New installations create only `vidshots`. Capture bundle
+paths are unchanged.
+
+Captures have no meeting/dictation foreign key and never enter CloudKit, telemetry, or automatic exports. Saved narration and capture metadata participate in local search and permitted history retrieval; video, frames and screen contents are not indexed. Media lives in mode-0700
+`feedback-captures/fc-<epochms>-<4 hex>.capture/` directories. `capture.json`
+uses camelCase, manifest version 1, relative media paths and `videoOffsetMs`.
+Readers ignore unknown fields and reject unsupported versions. Future produced
+payloads must decode older slice-1 manifests without requiring those fields.
+The optional target `region` is in display-relative points and `windowID` identifies
+the selected window for the recording attempt; optional `windowFrame` stores
+its initial bounds. Older targets without these fields remain display captures.
+These fields do not change the database projection or reacquire a window during recovery.
+
+Timeline reads the local capture rows alongside other activity, ordering and
+paginating them by `created_at`. Transcript search reads the capture manifest;
+the Timeline does not copy transcripts or media into the dictation tables.
+Deleting a Vidshot from Timeline uses the capture store to remove its capture
+directory and row, including the video, narration, transcript, and derived files.
+Narration is initially recorded to a separate WAV for transcription and recovery.
+After a nonempty transcript is durably published, finalization removes the WAV only
+if the saved video is playable and its audio decodes across the full microphone
+timeline (allowing small AAC padding differences). The manifest and summary then
+omit the removed WAV; original capture-clock offsets remain unchanged. If decoding,
+coverage, publication or transcription fails, the WAV is retained. Failed narration
+can be retried in the Vidshot using the same local transcription coordinator; a
+successful retry updates that capture and applies the same retention check. Existing
+captures are not bulk-migrated.
+
+Readers ignore unknown fields and reject unsupported versions. Version 1 also
+contains default-empty `events`, `inputGaps`, and `keyframes`, plus optional
+`contactSheet`; older manifests decode without these fields. Event coordinates
+are normalized to the selected region or window with a top-left origin; window
+coordinates track its current bounds. Legacy display captures use the display.
+Events are tagged
+`click`, `drag`, or `scroll`, with capture-relative millisecond times. Keyframes
+store `index`, decoded capture time `t`, `reason`, relative `file`, optional
+`eventIndex`, optional `narrationAnchor`, `said`, and a half-open `saidRange {from,to}` into transcript words. `narrationAnchor` preserves the action time independently of the decoded frame time. Retry of older manifests reconstructs event/mark anchors where possible and otherwise uses the saved frame time.
+Malformed optional sidecars are tolerated independently: rebuildable `events`,
+`keyframes`, and `contactSheet` fall back to empty or nil, while malformed
+`inputGaps` entries are skipped individually.
+Action anchors drive narration partitioning separately from decoded frame times.
+All artifact paths pass the store's bundle containment checks. The row's
+`keyframeCount` reflects the published frames, including partial render results.
+
+Discard writes an atomic `.discarded/<capture-id>.pending` marker outside the
+capture bundle before asynchronous media teardown. Clock checkpoints and partial
+bundle deletion cannot overwrite it. Recovery scans markers even when bundles are
+missing, deletes the row and remaining bundle, then removes the marker last. Failed
+or interrupted deletion leaves the marker available for retry; legacy in-bundle
+markers are promoted before deletion. Failed marker writes
+are reported and retain the capture rather than claiming it was discarded.
+
+Before capture, `unfinished.json` journals the manifest atomically. The first
+microphone host frame and first accepted video host frame are checkpointed as
+soon as known; `videoOffsetMs` aligns video zero to narration sample zero.
+Publication writes the manifest and row before removing the journal. Active and
+still-finalizing bundles remain owned until actual writer completion. Recovery
+independently repairs complete surviving PCM samples and validates fragmented
+video through the same media reconciliation used at Finish. Each probe records
+its own failure; one cannot suppress the other. It preserves partial or uncertain
+media and claims interrupted bundles for the same finalizer. The journal remains
+while missing transcription resumes, and checkpointed transcripts are reused.
+Complete surviving `events.jsonl` records are replayed and merged; a truncated
+tail records an `events` failure without discarding earlier usable events.
+Event-only bundles retain ownership, contribute to duration, and enter the same
+finalizer even without playable media. Unknown contents still prevent deletion.
+Completion publishes `recovered` before retiring the journal. Each bundle reports
+recovery errors independently; successfully claimed bundles retain ownership and
+continue finalization even when a sibling fails. Inference holds no store lock.
+Only an interrupted bundle proven empty is removed. Journal-backed captures remain
+openable after row publication fails. Deletion uses the store, removes files
+before its row, and leaves failures visible for retry. No ad hoc SQL cleanup.
 Quill Timeline reads isolate malformed `quill_conversation_turns.body` JSON:
 readable turns remain visible. When both preview endpoints are damaged but
 unchecked middle turns remain, the row stays available for background expansion;
@@ -897,7 +1078,7 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   history APIs. Source IDs are used to navigate back to the authoritative store.
 - `global_search_fts`: external-content FTS5 over title/text, maintained by
   insert/update/delete triggers on `global_search_documents`.
-- `global_search_<source>_v1` (or `_v2` for Quill, Chat and recap): versioned
+- `global_search_<source>_v1` (or `_v2` for meetings, Quill, Chat and recap): versioned
   projection views and source-table triggers. Each available source is backfilled transactionally once. Subsequent
   writes refresh only the affected parent document. Schema-version checks discover
   Chat and Recap tables created after first search without reindexing all history.
@@ -910,7 +1091,7 @@ CloudKit serialization, exports, or meeting-agent retrieval scope.
   unchanged.
 
 Prepared source writes in `DictationStore`, `MeetingChatSQL`, and
-`TimeTurnerRecapStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
+`TimeTurnerRecapStore`, and `FeedbackCaptureStore` share `GlobalSearchIndex.stepSourceWrite`. A failed write
 is retried only for `SQLITE_CORRUPT_VTAB` after a separate FTS integrity check
 confirms corruption of **global_search_fts**. A savepoint rebuilds its tokens from
 `global_search_documents` (recreating the virtual table only if the rebuild itself
@@ -921,8 +1102,9 @@ as part of repair, or treats busy, constraint, I/O, or another index's errors as
 permission to rebuild. Unrecoverable corruption remains an explicit save error.
 
 Sources are dictations, CUA **input commands only**, meetings (title, transcript,
-manual/generated notes as one result), Quill conversations, accepted Cotypist
-text, Chat conversations, and recap insight text. CUA traces/results, unaccepted
+manual/generated notes and active participant names and emails as one result),
+Quill conversations, accepted Cotypist text, Chat conversations, recap insight
+text, and Vidshot narration and capture metadata. CUA traces/results, unaccepted
 Cotypist suggestions, chat drafts/provider fields, rolling model memory, and
 recap source snapshots are deliberately excluded.
 
@@ -1023,6 +1205,49 @@ replacing the preview invalidates in-flight reads.
 The search panel does not mutate source content. “Copy text” copies the displayed
 text preview to the system clipboard at the user's request.
 
+
+The optional version-1 `transcript` contains `source`, optional `model`, `text`,
+`words` and `segments` (`t0`, `t1`, `text`), `estimated`, and optional
+`missing.reason`. Times are integer milliseconds from narration WAV sample zero,
+independent of `videoOffsetMs`. Older manifests omit it; no SQL migration or
+backfill is needed. Store publication maintains title and body projections.
+Narration uses disjoint quiet chunks of at most eight seconds, each decoded once.
+Complete measured words are retained; incomplete chunks estimate their full text.
+Decoder-only padding to 300 ms never extends source-time bounds.
+Missing audio/model, empty output, cancellation, timeout, and decoding errors
+retain playable media and record a named transcription failure. Narration and
+model identifiers remain local-only and do not enter sync or telemetry.
+
+Finalization prepares thumbnails alongside transcription, selects and annotates
+frames under `frames/`, writes `contact-sheet.png`, then atomically writes
+`summary.md` before publication. Thumbnail and render deadlines cancel native
+decoding and reject its late results. Failed illustrations leave narration in
+the summary as unillustrated text. Automatic clipboard delivery follows durable
+publication only when the clipboard is unchanged since Finish; explicit Copy
+reads the saved summary. Recovery regenerates local artifacts without automatic
+copying. Clipboard delivery state is transient and is not a manifest promise.
+
+Slice 4 adds default-empty version-1 `strokes` and `marks`, and optional keyframe
+`markId`; absent fields remain backward compatible. A stroke stores capture-time
+`t0/t1`, point-space target dimensions `fw/fh`, optional numbered `pin`, and flat
+integer `pts` triples `[x,y,dtMs,…]` with x/y in 0…10000 and time from `t0`.
+Marks store stable replay-derived IDs, stroke indexes, time bounds, normalized
+bounding boxes, optional pin, description, and optional relative `frame`.
+Shared mark frames and individual keyframe files use the same containment checks.
+Only successfully written frames retain links. Strokes/marks remain local-only.
+
+The mixed event journal preserves old pointer records and adds tagged stroke,
+undo, and input-gap transitions. New undo records include an optional `stroke`
+target using the existing stroke value. Targeted undo removes only that surviving
+stroke; a missing or invalid preceding stroke cannot redirect it to earlier ink.
+Older time-only undo records retain their last-stroke behavior without a migration.
+Recovery applies operations in append order, retains complete records around
+invalid records/truncated tails, closes an open Secure Input interval at recovered
+capture end, and deterministically rebuilds marks from surviving strokes.
+Stroke-only captures retain content and contribute to duration. Existing SQL
+columns, title/body projection, version, and migration remain unchanged.
+Old configuration defaults the canonical
+`feedback_capture_draw_modifier` setting to `shift`.
 
 ### Shared history task access (no additional history tables)
 

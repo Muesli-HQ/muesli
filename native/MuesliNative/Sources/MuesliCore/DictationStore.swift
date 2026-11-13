@@ -1,10 +1,14 @@
 import Foundation
 import SQLite3
+import CryptoKit
 
 public enum DictationStoreError: Error, LocalizedError {
     case dictationNotFound(id: Int64)
     case meetingNotFound(id: Int64)
     case invalidParticipantIdentifier
+    case staleParticipantSuggestion
+    case invalidPeopleMerge
+    case peopleMergeUndoOrder
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +18,12 @@ public enum DictationStoreError: Error, LocalizedError {
             return "Meeting \(id) no longer exists."
         case .invalidParticipantIdentifier:
             return "That meeting participant could not be identified."
+        case .invalidPeopleMerge:
+            return "These people changed. Refresh the list and try again."
+        case .peopleMergeUndoOrder:
+            return "Undo newer merges involving these people first."
+        case .staleParticipantSuggestion:
+            return "The meeting changed. Find participants again to review current evidence."
         }
     }
 }
@@ -50,7 +60,7 @@ public final class DictationStore {
     t.id, t.final_status, t.final_message, t.trace_json, t.created_at
     """
     private static let meetingColumns = """
-    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context
+    id, title, start_time, duration_seconds, raw_transcript, formatted_notes, word_count, folder_id, calendar_event_id, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, notes_layout_version, previous_notes
     """
 
     public init() {
@@ -128,6 +138,8 @@ public final class DictationStore {
             saved_recording_path TEXT,
             meeting_status TEXT NOT NULL DEFAULT 'completed',
             manual_notes TEXT NOT NULL DEFAULT '',
+            notes_layout_version INTEGER NOT NULL DEFAULT 0,
+            previous_notes TEXT,
             word_count INTEGER NOT NULL DEFAULT 0,
             selected_template_id TEXT,
             selected_template_name TEXT,
@@ -160,10 +172,26 @@ public final class DictationStore {
             insertion_order INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT 'manual',
             is_suppressed INTEGER NOT NULL DEFAULT 0,
+            person_id TEXT,
             PRIMARY KEY (meeting_id, participant_identifier)
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_participants_order
             ON meeting_participants(meeting_id, insertion_order);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_identity
+            ON meeting_participants(participant_identifier, meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_email
+            ON meeting_participants(email_address COLLATE NOCASE, meeting_id);
+        CREATE INDEX IF NOT EXISTS idx_meeting_participants_name
+            ON meeting_participants(display_name COLLATE NOCASE, meeting_id);
+        CREATE TABLE IF NOT EXISTS meeting_participant_suggestions (
+            meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+            fingerprint TEXT NOT NULL,
+            name TEXT NOT NULL COLLATE NOCASE,
+            source TEXT NOT NULL,
+            excerpt TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            PRIMARY KEY(meeting_id, fingerprint, name)
+        );
 
         CREATE TABLE IF NOT EXISTS meeting_transcript_checkpoints (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,6 +266,12 @@ public final class DictationStore {
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN manual_notes TEXT NOT NULL DEFAULT ''", nil, nil, nil) != SQLITE_OK {
             // Column may already exist.
         }
+        if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN previous_notes TEXT", nil, nil, nil) != SQLITE_OK {
+            // Column may already exist.
+        }
+        if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN notes_layout_version INTEGER NOT NULL DEFAULT 0", nil, nil, nil) != SQLITE_OK {
+            // Existing rows deliberately remain legacy; never rewrite their content.
+        }
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN source TEXT NOT NULL DEFAULT 'meeting'", nil, nil, nil) != SQLITE_OK {
             // Column may already exist.
         }
@@ -273,6 +307,7 @@ public final class DictationStore {
             "ALTER TABLE meetings ADD COLUMN calendar_occurrence_start REAL",
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
             "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meeting_participants ADD COLUMN person_id TEXT",
             "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
         ] {
             guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
@@ -284,6 +319,57 @@ public final class DictationStore {
                 throw lastError(db)
             }
         }
+        // Partial indexes keep the one-time legacy mobile-history check bounded.
+        try exec("""
+            CREATE INDEX IF NOT EXISTS idx_dictations_mobile_origin ON dictations(id)
+                WHERE deleted_at IS NULL AND LOWER(TRIM(COALESCE(source,''))) = 'ios';
+            CREATE INDEX IF NOT EXISTS idx_meetings_mobile_origin ON meetings(id)
+                WHERE deleted_at IS NULL AND LOWER(TRIM(COALESCE(source,''))) = 'ios';
+            """, db: db)
+        try exec("""
+            CREATE TRIGGER IF NOT EXISTS meeting_participant_suggestions_invalidate
+            AFTER UPDATE OF raw_transcript, manual_notes, deleted_at ON meetings
+            WHEN OLD.raw_transcript IS NOT NEW.raw_transcript OR OLD.manual_notes IS NOT NEW.manual_notes
+              OR (OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL)
+            BEGIN DELETE FROM meeting_participant_suggestions WHERE meeting_id=NEW.id; END;
+            """, db: db)
+        // A person is local and stable; source identifiers and email addresses are
+        // provenance, not the identity itself. Backfill only exact source identities.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS meeting_people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_meeting_people_name ON meeting_people(display_name COLLATE NOCASE, id);
+            CREATE TABLE IF NOT EXISTS meeting_person_identifiers (
+                identifier TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES meeting_people(id));
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_identifiers_person
+                ON meeting_person_identifiers(person_id, identifier);
+            CREATE TABLE IF NOT EXISTS meeting_people_merges (
+                id TEXT PRIMARY KEY, target_id TEXT NOT NULL, source_id TEXT NOT NULL,
+                target_name TEXT NOT NULL, source_name TEXT NOT NULL, created_at REAL NOT NULL,
+                undone INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS idx_meeting_people_merges_active ON meeting_people_merges(undone,created_at);
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_identifiers (
+                merge_id TEXT NOT NULL, identifier TEXT NOT NULL, PRIMARY KEY(merge_id,identifier));
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_emails (
+                merge_id TEXT NOT NULL, email TEXT NOT NULL COLLATE NOCASE, source_identifier TEXT NOT NULL,
+                target_had INTEGER NOT NULL, PRIMARY KEY(merge_id,email,source_identifier));
+            CREATE TABLE IF NOT EXISTS meeting_people_merge_participants (
+                merge_id TEXT NOT NULL, meeting_id INTEGER NOT NULL, identifier TEXT NOT NULL,
+                PRIMARY KEY(merge_id,meeting_id,identifier));
+            CREATE TABLE IF NOT EXISTS meeting_person_emails (
+                person_id TEXT NOT NULL REFERENCES meeting_people(id), email TEXT NOT NULL COLLATE NOCASE,
+                source_identifier TEXT NOT NULL, PRIMARY KEY(person_id, email, source_identifier));
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_emails_email ON meeting_person_emails(email, person_id);
+            CREATE INDEX IF NOT EXISTS idx_meeting_person_emails_source ON meeting_person_emails(source_identifier, person_id);
+            CREATE INDEX IF NOT EXISTS idx_meeting_participants_person ON meeting_participants(person_id, meeting_id);
+            """, db: db)
+        try MeetingChatSQL.transaction(db: db) {
+            let migrated = try MeetingChatSQL.rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_people_v1'", db: db) { _ in true }.first ?? false
+            if !migrated {
+                try backfillMeetingPeople(db: db)
+                try MeetingChatSQL.execute("INSERT INTO local_migrations VALUES('meeting_people_v1',strftime('%s','now'))", db: db)
+            }
+        }
+        try installMeetingPeopleSearch(db: db)
         // Migrate local development databases created by the superseded PR.
         _ = sqlite3_exec(
             db,
@@ -362,6 +448,7 @@ public final class DictationStore {
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
+        try FeedbackCaptureStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
         try migrateQuillHistory(db: db)
@@ -1307,6 +1394,11 @@ public final class DictationStore {
         var quillFilter = historyFilterConditions(alias: "q", dateColumn: "timestamp",
             fromDate: fromDate, toDate: toDate, origin: origin)
         if targetApplication != nil { quillFilter.conditions.append("0 = 1") }
+        var captureConditions = ["1 = 1"]
+        var captureValues: [String] = []
+        if let fromDate { captureConditions.append("julianday(f.created_at, 'unixepoch') >= julianday(?)"); captureValues.append(fromDate) }
+        if let toDate { captureConditions.append("julianday(f.created_at, 'unixepoch') <= julianday(?)"); captureValues.append(toDate) }
+        if origin == .fromIPhone || targetApplication != nil { captureConditions.append("0 = 1") }
         let sql = """
         WITH timeline(kind, record_id, sort_time) AS (
             SELECT 0, d.id, d.timestamp
@@ -1323,6 +1415,9 @@ public final class DictationStore {
             UNION ALL
             SELECT 3, q.id, q.timestamp FROM quill_conversations q
             WHERE \(quillFilter.conditions.joined(separator: " AND "))
+            UNION ALL
+            SELECT 4, f.id, strftime('%Y-%m-%dT%H:%M:%fZ', f.created_at, 'unixepoch')
+            FROM vidshots f WHERE \(captureConditions.joined(separator: " AND "))
         )
         SELECT kind, record_id
         FROM timeline
@@ -1334,7 +1429,7 @@ public final class DictationStore {
         }
         defer { sqlite3_finalize(statement) }
 
-        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues
+        let boundValues = dictationFilter.boundValues + meetingFilter.boundValues + cotypistFilter.boundValues + quillFilter.boundValues + captureValues
         for (index, value) in boundValues.enumerated() {
             sqlite3_bind_text(statement, Int32(index + 1), (value as NSString).utf8String, -1, nil)
         }
@@ -1342,11 +1437,13 @@ public final class DictationStore {
         var entries: [TimelineEntry] = []
         var remainingOffset = max(0, offset)
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var captureStore: FeedbackCaptureStore?
+        var captureRecords: [String: FeedbackCaptureRecord]?
         while sqlite3_step(statement) == SQLITE_ROW {
             try Task.checkCancellation()
             let kind = sqlite3_column_int(statement, 0)
             let id = sqlite3_column_int64(statement, 1)
-            let labels = ["Dictations", "Meetings", "Cotypist", "Quill"]
+            let labels = ["Dictations", "Meetings", "Cotypist", "Quill", "Vidshots"]
             guard activity == "All activity" || (kind >= 0 && Int(kind) < labels.count && labels[Int(kind)] == activity) else { continue }
             let entry: TimelineEntry?
             switch kind {
@@ -1354,6 +1451,15 @@ public final class DictationStore {
             case 1: entry = try meeting(id: id, db: db).map(TimelineEntry.meeting)
             case 2: entry = try cotypistSession(id: id, db: db).map(TimelineEntry.cotypist)
             case 3: entry = try quillConversation(id: id, db: db, previewOnly: query.isEmpty).map(TimelineEntry.quill)
+            case 4:
+                guard let rawID = sqlite3_column_text(statement, 1) else { continue }
+                let captureID = String(cString: rawID)
+                if captureStore == nil {
+                    let store = try FeedbackCaptureStore(databaseURL: databaseURL, support: databaseURL.deletingLastPathComponent())
+                    captureRecords = try Dictionary(uniqueKeysWithValues: store.list().map { ($0.id, $0) })
+                    captureStore = store
+                }
+                entry = captureRecords?[captureID].map(TimelineEntry.vidshot)
             default: entry = nil
             }
             guard let entry else { continue }
@@ -1364,6 +1470,9 @@ public final class DictationStore {
                 case .dictation(let record): text = record.rawText
                 case .quill(let record): text = record.turns.map { ($0.question ?? "") + " " + $0.answer }.joined(separator: "\n")
                 case .cotypist(let record): text = record.acceptances.map { $0.contextBefore + $0.text }.joined(separator: "\n")
+                case .vidshot(let record):
+                    let transcript = try? captureStore?.manifest(id: record.id).transcript?.text
+                    text = [record.title, transcript ?? ""].joined(separator: "\n")
                 }
                 guard text.localizedCaseInsensitiveContains(query) else { continue }
             }
@@ -1372,6 +1481,19 @@ public final class DictationStore {
             if entries.count == limit { break }
         }
         return entries
+    }
+
+    /// Local iOS-origin records are durable evidence that another device has synced,
+    /// including databases predating companion-device discovery.
+    public func hasMobileOriginHistory() throws -> Bool {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        let rows = try MeetingChatSQL.rows("""
+            SELECT EXISTS(SELECT 1 FROM dictations WHERE deleted_at IS NULL
+                AND LOWER(TRIM(COALESCE(source,''))) = 'ios')
+              OR EXISTS(SELECT 1 FROM meetings WHERE deleted_at IS NULL
+                AND LOWER(TRIM(COALESCE(source,''))) = 'ios')
+            """, db: db) { sqlite3_column_int($0, 0) != 0 }
+        return rows.first ?? false
     }
 
     public func meetingCounts(
@@ -1767,8 +1889,8 @@ public final class DictationStore {
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?))
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, visual_context, folder_id, notes_layout_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, (SELECT id FROM meeting_folders WHERE id = ?), 1)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -1821,14 +1943,289 @@ public final class DictationStore {
         return sqlite3_last_insert_rowid(db)
     }
 
+    public static func participantEvidenceFingerprint(transcript: String, notes: String) -> String {
+        let data = Data(("\(transcript.utf8.count):" + transcript + notes).utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func saveParticipantSuggestions(meetingID: Int64, fingerprint: String, suggestions: [MeetingParticipantSuggestion]) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard let meeting = try meeting(id: meetingID, db: db),
+                  Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes) == fingerprint else {
+                throw DictationStoreError.staleParticipantSuggestion
+            }
+            let sql = "INSERT OR IGNORE INTO meeting_participant_suggestions(meeting_id,fingerprint,name,source,excerpt) VALUES(?,?,?,?,?)"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for suggestion in suggestions.prefix(20) {
+                let name = suggestion.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let excerpt = suggestion.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = suggestion.source == "transcript" ? meeting.rawTranscript : suggestion.source == "notes" ? meeting.manualNotes : ""
+                guard !name.isEmpty, name.count <= 200, excerpt.count >= 8, excerpt.count <= 500,
+                      text.contains(excerpt), excerpt.range(of: name, options: [.caseInsensitive, .diacriticInsensitive]) != nil else { continue }
+                sqlite3_reset(statement); sqlite3_clear_bindings(statement)
+                sqlite3_bind_int64(statement, 1, meetingID)
+                for (slot, value) in [(2, fingerprint), (3, name), (4, suggestion.source), (5, excerpt)] {
+                    sqlite3_bind_text(statement, Int32(slot), value, -1, transient)
+                }
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
+            }
+            try Task.checkCancellation()
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error
+        }
+    }
+
+    public func participantSuggestions(meetingID: Int64) throws -> [MeetingParticipantSuggestion] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        guard let meeting = try meeting(id: meetingID, db: db) else { return [] }
+        let fingerprint = Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT name,source,excerpt FROM meeting_participant_suggestions WHERE meeting_id=? AND fingerprint=? AND state='pending' ORDER BY name COLLATE NOCASE", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 2, fingerprint, -1, transient)
+        var result: [MeetingParticipantSuggestion] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                let name = stringColumn(statement, index: 0)
+                result.append(.init(id: name, name: name, source: stringColumn(statement, index: 1), excerpt: stringColumn(statement, index: 2)))
+            case SQLITE_DONE: return result
+            default: throw lastError(db)
+            }
+        }
+    }
+
+    public func resolveParticipantSuggestion(meetingID: Int64, fingerprint: String, name: String, add: Bool, existingPerson: MeetingParticipantDraft? = nil) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            guard let meeting = try meeting(id: meetingID, db: db),
+                  Self.participantEvidenceFingerprint(transcript: meeting.rawTranscript, notes: meeting.manualNotes) == fingerprint else { throw DictationStoreError.staleParticipantSuggestion }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "UPDATE meeting_participant_suggestions SET state=? WHERE meeting_id=? AND fingerprint=? AND name=? COLLATE NOCASE AND state='pending'", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(statement, 1, add ? "accepted" : "dismissed", -1, transient)
+            sqlite3_bind_int64(statement, 2, meetingID)
+            sqlite3_bind_text(statement, 3, fingerprint, -1, transient)
+            sqlite3_bind_text(statement, 4, name, -1, transient)
+            guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else { throw DictationStoreError.staleParticipantSuggestion }
+            if add {
+                let participant = existingPerson ?? .init(participantIdentifier: "manual:\(UUID().uuidString)", displayName: name)
+                try upsertMeetingParticipants(meetingID: meetingID, participants: [participant], source: .manual, db: db)
+            }
+            try exec("COMMIT", db: db)
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw error
+        }
+    }
+
+    public func searchMeetingPeople(query: String, limit: Int = 50) throws -> [MeetingParticipantDraft] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.utf8.count <= 512 else { return [] }
+        if !text.isEmpty && !text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) { return [] }
+        let match = text.isEmpty ? "" : "JOIN meeting_people_fts ON meeting_people_fts.rowid=person.rowid"
+        let predicate = text.isEmpty ? "" : "AND meeting_people_fts MATCH ?"
+        let sql = """
+        SELECT person.id, person.display_name,
+          (SELECT email FROM meeting_person_emails e WHERE e.person_id=person.id ORDER BY email LIMIT 1)
+        FROM meeting_people person \(match)
+        WHERE EXISTS (SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id
+            WHERE p.person_id=person.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          \(predicate)
+        ORDER BY person.display_name COLLATE NOCASE, person.id LIMIT ?
+        """
+        var values: [MeetingChatSQL.Value] = []
+        if !text.isEmpty { values.append(.text("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"*")) }
+        values.append(.integer(Int64(max(1, min(limit, 100)))))
+        return try MeetingChatSQL.rows(sql, values, db: db) { statement in
+            let id = MeetingChatSQL.text(statement, 0)
+            return MeetingParticipantDraft(participantIdentifier: id, displayName: MeetingChatSQL.text(statement, 1),
+                emailAddress: sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : MeetingChatSQL.text(statement, 2), personID: id)
+        }
+    }
+
+    /// Exact indexed source evidence only; never consider names or infer attendance.
+    public func duplicateMeetingPeople(limit: Int = 100) throws -> [DuplicateMeetingPeople] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        let sql = """
+        WITH email_matches AS (
+          SELECT DISTINCT a.person_id first_id, b.person_id second_id
+          FROM meeting_person_emails a JOIN meeting_person_emails b
+            ON a.email=b.email COLLATE NOCASE AND a.person_id<b.person_id
+          WHERE EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          LIMIT 100
+        ), contact_matches AS (
+          SELECT DISTINCT a.person_id first_id, b.person_id second_id
+          FROM meeting_person_emails a JOIN meeting_person_emails b
+            ON a.source_identifier=b.source_identifier AND a.person_id<b.person_id
+          WHERE a.source_identifier LIKE 'contact:%'
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+            AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.person_id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          LIMIT 100
+        ), candidates AS (
+          SELECT * FROM email_matches UNION SELECT * FROM contact_matches
+        )
+        SELECT a.id,a.display_name,b.id,b.display_name,COALESCE(
+          (SELECT x.email FROM meeting_person_emails x JOIN meeting_person_emails y
+            ON x.email=y.email COLLATE NOCASE WHERE x.person_id=a.id AND y.person_id=b.id LIMIT 1),
+          (SELECT x.source_identifier FROM meeting_person_emails x JOIN meeting_person_emails y
+            ON x.source_identifier=y.source_identifier WHERE x.person_id=a.id AND y.person_id=b.id
+              AND x.source_identifier LIKE 'contact:%' LIMIT 1))
+        FROM candidates c JOIN meeting_people a ON a.id=c.first_id JOIN meeting_people b ON b.id=c.second_id
+        WHERE EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=a.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+          AND EXISTS(SELECT 1 FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id WHERE p.person_id=b.id AND p.is_suppressed=0 AND m.deleted_at IS NULL)
+        GROUP BY a.id,b.id ORDER BY a.display_name COLLATE NOCASE,b.display_name COLLATE NOCASE,a.id,b.id LIMIT ?
+        """
+        return try MeetingChatSQL.rows(sql, [.integer(Int64(max(1,min(limit,100))))], db: db) { row in
+            let a = MeetingChatSQL.text(row,0), b = MeetingChatSQL.text(row,2)
+            return DuplicateMeetingPeople(first: .init(participantIdentifier:a,displayName:MeetingChatSQL.text(row,1),personID:a),
+                second: .init(participantIdentifier:b,displayName:MeetingChatSQL.text(row,3),personID:b), evidence:MeetingChatSQL.text(row,4))
+        }
+    }
+
+    /// Caller must present the candidate and obtain explicit user confirmation.
+    public func mergeMeetingPeople(targetID: String, sourceID: String) throws {
+        guard targetID != sourceID else { throw DictationStoreError.invalidPeopleMerge }
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try MeetingChatSQL.transaction(db: db) {
+            let names = try MeetingChatSQL.rows("SELECT id,display_name FROM meeting_people WHERE id IN (?,?)", [.text(targetID),.text(sourceID)], db: db) { (MeetingChatSQL.text($0,0),MeetingChatSQL.text($0,1)) }
+            guard names.count == 2,
+                  let targetName = names.first(where: { $0.0 == targetID })?.1,
+                  let sourceName = names.first(where: { $0.0 == sourceID })?.1 else { throw DictationStoreError.invalidPeopleMerge }
+            let evidence = try MeetingChatSQL.rows("""
+              SELECT 1 FROM meeting_person_emails a JOIN meeting_person_emails b
+                ON (a.email=b.email COLLATE NOCASE OR (a.source_identifier=b.source_identifier AND a.source_identifier LIKE 'contact:%'))
+              WHERE a.person_id=? AND b.person_id=? LIMIT 1
+              """, [.text(targetID),.text(sourceID)], db: db) { _ in true }.first ?? false
+            let active = try MeetingChatSQL.rows("""
+                SELECT count(DISTINCT p.person_id) FROM meeting_participants p JOIN meetings m ON m.id=p.meeting_id
+                WHERE p.person_id IN (?,?) AND p.is_suppressed=0 AND m.deleted_at IS NULL
+                """, [.text(targetID),.text(sourceID)], db: db) { sqlite3_column_int($0,0) }.first ?? 0
+            guard evidence && active == 2 else { throw DictationStoreError.invalidPeopleMerge }
+            let id = UUID().uuidString
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merges(id,target_id,source_id,target_name,source_name,created_at) VALUES(?,?,?,?,?,?)", [.text(id),.text(targetID),.text(sourceID),.text(targetName),.text(sourceName),.real(Date().timeIntervalSince1970)], db: db)
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merge_identifiers SELECT ?,identifier FROM meeting_person_identifiers WHERE person_id=?", [.text(id),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("INSERT INTO meeting_people_merge_participants SELECT ?,meeting_id,participant_identifier FROM meeting_participants WHERE person_id=?", [.text(id),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("""
+              INSERT INTO meeting_people_merge_emails SELECT ?,s.email,s.source_identifier,
+                EXISTS(SELECT 1 FROM meeting_person_emails t WHERE t.person_id=? AND t.email=s.email COLLATE NOCASE AND t.source_identifier=s.source_identifier)
+              FROM meeting_person_emails s WHERE s.person_id=?
+              """, [.text(id),.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_person_identifiers SET person_id=? WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails SELECT ?,email,source_identifier FROM meeting_person_emails WHERE person_id=?", [.text(targetID),.text(sourceID)], db: db)
+            try MeetingChatSQL.execute("DELETE FROM meeting_person_emails WHERE person_id=?", [.text(sourceID)], db: db)
+        }
+    }
+
+    public func meetingPeopleMergeHistory(limit: Int = 100) throws -> [MeetingPeopleMerge] {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        return try MeetingChatSQL.rows("SELECT id,target_name,source_name FROM meeting_people_merges WHERE undone=0 ORDER BY created_at DESC,rowid DESC LIMIT ?", [.integer(Int64(max(1,min(limit,100))))], db: db) {
+            MeetingPeopleMerge(id:MeetingChatSQL.text($0,0),targetName:MeetingChatSQL.text($0,1),sourceName:MeetingChatSQL.text($0,2))
+        }
+    }
+
+    public func undoMeetingPeopleMerge(id: String) throws {
+        let db = try openDatabase(); defer { sqlite3_close(db) }
+        try MeetingChatSQL.transaction(db: db) {
+            let merges = try MeetingChatSQL.rows("SELECT target_id,source_id,rowid FROM meeting_people_merges WHERE id=? AND undone=0", [.text(id)], db: db) { (MeetingChatSQL.text($0,0),MeetingChatSQL.text($0,1),sqlite3_column_int64($0,2)) }
+            guard let (target, source, sequence) = merges.first else { throw DictationStoreError.invalidPeopleMerge }
+            let later = try MeetingChatSQL.rows("SELECT 1 FROM meeting_people_merges WHERE undone=0 AND id!=? AND rowid>? AND (target_id IN (?,?) OR source_id IN (?,?)) LIMIT 1", [.text(id),.integer(sequence),.text(target),.text(source),.text(target),.text(source)], db: db) { _ in true }.first ?? false
+            guard !later else { throw DictationStoreError.peopleMergeUndoOrder }
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_participants SET person_id=? WHERE person_id=? AND (
+                participant_identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+                OR EXISTS(SELECT 1 FROM meeting_people_merge_participants x WHERE x.merge_id=? AND x.meeting_id=meeting_participants.meeting_id AND x.identifier=meeting_participants.participant_identifier))
+              """, [.text(source),.text(target),.text(id),.text(id)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_person_identifiers SET person_id=? WHERE person_id=? AND identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)", [.text(source),.text(target),.text(id)], db: db)
+            try MeetingChatSQL.execute("""
+              INSERT OR IGNORE INTO meeting_person_emails SELECT ?,e.email,e.source_identifier FROM meeting_people_merge_emails e
+              WHERE e.merge_id=? AND EXISTS(SELECT 1 FROM meeting_person_emails t WHERE t.person_id=? AND t.email=e.email COLLATE NOCASE AND t.source_identifier=e.source_identifier)
+              """, [.text(source),.text(id),.text(target)], db: db)
+            try MeetingChatSQL.execute("""
+              DELETE FROM meeting_person_emails WHERE person_id=? AND EXISTS(SELECT 1 FROM meeting_people_merge_emails e
+                WHERE e.merge_id=? AND e.target_had=0 AND e.email=meeting_person_emails.email COLLATE NOCASE AND e.source_identifier=meeting_person_emails.source_identifier)
+              """, [.text(target),.text(id)], db: db)
+            // Addresses discovered after the merge inherit the ownership of
+            // the moved source identifier, so undo does not strand them.
+            try MeetingChatSQL.execute("""
+              INSERT OR IGNORE INTO meeting_person_emails SELECT ?,t.email,t.source_identifier FROM meeting_person_emails t
+              WHERE t.person_id=? AND t.source_identifier IN (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+              """, [.text(source),.text(target),.text(id)], db: db)
+            try MeetingChatSQL.execute("""
+              DELETE FROM meeting_person_emails WHERE person_id=? AND source_identifier IN
+                (SELECT identifier FROM meeting_people_merge_identifiers WHERE merge_id=?)
+                AND NOT EXISTS (SELECT 1 FROM meeting_people_merge_emails e WHERE e.merge_id=? AND e.target_had=1
+                  AND e.email=meeting_person_emails.email COLLATE NOCASE AND e.source_identifier=meeting_person_emails.source_identifier)
+              """, [.text(target),.text(id),.text(id)], db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_people_merges SET undone=1 WHERE id=?", [.text(id)], db: db)
+        }
+    }
+
+    public func relatedMeetings(meetingID: Int64, limit: Int = 20, offset: Int = 0) throws -> [RelatedMeeting] {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = """
+        WITH matches AS (
+            SELECT DISTINCT p.meeting_id, own.person_id AS person, person.display_name
+            FROM meeting_participants own
+            JOIN meeting_participants p ON p.person_id = own.person_id
+            JOIN meeting_people person ON person.id = own.person_id
+            WHERE own.meeting_id = ?1 AND own.is_suppressed = 0 AND p.is_suppressed = 0 AND p.meeting_id != ?1
+        )
+        SELECT m.id, m.title, m.start_time, group_concat(matches.display_name, char(10))
+        FROM matches JOIN meetings m ON m.id = matches.meeting_id
+        WHERE m.deleted_at IS NULL
+        GROUP BY m.id ORDER BY count(DISTINCT matches.person) DESC, julianday(m.start_time) DESC, m.id DESC
+        LIMIT ?2 OFFSET ?3
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, meetingID)
+        sqlite3_bind_int(statement, 2, Int32(max(1, min(limit, 100))))
+        sqlite3_bind_int(statement, 3, Int32(max(0, min(offset, Int(Int32.max)))))
+        var result: [RelatedMeeting] = []
+        while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                result.append(RelatedMeeting(meetingID: sqlite3_column_int64(statement, 0),
+                    title: stringColumn(statement, index: 1), startTime: stringColumn(statement, index: 2),
+                    sharedNames: stringColumn(statement, index: 3).components(separatedBy: "\n")))
+            case SQLITE_DONE: return result
+            default: throw lastError(db)
+            }
+        }
+    }
+
     public func listMeetingParticipants(meetingID: Int64) throws -> [MeetingParticipant] {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
 
         let sql = """
         SELECT meeting_id, participant_identifier, display_name, email_address, insertion_order
-        FROM meeting_participants
-        WHERE meeting_id = ? AND is_suppressed = 0
+        FROM (
+            SELECT p.*, ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(person_id, participant_identifier)
+                ORDER BY CASE source WHEN 'manual' THEN 0 ELSE 1 END, insertion_order, participant_identifier
+            ) AS person_rank
+            FROM meeting_participants p WHERE meeting_id = ? AND is_suppressed = 0
+        ) WHERE person_rank = 1
         ORDER BY insertion_order, participant_identifier
         """
         var statement: OpaquePointer?
@@ -1965,22 +2362,21 @@ public final class DictationStore {
 
         try exec("BEGIN IMMEDIATE TRANSACTION", db: db)
         do {
-            if try meetingParticipantSource(
-                meetingID: meetingID,
-                participantIdentifier: normalizedIdentifier,
-                db: db
-            ) == .calendar {
-                try suppressMeetingParticipant(
-                    meetingID: meetingID,
-                    participantIdentifier: normalizedIdentifier,
-                    db: db
-                )
-            } else {
-                try deleteMeetingParticipant(
-                    meetingID: meetingID,
-                    participantIdentifier: normalizedIdentifier,
-                    db: db
-                )
+            // A person may have multiple source snapshots in the same meeting.
+            // Remove the association as a whole while retaining calendar suppression.
+            let ids = try MeetingChatSQL.rows("""
+                SELECT p.participant_identifier, p.source FROM meeting_participants p
+                WHERE p.meeting_id=? AND p.person_id=(SELECT person_id FROM meeting_participants
+                    WHERE meeting_id=? AND participant_identifier=?)
+                """, [.integer(meetingID), .integer(meetingID), .text(normalizedIdentifier)], db: db) {
+                    (MeetingChatSQL.text($0, 0), MeetingChatSQL.text($0, 1))
+                }
+            for (identifier, source) in ids {
+                if source == MeetingParticipantSource.calendar.rawValue {
+                    try suppressMeetingParticipant(meetingID: meetingID, participantIdentifier: identifier, db: db)
+                } else {
+                    try deleteMeetingParticipant(meetingID: meetingID, participantIdentifier: identifier, db: db)
+                }
             }
             try exec("COMMIT", db: db)
         } catch {
@@ -2002,9 +2398,99 @@ public final class DictationStore {
             return MeetingParticipantDraft(
                 participantIdentifier: participantIdentifier,
                 displayName: displayName,
-                emailAddress: participant.emailAddress
+                emailAddress: participant.emailAddress,
+                emailAddresses: participant.emailAddresses, personID: participant.personID
             )
         }
+    }
+
+    private func installMeetingPeopleSearch(db: OpaquePointer?) throws {
+        try exec("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS meeting_people_fts USING fts5(name, emails, prefix='2 3 4');
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_insert AFTER INSERT ON meeting_people BEGIN
+          INSERT INTO meeting_people_fts(rowid,name,emails) VALUES(new.rowid,new.display_name,'');
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_update AFTER UPDATE OF display_name ON meeting_people BEGIN
+          UPDATE meeting_people_fts SET name=new.display_name WHERE rowid=new.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_delete AFTER DELETE ON meeting_people BEGIN
+          DELETE FROM meeting_people_fts WHERE rowid=old.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_email_insert AFTER INSERT ON meeting_person_emails BEGIN
+          UPDATE meeting_people_fts SET emails=COALESCE((SELECT group_concat(email,' ') FROM meeting_person_emails WHERE person_id=new.person_id),'')
+          WHERE rowid=(SELECT rowid FROM meeting_people WHERE id=new.person_id);
+        END;
+        CREATE TRIGGER IF NOT EXISTS meeting_people_fts_email_delete AFTER DELETE ON meeting_person_emails BEGIN
+          UPDATE meeting_people_fts SET emails=COALESCE((SELECT group_concat(email,' ') FROM meeting_person_emails WHERE person_id=old.person_id),'')
+          WHERE rowid=(SELECT rowid FROM meeting_people WHERE id=old.person_id);
+        END;
+        """, db: db)
+        try MeetingChatSQL.transaction(db: db) {
+            let indexed = try MeetingChatSQL.rows("SELECT 1 FROM local_migrations WHERE identifier='meeting_people_fts_v1'", db: db) { _ in true }.first ?? false
+            if !indexed {
+                try exec("""
+                  INSERT INTO meeting_people_fts(rowid,name,emails)
+                    SELECT p.rowid,p.display_name,COALESCE((SELECT group_concat(e.email,' ') FROM meeting_person_emails e WHERE e.person_id=p.id),'') FROM meeting_people p;
+                  INSERT INTO local_migrations VALUES('meeting_people_fts_v1',strftime('%s','now'));
+                  """, db: db)
+            }
+        }
+    }
+
+    private func backfillMeetingPeople(db: OpaquePointer?) throws {
+        let missing = try MeetingChatSQL.rows("SELECT participant_identifier, display_name FROM meeting_participants WHERE person_id IS NULL GROUP BY participant_identifier", db: db) { (MeetingChatSQL.text($0, 0), MeetingChatSQL.text($0, 1)) }
+        for (identifier, name) in missing {
+            let id = try resolveMeetingPerson(.init(participantIdentifier: identifier, displayName: name), db: db)
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE participant_identifier=? AND person_id IS NULL", [.text(id), .text(identifier)], db: db)
+        }
+        try MeetingChatSQL.execute("""
+            INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier)
+            SELECT person_id, lower(trim(email_address)), participant_identifier FROM meeting_participants
+            WHERE person_id IS NOT NULL AND email_address IS NOT NULL AND trim(email_address) != ''
+            """, db: db)
+    }
+
+    private func resolveMeetingPerson(_ participant: MeetingParticipantDraft, source: MeetingParticipantSource? = nil, db: OpaquePointer?) throws -> String {
+        let identifier = participant.participantIdentifier
+        let existing = try MeetingChatSQL.rows("SELECT person_id FROM meeting_person_identifiers WHERE identifier=?", [.text(identifier)], db: db) { MeetingChatSQL.text($0, 0) }.first
+        let requested = participant.personID.flatMap { $0.isEmpty ? nil : $0 }
+        let requestedExists = try requested.map { id in
+            try !MeetingChatSQL.rows("SELECT id FROM meeting_people WHERE id=?", [.text(id)], db: db) { MeetingChatSQL.text($0, 0) }.isEmpty
+        } ?? false
+        let emails = Set((participant.emailAddresses + [participant.emailAddress].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        let isContact = identifier.hasPrefix("contact:")
+        var id = existing ?? (requestedExists ? requested! : "")
+        if id.isEmpty { id = "person:\(UUID().uuidString)" }
+        try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_people(id,display_name) VALUES(?,?)", [.text(id), .text(participant.displayName)], db: db)
+        try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_identifiers(identifier,person_id) VALUES(?,?)", [.text(identifier), .text(id)], db: db)
+        if isContact {
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=? AND NOT EXISTS (
+                SELECT 1 FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
+                WHERE m.undone=0 AND m.target_id=? AND i.identifier=?)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(identifier)], db: db)
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=(
+                SELECT m.source_id FROM meeting_people_merges m JOIN meeting_people_merge_identifiers i ON i.merge_id=m.id
+                WHERE m.undone=0 AND i.identifier=? ORDER BY m.rowid LIMIT 1)
+              """, [.text(participant.displayName), .text(identifier)], db: db)
+        } else if source == .calendar {
+            // Calendar-only identities can follow attendee edits. A contact or
+            // a confirmed merge owns the canonical name and must not be overwritten.
+            try MeetingChatSQL.execute("""
+              UPDATE meeting_people SET display_name=? WHERE id=?
+                AND NOT EXISTS (SELECT 1 FROM meeting_person_identifiers i
+                                WHERE i.person_id=? AND i.identifier NOT LIKE 'calendar:%' AND i.identifier NOT LIKE 'email:%')
+                AND NOT EXISTS (SELECT 1 FROM meeting_participants p
+                                WHERE p.person_id=? AND p.source='manual')
+                AND NOT EXISTS (SELECT 1 FROM meeting_people_merges m
+                                WHERE m.undone=0 AND m.target_id=?)
+              """, [.text(participant.displayName), .text(id), .text(id), .text(id), .text(id)], db: db)
+        }
+        for email in emails {
+            try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_person_emails(person_id,email,source_identifier) VALUES(?,?,?)", [.text(id), .text(email), .text(identifier)], db: db)
+        }
+        return id
     }
 
     private func upsertMeetingParticipants(
@@ -2059,6 +2545,7 @@ public final class DictationStore {
         defer { sqlite3_finalize(statement) }
 
         for participant in participants {
+            let personID = try resolveMeetingPerson(participant, source: source, db: db)
             sqlite3_reset(statement)
             sqlite3_clear_bindings(statement)
             sqlite3_bind_int64(statement, 1, meetingID)
@@ -2082,6 +2569,7 @@ public final class DictationStore {
             guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
                 throw lastError(db)
             }
+            try MeetingChatSQL.execute("UPDATE meeting_participants SET person_id=? WHERE meeting_id=? AND participant_identifier=? AND person_id IS NOT ?", [.text(personID), .integer(meetingID), .text(participant.participantIdentifier), .text(personID)], db: db)
         }
     }
 
@@ -2205,8 +2693,8 @@ public final class DictationStore {
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start)
-        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, notes_layout_version)
+        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -3221,6 +3709,7 @@ public final class DictationStore {
             SET title = 'Deleted Meeting',
                 raw_transcript = '',
                 formatted_notes = NULL,
+                previous_notes = NULL,
                 manual_notes = '',
                 mic_audio_path = NULL,
                 system_audio_path = NULL,
@@ -3380,13 +3869,22 @@ public final class DictationStore {
         try MeetingChatSQL.clear(db: db)
         try exec("DELETE FROM meeting_resume_snapshots", db: db)
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
+        try exec("DELETE FROM meeting_participant_suggestions", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
+        try exec("DELETE FROM meeting_people_merge_participants", db: db)
+        try exec("DELETE FROM meeting_people_merge_emails", db: db)
+        try exec("DELETE FROM meeting_people_merge_identifiers", db: db)
+        try exec("DELETE FROM meeting_people_merges", db: db)
+        try exec("DELETE FROM meeting_person_emails", db: db)
+        try exec("DELETE FROM meeting_person_identifiers", db: db)
+        try exec("DELETE FROM meeting_people", db: db)
         try exec(
             """
             UPDATE meetings
             SET title = 'Deleted Meeting',
                 raw_transcript = '',
                 formatted_notes = NULL,
+                previous_notes = NULL,
                 manual_notes = '',
                 mic_audio_path = NULL,
                 system_audio_path = NULL,
@@ -3693,6 +4191,20 @@ public final class DictationStore {
         }
     }
 
+    /// The SQL assignments use the row's pre-update values, so a replacement
+    /// summary and its preserved sources commit together. No parsing or matching.
+    private static func preserveLegacyNotesSQL(originalStatus: MeetingStatus? = nil) -> String {
+        let completed = originalStatus.map { $0 == .completed ? "1" : "0" } ?? "meeting_status = 'completed'"
+        let useCombined = "(\(completed)) AND source != 'granola_import'"
+        return """
+        previous_notes = CASE WHEN notes_layout_version != 0 THEN previous_notes
+            WHEN \(useCombined) THEN manual_notes ELSE formatted_notes END,
+        manual_notes = CASE WHEN notes_layout_version = 0 AND (\(useCombined))
+            THEN COALESCE(formatted_notes, '') ELSE manual_notes END,
+        notes_layout_version = CASE WHEN notes_layout_version = 0 THEN 1 ELSE notes_layout_version END,
+        """
+    }
+
     public func completeLiveMeeting(
         id: Int64,
         title: String,
@@ -3715,7 +4227,8 @@ public final class DictationStore {
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
+        SET \(Self.preserveLegacyNotesSQL(originalStatus: .recording))
+            title = ?, calendar_event_id = ?, start_time = ?, end_time = ?, duration_seconds = ?, raw_transcript = ?, formatted_notes = ?, mic_audio_path = ?, system_audio_path = ?, saved_recording_path = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, visual_context = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -4129,13 +4642,15 @@ public final class DictationStore {
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
         selectedTemplatePrompt: String,
-        replacingTitleIfUnchanged expectedTitle: String? = nil
+        replacingTitleIfUnchanged expectedTitle: String? = nil,
+        replacingSummary: Bool = true
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let sql = """
         UPDATE meetings
-        SET title = CASE WHEN ? IS NULL OR title = ? THEN ? ELSE title END, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET \(replacingSummary ? Self.preserveLegacyNotesSQL() : "")
+            title = CASE WHEN ? IS NULL OR title = ? THEN ? ELSE title END, formatted_notes = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -4167,7 +4682,9 @@ public final class DictationStore {
         selectedTemplateID: String,
         selectedTemplateName: String,
         selectedTemplateKind: MeetingTemplateKind,
-        selectedTemplatePrompt: String
+        selectedTemplatePrompt: String,
+        replacingSummary: Bool = true,
+        originalStatus: MeetingStatus? = nil
     ) throws {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
@@ -4175,7 +4692,8 @@ public final class DictationStore {
         let wordCount = Self.countWords(in: rawTranscript) + Self.countWords(in: manualNotes)
         let sql = """
         UPDATE meetings
-        SET raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
+        SET \(replacingSummary ? Self.preserveLegacyNotesSQL(originalStatus: originalStatus) : "")
+            raw_transcript = ?, formatted_notes = ?, meeting_status = ?, word_count = ?, selected_template_id = ?, selected_template_name = ?, selected_template_kind = ?, selected_template_prompt = ?, updated_at = ?, sync_dirty = 1
         WHERE id = ?
         """
         var statement: OpaquePointer?
@@ -4535,7 +5053,7 @@ public final class DictationStore {
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
                COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
-               m.cloud_system_fields
+               m.cloud_system_fields, m.notes_layout_version, m.previous_notes
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IN (\(placeholders))
@@ -5039,7 +5557,7 @@ public final class DictationStore {
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
                COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
-               m.cloud_system_fields
+               m.cloud_system_fields, m.notes_layout_version, m.previous_notes
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.sync_dirty = 1 AND m.cloud_record_name IS NOT NULL
@@ -5144,7 +5662,7 @@ public final class DictationStore {
                m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
                m.updated_at, m.deleted_at, m.cloud_change_tag,
                COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
-               m.cloud_system_fields
+               m.cloud_system_fields, m.notes_layout_version, m.previous_notes
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IS NOT NULL
@@ -5645,6 +6163,8 @@ public final class DictationStore {
             text: rawTranscript,
             summaryText: optionalStringColumn(statement, index: 3),
             manualNotes: optionalStringColumn(statement, index: 4),
+            previousNotes: optionalStringColumn(statement, index: 16, keepingEmpty: true),
+            notesLayoutVersion: Int(sqlite3_column_int(statement, 15)),
             source: source,
             localSource: localSource,
             meetingStatus: meetingStatus,
@@ -5847,11 +6367,11 @@ public final class DictationStore {
             raw_transcript, formatted_notes, mic_audio_path, system_audio_path,
             saved_recording_path, meeting_status, manual_notes, word_count, source,
             follow_up_to_id, follow_up_to_record_name, updated_at, deleted_at, cloud_record_name, cloud_change_tag,
-            cloud_system_fields, last_synced_at, sync_dirty
+            cloud_system_fields, last_synced_at, sync_dirty, notes_layout_version, previous_notes
         )
         VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?,
                 (SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1),
-                ?, ?, ?, ?, ?, ?, ?, 0)
+                ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(cloud_record_name) DO UPDATE SET
             title = excluded.title,
             start_time = excluded.start_time,
@@ -5861,6 +6381,8 @@ public final class DictationStore {
             formatted_notes = excluded.formatted_notes,
             meeting_status = excluded.meeting_status,
             manual_notes = excluded.manual_notes,
+            previous_notes = CASE WHEN excluded.deleted_at IS NOT NULL THEN NULL ELSE COALESCE(excluded.previous_notes, meetings.previous_notes) END,
+            notes_layout_version = MAX(meetings.notes_layout_version, excluded.notes_layout_version),
             word_count = excluded.word_count,
             source = excluded.source,
             follow_up_to_id = excluded.follow_up_to_id,
@@ -5900,6 +6422,8 @@ public final class DictationStore {
         bindOptionalText(record.cloudChangeTag, at: 16, statement: statement)
         bindOptionalBlob(record.cloudSystemFields, at: 17, statement: statement)
         sqlite3_bind_double(statement, 18, Date().timeIntervalSince1970)
+        sqlite3_bind_int(statement, 19, Int32(record.notesLayoutVersion == 1 ? 1 : 0))
+        bindOptionalText(record.isDeleted ? nil : record.previousNotes, at: 20, statement: statement)
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
@@ -6008,6 +6532,8 @@ public final class DictationStore {
             savedRecordingPath: savedRecordingPath,
             status: status,
             manualNotes: manualNotes,
+            previousNotes: optionalStringColumn(statement, index: 28, keepingEmpty: true),
+            notesLayoutVersion: Int(sqlite3_column_int(statement, 27)),
             selectedTemplateID: selectedTemplateID,
             selectedTemplateName: selectedTemplateName,
             selectedTemplateKind: selectedTemplateKind,
@@ -6083,13 +6609,13 @@ public final class DictationStore {
         return String(cString: pointer)
     }
 
-    private func optionalStringColumn(_ statement: OpaquePointer?, index: Int32) -> String? {
+    private func optionalStringColumn(_ statement: OpaquePointer?, index: Int32, keepingEmpty: Bool = false) -> String? {
         guard sqlite3_column_type(statement, index) != SQLITE_NULL,
               let pointer = sqlite3_column_text(statement, index) else {
             return nil
         }
         let value = String(cString: pointer)
-        return value.isEmpty ? nil : value
+        return value.isEmpty && !keepingEmpty ? nil : value
     }
 
     private func optionalDataColumn(_ statement: OpaquePointer?, index: Int32) -> Data? {

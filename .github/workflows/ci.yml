@@ -393,7 +393,53 @@ jobs:
           swift --version
 
       - name: Run test shard
-        run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
+        run: |
+          set -o pipefail
+          if [[ "${{ matrix.shard }}" == core ]]; then
+            bash ./scripts/sample_core_test_hang.sh &
+            watchdog_pid=$!
+            trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+          fi
+          bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}" 2>&1 | tee "$RUNNER_TEMP/test-shard.log"
+
+      - name: Isolate a core process crash
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          if grep -q 'unexpected signal code 11' "$RUNNER_TEMP/test-shard.log"; then
+            python3 scripts/diagnose_core_crash.py
+          else
+            echo 'Core did not terminate with signal 11; skipping crash isolation.'
+          fi
+
+      - name: Collect core test crash reports
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          destination="${RUNNER_TEMP}/core-test-crashes"
+          mkdir -p "$destination"
+          # ReportCrash may finish writing after the test process has exited.
+          for attempt in {1..10}; do
+            for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              if [[ -d "$directory" ]]; then
+                find "$directory" -maxdepth 1 -type f -mmin -30 \
+                  \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
+                     -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
+                  -exec cp {} "$destination/" \; || true
+              fi
+            done
+            [[ -n "$(ls -A "$destination")" ]] && break
+            sleep 1
+          done
+
+      - name: Upload core test crash reports
+        if: failure() && matrix.shard == 'core'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-crashes
+          path: ${{ runner.temp }}/core-test-crashes/
+          if-no-files-found: ignore
+          retention-days: 3
 
   m5-tests:
     name: m5-macos ${{ github.sha }}

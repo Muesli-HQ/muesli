@@ -994,6 +994,27 @@ struct DictationStoreTests {
         #expect(meeting.durationSeconds == 210)
     }
 
+    @Test("mobile history evidence detects live synced dictations and meetings")
+    func mobileOriginHistoryEvidence() throws {
+        let store = try makeStore()
+        let date = Date(timeIntervalSince1970: 1_770_000_000)
+        #expect(try !store.hasMobileOriginHistory())
+        try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "dictation-ios-evidence", kind: .dictation, text: "Synthetic", source: "ios",
+            createdAt: date, updatedAt: date, durationSeconds: 1, wordCount: 1))
+        #expect(try store.hasMobileOriginHistory())
+        let dictation = try #require(store.recentDictations(limit: 1).first)
+        try store.deleteDictation(id: dictation.id)
+        #expect(try !store.hasMobileOriginHistory())
+        try store.upsertSyncedTextRecord(SyncTextRecord(
+            id: "meeting-ios-evidence", kind: .meeting, title: "Synthetic", text: "Notes", source: "ios",
+            meetingStatus: .noteOnly, createdAt: date, updatedAt: date, startedAt: date, durationSeconds: 1, wordCount: 1))
+        #expect(try store.hasMobileOriginHistory())
+        let meeting = try #require(store.recentMeetings(limit: 1).first)
+        try store.deleteMeeting(id: meeting.id)
+        #expect(try !store.hasMobileOriginHistory())
+    }
+
     @Test("synced iOS dictation preserves source and is clean")
     func syncedIOSDictationPreservesSource() throws {
         let store = try makeStore()

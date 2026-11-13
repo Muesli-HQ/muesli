@@ -44,7 +44,8 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
     /// Multilingual config from metadata.json (multilingual/2240ms variant).
     /// Geometry: chunk_mel_frames 224 + pre_encode_cache 9 = total 233; 8× subsampling
     /// → 28 encoder frames/chunk; chunkSamples = 2240ms · 16kHz = 35840.
-    private var config: NemotronRNNTConfig {
+    private var config: NemotronRNNTConfig { configuration() }
+    func configuration(promptId override: Int32? = nil) -> NemotronRNNTConfig {
         NemotronRNNTConfig(
             chunkSamples: 35840,
             cacheChannelFrames: 42,      // att_context left
@@ -52,7 +53,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             encoderDim: 1024,
             decoderHiddenSize: 640,
             blankTokenId: 13087,         // = vocab_size (last logit index)
-            promptId: promptId,          // selected language (auto = 101)
+            promptId: override ?? promptId, // per-request override leaves the preference intact
             stripAngleBracketTags: true  // drop <lang>/<unk> tags the model emits
         )
     }
@@ -166,9 +167,9 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Convenience (full-file transcription)
 
-    func transcribe(wavURL: URL) async throws -> (text: String, processingTime: Double) {
+    func transcribe(wavURL: URL, promptId: Int32? = nil) async throws -> (text: String, processingTime: Double) {
         let (models, config) = try await inferenceGate.withReservation(onWait: onWait) {
-            let config = self.config // Prompt changes apply to subsequent work, not this file.
+            let config = self.configuration(promptId: promptId) // Snapshot this file’s language.
             try await self.prepareModels()
             guard let models = self.models else { throw TranscriberError.notLoaded }
             return (models, config)
@@ -231,6 +232,7 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
             return modelDir
         }
 
+        guard !ManagedASRModelDownloader.localOnly else { throw CocoaError(.fileNoSuchFile) }
         fputs("[nemotron35] downloading multilingual/2240ms variant from HuggingFace...\n", stderr)
         _ = try await Nemotron35ModelStore.ensureDownloaded(progress: progress, progressSnapshot: progressSnapshot)
 

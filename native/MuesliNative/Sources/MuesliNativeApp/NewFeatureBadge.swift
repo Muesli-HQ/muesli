@@ -4,12 +4,13 @@ import SwiftUI
 
 /// Visible feature introductions, not a list of every change in the release.
 enum NewFeature: String, CaseIterable {
-    case chat, timeTurner, granolaImport, cotypist, liveDictation, appFormatting
+    case chat, timeTurner, vidshots, granolaImport, cotypist, liveDictation, appFormatting
 
     static func sidebar(_ tab: DashboardTab) -> Self? {
         switch tab {
         case .meetingChat: .chat
         case .timeTurner: .timeTurner
+        case .vidshots: .vidshots
         default: nil
         }
     }

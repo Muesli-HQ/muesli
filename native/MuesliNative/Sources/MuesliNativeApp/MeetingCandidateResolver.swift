@@ -152,6 +152,29 @@ struct NormalizedMeetingURL: Equatable {
     let platform: MeetingCandidate.Platform
 }
 
+enum MeetingCalendarAssociation {
+    static func matches(candidate: MeetingCandidate, meetingURL: URL?) -> Bool {
+        guard let candidateURL = candidate.url,
+              let detected = MeetingURLNormalizer.normalize(candidateURL),
+              let meetingURL,
+              let scheduled = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else { return false }
+        return detected.id == scheduled.id
+    }
+
+    /// Calendar proximity can help detect a call, but cannot identify its room.
+    static func sanitize(_ candidate: MeetingCandidate?, calendarEvent: CalendarEventContext?) -> MeetingCandidate? {
+        guard let candidate else { return nil }
+        let matchesRoom = calendarEvent.map { matches(candidate: candidate, meetingURL: $0.meetingURL) } ?? false
+        var evidence = candidate.evidence
+        if matchesRoom { evidence.insert(.calendarEvent) } else { evidence.remove(.calendarEvent) }
+        return MeetingCandidate(id: candidate.id, platform: candidate.platform, appName: candidate.appName,
+            url: candidate.url, evidence: evidence, startedAt: candidate.startedAt,
+            meetingTitle: matchesRoom ? calendarEvent?.title : nil,
+            sourceBundleID: candidate.sourceBundleID, sourcePID: candidate.sourcePID,
+            suppressionID: candidate.suppressionID)
+    }
+}
+
 enum MeetingURLNormalizer {
     static func normalize(_ rawValue: String) -> NormalizedMeetingURL? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -170,7 +193,9 @@ enum MeetingURLNormalizer {
             .joined(separator: "/")
 
         if host == "meet.google.com" {
-            guard let code = path.split(separator: "/").first.map(String.init),
+            let pathParts = path.split(separator: "/")
+            let codePart = pathParts.first == "meet" ? pathParts.dropFirst().first : pathParts.first
+            guard let code = codePart.map(String.init),
                   isGoogleMeetCode(code) else { return nil }
             let identity = "meet.google.com/\(code.lowercased())"
             return NormalizedMeetingURL(

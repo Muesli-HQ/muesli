@@ -2335,6 +2335,14 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Vidshot", icon: VidshotIcon.image()) {
+                settingsRow("Enable Vidshot", description: "Record a window or screen region with microphone narration. Captures stay on this Mac.") {
+                    settingsControl("feedback_capture")
+                }
+                settingsRow("Draw modifier") { settingsControl("feedback_capture_draw_modifier") }
+                compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
+                    .disabled(!appState.config.enableFeedbackCapture)
+            }
             TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
             quilSettingsSection
@@ -2455,6 +2463,10 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow("Stop recording when a meeting ends", description: "Supports Zoom, Teams, Webex and browser meetings. Checks connectivity with Google when the meeting signal disappears. If the check fails, recording may continue for up to 8 minutes.") {
+                    settingsControl("meeting_auto_stop")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
@@ -2521,6 +2533,7 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
+
             }
 
             settingsSection("Calendars") {
@@ -2609,6 +2622,7 @@ struct SettingsView: View {
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
+                .disabled(controller.feedbackCaptureOwnsMicrophone)
                 .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, MuesliTheme.spacing8)
                 if appState.config.recordingIndicatorStyle == .notch {

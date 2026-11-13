@@ -1,4 +1,47 @@
 import Foundation
+import CoreGraphics
+
+struct MeetingClamshellMicWarningState {
+    private(set) var hasWarned = false
+
+    mutating func update(lidClosed: Bool, effectiveInputIsBuiltIn: Bool?) -> Bool {
+        guard lidClosed else { hasWarned = false; return false }
+        guard let effectiveInputIsBuiltIn else { return false }
+        guard effectiveInputIsBuiltIn else { hasWarned = false; return false }
+        guard !hasWarned else { return false }
+        return true
+    }
+
+    mutating func markShown() { hasWarned = true }
+}
+
+enum MeetingLidStopPolicy {
+    static func shouldStop(lidClosed: Bool, hasActiveExternalDisplay: Bool?) -> Bool {
+        lidClosed && hasActiveExternalDisplay == false
+    }
+
+    static func hasActiveExternalDisplay() -> Bool? {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).contains {
+            CGDisplayIsBuiltin($0) == 0 && CGDisplayIsActive($0) != 0 && CGDisplayIsAsleep($0) == 0
+        }
+    }
+}
+
+enum MeetingSystemStopAction: Equatable {
+    case none, cancelPreparation, stopRecording
+
+    static func action(phase: MeetingCapturePhase) -> Self {
+        switch phase {
+        case .preparing: .cancelPreparation
+        case .capturing, .paused: .stopRecording
+        case .stopping, .stopped: .none
+        }
+    }
+}
 
 enum MeetingRecordingStartOrigin: Equatable {
     case manual
@@ -6,12 +49,13 @@ enum MeetingRecordingStartOrigin: Equatable {
     case calendarAutoRecord
     case scheduledMeetingPrompt
     case joinAndRecord
+    case calendarRecordingSwitch
 
     var tracksMeetingSource: Bool {
         switch self {
         case .manual:
             return false
-        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+        case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord, .calendarRecordingSwitch:
             return true
         }
     }
@@ -22,7 +66,7 @@ enum MeetingRecordingStartOrigin: Equatable {
             return .transcriptInactivity
         case .detectedPrompt:
             return .warnOnly
-        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
+        case .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord, .calendarRecordingSwitch:
             return .warnOnly
         }
     }
@@ -34,6 +78,8 @@ enum MeetingRecordingStartOrigin: Equatable {
         switch self {
         case .manual:
             return nil
+        case .calendarRecordingSwitch:
+            return explicitSource
         case .detectedPrompt, .calendarAutoRecord, .scheduledMeetingPrompt, .joinAndRecord:
             return explicitSource ?? recentSource()
         }
@@ -102,19 +148,35 @@ struct MeetingAutoStopSource: Equatable {
     let normalizedURL: String?
     let sourceBundleID: String?
     let hasObservedCandidate: Bool
+    let requiresExactRoomMatch: Bool
+
+    var assertionTarget: MeetingAssertionTarget? {
+        guard hasObservedCandidate, let bundle = sourceBundleID else { return nil }
+        let same = MeetingAutoStopPolicy.bundleIDsReferToSameApp
+        if same(bundle, "us.zoom.xos") { return .zoom }
+        if ["com.microsoft.teams2", "com.microsoft.teams"].contains(where: { same(bundle, $0) }) { return .teams }
+        if ["com.webex.meetingmanager", "com.cisco.webexmeetingsapp"].contains(where: { same(bundle, $0) }) { return .webex }
+        // A source exists only for an accepted detected or calendar recording.
+        // Chromium's assertion is process-wide, so another tab can prolong or
+        // be mistaken for this meeting; absence alone never arms the observer.
+        guard let root = MeetingCandidateResolver.browserApps.keys.first(where: { same(bundle, $0) }) else { return nil }
+        return .browser(bundleID: root)
+    }
 
     private init(
         candidateID: String?,
         suppressionID: String?,
         normalizedURL: String?,
         sourceBundleID: String?,
-        hasObservedCandidate: Bool
+        hasObservedCandidate: Bool,
+        requiresExactRoomMatch: Bool
     ) {
         self.candidateID = candidateID
         self.suppressionID = suppressionID
         self.normalizedURL = normalizedURL
         self.sourceBundleID = sourceBundleID
         self.hasObservedCandidate = hasObservedCandidate
+        self.requiresExactRoomMatch = requiresExactRoomMatch
     }
 
     init(candidate: MeetingCandidate) {
@@ -123,9 +185,10 @@ struct MeetingAutoStopSource: Equatable {
         self.normalizedURL = candidate.url
         self.sourceBundleID = candidate.sourceBundleID
         self.hasObservedCandidate = true
+        self.requiresExactRoomMatch = false
     }
 
-    init?(meetingURL: URL) {
+    init?(meetingURL: URL, requiresExactRoomMatch: Bool = false) {
         guard let normalized = MeetingURLNormalizer.normalize(meetingURL.absoluteString) else {
             return nil
         }
@@ -134,6 +197,7 @@ struct MeetingAutoStopSource: Equatable {
         self.normalizedURL = normalized.url
         self.sourceBundleID = nil
         self.hasObservedCandidate = false
+        self.requiresExactRoomMatch = requiresExactRoomMatch
     }
 
     func refined(with candidate: MeetingCandidate) -> MeetingAutoStopSource {
@@ -145,7 +209,8 @@ struct MeetingAutoStopSource: Equatable {
             suppressionID: refinedSuppressionID,
             normalizedURL: normalizedURL ?? candidate.url,
             sourceBundleID: sourceBundleID ?? candidate.sourceBundleID,
-            hasObservedCandidate: true
+            hasObservedCandidate: true,
+            requiresExactRoomMatch: requiresExactRoomMatch
         )
     }
 }
@@ -212,6 +277,33 @@ struct MeetingAutoStopTracker: Equatable {
 }
 
 enum MeetingAutoStopPolicy {
+    enum CalendarConfirmationAction {
+        case transcribeCurrent
+        case joinScheduled
+    }
+
+    static func calendarConfirmationHasConflictingRoom(candidate: MeetingCandidate?, meetingURL: URL?) -> Bool {
+        guard let candidateRoom = candidate?.url,
+              let scheduledRoom = meetingURL.flatMap({ MeetingAutoStopSource(meetingURL: $0)?.normalizedURL }) else { return false }
+        return candidateRoom != scheduledRoom
+    }
+
+    static func calendarConfirmationSource(candidate: MeetingCandidate?, meetingURL: URL?,
+                                           action: CalendarConfirmationAction = .transcribeCurrent)
+        -> (source: MeetingAutoStopSource?, origin: MeetingRecordingStartOrigin) {
+        if action == .joinScheduled {
+            return (meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: true) },
+                    .calendarRecordingSwitch)
+        }
+        if let candidate {
+            return (MeetingAutoStopSource(candidate: candidate), .detectedPrompt)
+        }
+        if let source = meetingURL.flatMap({ MeetingAutoStopSource(meetingURL: $0, requiresExactRoomMatch: true) }) {
+            return (source, .calendarAutoRecord)
+        }
+        return (nil, .manual)
+    }
+
     static func matches(candidate: MeetingCandidate, source: MeetingAutoStopSource) -> Bool {
         // Missing room evidence permits a media fallback; conflicting room
         // evidence must never extend the original recording, even in one browser.
@@ -220,6 +312,21 @@ enum MeetingAutoStopPolicy {
         if candidate.id == source.candidateID
             || candidate.suppressionID == source.suppressionID
             || (source.normalizedURL != nil && candidate.url == source.normalizedURL) {
+            return true
+        }
+        // Calendar and join-link sources start with a room URL but no desktop
+        // bundle. Allow matching desktop input attribution to refine that source;
+        // a running process or a browser URL alone cannot bind it.
+        if !source.requiresExactRoomMatch, source.sourceBundleID == nil,
+           candidate.url == nil,
+           let bundle = candidate.sourceBundleID,
+           let prefix = source.candidateID?.split(separator: ":").first,
+           [("zoom", "us.zoom.xos"), ("teams", "com.microsoft.teams2"),
+            ("teams", "com.microsoft.teams"), ("webex", "com.webex.meetingmanager"),
+            ("webex", "com.cisco.webexmeetingsapp")].contains(where: {
+                $0.0 == String(prefix) && bundleIDsReferToSameApp(bundle, $0.1)
+           }),
+           candidate.evidence.contains(.audioInputProcess) {
             return true
         }
         guard let sourceBundle = source.sourceBundleID,

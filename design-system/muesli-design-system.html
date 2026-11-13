@@ -306,11 +306,16 @@
     border: 1px solid var(--border);
   }
   .icon-item .symbol {
-    font-size: 16px;
     width: 24px;
-    text-align: center;
+    height: 24px;
+    flex: none;
+    background: var(--text-secondary);
+    mask: var(--icon) center / contain no-repeat;
+    -webkit-mask: var(--icon) center / contain no-repeat;
   }
   .icon-item .icon-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: 11px;
     color: var(--text-secondary);
   }
@@ -627,21 +632,24 @@
 <!-- 4. ICONOGRAPHY -->
 <section class="page-break">
   <h2><span class="num">04</span> Iconography</h2>
-  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, official assets for branding. Symbol names below are authoritative; browser emoji are illustrative placeholders, not SF Symbol renderings.</p>
+  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, official assets for branding. Generate the local SF Symbol previews with <code>swift design-system/scripts/render-sidebar-symbols.swift</code> from the repository root. Symbol names remain visible without them. Time Turner and Vidshots use bundled custom icon specimens.</p>
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock<br>Timeline</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x301C;</span><div class="icon-label">waveform<br>Dictations</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2 / person.2<br>Meetings (expanded / collapsed)</div></div>
-    <div class="icon-item"><span class="symbol" aria-hidden="true">&#x1F4AC;</span><div class="icon-label">bubble.left.and.bubble.right<br>Chat</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4BB;</span><div class="icon-label">cpu<br>Models</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2318;</span><div class="icon-label">command<br>Shortcuts</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/clock.png)"></span><div class="icon-label">clock<br>Timeline</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/time-turner.svg)"></span><div class="icon-label">TimeTurnerIcon<br>Time Turner</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/waveform.png)"></span><div class="icon-label">waveform<br>Dictations</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/vidshots.svg)"></span><div class="icon-label">VidshotIcon<br>Vidshots</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/person.wave.2.png)"></span><div class="icon-label">person.wave.2<br>Meetings (expanded)</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/person.2.png)"></span><div class="icon-label">person.2<br>Meetings (collapsed)</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/bubble.left.and.bubble.right.png)"></span><div class="icon-label">bubble.left.and.bubble.right<br>Chat</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/character.book.closed.png)"></span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/cpu.png)"></span><div class="icon-label">cpu<br>Models</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/command.png)"></span><div class="icon-label">command<br>Shortcuts</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/gearshape.png)"></span><div class="icon-label">gearshape<br>Settings</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/info.circle.png)"></span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Chat follows Meetings. Open Insights through the statistics tiles on Timeline or Dictations; it has no sidebar entry. Timeline’s activity filter shows only its selected value, with its label retained for accessibility. Models, Shortcuts, Settings, and About stay fixed in the bottom section. Only the top six destinations can be reordered. Drag toward a row’s upper or lower half: an accent insertion line marks the exact boundary before or after that row. Meetings moves with its folder tree. Right-click Move up / Move down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults. The local order persists across launches without changing the selected page. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The default order is Timeline, Time Turner, Dictations, Vidshots, Meetings, Chat and Dictionary. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Open Insights through the statistics tiles on Timeline or Dictations; it has no sidebar entry. Timeline’s activity filter shows only its selected value, with its label retained for accessibility. Models, Shortcuts, Settings, and About stay fixed in the bottom section. These seven destinations can be reordered. Drag toward a row’s upper or lower half: an accent insertion line marks the exact boundary before or after that row. Meetings moves with its folder tree. Right-click Move up / Move down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults. The local order persists across launches without changing the selected page. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
   <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Expanded row icons use 14pt medium; collapsed rail icons use 16pt medium. Meetings uses person.wave.2 expanded and person.2 collapsed. Icons are outline-only; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
   <h3>Permission recovery</h3>
@@ -1032,7 +1040,7 @@
   <table>
     <tr><th>Property</th><th>Value</th></tr>
     <tr><td>Container</td><td><code>backgroundRaised</code>, 12pt radius, 1pt <code>surfaceBorder</code>, 20pt padding</td></tr>
-    <tr><td>Header</td><td>"Coming Up" &mdash; Cormorant Garamond 22pt medium</td></tr>
+    <tr><td>Header</td><td>"Coming Up" &mdash; Nunito Sans 20pt semibold (title2)</td></tr>
     <tr><td>Date column</td><td>60pt wide &mdash; day number (24pt light), label (11pt medium), weekday (10pt)</td></tr>
     <tr><td>Event row</td><td>3pt accent bar (today) or 40% secondary bar &middot; title 13pt medium &middot; time 11pt secondary</td></tr>
     <tr><td>Join &amp; Record</td><td>Green button, shown when <code>meetingURL</code> present and not recording</td></tr>

@@ -84,6 +84,7 @@ struct PasteShortcutTests {
         case .quil: keyPath = \.quilHotkey
         case .computerUse: keyPath = \.computerUseHotkey
         case .meetingRecording: keyPath = \.meetingRecordingHotkey
+        case .feedbackCapture: keyPath = \.feedbackCaptureHotkey
         }
         _ = NSApplication.shared
         let automatic = try #require(PasteKeyboardLayout.resolve(.automatic))

@@ -6,6 +6,22 @@ import SQLite3
 import Observation
 @testable import MuesliNativeApp
 
+private actor ParticipantSuggestionTransportProbe {
+    private var captured: (url: String, body: Data)?
+    private(set) var callCount = 0
+
+    func load(_ request: URLRequest) throws -> (Data, URLResponse) {
+        callCount += 1
+        let url = try #require(request.url)
+        captured = (url.absoluteString, try #require(request.httpBody))
+        let result = #"[{"name":"Maya","source":"transcript","excerpt":"Maya joined the meeting"}]"#
+        let data = try JSONSerialization.data(withJSONObject: ["content": [["type": "text", "text": result]]])
+        return (data, try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)))
+    }
+
+    func snapshot() -> (url: String, body: Data)? { captured }
+}
+
 @MainActor
 private final class HistoryRefreshPublicationCounter {
     private(set) var count = 0
@@ -113,6 +129,41 @@ private actor OpenRouterCatalogRaceProbe {
 @MainActor
 @Suite("Meetings navigation")
 struct MeetingsNavigationTests {
+    @Test("Participant suggestion action discloses and sends bounded meeting text to the configured provider")
+    func participantSuggestionsSendOnlyBoundedMeetingText() async throws {
+        let store = try makeStore()
+        let support = makeSupportDirectory()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let controller = makeController(dictationStore: store, configStore: makeTestConfigStore(supportDirectory: support))
+        controller.updateConfig { $0.meetingSummaryBackend = MeetingSummaryBackendOption.anthropic.backend }
+        let transcript = "Maya joined the meeting. " + String(repeating: "t", count: 40_001) + "TRANSCRIPT_TAIL"
+        let notes = "Synthetic notes. " + String(repeating: "n", count: 20_001) + "NOTES_TAIL"
+        let id = try store.insertMeeting(title: "Private synthetic title", calendarEventID: nil,
+            startTime: Date(), endTime: Date(), rawTranscript: transcript, formattedNotes: "Private formatted notes",
+            micAudioPath: nil, systemAudioPath: nil)
+        try store.updateMeetingManualNotes(id: id, manualNotes: notes)
+        let probe = ParticipantSuggestionTransportProbe()
+        var generator = MeetingTextGenerationClient()
+        generator.credentialResolver = { _ in "synthetic-test-key" }
+        generator.load = { request in try await probe.load(request) }
+        let truncated = try await controller.findParticipantSuggestions(meetingID: id, generator: generator)
+        let captured = try #require(await probe.snapshot())
+        let envelope = try #require(JSONSerialization.jsonObject(with: captured.body) as? [String: Any])
+        let messages = try #require(envelope["messages"] as? [[String: String]])
+        let user = try #require(messages.first?["content"])
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(user.utf8)) as? [String: String])
+        #expect(await probe.callCount == 1)
+        #expect(captured.url == "https://api.anthropic.com/v1/messages")
+        #expect(payload.count == 2)
+        #expect(payload["transcript"] == String(transcript.prefix(40_000)))
+        #expect(payload["notes"] == String(notes.prefix(20_000)))
+        #expect(!user.contains("Private synthetic title"))
+        #expect(!user.contains("Private formatted notes"))
+        #expect(truncated)
+        #expect(ParticipantSuggestionPrivacy.disclosure.contains("provider"))
+        #expect(try store.participantSuggestions(meetingID: id).map(\.name) == ["Maya"])
+        #expect(try store.listMeetingParticipants(meetingID: id).isEmpty)
+    }
     @Test func timelinePaginationKeepsRowsButChangedSearchInvalidatesThem() {
         let completed = TimelineSearchRequest(scope: "release|revision1", limit: 50)
         #expect(completed.canDisplay(completed))
@@ -578,6 +629,7 @@ struct MeetingsNavigationTests {
         let store = try makeStore()
         let meetingID = try insertMeeting(in: store, title: "Timeline meeting", savedRecordingPath: nil)
         let controller = makeController(dictationStore: store)
+        controller.appState.hasMobileOriginHistory = true
         controller.appState.timelineOriginFilter = .fromIPhone
         controller.appState.timelineDateFilter = .lastWeek
         controller.appState.timelineFromDate = "2026-08-09T00:00:00Z"
@@ -652,6 +704,7 @@ struct MeetingsNavigationTests {
         #expect(!controller.appState.hasMoreTimelineEntries)
 
         controller.appState.timelineScrollAnchor = controller.appState.timelineRows.last?.id
+        controller.appState.hasMobileOriginHistory = true
         controller.filterTimeline(origin: .thisMac)
         #expect(controller.appState.timelineRows.count == 2)
         #expect(controller.appState.timelineScrollAnchor == controller.appState.timelineRows.first?.id)
@@ -1244,6 +1297,20 @@ struct MeetingsNavigationTests {
         #expect(try store.meeting(id: id)?.savedRecordingPath == "/saved/recovery.wav")
     }
 
+    @Test("Recording recovery references decode legacy and pending decisions")
+    func recordingRecoveryDecisionCompatibility() throws {
+        let legacy = Data(#"{"meetingID":1,"startTime":"date","databasePath":"/local"}"#.utf8)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: legacy).pendingRetentionDecision == nil)
+        let pending = MeetingRecordingRecoveryReference(meetingID: 1, startTime: "date", databasePath: "/local", pendingRetentionDecision: true)
+        let encoded = try JSONEncoder().encode(pending)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: encoded).pendingRetentionDecision == true)
+        let malformed = Data(#"{"meetingID":1,"startTime":"date","databasePath":"/local","pendingRetentionDecision":"invalid"}"#.utf8)
+        let recovered = try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: malformed)
+        #expect(recovered.meetingID == 1 && recovered.pendingRetentionDecision == true)
+        let refused = MeetingRecordingRecoveryReference(meetingID: 1, startTime: "date", databasePath: "/local", pendingRetentionDecision: false)
+        #expect(try JSONDecoder().decode(MeetingRecordingRecoveryReference.self, from: JSONEncoder().encode(refused)).pendingRetentionDecision == false)
+    }
+
     @Test("retained recording reference survives restart and repeated database failure")
     func retainedRecordingReferenceSurvivesRestart() throws {
         let store = try makeStore()
@@ -1455,6 +1522,56 @@ struct MeetingsNavigationTests {
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .never, hasRecording: false, writerFailed: true, prompt: { true })))
         #expect(!(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { false })))
         #expect(await MuesliController.shouldRetainMeetingRecording(policy: .prompt, hasRecording: true, writerFailed: false, prompt: { true }))
+    }
+
+    @Test("prompt policy asks before retaining a recording with a finalization error")
+    func promptPolicyAsksBeforeRetainingRecordingWithWriterFailure() async {
+        var didPrompt = false
+        let shouldRetain = await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: true,
+            prompt: {
+                didPrompt = true
+                return false
+            }
+        )
+        #expect(didPrompt)
+        #expect(!shouldRetain)
+
+        #expect(!(await MuesliController.shouldRetainMeetingRecording(
+            policy: .never, hasRecording: true, writerFailed: true,
+            prompt: {
+                Issue.record("Never policy must not ask to retain audio")
+                return true
+            }
+        )))
+    }
+
+    @Test("alert fallback logging omits private content")
+    func alertFallbackLogOmitsPrivateContent() {
+        let privateContext = "Customer roadmap review"
+        let privateTitle = "Acme renewal planning"
+        let privatePath = "/tmp/acme-renewal-planning.wav"
+        let message = "The recording was saved at \(privatePath)."
+        let fallbackLog = MuesliController.alertFallbackLogMessage(
+            context: privateContext,
+            title: privateTitle,
+            informativeText: message
+        )
+
+        #expect(fallbackLog.contains("[muesli-native] unable to present"))
+        #expect(!fallbackLog.contains(privateContext))
+        #expect(!fallbackLog.contains(privateTitle))
+        #expect(!fallbackLog.contains(privatePath))
+        #expect(!fallbackLog.contains(message))
+    }
+
+    @Test("System suspension retains audio without waiting for its prompt")
+    func systemSuspensionDefersRetentionPrompt() async {
+        let retained = await MuesliController.shouldRetainMeetingRecording(
+            policy: .prompt, hasRecording: true, writerFailed: false, deferPrompt: true,
+            prompt: { Issue.record("The retention prompt must not block finalization"); return false }
+        )
+        #expect(retained)
     }
 
     @Test("explicit screen recording retains audio without another save prompt")
@@ -1717,7 +1834,10 @@ struct MeetingsNavigationTests {
         let retainedRecordingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("retained-policy-drift-\(UUID().uuidString)")
             .appendingPathExtension("wav")
-        try Data("recording".utf8).write(to: retainedRecordingURL)
+        try WavWriter.writeWAV(
+            samples: [Float](repeating: 0.25, count: 1_600),
+            to: retainedRecordingURL
+        )
 
         let result = MeetingSessionResult(
             title: "Policy Drift",
@@ -1961,19 +2081,199 @@ struct MeetingsNavigationTests {
         #expect(storedMeeting.formattedNotes == "## Summary\nFollow-up items discussed.")
     }
 
-    @Test("resummary context strips appended written notes section")
-    func resummaryContextStripsWrittenNotesSection() {
-        let meeting = makeMeeting(
-            id: 909,
-            title: "Resummarize",
-            formattedNotes: "## Summary\n- Decision captured\n\n### Written notes\n\n- User typed this",
-            status: .completed,
-            manualNotes: "- User typed this"
-        )
+    @Test("legacy combined documents remain unchanged and are not matched")
+    func legacyNotesRemainIntact() {
+        let combined = "## Summary\nDiscussed pricing tiers\n\n### Written notes\n\nPricing"
+        let meeting = makeMeeting(id: 909, title: "Legacy", formattedNotes: combined, manualNotes: "Pricing")
+        #expect(MuesliController.notesContextForResummary(meeting) == combined)
+        #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
+        #expect(!meeting.hasSeparateUserNotes)
+    }
 
-        let context = MuesliController.notesContextForResummary(meeting)
+    @Test("replacing a legacy summary retains both documents and never replays deleted references")
+    func replacingLegacySummaryPreservesSources() throws {
+        let store = try makeStore()
+        let activeImage = "![Image](muesli-note-image:\(UUID().uuidString)?width=320)"
+        let oldImage = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let visible = "## Notes\r\nDiscussed pricing tiers\r\n" + activeImage
+        let historical = "Pricing\n" + oldImage
+        let date = Date()
+        let record = SyncTextRecord(id: UUID().uuidString, kind: .meeting, title: "Legacy",
+            text: "Transcript", summaryText: visible, manualNotes: historical, createdAt: date,
+            updatedAt: date, durationSeconds: 1, wordCount: 1)
+        _ = try store.upsertSyncedTextRecord(record)
+        let id = try #require(try store.recentMeetings().first?.id)
+        func save(_ summary: String) throws {
+            try store.updateMeetingSummary(id: id, title: "Legacy", formattedNotes: summary,
+                selectedTemplateID: "auto", selectedTemplateName: "Auto", selectedTemplateKind: .auto, selectedTemplatePrompt: "")
+        }
+        try save("Provider returned text only")
+        let first = try #require(try store.meeting(id: id))
+        #expect(first.hasSeparateUserNotes)
+        #expect(first.formattedNotes == "Provider returned text only")
+        #expect(first.manualNotes == visible)
+        #expect(first.previousNotes == historical)
+        #expect(MuesliController.notesContextForResummary(first) == nil)
+        #expect(MuesliController.manualNotesForResummary(first) == visible)
+        let export = MeetingExporter.buildMarkdown(meeting: first, content: .fullMeeting)
+        #expect(export.contains(visible) && export.contains(historical))
+        try store.updateMeetingManualNotes(id: id, manualNotes: "Edited source with no images")
+        try save("Another summary")
+        let next = try #require(try store.meeting(id: id))
+        #expect(next.previousNotes == historical)
+        #expect(MuesliController.manualNotesForResummary(next) == "Edited source with no images")
+        #expect(MuesliController.notesContextForResummary(next) == nil)
+    }
 
-        #expect(context == "## Summary\n- Decision captured")
+    @Test("re-transcription retains the completed document even while processing")
+    func retranscriptionRetainsLegacyDocument() throws {
+        let store = try makeStore()
+        let date = Date()
+        let visible = "Old notes\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let legacy = SyncTextRecord(id: UUID().uuidString, kind: .meeting, title: "Legacy",
+            text: "Transcript", summaryText: visible, manualNotes: "", createdAt: date,
+            updatedAt: date, durationSeconds: 1, wordCount: 1)
+        _ = try store.upsertSyncedTextRecord(legacy)
+        let id = try #require(try store.recentMeetings().first?.id)
+        try store.updateMeetingStatus(id: id, status: .processing)
+        try store.updateMeetingTranscriptAndSummary(id: id, rawTranscript: "Updated transcript",
+            formattedNotes: "Generated replacement", selectedTemplateID: "auto", selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto, selectedTemplatePrompt: "", originalStatus: .completed)
+        let stored = try #require(try store.meeting(id: id))
+        #expect(stored.status == .completed)
+        #expect(stored.manualNotes == visible)
+        #expect(stored.previousNotes == "")
+        #expect(MuesliController.manualNotesForResummary(stored) == visible)
+    }
+
+    @Test("finishing a legacy resume keeps live written notes editable and the previous document accessible")
+    func completingLegacyResumePreservesSources() throws {
+        let store = try makeStore()
+        let date = Date()
+        let combined = "Original combined doc\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let live = "Written during resume\r\n![Image](muesli-note-image:\(UUID().uuidString)?width=240)"
+        let record = SyncTextRecord(id: UUID().uuidString, kind: .meeting, title: "Legacy",
+            text: "Prior transcript", summaryText: combined, manualNotes: "Prior manual notes",
+            createdAt: date, updatedAt: date, durationSeconds: 1, wordCount: 1)
+        _ = try store.upsertSyncedTextRecord(record)
+        let id = try #require(try store.recentMeetings().first?.id)
+        _ = try store.prepareMeetingForResume(id: id)
+        try store.updateMeetingSummary(id: id, title: "Legacy", formattedNotes: combined,
+            selectedTemplateID: "auto", selectedTemplateName: "Auto", selectedTemplateKind: .auto,
+            selectedTemplatePrompt: "", replacingSummary: false)
+        #expect(try store.meeting(id: id)?.hasSeparateUserNotes == false)
+        try store.updateMeetingManualNotes(id: id, manualNotes: live)
+        try store.completeLiveMeeting(id: id, title: "Resumed", calendarEventID: nil, startTime: date, endTime: date,
+            rawTranscript: "Prior and new transcript", formattedNotes: "New AI summary", micAudioPath: nil, systemAudioPath: nil)
+        let finished = try #require(try store.meeting(id: id))
+        #expect(finished.hasSeparateUserNotes)
+        #expect(finished.status == .completed)
+        #expect(finished.manualNotes == live)
+        #expect(finished.previousNotes == combined)
+        #expect(finished.formattedNotes == "New AI summary")
+        #expect(MuesliController.manualNotesForResummary(finished) == live)
+        #expect(MeetingDetailView.copyContent(for: finished, content: .userNotes).contains(live))
+        let export = MeetingExporter.buildMarkdown(meeting: finished, content: .fullMeeting)
+        #expect(export.contains(combined) && export.contains(live) && export.contains("New AI summary"))
+    }
+
+    @Test("new summaries use exact current user notes and exclude older generated content")
+    func separateNotesAreAuthoritative() {
+        let removed = "![Image](muesli-note-image:\(UUID().uuidString))"
+        let current = "Pricing\r\nSecond  line\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let meeting = makeMeeting(id: 910, title: "New", formattedNotes: "## Summary\nDiscussed pricing tiers\n" + removed,
+            manualNotes: current, notesLayoutVersion: 1)
+        #expect(MuesliController.notesContextForResummary(meeting) == nil)
+        #expect(MuesliController.manualNotesForResummary(meeting) == current)
+        #expect(!MuesliController.manualNotesForResummary(meeting).contains(removed))
+        #expect(MeetingDetailView.copyContent(for: meeting, content: .userNotes).contains(current))
+        let exported = MeetingExporter.buildMarkdown(meeting: meeting, content: .fullMeeting)
+        #expect(exported.contains("## Your notes\n" + current))
+        #expect(exported.contains(meeting.formattedNotes))
+    }
+
+    @Test("cleared user notes stay empty after summarization")
+    func separateNotesStayDeleted() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Test", calendarEventID: nil, startTime: Date())
+        let original = "First line\nSecond line\n![Image](muesli-note-image:\(UUID().uuidString))"
+        try store.updateMeetingManualNotes(id: id, manualNotes: original)
+        try store.updateMeetingSummary(id: id, title: "Test", formattedNotes: "## Summary\n" + original,
+            selectedTemplateID: "auto", selectedTemplateName: "Auto", selectedTemplateKind: .auto, selectedTemplatePrompt: "")
+        #expect(try store.meeting(id: id)?.manualNotes == original)
+        try store.updateMeetingManualNotes(id: id, manualNotes: "")
+        let meeting = try #require(try store.meeting(id: id))
+        #expect(meeting.hasSeparateUserNotes)
+        #expect(MuesliController.manualNotesForResummary(meeting).isEmpty)
+        #expect(MuesliController.notesContextForResummary(meeting) == nil)
+    }
+
+    @Test("sync preserves separated notes and accepts legacy metadata")
+    func separatedNotesSync() throws {
+        let store = try makeStore()
+        let date = Date()
+        var record = SyncTextRecord(id: UUID().uuidString, kind: .meeting, title: "Synced",
+            text: "Transcript", summaryText: "Generated", manualNotes: "User notes",
+            previousNotes: "Preserved document", notesLayoutVersion: 1, createdAt: date, updatedAt: date, durationSeconds: 1, wordCount: 1)
+        #expect(try store.upsertSyncedTextRecord(record))
+        let first = try #require(try store.recentMeetings().first)
+        #expect(first.hasSeparateUserNotes)
+        #expect(first.manualNotes == "User notes")
+        record.updatedAt = date.addingTimeInterval(1)
+        record.notesLayoutVersion = nil
+        record.previousNotes = nil
+        record.summaryText = "Updated summary"
+        #expect(try store.upsertSyncedTextRecord(record))
+        let updated = try #require(try store.meeting(id: first.id))
+        #expect(updated.hasSeparateUserNotes)
+        #expect(updated.manualNotes == "User notes")
+        #expect(updated.formattedNotes == "Updated summary")
+        #expect(updated.previousNotes == "Preserved document")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object["notesLayoutVersion"] = "unknown"
+        let decoded = try JSONDecoder().decode(SyncTextRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.notesLayoutVersion == nil)
+        #expect(decoded.manualNotes == record.manualNotes)
+    }
+
+    @Test("schema upgrade leaves legacy meeting documents byte-for-byte intact")
+    func legacyNotesMigration() throws {
+        let store = try makeStore()
+        let id = try store.createLiveMeeting(title: "Legacy fixture", calendarEventID: nil, startTime: Date())
+        let original = "Pricing\r\n![Image](muesli-note-image:\(UUID().uuidString))"
+        let combined = "## Summary\nDiscussed pricing tiers\n" + original
+        try store.updateMeetingManualNotes(id: id, manualNotes: original)
+        try store.updateMeetingNotes(id: id, formattedNotes: combined)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(store.resolvedDatabaseURL.path, &db) == SQLITE_OK)
+        // Synthetic fixture only: emulate the pre-column schema.
+        #expect(sqlite3_exec(db, "ALTER TABLE meetings DROP COLUMN notes_layout_version", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        let reopened = DictationStore(databaseURL: store.resolvedDatabaseURL)
+        try reopened.migrateIfNeeded()
+        let legacy = try #require(try reopened.meeting(id: id))
+        #expect(!legacy.hasSeparateUserNotes)
+        #expect(legacy.manualNotes == original)
+        #expect(legacy.formattedNotes == combined)
+    }
+
+    @Test("legacy serialized meetings decode without the layout marker")
+    func legacyMeetingDecoding() throws {
+        let legacy = makeMeeting(id: 911, title: "Legacy", manualNotes: "Original")
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        object.removeValue(forKey: "notesLayoutVersion")
+        let decoded = try JSONDecoder().decode(MeetingRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(!decoded.hasSeparateUserNotes)
+        #expect(decoded.manualNotes == legacy.manualNotes)
+        #expect(decoded.formattedNotes == legacy.formattedNotes)
+        object["notesLayoutVersion"] = "invalid"
+        #expect(try JSONDecoder().decode(MeetingRecord.self, from: JSONSerialization.data(withJSONObject: object)).notesLayoutVersion == 0)
+    }
+
+    @Test("unfinished meeting resummary retains current manual notes")
+    func unfinishedMeetingUsesManualNotes() {
+        let meeting = makeMeeting(id: 913, title: "Draft", formattedNotes: "", status: .failed, manualNotes: "Current draft")
+        #expect(MuesliController.manualNotesForResummary(meeting) == "Current draft")
     }
 
     @Test("startup recovery preserves stale live meetings with notes")
@@ -2478,7 +2778,8 @@ struct MeetingsNavigationTests {
         title: String,
         formattedNotes: String = "## Summary",
         status: MeetingStatus = .completed,
-        manualNotes: String = ""
+        manualNotes: String = "",
+        notesLayoutVersion: Int = 0
     ) -> MeetingRecord {
         MeetingRecord(
             id: id,
@@ -2494,6 +2795,7 @@ struct MeetingsNavigationTests {
             systemAudioPath: nil,
             status: status,
             manualNotes: manualNotes,
+            notesLayoutVersion: notesLayoutVersion,
             selectedTemplateID: MeetingTemplates.autoID,
             selectedTemplateName: "Auto",
             selectedTemplateKind: .auto,

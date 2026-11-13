@@ -212,6 +212,15 @@ struct NotchIndicatorTests {
         compactWrites.forEach { $0() }
         completions.forEach { $0() }
         #expect(!transcriptVisible && geometry == "compact" && effects == ["layout", "compact", "completion"])
+        compactWrites.removeAll()
+        completions.removeAll()
+        var reconciledGeometry: String?
+        FloatingIndicatorController.applyTransitionGeometry(restoresTranscript: false, geometry: applyGeometry,
+            restore: restore, onCompletion: { reconciledGeometry = geometry })
+        #expect(reconciledGeometry == nil, "Reconciliation must wait for geometry completion")
+        compactWrites.forEach { $0() }
+        completions.forEach { $0() }
+        #expect(reconciledGeometry == "compact")
     }
 
     @Test("meeting status draws an unclipped recording dot")
@@ -852,10 +861,13 @@ struct NotchIndicatorTests {
         defer { controller.hide() }
         #expect(controller.showOutcome(on: screen, outcome: .success,
             instruction: nil, message: "Done", icon: NSImage()))
+        #expect(scheduled.count == 1)
         let original = try #require(scheduled.first)
         #expect(original.0 == NotchOutcome.success.duration)
         #expect(controller.refreshOutcomePlacement(on: screen))
-        #expect(scheduled.count == 1, "A placement refresh must not replace the dismissal")
+        #expect(scheduled.count == 1)
+        #expect(!original.1.isCancelled)
+        #expect(controller.outcome == .success)
         original.1.perform()
         #expect(controller.outcome == nil)
         #expect(!controller.isVisible)
