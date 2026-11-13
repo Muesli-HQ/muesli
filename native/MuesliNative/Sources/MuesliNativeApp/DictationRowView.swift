@@ -19,6 +19,8 @@ struct DictationRowView: View {
     @State private var showDeleteConfirmation = false
     @State private var isExpanded = false
     @State private var showsFullText = false
+    @State private var twoLineHeight: CGFloat = 0
+    @State private var threeLineHeight: CGFloat = 0
     /// Row actions are revealed by hover or by keyboard focus, never left invisible but focused.
     @FocusState private var focusedAction: RowAction?
     @State private var copyConfirmation: CopyConfirmation?
@@ -52,13 +54,13 @@ struct DictationRowView: View {
         record.source == "quil"
     }
 
-    private var canExpandText: Bool {
-        record.rawText.count > 160 || record.rawText.filter { $0 == "\n" }.count > 2
-    }
-
-    private var displayedText: String {
-        guard !showsFullText, record.rawText.count > 160 else { return record.rawText }
-        return String(record.rawText.prefix(160)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    private func transcript(lineLimit: Int?) -> some View {
+        Text(record.rawText)
+            .font(MuesliTheme.reading())
+            .lineSpacing(3)
+            .lineLimit(lineLimit)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var hasExpandableDetails: Bool {
@@ -116,11 +118,20 @@ struct DictationRowView: View {
                             SyncOriginBadge(label: syncOriginBadgeLabel)
                         }
 
-                        Text(displayedText)
-                            .font(MuesliTheme.reading())
+                        transcript(lineLimit: showsFullText ? nil : 2)
                             .foregroundStyle(MuesliTheme.textPrimary)
-                            .lineLimit(showsFullText || !canExpandText ? nil : 3)
-                            .lineSpacing(3)
+                            .background {
+                                // A third laid-out line is enough to detect overflow at this width.
+                                ZStack {
+                                    transcript(lineLimit: 2)
+                                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { twoLineHeight = $0 }
+                                    transcript(lineLimit: 3)
+                                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { threeLineHeight = $0 }
+                                }
+                                .hidden()
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                            }
                             .muesliRowActivation {
                                 if hasExpandableDetails {
                                     withAnimation(rowAnimation) { isExpanded.toggle() }
@@ -150,7 +161,7 @@ struct DictationRowView: View {
                         DictationRecordingControls(record: record, controller: controller)
                     }
 
-                    if canExpandText {
+                    if twoLineHeight > 0 && threeLineHeight > twoLineHeight {
                         Button {
                             showsFullText.toggle()
                         } label: {
