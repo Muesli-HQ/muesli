@@ -1009,16 +1009,21 @@ struct MeetingDetailView: View {
 
     @ViewBuilder
     private func pipelineStatusChips(for meeting: MeetingRecord) -> some View {
+        let transcription = MeetingPipelineStatus.transcription(for: meeting, isRunning: isRetranscribing)
+        let summary = MeetingPipelineStatus.summary(for: meeting, isRunning: isSummarizing)
         HStack(spacing: 6) {
-            transcriptionChip(for: meeting)
-            summaryChip(for: meeting)
+            if let transcription {
+                transcriptionChip(for: meeting, status: transcription)
+            }
+            if let summary {
+                summaryChip(for: meeting, status: summary)
+            }
         }
         .fixedSize()
     }
 
     @ViewBuilder
-    private func transcriptionChip(for meeting: MeetingRecord) -> some View {
-        let status = MeetingPipelineStatus.transcription(for: meeting, isRunning: isRetranscribing)
+    private func transcriptionChip(for meeting: MeetingRecord, status: MeetingStageStatus) -> some View {
         let chip = stageChip(title: "Transcript", systemImage: "waveform", status: status)
         switch status {
         case .failed(let reason) where hasSavedRecording(meeting):
@@ -1040,8 +1045,7 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
-    private func summaryChip(for meeting: MeetingRecord) -> some View {
-        let status = MeetingPipelineStatus.summary(for: meeting, isRunning: isSummarizing)
+    private func summaryChip(for meeting: MeetingRecord, status: MeetingStageStatus) -> some View {
         let chip = stageChip(title: "Summary", systemImage: "sparkles", status: status)
         switch status {
         case .failed(let reason):

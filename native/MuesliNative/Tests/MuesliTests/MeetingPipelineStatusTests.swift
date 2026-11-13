@@ -5,7 +5,7 @@ import MuesliCore
 
 @Suite("MeetingPipelineStatus")
 struct MeetingPipelineStatusTests {
-    private func makeMeeting(transcript: String = "hello there", notes: String = "## Decision\nShip it") -> MeetingRecord {
+    private func makeMeeting(transcript: String = "hello there", notes: String = "## Decision\nShip it", source: MeetingSource = .meeting) -> MeetingRecord {
         MeetingRecord(
             id: 1,
             title: "Weekly",
@@ -14,7 +14,8 @@ struct MeetingPipelineStatusTests {
             rawTranscript: transcript,
             formattedNotes: notes,
             wordCount: 2,
-            folderID: nil
+            folderID: nil,
+            source: source
         )
     }
 
@@ -71,12 +72,30 @@ struct MeetingPipelineStatusTests {
         #expect(MeetingPipelineStatus.summary(for: meeting, isRunning: true) == .working)
     }
 
-    @Test("summary stage: a raw transcript fallback or empty notes fail without a stored reason")
-    func summaryMissingFails() {
-        let reason = "No notes have been generated for this meeting."
-        #expect(MeetingPipelineStatus.summary(for: makeMeeting(notes: ""), isRunning: false) == .failed(reason: reason))
-        #expect(MeetingPipelineStatus.summary(for: makeMeeting(notes: "## Raw Transcript\n\nhello"), isRunning: false)
-            == .failed(reason: reason))
+    @Test("summary stage: notes that were never generated show no chip")
+    func summaryNeverAttemptedHasNoChip() {
+        #expect(MeetingPipelineStatus.summary(for: makeMeeting(notes: ""), isRunning: false) == nil)
+        #expect(MeetingPipelineStatus.summary(for: makeMeeting(notes: "## Raw Transcript\n\nhello"), isRunning: false) == nil)
+    }
+
+    @Test("summary stage: a Granola import without a summary shows no chip")
+    func summaryGranolaImportWithoutNotesHasNoChip() {
+        let meeting = makeMeeting(notes: "", source: .granolaImport)
+        #expect(meeting.usesImportedManualNotes)
+        #expect(MeetingPipelineStatus.summary(for: meeting, isRunning: false) == nil)
+    }
+
+    @Test("summary stage: a failure stored for a meeting with no backend still fails")
+    func summaryNotConfiguredFailureStaysFailed() {
+        let meeting = makeMeeting(notes: failureNotes("Sign in to ChatGPT to summarize."))
+        #expect(MeetingPipelineStatus.summary(for: meeting, isRunning: false)
+            == .failed(reason: "Sign in to ChatGPT to summarize."))
+    }
+
+    @Test("transcription stage: an import with no transcript shows no chip")
+    func transcriptionGranolaImportWithoutTranscriptHasNoChip() {
+        let meeting = makeMeeting(transcript: "", source: .granolaImport)
+        #expect(MeetingPipelineStatus.transcription(for: meeting, isRunning: false) == nil)
     }
 
     @Test("transcription stage: transcript present succeeds, empty fails, re-transcribing works")
