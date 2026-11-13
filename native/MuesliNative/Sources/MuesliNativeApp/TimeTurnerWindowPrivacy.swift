@@ -34,38 +34,51 @@ enum TimeTurnerWindowPrivacy {
         guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
         let app = AXUIElementCreateApplication(processID)
         AXUIElementSetMessagingTimeout(app, 0.15)
-        guard let windows = elements(app, kAXWindowsAttribute, limit: 64) else { return false }
+        var windowValues: CFArray?
+        guard AXUIElementCopyAttributeValues(app, kAXWindowsAttribute as CFString, 0, 65, &windowValues) == .success,
+              let windowValues, CFArrayGetCount(windowValues) <= 64,
+              let windows = windowValues as? [AXUIElement] else { return false }
+        let attributes = [kAXSubroleAttribute, kAXChildrenAttribute, kAXRoleAttribute] as CFArray
         return permits(frames: frames, windows: windows, frame: { window in
             AXUIElementSetMessagingTimeout(window, 0.15)
             return DictationContextCapture.windowFrame(window)
-        }, inspect: { node, limit in
+        }, inspect: { node in
             AXUIElementSetMessagingTimeout(node, 0.15)
-            var subrole: CFTypeRef?
-            let nodeSubrole: String?
-            switch AXUIElementCopyAttributeValue(node, kAXSubroleAttribute as CFString, &subrole) {
-            case .success:
-                guard let value = subrole as? String else { return nil }
-                nodeSubrole = value
-            case .attributeUnsupported, .noValue: nodeSubrole = nil
-            default: return nil
-            }
-            guard let children = elements(node, kAXChildrenAttribute, limit: limit) else { return nil }
-            return (nodeSubrole, children)
+            var values: CFArray?
+            guard AXUIElementCopyMultipleAttributeValues(node, attributes, [], &values) == .success,
+                  let values else { return nil }
+            return decodeNode(values as NSArray, withinBudget: { ProcessInfo.processInfo.systemUptime < deadline })
         }, withinBudget: { ProcessInfo.processInfo.systemUptime < deadline })
     }
 
-    private static func elements(_ element: AXUIElement, _ attribute: String, limit: Int) -> [AXUIElement]? {
-        var array: CFArray?
-        let status = AXUIElementCopyAttributeValues(element, attribute as CFString, 0, limit + 1, &array)
-        switch status {
-        case .success:
-            guard let array, CFArrayGetCount(array) <= limit,
-                  let children = array as? [AXUIElement] else { return nil }
-            return children
-        default:
-            guard allowsMissingChildren(after: status, attribute: attribute, role: DictationContextCapture.axStringValue(element, attribute: kAXRoleAttribute)) else { return nil }
-            return []
+    // A batched AX read can succeed even when an individual attribute failed.
+    static func decodeNode(_ values: NSArray, withinBudget: () -> Bool) -> (subrole: String?, children: [AXUIElement])? {
+        guard values.count == 3 else { return nil }
+        let subrole = values[0] as? String
+        if subrole == nil {
+            let error = attributeError(values[0] as AnyObject)
+            guard error == .attributeUnsupported || error == .noValue else { return nil }
         }
+        if let elements = values[1] as? NSArray {
+            var children: [AXUIElement] = []
+            for element in elements {
+                guard withinBudget(), CFGetTypeID(element as AnyObject) == AXUIElementGetTypeID() else { return nil }
+                children.append(element as! AXUIElement)
+            }
+            return (subrole, children)
+        }
+        guard let error = attributeError(values[1] as AnyObject),
+              allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: values[2] as? String ?? "") else { return nil }
+        return (subrole, [])
+    }
+
+    private static func attributeError(_ value: AnyObject) -> AXError? {
+        if CFGetTypeID(value) == CFNullGetTypeID() { return .noValue }
+        guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = value as! AXValue
+        var error = AXError.failure
+        guard AXValueGetType(axValue) == .axError, AXValueGetValue(axValue, .axError, &error) else { return nil }
+        return error
     }
 
     // Only non-editable leaf controls can safely omit AXChildren. An opaque
@@ -81,8 +94,8 @@ enum TimeTurnerWindowPrivacy {
     }
 
     static func permits<Node: Hashable>(frames: [CGRect], windows: [Node],
-                                        frame: (Node) -> CGRect?, inspect: (Node, Int) -> (subrole: String?, children: [Node])?,
-                                        withinBudget: () -> Bool, nodeLimit: Int = 512) -> Bool {
+                                        frame: (Node) -> CGRect?, inspect: (Node) -> (subrole: String?, children: [Node])?,
+                                        withinBudget: () -> Bool) -> Bool {
         guard !frames.isEmpty, frames.count <= windows.count else { return false }
         var bounds: [CGRect] = []
         for window in windows {
@@ -96,13 +109,13 @@ enum TimeTurnerWindowPrivacy {
             pending.append(windows[index])
         }
         var seen = Set(pending)
-        guard seen.count == frames.count, seen.count <= nodeLimit else { return false }
+        guard seen.count == frames.count else { return false }
         while let node = pending.popLast() {
-            guard withinBudget(), let info = inspect(node, nodeLimit - seen.count),
+            guard withinBudget(), let info = inspect(node),
                   info.subrole != kAXSecureTextFieldSubrole else { return false }
-            for child in info.children where seen.insert(child).inserted {
-                guard seen.count <= nodeLimit else { return false }
-                pending.append(child)
+            for child in info.children {
+                guard withinBudget() else { return false }
+                if seen.insert(child).inserted { pending.append(child) }
             }
         }
         return withinBudget()

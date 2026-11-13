@@ -18,13 +18,15 @@ struct VisualMemoryStoreTests {
         let children = [0: [2], 1: [3], 3: [4]]
         var secureNode: Int?
         var unreadableNode: Int?
-        func permits(_ frames: [CGRect], budget: Int = 512) -> Bool {
-            TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 1], frame: { bounds[$0] },
-                inspect: { node, _ in
+        func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
+            var inspected = 0
+            return TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 1], frame: { bounds[$0] },
+                inspect: { node in
+                    inspected += 1
                     guard node != unreadableNode else { return nil }
                     return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
                 },
-                withinBudget: { true }, nodeLimit: budget)
+                withinBudget: { inspected < budget })
         }
         #expect(permits([focused, other]))
         secureNode = 4 // Secure control appears between capture and the second check.
@@ -38,7 +40,54 @@ struct VisualMemoryStoreTests {
         #expect(!permits([focused, other], budget: 3))
         #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
         #expect(!TimeTurnerWindowPrivacy.permits(frames: [focused], windows: [0, 1],
-            frame: { _ in focused }, inspect: { _, _ in (nil, []) }, withinBudget: { true }))
+            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }))
+    }
+
+    @Test func largeWindowsRequireACompletePrivacyInspection() {
+        let first = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let second = first.offsetBy(dx: 800, dy: 0)
+        // One wide window and one deep tree, with a shared child and a cycle.
+        func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
+            TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 2000],
+                frame: { $0 == 0 ? first : second }, inspect: { node in
+                    guard node != unreadable else { return nil }
+                    let children: [Int]
+                    switch node {
+                    case 0: children = Array(1...1500)
+                    case 2000..<3500: children = [node + 1]
+                    case 3500: children = [2000, 1500]
+                    default: children = []
+                    }
+                    return (node == secure ? kAXSecureTextFieldSubrole : nil, children)
+                }, withinBudget: { true })
+        }
+        #expect(permits([first]))
+        #expect(permits([first, second]))
+        #expect(!permits([first], secure: 1)) // Last child visited in the wide window.
+        #expect(!permits([first, second], secure: 3500))
+        #expect(!permits([second], unreadable: 3499))
+    }
+
+    @Test func batchedPrivacyReadRejectsPartialOrMalformedAXResults() throws {
+        func error(_ code: AXError) throws -> AXValue {
+            var code = code
+            return try #require(AXValueCreate(.axError, &code))
+        }
+        func decode(_ values: NSArray) -> (subrole: String?, children: [AXUIElement])? {
+            TimeTurnerWindowPrivacy.decodeNode(values, withinBudget: { true })
+        }
+        let unsupported = try error(.attributeUnsupported)
+        let timedOut = try error(.cannotComplete)
+        let node = AXUIElementCreateSystemWide()
+        #expect(decode([unsupported, [node], kAXWindowRole])?.children.count == 1)
+        #expect(decode([kAXSecureTextFieldSubrole, [], kAXTextFieldRole])?.subrole == kAXSecureTextFieldSubrole)
+        #expect(decode([NSNull(), unsupported, kAXStaticTextRole]) != nil)
+        #expect(decode([timedOut, [], kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, timedOut, kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, NSNull(), kAXWindowRole]) == nil)
+        #expect(decode([unsupported, ["invalid"], kAXWindowRole]) == nil)
+        #expect(decode([unsupported]) == nil)
+        #expect(TimeTurnerWindowPrivacy.decodeNode([unsupported, [node], kAXWindowRole], withinBudget: { false }) == nil)
     }
 
     @Test func missingAXChildrenRequireAKnownLeaf() {

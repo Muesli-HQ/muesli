@@ -601,11 +601,11 @@ final class VisualMemoryController {
                 ambientStatus = "Skipping private window"; return
             }
             var budget = TimeTurnerAXBudget(interval: Double(ambientConfig?.timeTurnerInterval ?? "10") ?? 10)
-            guard await budget.permits(reserving: budget.revalidationReserve, { deadline in
+            let safeBeforeCapture = await budget.permits(reserving: budget.revalidationReserve) { deadline in
                 await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
-            }), generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else {
-                return
             }
+            guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
+            guard safeBeforeCapture else { ambientStatus = "Skipped for privacy"; return }
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let configuration = SCStreamConfiguration()
             configuration.width = max(2, Int(window.frame.width * CGFloat(filter.pointPixelScale)))
@@ -621,13 +621,16 @@ final class VisualMemoryController {
                 throw ScreenVideoRecorder.error("Screen capture returned unexpected dimensions; no image was saved.")
             }
             let after = await Self.ambientWindow(processID: pid)
-            guard !after.secure, generation == ambientGeneration, permitsAmbientCapture,
+            guard generation == ambientGeneration, permitsAmbientCapture,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
                   after.window?.frame == frame,
-                  after.window?.title == focused.title,
-                  await budget.permits({ deadline in
-                      await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
-                  }), generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
+                  after.window?.title == focused.title else { return }
+            guard !after.secure else { ambientStatus = "Skipping private content"; return }
+            let safeAfterCapture = await budget.permits { deadline in
+                await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
+            }
+            guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
+            guard safeAfterCapture else { ambientStatus = "Skipped for privacy"; return }
             let result = try await Task.detached(priority: .utility) {
                 try VisualMemoryEncoding.encode(.init(image: image), privacy: privacy)
             }.value
