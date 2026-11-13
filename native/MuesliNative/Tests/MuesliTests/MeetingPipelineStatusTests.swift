@@ -5,7 +5,7 @@ import MuesliCore
 
 @Suite("MeetingPipelineStatus")
 struct MeetingPipelineStatusTests {
-    private func makeMeeting(transcript: String = "hello there", notes: String = "## Decision\nShip it", source: MeetingSource = .meeting) -> MeetingRecord {
+    private func makeMeeting(transcript: String = "hello there", notes: String = "## Decision\nShip it", source: MeetingSource = .meeting, status: MeetingStatus = .completed) -> MeetingRecord {
         MeetingRecord(
             id: 1,
             title: "Weekly",
@@ -15,6 +15,7 @@ struct MeetingPipelineStatusTests {
             formattedNotes: notes,
             wordCount: 2,
             folderID: nil,
+            status: status,
             source: source
         )
     }
@@ -96,6 +97,13 @@ struct MeetingPipelineStatusTests {
     func transcriptionGranolaImportWithoutTranscriptHasNoChip() {
         let meeting = makeMeeting(transcript: "", source: .granolaImport)
         #expect(MeetingPipelineStatus.transcription(for: meeting, isRunning: false) == nil)
+    }
+
+    @Test("transcription stage: a failed meeting with no transcript fails and can retry")
+    func transcriptionFailedMeetingWithoutTranscriptFails() {
+        let meeting = makeMeeting(transcript: "", notes: "", status: .failed)
+        #expect(MeetingPipelineStatus.transcription(for: meeting, isRunning: false)
+            == .failed(reason: "No transcript was captured for this meeting."))
     }
 
     @Test("transcription stage: transcript present succeeds, empty fails, re-transcribing works")

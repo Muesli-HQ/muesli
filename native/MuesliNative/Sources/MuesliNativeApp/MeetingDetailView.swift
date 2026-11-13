@@ -396,6 +396,7 @@ struct MeetingDetailView: View {
                 .layoutPriority(1)
 
                 if showsManualNotesEditor(for: meeting), meeting.status != .completed {
+                    failedMeetingStatusChips(for: meeting)
                     recordingRecoveryHeaderAction(for: meeting)
                     compactRecordingControls(for: meeting)
                 } else {
@@ -496,6 +497,7 @@ struct MeetingDetailView: View {
     ) -> some View {
         if showsManualNotesEditor(for: meeting), meeting.status != .completed {
             HStack(spacing: MuesliTheme.spacing8) {
+                failedMeetingStatusChips(for: meeting)
                 recordingRecoveryHeaderAction(for: meeting)
                 recordingControlGroup(for: meeting)
             }
@@ -1016,6 +1018,13 @@ struct MeetingDetailView: View {
     }
 
     @ViewBuilder
+    private func failedMeetingStatusChips(for meeting: MeetingRecord) -> some View {
+        if meeting.status == .failed {
+            pipelineStatusChips(for: meeting)
+        }
+    }
+
+    @ViewBuilder
     private func pipelineStatusChips(for meeting: MeetingRecord) -> some View {
         let transcription = MeetingPipelineStatus.transcription(for: meeting, isRunning: isRetranscribing)
         let summary = MeetingPipelineStatus.summary(for: meeting, isRunning: isSummarizing)
@@ -1127,12 +1136,13 @@ struct MeetingDetailView: View {
         return HStack(spacing: 1) {
             Group {
                 if let action {
-                    Button(action: action) { content.background(fill) }
-                        .buttonStyle(.plain)
+                    Button(action: action) { content }
+                        .buttonStyle(.muesli(.quiet, shape: .rounded(0), compresses: false))
                 } else {
-                    content.background(fill)
+                    content
                 }
             }
+            .background(fill)
             .help(help)
 
             Menu {
