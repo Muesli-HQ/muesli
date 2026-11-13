@@ -184,9 +184,10 @@ struct DictationAppFormattingTests {
         }
         let id = try #require(database.recentDictations().first?.id)
         let deadline = ContinuousClock.now + .seconds(5)
-        while try database.dictation(id: id)?.hasRetainedAudio == false, ContinuousClock.now < deadline {
+        while FileManager.default.fileExists(atPath: url.path), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(25))
         }
+        #expect(try database.dictation(id: id)?.waveformPreview != nil)
         #expect(try database.dictationAudio(id: id) == wav)
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }

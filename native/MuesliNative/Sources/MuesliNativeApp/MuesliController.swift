@@ -15087,7 +15087,12 @@ public final class MuesliController: NSObject {
                         let audio = try AVAudioFile(forReading: recording.url)
                         guard Double(audio.length) / audio.fileFormat.sampleRate > Double(max(1, minutes)) * 60 else { return false }
                         let data = try Data(contentsOf: recording.url, options: .mappedIfSafe)
-                        try DictationStore(databaseURL: databaseURL).saveDictationAudio(data, id: id)
+                        let store = DictationStore(databaseURL: databaseURL)
+                        let preview = try? RecordingWaveformData.load(from: recording.url)
+                        try store.saveDictationAudio(data, id: id)
+                        if let preview {
+                            try? store.saveDictationWaveform(preview.encodedCacheData(), id: id)
+                        }
                         return true
                     }
                 }.value
@@ -15100,6 +15105,41 @@ public final class MuesliController: NSObject {
                 presentErrorAlert(title: "Could not keep dictation audio", message: "The transcript was saved. " + error.localizedDescription)
             }
         }
+    }
+
+    // Rows already on screen can predate the one-time backfill. Keep only their
+    // small previews warm until the next history query picks up the stored bytes.
+    private let backfilledWaveforms: NSCache<NSNumber, NSData> = {
+        let cache = NSCache<NSNumber, NSData>()
+        cache.countLimit = 256
+        return cache
+    }()
+
+    func cachedDictationWaveform(id: Int64) -> Data? {
+        backfilledWaveforms.object(forKey: NSNumber(value: id)) as Data?
+    }
+
+    @MainActor private var pendingWaveforms: [Int64: Task<RecordingWaveformData, Error>] = [:]
+
+    // Recordings retained before previews were persisted need one scan. Both
+    // history views share that work even if the originating row disappears.
+    @MainActor func dictationWaveform(id: Int64) async throws -> RecordingWaveformData {
+        if let pending = pendingWaveforms[id] { return try await pending.value }
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        let pending = Task.detached(priority: .utility) {
+            let store = DictationStore(databaseURL: databaseURL)
+            if let bytes = try store.dictationWaveform(id: id),
+               let preview = RecordingWaveformData.decodeCacheData(bytes) { return preview }
+            let file = try DictationRecordingFile(historyID: id, databaseURL: databaseURL)
+            let preview = try RecordingWaveformData.load(from: file.url)
+            try? store.saveDictationWaveform(preview.encodedCacheData(), id: id)
+            return preview
+        }
+        pendingWaveforms[id] = pending
+        defer { pendingWaveforms[id] = nil }
+        let preview = try await pending.value
+        backfilledWaveforms.setObject(preview.encodedCacheData() as NSData, forKey: NSNumber(value: id))
+        return preview
     }
 
     func loadDictationRecording(id: Int64) async throws -> DictationRecordingFile {

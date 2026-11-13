@@ -206,6 +206,7 @@ public struct DictationRecord: Identifiable, Codable, Sendable {
     public let targetAppBundleID: String?
     public let computerUseTrace: ComputerUseTraceRecord?
     public internal(set) var hasRetainedAudio = false
+    public internal(set) var waveformPreview: Data?
     // Recording availability is local to this database, including after a text sync.
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, durationSeconds, rawText, appContext, wordCount, source

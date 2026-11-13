@@ -41,11 +41,15 @@ struct DictationRecoveryTests {
         let id = try store.insertDictation(text: "before", durationSeconds: 100, startedAt: Date(), endedAt: Date())
         let bytes = try Data(contentsOf: source)
         try store.saveDictationAudio(bytes, id: id)
+        let preview = try RecordingWaveformData.load(from: source).encodedCacheData()
+        try store.saveDictationWaveform(preview, id: id)
+        #expect(try store.recentDictations().first?.waveformPreview == preview)
         #expect(try store.recentDictations().first?.hasRetainedAudio == true)
         guard case .dictation(let row) = try store.timelineEntries().first else {
             Issue.record("Expected a Timeline dictation"); return
         }
         #expect(row.id == id && row.hasRetainedAudio)
+        #expect(row.waveformPreview == preview)
         let file = try DictationRecordingFile(historyID: id, databaseURL: database)
         #expect(try Data(contentsOf: file.url) == bytes)
         let model = DictationModelIdentity(backend: "test", model: "other-model", name: "Other model")
@@ -57,6 +61,8 @@ struct DictationRecoveryTests {
         #expect(try store.dictation(id: id)?.rawText == "second version")
         #expect(try store.dictationAudio(id: id) == bytes)
         try store.deleteDictation(id: id)
+        try store.saveDictationWaveform(preview, id: id)
+        #expect(try store.dictationWaveform(id: id) == nil)
         #expect(throws: (any Error).self) { try store.dictationAudio(id: id) }
         #expect(throws: (any Error).self) { try store.saveDictationAudio(bytes, id: id) }
         let another = try store.insertDictation(text: "another", durationSeconds: 65, startedAt: Date(), endedAt: Date())

@@ -80,7 +80,7 @@ struct DictationRowView: View {
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
                     if record.hasRetainedAudio, let controller = recordingController {
-                        DictationRecordingPlayer(id: record.id, controller: controller)
+                        MeetingRecordingPlayerView(dictationID: record.id, preview: record.waveformPreview, controller: controller)
                             .id(record.id)
                     }
 
@@ -357,41 +357,6 @@ struct DictationRowView: View {
             return "Cancelled"
         default:
             return status.capitalized
-        }
-    }
-}
-
-private struct DictationRecordingPlayer: View {
-    let id: Int64
-    let controller: MuesliController
-    @State private var recording: DictationRecordingFile?
-    @State private var loadError: String?
-
-    var body: some View {
-        Group {
-            if let recording {
-                MeetingRecordingPlayerView(recordingPath: recording.url.path, cacheWaveform: false)
-            } else if let loadError {
-                Text(loadError)
-                    .font(MuesliTheme.callout())
-            } else {
-                ProgressView("Loading recording")
-                    .controlSize(.small)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-        .task {
-            do {
-                let file = try await controller.loadDictationRecording(id: id)
-                try Task.checkCancellation()
-                recording = file
-            } catch {
-                if !Task.isCancelled { loadError = error.localizedDescription }
-            }
-        }
-        .onDisappear {
-            recording = nil
-            loadError = nil
         }
     }
 }
