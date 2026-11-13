@@ -265,7 +265,7 @@ struct TimelineView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .padding(.leading, MuesliTheme.spacing4)
 
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(group.entries) { entry in
                                 timelineRow(entry).id(entry.id)
                             }

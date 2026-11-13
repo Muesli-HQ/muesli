@@ -79,6 +79,11 @@ struct DictationRowView: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    if record.hasRetainedAudio, let controller = recordingController {
+                        DictationRecordingPlayer(id: record.id, controller: controller)
+                            .id(record.id)
+                    }
+
                     HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
                         if isComputerUseCommand {
                             Text("CUA")
@@ -356,44 +361,48 @@ struct DictationRowView: View {
     }
 }
 
+private struct DictationRecordingPlayer: View {
+    let id: Int64
+    let controller: MuesliController
+    @State private var recording: DictationRecordingFile?
+    @State private var loadError: String?
+
+    var body: some View {
+        Group {
+            if let recording {
+                MeetingRecordingPlayerView(recordingPath: recording.url.path, cacheWaveform: false)
+            } else if let loadError {
+                Text(loadError)
+                    .font(MuesliTheme.callout())
+            } else {
+                ProgressView("Loading recording")
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+        .task {
+            do {
+                let file = try await controller.loadDictationRecording(id: id)
+                try Task.checkCancellation()
+                recording = file
+            } catch {
+                if !Task.isCancelled { loadError = error.localizedDescription }
+            }
+        }
+        .onDisappear {
+            recording = nil
+            loadError = nil
+        }
+    }
+}
+
 private struct DictationRecordingControls: View {
     let record: DictationRecord
     let controller: MuesliController
-    @State private var showPlayer = false
-    @State private var recording: DictationRecordingFile?
-    @State private var loadError: String?
     @State private var selectedModel: BackendOption?
 
     var body: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            Button {
-                showPlayer.toggle()
-            } label: {
-                Label("Recording", systemImage: "waveform")
-            }
-            .popover(isPresented: $showPlayer) {
-                Group {
-                    if let recording {
-                        MeetingRecordingPlayerView(recordingPath: recording.url.path, cacheWaveform: false)
-                    } else if let loadError {
-                        Text(loadError)
-                    } else {
-                        ProgressView("Loading recording")
-                    }
-                }
-                .frame(width: 310)
-                .padding()
-                .task(id: record.id) {
-                    do {
-                        let file = try await controller.loadDictationRecording(id: record.id)
-                        try Task.checkCancellation()
-                        recording = file
-                    } catch {
-                        if !Task.isCancelled { loadError = error.localizedDescription }
-                    }
-                }
-                .onDisappear { recording = nil; loadError = nil }
-            }
             if controller.appState.retranscribingHistoryID == record.id {
                 ProgressView().controlSize(.small)
                 Button("Cancel") { controller.cancelDictationRecovery() }

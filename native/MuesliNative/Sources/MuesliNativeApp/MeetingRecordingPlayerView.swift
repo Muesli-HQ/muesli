@@ -343,6 +343,7 @@ struct MeetingRecordingPlayerView: View {
             }
             .buttonStyle(.plain)
             .disabled(player == nil)
+            .accessibilityLabel(isPlaying ? "Pause recording" : "Play recording")
             .help(isPlaying ? "Pause recording" : "Play recording")
 
             Group {
@@ -387,7 +388,7 @@ struct MeetingRecordingPlayerView: View {
             await loadRecording()
         }
         .onReceive(timer) { _ in
-            guard let player else { return }
+            guard isPlaying, let player else { return }
             currentTime = player.currentTime
             if !player.isPlaying, isPlaying {
                 isPlaying = false
