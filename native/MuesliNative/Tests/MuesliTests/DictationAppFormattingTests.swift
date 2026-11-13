@@ -234,8 +234,10 @@ struct DictationAppFormattingTests {
         while FileManager.default.fileExists(atPath: url.path), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(25))
         }
-        #expect(try database.dictation(id: id)?.waveformPreview != nil)
         #expect(try database.dictationAudio(id: id) == wav)
+        #expect(try database.dictation(id: id)?.waveformPreview == nil)
+        _ = try await controller.dictationWaveform(id: id)
+        #expect(try database.dictation(id: id)?.waveformPreview != nil)
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
 

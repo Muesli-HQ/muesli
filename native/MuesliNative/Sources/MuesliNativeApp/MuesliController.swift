@@ -3,6 +3,7 @@ import AVFoundation
 import CloudKit
 import CoreAudio
 import Foundation
+import UniformTypeIdentifiers
 import Sparkle
 import TelemetryDeck
 import MuesliCore
@@ -1023,7 +1024,7 @@ public final class MuesliController: NSObject {
     var hasStarted = false
     let medASRTerms = MedASRTermsState()
     private var dictationRecoveryTask: Task<Void, Never>?
-    private var pendingStreamingRecoverySaves: [UUID: Task<Void, Never>] = [:]
+    private var pendingDictationAudioSaves: [UUID: Task<Void, Never>] = [:]
     private var streamingRecoveryAlertID: UUID?
     private var discardingDictationRecoveryIDs: Set<UUID> = []
     private var dictationRecoveryRefreshGeneration = 0
@@ -1615,7 +1616,7 @@ public final class MuesliController: NSObject {
         shutdownStep = "iCloud sync engine"
         await syncEngineCancellationTask?.value
         await dictationRecoveryTask?.value
-        for save in pendingStreamingRecoverySaves.values { await save.value }
+        for save in pendingDictationAudioSaves.values { await save.value }
         nativeRecordingGate.invalidate()
         shutdownStep = "transcription coordinator"
         await transcriptionCoordinator.shutdown()
@@ -14450,10 +14451,10 @@ public final class MuesliController: NSObject {
         let saveID = UUID()
         streamingRecoveryAlertID = saveID
         appState.activeAudioImportCount += 1
-        pendingStreamingRecoverySaves[saveID] = Task {
+        pendingDictationAudioSaves[saveID] = Task {
             defer {
                 appState.activeAudioImportCount -= 1
-                pendingStreamingRecoverySaves[saveID] = nil
+                pendingDictationAudioSaves[saveID] = nil
                 if streamingRecoveryAlertID == saveID { streamingRecoveryAlertID = nil }
             }
             do {
@@ -15133,7 +15134,9 @@ public final class MuesliController: NSObject {
     private func saveLongDictationRecording(_ recording: DictationRecordingFile, id: Int64, privacy: ContentPrivacy.Session?) {
         let databaseURL = dictationStore.resolvedDatabaseURL
         let minutes = config.dictationAudioThresholdMinutes
-        Task {
+        let saveID = UUID()
+        pendingDictationAudioSaves[saveID] = Task {
+            defer { pendingDictationAudioSaves[saveID] = nil }
             do {
                 let saved = try await Task.detached {
                     try ContentPrivacy.$session.withValue(privacy) {
@@ -15142,11 +15145,7 @@ public final class MuesliController: NSObject {
                         guard Double(audio.length) / audio.fileFormat.sampleRate > Double(max(1, minutes)) * 60 else { return false }
                         let data = try Data(contentsOf: recording.url, options: .mappedIfSafe)
                         let store = DictationStore(databaseURL: databaseURL)
-                        let preview = try? RecordingWaveformData.load(from: recording.url)
                         try store.saveDictationAudio(data, id: id)
-                        if let preview {
-                            try? store.saveDictationWaveform(preview.encodedCacheData(), id: id)
-                        }
                         return true
                     }
                 }.value
@@ -15197,6 +15196,27 @@ public final class MuesliController: NSObject {
             } onCancel: { worker.cancel() }
             backfilledWaveforms.setObject(preview.encodedCacheData() as NSData, forKey: NSNumber(value: id))
             return preview
+        }
+    }
+
+    func exportDictationRecording(id: Int64) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.wav]
+        panel.nameFieldStringValue = "Dictation-\(id).wav"
+        panel.canCreateDirectories = true
+        let databaseURL = dictationStore.resolvedDatabaseURL
+        MeetingExporter.presentSavePanel(panel) { destination in
+            Task {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        let data = try DictationStore(databaseURL: databaseURL).dictationAudio(id: id)
+                        try data.write(to: destination, options: .atomic)
+                    }.value
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                } catch {
+                    self.presentErrorAlert(title: "Could not export dictation audio", message: error.localizedDescription)
+                }
+            }
         }
     }
 
