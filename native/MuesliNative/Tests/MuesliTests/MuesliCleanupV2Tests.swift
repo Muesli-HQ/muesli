@@ -134,8 +134,25 @@ struct MuesliCleanupV2Tests {
     }
 
 
+    @available(macOS 15, *)
+    @Test("Configurable GGUF cleanup preserves long input when it exhausts context",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_TEST_CONFIGURABLE_GGUF"] != nil))
+    func configurableContextLimit() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["MUESLI_TEST_CONFIGURABLE_GGUF"])
+        let url = URL(fileURLWithPath: path)
+        let config = Qwen3PostProcessor.Configuration(modelURL: url,
+            systemPrompt: "Return the transcript verbatim.", inputFormat: .configurable, maxTokenCount: 512)
+        let processor = Qwen3PostProcessor(modelURL: url, systemPrompt: config.systemPrompt, inputFormat: .configurable)
+        let input = String(repeating: "The recording began in the morning and finished in the afternoon. ", count: 24)
+        let result = try await processor.processResult(input, configuration: config)
+        await processor.shutdown()
+        #expect(result.didFallback)
+        #expect(result.text == input)
+        #expect(!result.rawOutput.isEmpty)
+    }
+
     @Test func truncatedOutputPreservesEntireTranscript() {
-        let input = "First send the report. Then email the customer. Finally archive the results."
+        let input = String(repeating: "First send the report. Then email the customer. ", count: 100) + "Finally archive the results."
         #expect(MuesliCleanupV2Prompt.guardedOutput("First send the report.", input: input, generationCompleted: false) == input)
         #expect(MuesliCleanupV2Prompt.guardResult("First send the report.", input: input, generationCompleted: false).didFallback)
         #expect(MuesliCleanupV2Prompt.guardResult("", input: input).didFallback)

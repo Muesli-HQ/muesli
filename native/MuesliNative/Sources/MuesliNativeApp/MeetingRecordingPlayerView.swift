@@ -20,6 +20,7 @@ struct RecordingWaveformData: Equatable, Sendable {
         var globalFrame = 0
 
         while file.framePosition < file.length {
+            try Task.checkCancellation()
             let remaining = Int(file.length - file.framePosition)
             let framesToRead = AVAudioFrameCount(min(Int(capacity), remaining))
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else {

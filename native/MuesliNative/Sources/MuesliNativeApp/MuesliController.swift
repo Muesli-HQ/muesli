@@ -13836,11 +13836,11 @@ public final class MuesliController: NSObject {
         receiveNemotronStreamingPartial(text, sessionID: sessionID)
     }
 
-    func finishStreamingFormattingForTesting(_ text: String, sessionID: UUID, failure: Bool = false) {
+    func finishStreamingFormattingForTesting(_ text: String, sessionID: UUID, failure: Bool = false, stoppedWAV: URL? = nil) {
         if failure {
             handleNemotronStreamingRuntimeFailure(error: NSError(domain: "SyntheticStreamingFailure", code: 1), sessionID: sessionID)
         } else {
-            finishNemotronStreamingStop(finalText: text, startedAt: dictationStartedAt ?? Date(), sessionID: sessionID)
+            finishNemotronStreamingStop(finalText: text, startedAt: dictationStartedAt ?? Date(), sessionID: sessionID, recording: stoppedWAV.map(DictationRecordingFile.init(stoppedWAV:)))
         }
     }
 
@@ -13878,8 +13878,11 @@ public final class MuesliController: NSObject {
         let stable: Substring
         if isFinal || fullText.last.map({ ".,!?;:।".contains($0) }) == true {
             stable = fullText[...]
-        } else if let boundary = fullText.lastIndex(where: \.isWhitespace) {
-            stable = fullText[..<boundary]
+        } else if let boundary = fullText.lastIndex(where: { character in
+            character.isWhitespace || "。、，！？；：".contains(character)
+                || character.unicodeScalars.contains { $0.properties.isIdeographic || (0x3040...0x30FF).contains($0.value) }
+        }) {
+            stable = fullText[...boundary]
         } else {
             return
         }
@@ -14406,6 +14409,7 @@ public final class MuesliController: NSObject {
         }
 
         if cleaned.isEmpty {
+            if let recording { recoverEmptyStreamingRecording(recording, startedAt: startedAt, duration: duration) }
             dictationAnalytics?.finish(.discarded, fields: [.saved: .no, .delivery: .none])
             dictationAnalytics = nil
         } else {
@@ -14427,6 +14431,35 @@ public final class MuesliController: NSObject {
         if hadStreamingInsertion { indicator.showDictationCompletion() }
         finishDictationLatencyTrace("nemotron_stop")
         syncDictationRecorderWarmup(intent: .idlePrewarm(.backendRecovery))
+    }
+
+    private func recoverEmptyStreamingRecording(_ recording: DictationRecordingFile, startedAt: Date, duration: TimeInterval) {
+        let privacy = dictationPrivacy
+        let store = dictationRecoveryStore
+        Task {
+            do {
+                let record = try await Task.detached {
+                    try ContentPrivacy.$session.withValue(privacy) {
+                        try store.save(wavURL: recording.url, startedAt: startedAt, durationSeconds: duration,
+                            modelName: BackendOption.nemotron35Multilingual.label,
+                            failureMessage: DictationRecoveryStore.Failure.emptyTranscript.localizedDescription)
+                    }
+                }.value
+                await refreshFailedDictations()
+                guard ContentPrivacy.shared.permits(privacy) else {
+                    try? await Task.detached { try store.discard(record) }.value
+                    await refreshFailedDictations()
+                    return
+                }
+                presentFailedDictation(record)
+            } catch DictationRecoveryStore.Failure.noCapturedAudio {
+                return
+            } catch {
+                guard ContentPrivacy.shared.permits(privacy) else { return }
+                recording.keepOriginalForManualRecovery()
+                presentUnsavedDictationRecovery(recording.url)
+            }
+        }
     }
 
     /// One completion path for standard and buffered streaming dictation. Failed
@@ -15119,27 +15152,31 @@ public final class MuesliController: NSObject {
         backfilledWaveforms.object(forKey: NSNumber(value: id)) as Data?
     }
 
-    @MainActor private var pendingWaveforms: [Int64: Task<RecordingWaveformData, Error>] = [:]
+    private let dictationWaveformGate = InferenceGate()
 
-    // Recordings retained before previews were persisted need one scan. Both
-    // history views share that work even if the originating row disappears.
     @MainActor func dictationWaveform(id: Int64) async throws -> RecordingWaveformData {
-        if let pending = pendingWaveforms[id] { return try await pending.value }
-        let databaseURL = dictationStore.resolvedDatabaseURL
-        let pending = Task.detached(priority: .utility) {
-            let store = DictationStore(databaseURL: databaseURL)
-            if let bytes = try store.dictationWaveform(id: id),
+        try await dictationWaveformGate.withReservation {
+            // Recheck after admission: another row may have just filled this preview.
+            if let bytes = cachedDictationWaveform(id: id),
                let preview = RecordingWaveformData.decodeCacheData(bytes) { return preview }
-            let file = try DictationRecordingFile(historyID: id, databaseURL: databaseURL)
-            let preview = try RecordingWaveformData.load(from: file.url)
-            try? store.saveDictationWaveform(preview.encodedCacheData(), id: id)
+            let databaseURL = dictationStore.resolvedDatabaseURL
+            let worker = Task.detached(priority: .utility) {
+                let store = DictationStore(databaseURL: databaseURL)
+                if let bytes = try store.dictationWaveform(id: id),
+                   let preview = RecordingWaveformData.decodeCacheData(bytes) { return preview }
+                try Task.checkCancellation()
+                let file = try DictationRecordingFile(historyID: id, databaseURL: databaseURL)
+                let preview = try RecordingWaveformData.load(from: file.url)
+                try Task.checkCancellation()
+                try? store.saveDictationWaveform(preview.encodedCacheData(), id: id)
+                return preview
+            }
+            let preview = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: { worker.cancel() }
+            backfilledWaveforms.setObject(preview.encodedCacheData() as NSData, forKey: NSNumber(value: id))
             return preview
         }
-        pendingWaveforms[id] = pending
-        defer { pendingWaveforms[id] = nil }
-        let preview = try await pending.value
-        backfilledWaveforms.setObject(preview.encodedCacheData() as NSData, forKey: NSNumber(value: id))
-        return preview
     }
 
     func loadDictationRecording(id: Int64) async throws -> DictationRecordingFile {

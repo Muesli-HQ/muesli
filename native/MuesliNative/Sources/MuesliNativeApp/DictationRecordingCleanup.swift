@@ -1,5 +1,6 @@
 import Foundation
 import MuesliCore
+import os
 
 /// Deletes a stopped WAV unless another owner takes responsibility for retention or recovery.
 struct DictationRecordingCleanup {
@@ -15,11 +16,11 @@ struct DictationRecordingCleanup {
 /// copy for as long as the history player or transcription task needs it.
 final class DictationRecordingFile: Sendable {
     let url: URL
-    private let cleanupURL: URL
+    private let cleanupURL: OSAllocatedUnfairLock<URL?>
 
     init(stoppedWAV: URL) {
         url = stoppedWAV
-        cleanupURL = stoppedWAV
+        cleanupURL = .init(initialState: stoppedWAV)
     }
 
     init(historyID: Int64, databaseURL: URL) throws {
@@ -27,7 +28,7 @@ final class DictationRecordingFile: Sendable {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                  attributes: [.posixPermissions: 0o700])
-        cleanupURL = directory
+        cleanupURL = .init(initialState: directory)
         url = directory.appendingPathComponent("dictation.wav")
         do { try data.write(to: url, options: .withoutOverwriting) }
         catch {
@@ -36,5 +37,12 @@ final class DictationRecordingFile: Sendable {
         }
     }
 
-    deinit { try? FileManager.default.removeItem(at: cleanupURL) }
+    /// Recovery storage failed. The original file now belongs to the user.
+    func keepOriginalForManualRecovery() {
+        cleanupURL.withLock { $0 = nil }
+    }
+
+    deinit {
+        if let url = cleanupURL.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) }
+    }
 }

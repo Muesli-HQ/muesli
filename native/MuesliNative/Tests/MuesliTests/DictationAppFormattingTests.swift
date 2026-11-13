@@ -162,6 +162,38 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
+    @Test("A filtered-empty streaming result keeps the WAV available for recovery")
+    @MainActor
+    func emptyStreamingRecordingRecovery() async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("stream.wav")
+        let wav = WavWriter.header(dataSize: 64) + Data(repeating: 0, count: 64)
+        try wav.write(to: url)
+        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
+        controller.finishStreamingFormattingForTesting("REDACTED", sessionID: id, stoppedWAV: url)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while controller.appState.failedDictations.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let recovery = try #require(controller.appState.failedDictations.first)
+        #expect(try Data(contentsOf: controller.failedDictationAudioURL(recovery)) == wav)
+        #expect(try database.recentDictations().isEmpty)
+    }
+
+    @Test("Chinese and Japanese stream before stop including a trailing partial word", arguments: ["你好世界。", "こんにちは、"])
+    @MainActor
+    func streamingWithoutSpaces(sentence: String) throws {
+        let (directory, _, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var typed = ""
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { typed += $0 }, dispatchPaste: { _ in false }, warning: { _ in })
+        let id = controller.startStreamingFormattingForTesting(bundleID: nil)
+        controller.receiveStreamingFormattingForTesting(sentence + "REDAC", sessionID: id)
+        #expect(typed == sentence)
+    }
+
     @Test("Long WAV follows the finished paste to its original history row")
     @MainActor
     func retainedAudioAfterClipboardSettles() async throws {
@@ -205,7 +237,12 @@ struct DictationAppFormattingTests {
         try database.saveDictationAudio(audio, id: id)
         let recording = try #require(try database.dictation(id: id))
         let defaultBackend = controller.selectedBackend
-        let backend = try #require([BackendOption.parakeetUnified, .parakeetMultilingual].first { $0 != defaultBackend && $0.isDownloaded })
+        let backend: BackendOption
+        if ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_QWEN"] == "1" {
+            backend = .qwen3Asr
+        } else {
+            backend = try #require([BackendOption.parakeetUnified, .parakeetMultilingual].first { $0 != defaultBackend && $0.isDownloaded })
+        }
         controller.updateConfig { $0.enablePostProcessor = false }
         controller.retranscribeDictation(recording, with: backend)
         #expect(controller.appState.retranscribingHistoryID == id)
@@ -216,6 +253,10 @@ struct DictationAppFormattingTests {
         #expect(controller.appState.retranscribingHistoryID == nil)
         let updated = try #require(try database.dictation(id: id))
         #expect(!updated.rawText.isEmpty && updated.rawText != original)
+        if backend == .qwen3Asr {
+            #expect(updated.rawText.localizedCaseInsensitiveContains("lighthouse"))
+            #expect(updated.rawText.localizedCaseInsensitiveContains("apples"))
+        }
         #expect(controller.selectedBackend == defaultBackend)
         #expect(try database.dictationAudio(id: id) == audio)
         #expect(try database.recentDictations().count == 1)
