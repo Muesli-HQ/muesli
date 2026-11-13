@@ -306,11 +306,16 @@
     border: 1px solid var(--border);
   }
   .icon-item .symbol {
-    font-size: 16px;
     width: 24px;
-    text-align: center;
+    height: 24px;
+    flex: none;
+    background: var(--text-secondary);
+    mask: var(--icon) center / contain no-repeat;
+    -webkit-mask: var(--icon) center / contain no-repeat;
   }
   .icon-item .icon-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: 11px;
     color: var(--text-secondary);
   }
@@ -380,12 +385,12 @@
   /* Accessible roles for the Default accent. Native values are derived per saved accent by
      MuesliAccentPalette; these specimens approximate the Default result. */
   :root {
-    --toggle-accent:#6BA3F7; --on-toggle-accent:#000; --on-accent:#000; --accent-shade:#FFF; --accent-text:#89B5F9;
+    --toggle-accent:#6BA3F7; --on-toggle-accent:#000; --on-accent:#000; --accent-shade:#FFF; --accent-text:#B2CFFB;
     --recording-fill:#DC2626; --on-success:#000; --join-action:#33B887; --join-action-secondary:#26946B;
     --destructive-text:#F87171; --success-text:#34D399; --warning-text:#F59E0B;
   }
   :root[data-theme="light"] {
-    --toggle-accent:#2563EB; --on-toggle-accent:#FFF; --on-accent:#FFF; --accent-shade:#000; --accent-text:#1C4BB3;
+    --toggle-accent:#2563EB; --on-toggle-accent:#FFF; --on-accent:#FFF; --accent-shade:#000; --accent-text:#163B8D;
     --destructive-text:#B91C1C; --success-text:#065F46; --warning-text:#92400E;
   }
   :root[data-theme="ultra"] {
@@ -551,12 +556,12 @@
   </div>
 
   <h3 id="color-roles">Accessible foreground roles</h3>
-  <p class="section-desc">Fills keep the raw saved accent and semantic hues. Text and glyphs use a role chosen for the surface they sit on, so every enabled label reaches 4.5:1 and state glyphs 3:1 in Light, Dark and Ultra Dark.</p>
+  <p class="section-desc">Fills keep the raw saved accent and semantic hues. Text and glyphs use a role chosen for the surface they sit on, so accent labels reach 6:1 on neutral and tinted surfaces, filled-button labels at least 4.5:1, and state glyphs 3:1 in Light, Dark and Ultra Dark.</p>
   <table>
     <tr><th>Role</th><th>Rule</th><th>Ultra Dark</th></tr>
     <tr><td><code>accent</code> / <code>toggleAccent</code></td><td>Raw saved accent (adaptive blue by default) for fills, selection and switches</td><td>Actions white; switches keep the saved accent</td></tr>
     <tr><td><code>onAccent</code></td><td>Black or white, whichever contrasts more with the resolved fill (Default: white in Light, black in Dark)</td><td>Black</td></tr>
-    <tr><td><code>accentText</code></td><td>Same-hue shade of the saved accent, deepened in Light and lightened in Dark only until it reaches 4.5:1 on every neutral surface and on accent tints up to the pressed state. Never a fill.</td><td>White</td></tr>
+    <tr><td><code>accentText</code></td><td>Same-hue shade of the saved accent, deepened in Light and lightened in Dark only until it reaches 6:1 on every neutral surface and on accent tints up to the pressed state. Never a fill.</td><td>White</td></tr>
     <tr><td><code>accentStateShade</code></td><td>Hover/pressed overlay on accent fills (8% / 16%), moving the fill away from its label</td><td>Black</td></tr>
     <tr><td><code>onSuccess</code></td><td>Dark ink on <code>success</code> fills; never <code>onAccent</code></td><td>Same</td></tr>
     <tr><td><code>recordingFill</code></td><td>#DC2626 with white labels for labelled Stop/Record; <code>recording</code> stays for dots, waveforms and badges</td><td>Same</td></tr>
@@ -627,24 +632,45 @@
 <!-- 4. ICONOGRAPHY -->
 <section class="page-break">
   <h2><span class="num">04</span> Iconography</h2>
-  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, official assets for branding. Symbol names below are authoritative; browser emoji are illustrative placeholders, not SF Symbol renderings.</p>
+  <p class="section-desc">SF Symbols for UI chrome, animated waveform bars for the floating indicator, official assets for branding. Generate the local SF Symbol previews with <code>swift design-system/scripts/render-sidebar-symbols.swift</code> from the repository root. Symbol names remain visible without them. Time Turner and Vidshots use bundled custom icon specimens.</p>
 
   <h3>Sidebar Navigation</h3>
   <div class="icon-grid">
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F552;</span><div class="icon-label">clock<br>Timeline</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x301C;</span><div class="icon-label">waveform<br>Dictations</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F465;</span><div class="icon-label">person.wave.2 / person.2<br>Meetings (expanded / collapsed)</div></div>
-    <div class="icon-item"><span class="symbol" aria-hidden="true">&#x1F4AC;</span><div class="icon-label">bubble.left.and.bubble.right<br>Chat</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4CA;</span><div class="icon-label">chart.bar.xaxis<br>Insights</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4D6;</span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x1F4BB;</span><div class="icon-label">cpu<br>Models</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2318;</span><div class="icon-label">command<br>Shortcuts</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2699;</span><div class="icon-label">gearshape<br>Settings</div></div>
-    <div class="icon-item"><span class="symbol" style="font-family:-apple-system">&#x2139;</span><div class="icon-label">info.circle<br>About</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/clock.png)"></span><div class="icon-label">clock<br>Timeline</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/time-turner.svg)"></span><div class="icon-label">TimeTurnerIcon<br>Time Turner</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/waveform.png)"></span><div class="icon-label">waveform<br>Dictations</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/vidshots.svg)"></span><div class="icon-label">VidshotIcon<br>Vidshots</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/person.wave.2.png)"></span><div class="icon-label">person.wave.2<br>Meetings (expanded)</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/person.2.png)"></span><div class="icon-label">person.2<br>Meetings (collapsed)</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/bubble.left.and.bubble.right.png)"></span><div class="icon-label">bubble.left.and.bubble.right<br>Chat</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/character.book.closed.png)"></span><div class="icon-label">character.book.closed<br>Dictionary</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/cpu.png)"></span><div class="icon-label">cpu<br>Models</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/command.png)"></span><div class="icon-label">command<br>Shortcuts</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/gearshape.png)"></span><div class="icon-label">gearshape<br>Settings</div></div>
+    <div class="icon-item"><span class="symbol" aria-hidden="true" style="--icon:url(assets/icons/info.circle.png)"></span><div class="icon-label">info.circle<br>About</div></div>
   </div>
-  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Chat follows Meetings; Insights is a first-class sidebar item. Models, Shortcuts, Settings, and About stay fixed in the bottom section. Only the top six destinations can be reordered. Drag toward a row’s upper or lower half: an accent insertion line marks the exact boundary before or after that row. Meetings moves with its folder tree. Right-click Move up / Move down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults. The local order persists across launches without changing the selected page. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Timeline (clock) leads: one chronological feed combining dictations and meetings. The default order is Timeline, Time Turner, Dictations, Vidshots, Meetings, Chat and Dictionary. The Meetings row expands to reveal meeting folders, with children indented as a group (position carries nesting, not icon size). Open Insights through the statistics tiles on Timeline or Dictations; it has no sidebar entry. Timeline’s activity filter shows only its selected value, with its label retained for accessibility. Models, Shortcuts, Settings, and About stay fixed in the bottom section. These seven destinations can be reordered. Drag toward a row’s upper or lower half: an accent insertion line marks the exact boundary before or after that row. Meetings moves with its folder tree. Right-click Move up / Move down and VoiceOver actions offer alternatives; Reset sidebar order restores defaults. The local order persists across launches without changing the selected page. The rail is fixed at 240pt expanded and collapses to a 68pt icon strip via the header toggle. Navigation labels are 14pt, medium normally and semibold when selected. Milestone-gated sharing links live in About.</p>
   <p style="color:var(--text-secondary);font-size:13px;margin:8px 0">Expanded row icons use 14pt medium; collapsed rail icons use 16pt medium. Meetings uses person.wave.2 expanded and person.2 collapsed. Icons are outline-only; <code>.fill</code> is reserved for selection state, keeping ink weight even across the column. The icon column is center-aligned and starts at the search field's inner padding, so row glyphs sit directly under the magnifier.</p>
 
+  <h3>Permission recovery</h3>
+  <p class="pattern-note">Onboarding, feature setup and General Permissions share the System Settings arrow and draggable app-row guide for Accessibility, Input Monitoring and Screen Recording. For Screen Recording, turn on the existing app row or drag it in if missing. Its guide closes on return to muesli; a stale process grant must not keep it attached to later Settings visits. Microphone uses native consent.</p>
+  <p class="pattern-note">After requesting Accessibility, Input Monitoring or Screen Recording, returning from System Settings offers Restart muesli or Later. Use conditional copy: a request is not proof of a grant. Settings keeps a recovery action for access already enabled in macOS. Restart uses normal shutdown, waits for exit, restores permission setup or General → Permissions, and refuses to interrupt recordings, transcription, imports, AI requests or an unsent chat draft. Background polling never restarts the app.</p>
+  <div class="component-preview" style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:12px;flex:1;min-width:220px">Already enabled access in System Settings? Restart muesli to apply permission changes.</span>
+    <button class="btn btn-secondary">Restart muesli…</button>
+  </div>
+  <p class="pattern-note">Restart notices and blocking errors appear above an open setup sheet. Keep the manual restart action only in Settings → General → Permissions. Feature setup screens use their existing Manage permissions action for recovery after choosing Later, without feature-specific restart controls.</p>
+  <p class="pattern-note">Permission dialogs allow normal AppKit termination, including System Settings' Quit &amp; Reopen. Shutdown safeguards still apply. A rejected quit clears the pending restart so recovery remains retryable.</p>
+  <p class="pattern-note">A permission restart from Time Turner returns to its permission step (2 of 3) with current access checks. This one-shot navigation intent also handles macOS Quit &amp; Reopen and never enables capture automatically. Other permission recovery returns to General → Permissions. Pending notices and saved destinations expire after 15 minutes. A restart notice requires a System Settings visit after requesting access; native prompt dismissal or unrelated app switching is not enough.</p>
+  <div class="component-preview" style="text-align:center"><div style="font-size:20px;font-weight:600;color:var(--text-primary)">No captures on this day</div><p style="font-size:14px;color:var(--text-secondary)">Choose another day to browse your screen history.</p></div>
+  <div class="component-preview"><div class="demo-row"><span>Use on-screen text</span><span class="push-right" style="color:var(--accent-text)">Review access</span></div><p style="font-size:12px;color:var(--text-secondary)">Allow Screen Recording in System Settings to use on-screen text.</p></div>
+  <p class="pattern-note">Set up later completes onboarding on Timeline. Missing permissions block only the relevant feature. Keep Not now available and route recovery to Settings → General → Permissions. Show the missing prerequisite inline and refresh on return. Revoked permissions must not block dashboard navigation.</p>
+  <h3>Progressive Settings detail</h3>
+  <div class="component-preview"><div style="font-size:13px;color:var(--text-secondary)">Most-used apps</div><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Based on your last 30 days of dictation.</div><div class="demo-row" style="margin-top:12px"><span style="font-size:14px">Example app</span><span class="push-right" style="color:var(--accent-text);font-size:13px">Customize</span><span aria-label="Dismiss suggestion" style="padding:4px;color:var(--text-secondary)">×</span></div></div>
+  <p class="pattern-note">Suggestion titles use sentence-case callout text, app names use body text and usage uses caption text. Dismiss sits beside Customize and stays dismissed across launches; Add App still supports manual selection. Time Turner shows only Screen history and Set up while off; detailed capture, exclusions and storage settings appear when enabled. Saved settings and retention behavior are unchanged.</p>
+  <h3>New-feature discovery</h3>
+  <div class="component-preview"><span style="font-size:14px">Chat</span> <span style="font-size:11px;font-weight:600;color:#fff;background:#2861C7;border-radius:999px;padding:1px 5px">New</span></div>
+  <p class="pattern-note">A small static badge marks a major feature introduced in 0.8.6: Chat, Time Turner, Granola import, Cotypist, live dictation or App Formatting. The native fill follows the saved accent, deepening pale colors for at least 4.5:1 contrast with white text (also in Ultra Dark). Each badge disappears after that feature is used and stays dismissed across launches; viewing the page or tour does not dismiss it. No pulse, shadow or separate click target.</p>
   <h3>Indicator iconography and states</h3>
   <p class="pattern-note">Source-audited against origin/main at <code>e1b52117</code>, October 31, 2026. These are static browser specimens. Validate native rendering, motion, and pointer behavior in the app before treating them as pixel-accurate screenshots.</p>
   <table>
@@ -727,6 +753,7 @@
     <tr><td>Minimal idle</td><td>40pt-high window sized to the shortcut pill; only the visible grip/pill is interactive.</td></tr>
     <tr><td>Preparing</td><td>76×22pt, waiting bars, immediate transition.</td></tr>
     <tr><td>Recording</td><td>76×22pt normally. Cursor-insertion-stopped feedback widens to fit its title.</td></tr>
+    <tr><td>Dictating during a meeting</td><td>28pt-high, content-sized row: “Dictating”, a red meeting-recording dot (pause symbol when paused), live waveform and separate finish/cancel actions. Stopped live-insertion warnings take precedence. Notch keeps its waveform and two-wing layout.</td></tr>
     <tr><td>Transcribing</td><td>Measured title width and 32pt height; instruction transcript mode has separate sizing.</td></tr>
     <tr><td>Loading / notices</td><td>Message-dependent widths, 36pt high; use the dedicated loading/notice path.</td></tr>
     <tr><td>Surface</td><td>NSVisualEffectView hudWindow material, withinWindow blending, with a separate tint layer.</td></tr>
@@ -734,6 +761,14 @@
     <tr><td>Window alpha</td><td>Idle 0.90; hovered idle and active states 1.0.</td></tr>
     <tr><td>Border</td><td>White 22% idle, 14% hovered idle, 16% preparing/recording/transcribing.</td></tr>
   </table>
+  <div class="component-preview" style="display:flex;align-items:center;min-height:60px">
+    <div role="img" aria-label="Dictating while meeting recording, with waveform, finish and cancel controls" style="box-sizing:border-box;height:28px;border:1px solid rgba(255,255,255,.16);border-radius:14px;background:#252532;color:#fff;display:inline-flex;align-items:center;padding-left:8px">
+      <div style="font-size:10px;font-weight:600;white-space:nowrap">Dictating</div><div aria-hidden="true" style="width:20px;text-align:center;color:#ef4444;font-size:10px">●</div>
+      <div aria-hidden="true" style="width:27px;display:flex;align-items:center;justify-content:center;gap:3px;height:16px"><i style="width:3px;height:7px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:12px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:14px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:12px;background:#ddd;border-radius:2px"></i><i style="width:3px;height:7px;background:#ddd;border-radius:2px"></i></div>
+      <div aria-hidden="true" style="width:28px;text-align:center;font-size:9px">■</div><div aria-hidden="true" style="width:28px;text-align:center;font-size:12px">×</div>
+    </div>
+  </div>
+  <p class="pattern-note">Illustrative overlap state; native controls provide the actual symbols, hit targets and adaptive presentation.</p>
   <h3>Standing waveform dynamics</h3>
   <table>
     <tr><th>Property</th><th>Source value</th></tr>
@@ -1005,7 +1040,7 @@
   <table>
     <tr><th>Property</th><th>Value</th></tr>
     <tr><td>Container</td><td><code>backgroundRaised</code>, 12pt radius, 1pt <code>surfaceBorder</code>, 20pt padding</td></tr>
-    <tr><td>Header</td><td>"Coming Up" &mdash; Cormorant Garamond 22pt medium</td></tr>
+    <tr><td>Header</td><td>"Coming Up" &mdash; Nunito Sans 20pt semibold (title2)</td></tr>
     <tr><td>Date column</td><td>60pt wide &mdash; day number (24pt light), label (11pt medium), weekday (10pt)</td></tr>
     <tr><td>Event row</td><td>3pt accent bar (today) or 40% secondary bar &middot; title 13pt medium &middot; time 11pt secondary</td></tr>
     <tr><td>Join &amp; Record</td><td>Green button, shown when <code>meetingURL</code> present and not recording</td></tr>
@@ -1151,6 +1186,26 @@
     <span style="font-size:12px;text-align:right">Ⅱ Pause &nbsp; ⚙</span>
   </div>
   <p class="pattern-note">Recap screenshot citations show actual 144×90pt image previews above their timestamp, with 6pt padding and 10pt corners. They open the matching History capture. Previews resolve the current media location after compaction; expired screenshots show a compact explicit state while retained text stays accessible. Meeting citations remain text links. Search shows progress while results load, rather than an empty-history message.</p>
+
+  <h3>About · Privacy</h3>
+  <div style="padding:20px;border:1px solid var(--border);border-radius:12px;max-width:620px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:20px;font-size:14px">
+      <span>Disable anonymous analytics</span>
+      <span role="img" aria-label="Switch off by default" style="flex:none;width:32px;height:20px;border-radius:10px;background:var(--border);padding:2px"><span style="display:block;width:16px;height:16px;border-radius:50%;background:var(--text-secondary)"></span></span>
+    </div>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:12px">Stops anonymous usage and error analytics from being sent to TelemetryDeck. Applies immediately on this Mac. Requests already sent cannot be recalled.</p>
+  </div>
+  <p class="pattern-note">Use the shared compact switch, off by default, and wrapping helper text. The privacy preference is separate from automatic issue-reporting prompts. The enabled switch retains the saved accent in Ultra Dark.</p>
+
+  <h3>Timeline Privacy Mode</h3>
+  <p class="pattern-note">Timeline omits the inline iCloud companion/status card. The compact header sync control and Settings → General retain sync setup, status and recovery actions.</p>
+  <div class="settings-card">
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:12px">
+      <label style="font-size:12px">Privacy <input type="checkbox" role="switch" aria-label="Privacy mode" style="accent-color:var(--accent)"></label>
+    </div>
+    <p class="pattern-note">Of new activity on this Mac, only meetings and their recordings are saved. Time Turner and Cotypist are paused.</p>
+  </div>
+  <p class="pattern-note">The native switch sits beside Timeline filters below search, wrapping onto a trailing second row at narrow widths. Default off; use the saved switch accent in every theme. Anonymous analytics has its own independent control.</p>
 
   <h3>What's New in muesli 0.8.6</h3>
   <div class="component-preview" style="max-width:380px;display:block;padding:20px;border:1px solid var(--border);border-radius:8px;background:var(--bg-raised)">

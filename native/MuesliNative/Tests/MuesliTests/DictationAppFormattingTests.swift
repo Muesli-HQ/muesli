@@ -162,6 +162,31 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
+    @Test("Privacy keeps paste functional without saving history or monitoring corrections", arguments: [true, false])
+    @MainActor
+    func privatePasteCompletion(delivered: Bool) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var warnings: [String] = []
+        var pastes = 0
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in Issue.record("Unexpected live typing") },
+            dispatchPaste: { _ in pastes += 1; return delivered },
+            warning: { warnings.append($0) })
+        controller.dictationOutputTestHooks?.monitorCorrections = { _ in Issue.record("Private content entered correction monitoring") }
+        let privacy = ContentPrivacy(enabled: true).capture()
+        await ContentPrivacy.$session.withValue(privacy) {
+            await withCheckedContinuation { continuation in
+                controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+                controller.finishStandardFormattingForTesting("Synthetic private dictation.")
+            }
+        }
+        #expect(pastes == 1)
+        #expect(try database.recentDictations().isEmpty)
+        #expect(warnings == (delivered ? [] : ["Dictation wasn't pasted. Privacy mode kept it out of History."]))
+        #expect(board.string(forType: .string) == "original clipboard")
+    }
+
     @Test("History recovery messages reflect actual persistence for every paste completion path",
           arguments: ["standard", "buffered", "recovered"],
           ["saved/pasted", "saved/rejected", "openFailure/pasted", "openFailure/rejected", "writeFailure/pasted", "writeFailure/rejected"])
@@ -243,18 +268,24 @@ struct DictationAppFormattingTests {
         #expect(try database.recentDictations().first?.rawText == phrase)
     }
 
-    @Test("Voice notes never buffer for app rules or insert text")
+    @Test("Voice notes use history or an ephemeral preview without inserting text", arguments: [true, false])
     @MainActor
-    func streamingVoiceNote() throws {
+    func streamingVoiceNote(privateMode: Bool) throws {
         let (directory, database, _, controller, board) = try streamingFixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
         controller.dictationOutputTestHooks = .init(pasteboard: board,
             typeText: { _ in Issue.record("Voice note typed") },
             dispatchPaste: { _ in Issue.record("Voice note pasted"); return false })
-        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        var temporaryText: String?
+        controller.dictationOutputTestHooks?.temporaryVoiceNote = { temporaryText = $0 }
+        let session = privateMode ? ContentPrivacy(enabled: true).capture() : ContentPrivacy.shared.capture()
+        let id = ContentPrivacy.$session.withValue(session) {
+            controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        }
         controller.receiveStreamingFormattingForTesting("Voice note.", sessionID: id)
         controller.finishStreamingFormattingForTesting("Voice note.", sessionID: id)
-        #expect(try database.recentDictations().first?.rawText == "Voice note.")
+        #expect(temporaryText == (privateMode ? "Voice note." : nil))
+        #expect(try database.recentDictations().first?.rawText == (privateMode ? nil : "Voice note."))
         #expect(board.string(forType: .string) == "original clipboard")
     }
     #endif
@@ -390,6 +421,28 @@ struct DictationAppFormattingTests {
         #expect(ranked[1].suggestsLowercaseChat)
         #expect(DictationFormattingSuggestion.ranked(usage: usage,
             excluding: [.init(bundleID: "com.apple.mail", appName: "Mail")]).count == 1)
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: ["com.apple.mail"]).map(\.bundleID) == ["net.whatsapp.WhatsApp"])
+    }
+
+    @MainActor @Test("Dismissed app suggestions stay hidden after relaunch without changing other preferences")
+    func dismissedSuggestionsPersist() throws {
+        let suite = "muesli.formatting-suggestions.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("unchanged", forKey: "unrelated")
+        let preferences = DictationFormattingSuggestionPreferences(defaults: defaults)
+        preferences.dismiss("com.example.one")
+        preferences.dismiss("com.example.one")
+        let reopened = DictationFormattingSuggestionPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(reopened.dismissed == ["com.example.one"])
+        #expect(defaults.string(forKey: "unrelated") == "unchanged")
+        let usage: [InsightsUsage] = [
+            .init(id: "bundle:com.example.one", name: "One", sessions: 10, words: 100),
+            .init(id: "bundle:com.example.two", name: "Two", sessions: 2, words: 20)
+        ]
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: reopened.dismissed).map(\.appName) == ["Two"])
     }
 
     @Test("Output formatting uses the dispatch target and preserves clipboard restoration")

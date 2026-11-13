@@ -33,10 +33,9 @@ Muesli is a **native macOS app for dictation and meeting transcription**, built 
 Speech recognition runs on your Mac by default. Hosted transcription and AI features are optional and send the content needed for the selected task to your provider. iCloud sync transfers text and sync metadata, never audio. See [Muesli's privacy policy](https://muesli.works/privacy).
 
 <p align="center">
-  <img src="assets/muesli-github-ss.png" alt="Muesli 0.8.4 Timeline with illustrative dictation, meeting, iPhone, and Computer Use entries" width="900" />
+  <img src="assets/muesli-github-ss.png" alt="muesli Timeline with illustrative activity, meeting folders, and feature navigation" width="900" />
 </p>
 
-<p align="center"><sub>Illustrative entries and usage statistics. Personal content has been replaced.</sub></p>
 
 ## Features
 
@@ -46,6 +45,7 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Custom vocabulary and dictionary** — Add names, technical terms, phrase matches, and replacement pairs to improve recognition. Import and export your dictionary as JSON for reuse in the app and CLI.
 - **Meeting transcription** — Capture microphone and system audio with speaker labels. Enable live captions, import MP3/MP4/M4A/WAV files, or re-transcribe saved meetings with retained audio.
 - **Meeting video recording** — Record a selected window or display with meeting audio and play it back locally. Requires macOS Screen Recording and Microphone permissions; obtain permission from meeting participants before recording. See [meeting screen recording](docs/meeting-screen-recording.md).
+- **Vidshot (experimental)** — Record a selected window or screen region with microphone narration, then play the saved or recovered capture locally. Enable it in Experimental settings. See [Vidshot](docs/feedback-capture.md).
 - **Meeting notes** — Use templates, re-summarize with another model, and export notes, transcripts, and answers as Markdown or PDF.
 - **Ask Meetings** — Chat with your meeting notes and transcripts directly beneath a saved meeting or from the Ask Meetings workspace. Use `@` to attach saved meetings, continue with follow-up questions, and open cited passages to check the sources.
 - **Your choice of AI** — Generate summaries with OpenAI or Anthropic API keys, OpenRouter, ChatGPT sign-in, Claude Code, Ollama, LM Studio, or a custom endpoint. Hosted providers receive the transcript for the requested task.
@@ -55,6 +55,7 @@ Speech recognition runs on your Mac by default. Hosted transcription and AI feat
 - **Text sync with iPhone** — Sync transcripts, notes, summaries, and dictation text through your private iCloud account. Audio stays on the recording device.
 - **Native Mac interface** — Follow progress at the notch or in a floating indicator, browse meeting and dictation history, and manage models, shortcuts, and appearance in one app.
 
+Hotkey dictation works while a meeting is recording or paused, producing the usual pasted text or voice-note output according to the selected mode. The meeting's local microphone track is silenced from an admitted explicit dictation start attempt until stopping, cancellation, or startup failure completes, including attempts that capture no dictation audio. Meetings that are recording continue to capture system audio; paused meetings stay paused. Refused requests remain meeting audio. If models need preparation, the indicators explain progress or failure; after “Ready”, retry dictation to begin recording.
 ### Experimental features
 
 Opt in under **Settings → Experimental**; availability depends on your build and model setup.
@@ -62,7 +63,7 @@ Opt in under **Settings → Experimental**; availability depends on your build a
 - **[Time Turner](docs/visual-memory.md)** — Search local screen history by text, app, and date, generate source-linked daily recaps with your selected meeting model, and retrieve OCR and screenshots through `muesli-cli time-turner`.
 - **Computer Use voice commands** — Control apps, browsers, and supported muesli settings with on-device Gemma on macOS 15+ or a connected ChatGPT account; AI prompt settings remain manual-only.
 - **Quill voice writing** — Rewrite selected text, create text at the cursor, or ask a question using a local or hosted model.
-- **Cotypist typeahead (development builds)** — Get on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word.
+- **Cotypist typeahead** — Enable Cotypist in Settings for on-device inline writing suggestions through the muesli input source; Tab accepts a suggestion and ⌥→ accepts one word. Off by default. Accepted suggestions appear in your local Timeline with the preceding text and app name.
 
 ---
 

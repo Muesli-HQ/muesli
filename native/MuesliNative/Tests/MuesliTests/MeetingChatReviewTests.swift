@@ -34,7 +34,7 @@ struct MeetingChatReviewTests {
         let snapshot = try #require(chat.sourceSnapshots(scope: scope).first)
         for passage in result.passages {
             let text: String
-            switch passage.kind { case .transcript: text = snapshot.transcript; case .manualNotes: text = snapshot.manualNotes; case .generatedNotes: text = snapshot.generatedNotes }
+            switch passage.kind { case .title: text = snapshot.title; case .transcript: text = snapshot.transcript; case .manualNotes: text = snapshot.manualNotes; case .generatedNotes: text = snapshot.generatedNotes }
             #expect((text as NSString).substring(with: passage.range.nsRange) == passage.excerpt)
             #expect(!passage.sourceKey.isEmpty)
         }
@@ -497,6 +497,7 @@ struct MeetingChatReviewTests {
 private actor ReviewReplyProbe: MeetingTextGenerating {
     private(set) var calls = 0
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if request.user.contains("QUOTED SOURCES (JSON):\n[]") { return #"{"tool":"search_history","kind":"meeting"}"# }
         calls += 1
         return #"{"status":"answered","markdown":"Launch Friday [[S1]]"}"#
     }
@@ -516,7 +517,7 @@ private actor ToolPresentationProbe: MeetingTextGenerating {
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
         calls += 1
         await request.onReasoningSummary?("Checking the supplied launch context.")
-        if calls == 1 { return #"{"tool":"browse_meeting_sources"}"# }
+        if calls == 1 { return #"{"tool":"search_history","kind":"meeting"}"# }
         return #"{"status":"answered","markdown":"Launch Friday [[S1]]"}"#
     }
 }

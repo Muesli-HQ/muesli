@@ -101,6 +101,7 @@ struct DashboardRootView: View {
                         if showsPersistentChat {
                             MeetingChatView(appState: appState, controller: controller,
                                             coordinator: controller.meetingChatCoordinator, docked: true)
+                                .id(appState.privateMode)
                         }
                     }
             }
@@ -157,6 +158,11 @@ struct DashboardRootView: View {
         .sheet(isPresented: Binding(get: { appState.globalSearchPresented },
                                     set: { appState.globalSearchPresented = $0 })) {
             GlobalSearchPanel(controller: controller, appState: appState)
+        }
+        .onChange(of: appState.selectedTab) { _, tab in
+            if appState.activeFeatureTour == nil, let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
         }
         .onChange(of: appState.focusSearchField) { _, focus in
             if focus {
@@ -266,6 +272,8 @@ struct DashboardRootView: View {
                 TimeTurnerPage(appState: appState, controller: controller)
             case .dictations:
                 DictationsView(appState: appState, controller: controller)
+            case .vidshots:
+                VidshotsPage(appState: appState, controller: controller)
             case .insights:
                 InsightsView(
                     initialSection: appState.insightsInitialSection,
@@ -280,6 +288,7 @@ struct DashboardRootView: View {
                 MeetingsView(appState: appState, controller: controller)
             case .meetingChat:
                 MeetingChatView(appState: appState, controller: controller, coordinator: controller.meetingChatCoordinator)
+                    .id(appState.privateMode)
             case .dictionary:
                 DictionaryView(appState: appState, controller: controller)
             case .models:
@@ -291,6 +300,8 @@ struct DashboardRootView: View {
             case .about:
                 AboutView(
                     appState: appState,
+                    analyticsControl: MuesliSettingControl(controller: controller, id: "disable_anonymous_analytics")
+                        .environment(\.muesliSettingDefinitions, [controller.anonymousAnalyticsDefinition()]),
                     onShare: { controller.openContributionSidebarShare($0) },
                     onOpenManualDiagnosticReport: { controller.openManualDiagnosticReport() },
                     onSetAutomaticDiagnosticIssuePrompts: { controller.setAutomaticDiagnosticIssuePrompts($0) }

@@ -31,6 +31,7 @@ struct ConfigStoreTests {
         config.whisperLanguage = WhisperKitLanguage.german.rawValue
         config.appleSpeechLanguage = "en-US"
         config.meetingSummaryBackend = "openrouter"
+        config.meetingAutoStopEnabled = true
         store.save(config)
 
         let loaded = store.load()
@@ -46,6 +47,25 @@ struct ConfigStoreTests {
         #expect(loaded.whisperLanguage == WhisperKitLanguage.german.rawValue)
         #expect(loaded.appleSpeechLanguage == "en-US")
         #expect(loaded.meetingSummaryBackend == "openrouter")
+        #expect(loaded.meetingAutoStopEnabled)
+    }
+
+    @Test("meeting auto-stop is off for existing configurations")
+    func meetingAutoStopDefaultsOff() throws {
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(!config.meetingAutoStopEnabled)
+    }
+
+    @Test("meeting auto-stop preserves the previously saved Zoom setting")
+    func meetingAutoStopLegacyConfig() throws {
+        let decoder = JSONDecoder()
+        let legacy = try decoder.decode(AppConfig.self, from: Data(#"{"zoom_meeting_auto_stop_enabled":true}"#.utf8))
+        #expect(legacy.meetingAutoStopEnabled)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+        #expect(encoded?["meeting_auto_stop_enabled"] as? Bool == true)
+        #expect(encoded?["zoom_meeting_auto_stop_enabled"] == nil)
+        let both = try decoder.decode(AppConfig.self, from: Data(#"{"zoom_meeting_auto_stop_enabled":true,"meeting_auto_stop_enabled":false}"#.utf8))
+        #expect(!both.meetingAutoStopEnabled)
     }
 
     @Test("config path honors the isolated support directory")

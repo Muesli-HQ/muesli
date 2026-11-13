@@ -1,10 +1,17 @@
 import AppKit
 import SwiftUI
+import ImageIO
+
+private enum NoteImageSource {
+    case data(Data)
+    case file(URL)
+}
 
 private extension NSAttributedString.Key {
     static let muesliMarkdownStrong = NSAttributedString.Key("com.muesli.markdown.strong")
     static let muesliMarkdownEmphasis = NSAttributedString.Key("com.muesli.markdown.emphasis")
     static let muesliMarkdownCode = NSAttributedString.Key("com.muesli.markdown.code")
+    static let muesliMarkdownImage = NSAttributedString.Key("com.muesli.markdown.image")
 }
 
 struct MarkdownEditorCommand: Equatable {
@@ -25,11 +32,13 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
     var shouldFocus: Bool = false
     var isEditable: Bool = true
     var placeholder: String = "Write notes here..."
+    var renderMarkdownFormatting: Bool = true
     var onTextChange: ((String) -> Void)?
     var onSelectionChange: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, command: $command, onTextChange: onTextChange)
+        Coordinator(text: $text, command: $command, onTextChange: onTextChange,
+                    renderMarkdownFormatting: renderMarkdownFormatting)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -61,6 +70,11 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         textView.typingAttributes = context.coordinator.bodyAttributes()
+        textView.imageHandler = { [weak coordinator = context.coordinator, weak textView] source in
+            guard let coordinator, let textView else { return }
+            coordinator.insertImage(source, into: textView)
+        }
+        textView.registerForDraggedTypes([.fileURL, .png, .tiff, .rtfd, .rtf, .string])
         context.coordinator.apply(markdown: text, to: textView)
 
         scrollView.documentView = textView
@@ -96,9 +110,20 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         var onTextChange: ((String) -> Void)?
         var onSelectionChange: ((Bool) -> Void)?
         private var lastReportedSelection: Bool?
+        private var hadImageSelection = false
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            clearImageTypingAttributes(in: textView)
+            let range = textView.selectedRange()
+            let storage = textView.textStorage
+            let hasImageSelection = range.length == 1 && range.location != NSNotFound
+                && range.upperBound <= (storage?.length ?? 0)
+                && storage?.attribute(.muesliMarkdownImage, at: range.location, effectiveRange: nil) is String
+            if hasImageSelection || hadImageSelection {
+                textView.needsDisplay = true
+            }
+            hadImageSelection = hasImageSelection
             // AppKit can change selection during SwiftUI updates; publish after that pass.
             DispatchQueue.main.async { [weak self, weak textView] in
                 guard let self, let textView else { return }
@@ -119,6 +144,13 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private var pendingLocalMarkdown: String?
         private var bindingPublishWorkItem: DispatchWorkItem?
         private var scheduledCommandID: UUID?
+        private var imageCache: [UUID: NSImage] = [:]
+        private var imageAttachments: [String: NSTextAttachment] = [:]
+        private var loadingImages: Set<UUID> = []
+        private var missingImages: Set<UUID> = []
+        private var pendingImageCount = 0
+        private let imageSupportDirectory: URL
+        private let renderMarkdownFormatting: Bool
 
         private let bodyFont = AppFonts.font(size: 16)
         private let boldFont = AppFonts.bold(16)
@@ -126,16 +158,154 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private let bodyColor = NSColor.labelColor
         private let secondaryColor = NSColor.secondaryLabelColor
 
-        init(text: Binding<String>, command: Binding<MarkdownEditorCommand?>, onTextChange: ((String) -> Void)?) {
+        init(text: Binding<String>, command: Binding<MarkdownEditorCommand?>, onTextChange: ((String) -> Void)?,
+             renderMarkdownFormatting: Bool = true, imageSupportDirectory: URL = AppIdentity.supportDirectoryURL) {
+            self.imageSupportDirectory = imageSupportDirectory
             _text = text
             _command = command
             self.onTextChange = onTextChange
+            self.renderMarkdownFormatting = renderMarkdownFormatting
+        }
+
+        private func showImageLimit(in view: NSTextView) {
+            let alert = NSAlert()
+            alert.messageText = "Could not add image"
+            alert.informativeText = MeetingNoteImageError.tooMany.localizedDescription
+            if let window = view.window { alert.beginSheetModal(for: window) }
+        }
+
+        fileprivate func insertImage(_ source: NoteImageSource, into view: NSTextView) {
+            guard MeetingNoteImages.references(in: serializedMarkdown(from: view)).count + pendingImageCount < MeetingNoteImages.maximumImageCount else {
+                showImageLimit(in: view)
+                return
+            }
+            pendingImageCount += 1
+            let selection = view.selectedRange()
+            let original = view.string
+            DispatchQueue.global(qos: .userInitiated).async { [weak self, weak view] in
+                let result: Result<MeetingNoteImages.Reference, Error> = Result {
+                    let data: Data
+                    switch source {
+                    case .data(let value): data = value
+                    case .file(let url):
+                        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                        guard values.isRegularFile == true, let size = values.fileSize,
+                              size > 0, size <= MeetingNoteImages.maximumImageBytes else { throw ChatFileError.tooLarge }
+                        data = try Data(contentsOf: url, options: .mappedIfSafe)
+                    }
+                    return try MeetingNoteImages.save(data)
+                }
+                DispatchQueue.main.async {
+                    self?.pendingImageCount -= 1
+                    guard let self, let view, view.window != nil, view.isEditable else {
+                        if case .success(let reference) = result {
+                            DispatchQueue.global(qos: .utility).async {
+                                try? FileManager.default.removeItem(at: MeetingNoteImages.url(for: reference.id))
+                            }
+                        }
+                        return
+                    }
+                    switch result {
+                    case .success(let reference):
+                        // If the user typed while the image was processed, keep their
+                        // edits and insert at the current caret instead of replacing them.
+                        let target = view.string == original ? selection : view.selectedRange()
+                        self.insertImageReference(reference, into: view, replacing: target)
+                    case .failure(let error):
+                        let alert = NSAlert()
+                        alert.messageText = "Could not add image"
+                        alert.informativeText = error.localizedDescription
+                        alert.beginSheetModal(for: view.window!)
+                    }
+                    _ = self
+                }
+            }
+        }
+
+        func insertImageReference(_ reference: MeetingNoteImages.Reference, into view: NSTextView, replacing range: NSRange) {
+            guard let storage = view.textStorage, range.location != NSNotFound,
+                  range.upperBound <= storage.length else { return }
+            replaceWithImageContent(in: view, range: range,
+                                    content: inlineAttributedString(from: reference.markdown, attributes: bodyAttributes()))
+        }
+
+        fileprivate func pasteMarkdown(_ markdown: String, into view: NSTextView) -> Bool {
+            let range = view.selectedRange()
+            guard view.isEditable, let storage = view.textStorage, range.upperBound <= storage.length else { return false }
+            let references = MeetingNoteImages.references(in: markdown)
+            guard !references.isEmpty else { return false }
+            var remaining = pendingImageCount + references.count
+            storage.enumerateAttribute(.muesliMarkdownImage, in: NSRange(location: 0, length: storage.length)) { value, run, _ in
+                if value != nil { remaining += run.length - NSIntersectionRange(run, range).length }
+            }
+            guard remaining <= MeetingNoteImages.maximumImageCount else {
+                showImageLimit(in: view)
+                return false
+            }
+            return replaceWithImageContent(in: view, range: range, content: attributedString(from: markdown))
+        }
+
+        @discardableResult
+        private func replaceWithImageContent(in view: NSTextView, range: NSRange, content: NSAttributedString) -> Bool {
+            usesMarkdownStyling = true
+            view.breakUndoCoalescing()
+            view.undoManager?.beginUndoGrouping()
+            let changed = NoteImageMove.replace(in: view, range: range, with: content,
+                                      selection: NSRange(location: range.location + content.length, length: 0),
+                                      undoSelection: range)
+            view.undoManager?.setActionName("Paste Image")
+            view.undoManager?.endUndoGrouping()
+            view.breakUndoCoalescing()
+            return changed
+        }
+
+        private func loadImage(_ id: UUID) {
+            guard !loadingImages.contains(id), !missingImages.contains(id) else { return }
+            loadingImages.insert(id)
+            let directory = imageSupportDirectory
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let url = MeetingNoteImages.url(for: id, supportDirectory: directory)
+                let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+                let image = source.flatMap { CGImageSourceCreateThumbnailAtIndex($0, 0,
+                    [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                     kCGImageSourceThumbnailMaxPixelSize: 1000,
+                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.loadingImages.remove(id)
+                    guard let image else { self.missingImages.insert(id); return }
+                    let loaded = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+                    self.imageCache[id] = loaded
+                    guard let view = self.textView, let storage = view.textStorage else { return }
+                    var placements: [(NSRange, MeetingNoteImages.Reference)] = []
+                    storage.enumerateAttribute(.muesliMarkdownImage, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                        if let marker = value as? String, let reference = MeetingNoteImages.references(in: marker).first, reference.id == id {
+                            placements.append((range, reference))
+                        }
+                    }
+                    self.isApplying = true
+                    storage.beginEditing()
+                    for (range, reference) in placements {
+                        storage.addAttribute(.attachment, value: self.attachment(for: reference), range: range)
+                    }
+                    storage.endEditing()
+                    self.isApplying = false
+                }
+            }
         }
 
         func textDidChange(_ notification: Notification) {
             guard !isApplying, let textView = notification.object as? NSTextView else { return }
             applyInlineFormattingIfNeeded(in: textView)
             let markdown = markdownForLiveEdit(from: textView)
+            if imageAttachments.count > 6 || imageCache.count > 6 || missingImages.count > 6 {
+                let references = MeetingNoteImages.references(in: markdown)
+                let liveIDs = Set(references.map(\.id))
+                let markers = Set(references.map(\.markdown))
+                imageAttachments = imageAttachments.filter { markers.contains($0.key) }
+                imageCache = imageCache.filter { liveIDs.contains($0.key) }
+                missingImages.formIntersection(liveIDs)
+            }
             currentMarkdown = markdown
             pendingLocalMarkdown = markdown
             onTextChange?(markdown)
@@ -162,10 +332,21 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             shouldChangeTextIn affectedCharRange: NSRange,
             replacementString: String?
         ) -> Bool {
+            if let replacementString, !replacementString.contains("\u{fffc}") {
+                clearImageTypingAttributes(in: textView)
+            }
             guard !isHandlingNewline else { return true }
             guard replacementString == "\n" else { return true }
             continueListIfNeeded(in: textView, affectedCharRange: affectedCharRange)
             return false
+        }
+
+        private func clearImageTypingAttributes(in textView: NSTextView) {
+            var attributes = textView.typingAttributes
+            guard attributes[.attachment] != nil || attributes[.muesliMarkdownImage] != nil else { return }
+            attributes.removeValue(forKey: .attachment)
+            attributes.removeValue(forKey: .muesliMarkdownImage)
+            textView.typingAttributes = attributes
         }
 
         func apply(markdown: String, to textView: NSTextView) {
@@ -271,6 +452,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         }
 
         private func renderedLine(from markdown: String) -> NSAttributedString {
+            if !renderMarkdownFormatting {
+                return inlineAttributedString(from: markdown, attributes: bodyAttributes())
+            }
             let parsed = parseLine(markdown)
             // Keep an empty typed heading marker until the user enters its
             // first character. An empty attributed string cannot carry the
@@ -380,11 +564,54 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             return (line, bodyAttributes())
         }
 
+        private func attachment(for reference: MeetingNoteImages.Reference) -> NSTextAttachment {
+            let marker = reference.markdown
+            let loaded = imageCache[reference.id]
+            if let cached = imageAttachments[marker], loaded == nil || cached.image === loaded {
+                return cached
+            }
+            let attachment = NSTextAttachment()
+            if let loaded {
+                let scale = min(1, CGFloat(reference.width ?? 500) / max(loaded.size.width, 1))
+                attachment.image = loaded
+                attachment.bounds = NSRect(x: 0, y: 0, width: loaded.size.width * scale, height: loaded.size.height * scale)
+            } else {
+                attachment.image = NSImage(systemSymbolName: "photo", accessibilityDescription: "Image unavailable")
+                attachment.bounds = NSRect(x: 0, y: 0, width: 32, height: 32)
+                loadImage(reference.id)
+            }
+            imageAttachments[marker] = attachment
+            return attachment
+        }
+
         private func inlineAttributedString(
             from markdown: String,
             attributes: [NSAttributedString.Key: Any]
         ) -> NSAttributedString {
             let result = NSMutableAttributedString()
+            let source = markdown as NSString
+            let references = MeetingNoteImages.references(in: markdown)
+            if !references.isEmpty {
+                var offset = 0
+                for reference in references {
+                    if reference.range.location > offset {
+                        result.append(inlineAttributedString(from: source.substring(with: NSRange(location: offset, length: reference.range.location - offset)), attributes: attributes))
+                    }
+                    let attachment = attachment(for: reference)
+                    let imageText = NSMutableAttributedString(attachment: attachment)
+                    imageText.addAttributes(attributes, range: NSRange(location: 0, length: imageText.length))
+                    imageText.addAttribute(.muesliMarkdownImage, value: reference.markdown, range: NSRange(location: 0, length: imageText.length))
+                    result.append(imageText)
+                    offset = reference.range.upperBound
+                }
+                if offset < source.length {
+                    result.append(inlineAttributedString(from: source.substring(from: offset), attributes: attributes))
+                }
+                return result
+            }
+            if !renderMarkdownFormatting {
+                return NSAttributedString(string: markdown, attributes: attributes)
+            }
             let parsed = MarkdownInlineParser.parse(markdown)
             let baseFont = attributes[.font] as? NSFont ?? bodyFont
 
@@ -473,33 +700,27 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         private func insertLinePrefix(_ prefix: String, in textView: NSTextView) {
             let ranges = paragraphRanges(for: textView)
             let full = textView.string as NSString
-            let replacements = ranges.map { range in
-                let existingLine = full.substring(with: range).trimmingCharacters(in: .newlines)
-                return prefix + removingListPrefix(from: existingLine)
+            let prefixRanges = ranges.map { range in
+                let line = full.substring(with: range)
+                let oldLength = ["• ", "☐ ", "☑ "].contains { line.hasPrefix($0) } ? 2 : 0
+                return NSRange(location: range.location, length: oldLength)
             }
 
             isApplying = true
             var totalDelta = 0
-            for (range, replacement) in zip(ranges, replacements).reversed() {
-                textView.replaceCharacters(in: range, with: replacement)
-                totalDelta += replacement.count - range.length
+            for range in prefixRanges.reversed() {
+                textView.replaceCharacters(in: range, with: prefix)
+                totalDelta += (prefix as NSString).length - range.length
             }
             isApplying = false
 
             guard let firstRange = ranges.first, let lastRange = ranges.last else { return }
             if ranges.count == 1 {
-                textView.setSelectedRange(NSRange(location: firstRange.location + replacements[0].count, length: 0))
+                textView.setSelectedRange(NSRange(location: firstRange.upperBound + totalDelta, length: 0))
             } else {
                 let originalEnd = lastRange.location + lastRange.length
                 textView.setSelectedRange(NSRange(location: firstRange.location, length: originalEnd + totalDelta - firstRange.location))
             }
-        }
-
-        private func removingListPrefix(from line: String) -> String {
-            for existingPrefix in ["• ", "☐ ", "☑ "] where line.hasPrefix(existingPrefix) {
-                return String(line.dropFirst(existingPrefix.count))
-            }
-            return line
         }
 
         private func continueListIfNeeded(in textView: NSTextView, affectedCharRange: NSRange) {
@@ -532,12 +753,18 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             let full = textView.string as NSString
             guard full.length > 0 else { return [NSRange(location: 0, length: 0)] }
             return full.paragraphRanges(for: selectedRange).map { range in
-                NSRange(location: range.location, length: max(range.length - 1, 0))
+                var contentsEnd = 0
+                full.getParagraphStart(nil, end: nil, contentsEnd: &contentsEnd, for: range)
+                return NSRange(location: range.location, length: max(contentsEnd - range.location, 0))
             }
         }
 
         func serializedMarkdown(from textView: NSTextView) -> String {
             guard let storage = textView.textStorage else { return textView.string }
+            return serializedMarkdown(from: storage)
+        }
+
+        fileprivate func serializedMarkdown(from storage: NSTextStorage) -> String {
             var lines: [String] = []
             let full = storage.string as NSString
             let fullRange = NSRange(location: 0, length: full.length)
@@ -551,6 +778,7 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
         }
 
         private func markdownLine(from storage: NSTextStorage, range: NSRange) -> String {
+            if !renderMarkdownFormatting { return markdownInline(from: storage, contentRange: range) }
             let raw = (storage.string as NSString).substring(with: range)
             let prefix: String
             let content: String
@@ -570,7 +798,9 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
                 prefix = ""
                 content = raw
             }
-            let contentRange = NSRange(location: range.location + raw.count - content.count, length: content.count)
+            let rawLength = (raw as NSString).length
+            let contentLength = (content as NSString).length
+            let contentRange = NSRange(location: range.location + rawLength - contentLength, length: contentLength)
             return prefix + markdownInline(from: storage, contentRange: contentRange)
         }
 
@@ -579,6 +809,11 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
             var output = ""
             let isHeading = lineIsHeading(storage: storage, range: contentRange)
             storage.enumerateAttributes(in: contentRange) { attrs, range, _ in
+                if let image = attrs[.muesliMarkdownImage] as? String {
+                    let text = (storage.string as NSString).substring(with: range)
+                    output += text.replacingOccurrences(of: "\u{fffc}", with: image)
+                    return
+                }
                 let substring = (storage.string as NSString).substring(with: range)
                 let font = attrs[.font] as? NSFont ?? bodyFont
                 let isStrong = attrs[.muesliMarkdownStrong] as? Bool == true
@@ -652,13 +887,258 @@ struct MarkdownRichTextEditor: NSViewRepresentable {
     }
 }
 
-private final class PlaceholderTextView: NSTextView {
+/// Moves an attachment as one undoable text edit, preserving its original
+/// attributes and reference instead of re-importing or copying the image.
+enum NoteImageMove {
+    static func selectedImageBounds(in view: NSTextView) -> NSRect? {
+        let range = view.selectedRange()
+        guard range.length == 1, let storage = view.textStorage,
+              range.location != NSNotFound, range.upperBound <= storage.length,
+              storage.attribute(.muesliMarkdownImage, at: range.location, effectiveRange: nil) is String,
+              let manager = view.layoutManager, let container = view.textContainer else { return nil }
+        let glyph = manager.glyphIndexForCharacter(at: range.location)
+        guard glyph < manager.numberOfGlyphs else { return nil }
+        return manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+            .offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+    }
+
+    static func imageRange(in view: NSTextView, at point: NSPoint) -> NSRange? {
+        guard let manager = view.layoutManager, let container = view.textContainer,
+              let storage = view.textStorage, storage.length > 0, manager.numberOfGlyphs > 0 else { return nil }
+        let local = NSPoint(x: point.x - view.textContainerOrigin.x, y: point.y - view.textContainerOrigin.y)
+        let insertion = view.characterIndexForInsertion(at: point)
+        for index in [insertion, insertion - 1] where index >= 0 && index < storage.length {
+            guard storage.attribute(.muesliMarkdownImage, at: index, effectiveRange: nil) is String else { continue }
+            let glyph = manager.glyphIndexForCharacter(at: index)
+            guard glyph < manager.numberOfGlyphs else { continue }
+            if manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(local) {
+                return NSRange(location: index, length: 1)
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    static func move(in view: NSTextView, source: NSRange, destination: Int) -> Bool {
+        guard view.isEditable, let storage = view.textStorage,
+              source.length == 1, source.location != NSNotFound,
+              source.location >= 0, source.upperBound <= storage.length,
+              destination >= 0, destination <= storage.length,
+              storage.attribute(.muesliMarkdownImage, at: source.location, effectiveRange: nil) is String,
+              destination < source.location || destination > source.upperBound else { return false }
+        let image = storage.attributedSubstring(from: source)
+        let replacementRange: NSRange
+        let replacement = NSMutableAttributedString()
+        if destination < source.location {
+            replacementRange = NSRange(location: destination, length: source.upperBound - destination)
+            replacement.append(image)
+            replacement.append(storage.attributedSubstring(from: NSRange(location: destination, length: source.location - destination)))
+        } else {
+            replacementRange = NSRange(location: source.location, length: destination - source.location)
+            replacement.append(storage.attributedSubstring(from: NSRange(location: source.upperBound, length: destination - source.upperBound)))
+            replacement.append(image)
+        }
+        let imageLocation = destination < source.location ? destination : destination - source.length
+        view.breakUndoCoalescing()
+        return replace(in: view, range: replacementRange, with: replacement,
+                       selection: NSRange(location: imageLocation, length: source.length), undoSelection: source)
+    }
+
+    @discardableResult
+    static func replace(in view: NSTextView, range: NSRange,
+                                with replacement: NSAttributedString, selection: NSRange,
+                                undoSelection: NSRange) -> Bool {
+        guard let storage = view.textStorage, range.location >= 0, range.upperBound <= storage.length else { return false }
+        // This edit registers its own attributed undo below; NSTextView must not
+        // also register a plain-text inverse for the same range.
+        let allowsUndo = view.allowsUndo
+        view.allowsUndo = false
+        let allowed = view.shouldChangeText(in: range, replacementString: replacement.string)
+        view.allowsUndo = allowsUndo
+        guard allowed else { return false }
+        let previous = storage.attributedSubstring(from: range)
+        let inverseRange = NSRange(location: range.location, length: replacement.length)
+        view.undoManager?.registerUndo(withTarget: view) { target in
+            _ = replace(in: target, range: inverseRange, with: previous,
+                        selection: undoSelection, undoSelection: selection)
+        }
+        view.undoManager?.setActionName("Move Image")
+        storage.replaceCharacters(in: range, with: replacement)
+        view.setSelectedRange(selection)
+        view.didChangeText()
+        view.setSelectedRange(selection)
+        return true
+    }
+}
+
+class PlaceholderTextView: NSTextView {
+    fileprivate var imageHandler: ((NoteImageSource) -> Void)?
+
+    // Different dev lanes have separate image stores.
+    static let noteSelectionType = NSPasteboard.PasteboardType("com.muesli." + AppIdentity.supportDirectoryName.lowercased() + ".note-selection-markdown")
+
+    override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        guard selectedRanges.count == 1, let storage = textStorage else { return super.writablePasteboardTypes }
+        var hasImage = false
+        storage.enumerateAttribute(.muesliMarkdownImage, in: selectedRange()) { value, _, stop in
+            if value != nil {
+                hasImage = true
+                stop.pointee = true
+            }
+        }
+        return hasImage ? [Self.noteSelectionType] + super.writablePasteboardTypes : super.writablePasteboardTypes
+    }
+
+    override func writeSelection(to board: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == Self.noteSelectionType else { return super.writeSelection(to: board, type: type) }
+        guard let coordinator = delegate as? MarkdownRichTextEditor.Coordinator, let storage = textStorage else { return false }
+        let selection = NSTextStorage(attributedString: storage.attributedSubstring(from: selectedRange()))
+        return board.setString(coordinator.serializedMarkdown(from: selection), forType: type)
+    }
+
+    override func readSelection(from board: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == Self.noteSelectionType else { return super.readSelection(from: board, type: type) }
+        guard let coordinator = delegate as? MarkdownRichTextEditor.Coordinator,
+              let markdown = board.string(forType: type) else { return false }
+        return coordinator.pasteMarkdown(markdown, into: self)
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(paste(_:)), isEditable,
+           NSPasteboard.general.availableType(from: [Self.noteSelectionType, .png, .tiff, .fileURL]) != nil {
+            return true
+        }
+        return super.validateMenuItem(menuItem)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if isEditable, let bounds = NoteImageMove.selectedImageBounds(in: self),
+           NSRect(x: bounds.maxX - 12, y: bounds.maxY - 12, width: 24, height: 24).contains(point),
+           let window, let storage = textStorage {
+            let range = selectedRange()
+            guard let original = storage.attribute(.attachment, at: range.location, effectiveRange: nil) as? NSTextAttachment,
+                  let marker = storage.attribute(.muesliMarkdownImage, at: range.location, effectiveRange: nil) as? String,
+                  let reference = MeetingNoteImages.references(in: marker).first else { return }
+            let before = storage.attributedSubstring(from: range)
+            let aspect = bounds.height / max(bounds.width, 1)
+            let maxWidth = max(1, min(800, original.image?.size.width ?? 800))
+            let minWidth = min(80, maxWidth)
+            var width = bounds.width
+            while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                let current = convert(next.locationInWindow, from: nil)
+                width = min(maxWidth, max(minWidth, bounds.width + current.x - point.x))
+                if next.type == .leftMouseUp { break }
+                let preview = NSTextAttachment()
+                preview.image = original.image
+                preview.bounds = NSRect(x: 0, y: 0, width: width, height: width * aspect)
+                storage.addAttribute(.attachment, value: preview, range: range)
+                needsDisplay = true
+                displayIfNeeded()
+            }
+            storage.replaceCharacters(in: range, with: before)
+            var updated = reference
+            updated.width = Int(width.rounded())
+            let attachment = NSTextAttachment()
+            attachment.image = original.image
+            attachment.bounds = NSRect(x: 0, y: 0, width: width, height: width * aspect)
+            let replacement = NSMutableAttributedString(attributedString: before)
+            replacement.addAttribute(.attachment, value: attachment, range: NSRange(location: 0, length: 1))
+            replacement.addAttribute(.muesliMarkdownImage, value: updated.markdown, range: NSRange(location: 0, length: 1))
+            _ = NoteImageMove.replace(in: self, range: range, with: replacement, selection: range, undoSelection: range)
+            return
+        }
+        guard isEditable, event.clickCount == 1, let window,
+              let range = NoteImageMove.imageRange(in: self, at: convert(event.locationInWindow, from: nil)),
+              let marker = textStorage?.attribute(.muesliMarkdownImage, at: range.location, effectiveRange: nil) as? String else {
+            super.mouseDown(with: event)
+            return
+        }
+        window.makeFirstResponder(self)
+        setSelectedRange(range)
+        needsDisplay = true
+        let start = event.locationInWindow
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { return }
+            let point = next.locationInWindow
+            guard hypot(point.x - start.x, point.y - start.y) >= 4 else { continue }
+            while let drag = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                if drag.type == .leftMouseUp {
+                    let location = convert(drag.locationInWindow, from: nil)
+                    if bounds.contains(location),
+                       textStorage?.attribute(.muesliMarkdownImage, at: range.location, effectiveRange: nil) as? String == marker {
+                        _ = NoteImageMove.move(in: self, source: range, destination: characterIndexForInsertion(at: location))
+                    }
+                    return
+                }
+            }
+            return
+        }
+    }
+
+    var selectionPasteboard: NSPasteboard { .general }
+
+    override func paste(_ sender: Any?) {
+        let board = selectionPasteboard
+        if isEditable, board.types?.contains(Self.noteSelectionType) == true {
+            _ = readSelection(from: board, type: Self.noteSelectionType)
+        } else if isEditable, let source = Self.imageSource(from: board) {
+            imageHandler?(source)
+        } else {
+            super.paste(sender)
+        }
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isEditable, let source = Self.imageSource(from: sender.draggingPasteboard) else {
+            return super.performDragOperation(sender)
+        }
+        let point = convert(sender.draggingLocation, from: nil)
+        setSelectedRange(NSRange(location: characterIndexForInsertion(at: point), length: 0))
+        imageHandler?(source)
+        return true
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard isEditable else { return [] }
+        let types = sender.draggingPasteboard.types ?? []
+        if types.contains(.fileURL) || types.contains(.png) || types.contains(.tiff) { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isEditable else { return false }
+        if Self.imageSource(from: sender.draggingPasteboard) != nil { return true }
+        return super.prepareForDragOperation(sender)
+    }
+
+    private static func imageSource(from pasteboard: NSPasteboard) -> NoteImageSource? {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           let url = urls.first, ["png", "jpg", "jpeg", "tif", "tiff", "heic", "gif", "webp"].contains(url.pathExtension.lowercased()) {
+            return .file(url)
+        }
+        if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) { return .data(data) }
+        return nil
+    }
     var placeholder: String = "" {
         didSet { needsDisplay = true }
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if isEditable, let rect = NoteImageMove.selectedImageBounds(in: self), dirtyRect.intersects(rect) {
+            NSColor.controlAccentColor.setStroke()
+            let outline = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3)
+            outline.lineWidth = 2
+            outline.stroke()
+            let handle = NSRect(x: rect.maxX - 6, y: rect.maxY - 6, width: 12, height: 12)
+            NSColor.controlAccentColor.setFill()
+            NSBezierPath(ovalIn: handle).fill()
+        }
         guard string.isEmpty, !placeholder.isEmpty else { return }
         let origin = NSPoint(
             x: textContainerInset.width + 5,

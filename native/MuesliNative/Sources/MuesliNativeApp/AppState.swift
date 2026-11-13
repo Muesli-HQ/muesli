@@ -6,6 +6,7 @@ enum DashboardTab: String, CaseIterable {
     case timeline
     case timeTurner
     case dictations
+    case vidshots
     case insights
     case meetings
     case meetingChat
@@ -165,6 +166,8 @@ enum OpenRouterModelCatalogLoadState: Equatable {
 @MainActor
 @Observable
 final class AppState {
+    var privateMode = ContentPrivacy.shared.isEnabled
+    var anonymousAnalyticsDisabled = UserDefaults.standard.bool(forKey: TelemetryPrivacyGate.disabledKey)
     // Dashboard data
     // Also changes when a mutation affects a row outside the first visible page.
     var timelineHistoryRevision: UInt64 = 0
@@ -278,6 +281,17 @@ final class AppState {
             return false
         }
     }
+    /// Synced history also covers upgrades from versions without a device record.
+    var hasMobileOriginHistory = false
+    var showsDeviceOriginFilter: Bool {
+        iCloudBridgeCompanionDeviceName != nil || hasMobileOriginHistory
+    }
+    func clearUnavailableDeviceOriginFilters() {
+        guard !showsDeviceOriginFilter else { return }
+        if timelineOriginFilter != .all { timelineOriginFilter = .all }
+        if dictationOriginFilter != .all { dictationOriginFilter = .all }
+        if meetingOriginFilter != .all { meetingOriginFilter = .all }
+    }
     var iCloudLastSyncSummary: String?
     var iCloudLastSyncedAt: Date?
     var contributionMilestonePrompt: ContributionMilestonePrompt?
@@ -325,7 +339,19 @@ final class AppState {
         }
     }
     var timeTurnerSelectedRecap: TimeTurnerRecapSelection?
-    var timeTurnerShowsRecap = false
+    enum TimeTurnerSection { case history, recap, todos }
+    var timeTurnerSection: TimeTurnerSection = .history
+    var timeTurnerShowsRecap: Bool {
+        get { timeTurnerSection == .recap }
+        set { timeTurnerSection = newValue ? .recap : .history }
+    }
+    var timeTurnerFocusedTodo: String?
+    func openTimeTurnerTodo(_ id: String) {
+        timeTurnerFocusedTodo = id
+        timeTurnerSection = .todos
+        selectedTab = .timeTurner
+        timeTurnerNavigationID = UUID()
+    }
     var timeTurnerSelectedCapture: VisualMemoryItem?
     // Explicit source navigation must reset the explorer's local scrub position,
     // even when it is already mounted or the same result is opened again.
@@ -350,6 +376,8 @@ final class AppState {
     }
 
     var selectedTab: DashboardTab = .timeline
+    var selectedVidshotID: String?
+    var vidshotDetailReturnsToTimeline = false
     var meetingSourceReturnsToTimeTurner = false
     var meetingChatDocumentTarget: MeetingChatDocumentTarget?
     var insightsReturnTab: DashboardTab = .timeline
@@ -358,7 +386,9 @@ final class AppState {
     }
     var insightsInitialSection: InsightsSection = .words
     var selectedSettingsPane: SettingsPane = .general
+    var requestsPermissionsSettings = false
     var requestsTimeTurnerSetup = false
+    var requestsTimeTurnerPermissionSetup = false
     var selectedModelsCategory: ModelsCategory = .dictation
     var credentialStorageError: String?
     var pendingFeatureTourInvitation: FeatureTour?

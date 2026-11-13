@@ -5,7 +5,7 @@ public enum GlobalSearchError: Error { case changedSources, unavailableSources(S
 
 /// Source identities remain owned by their stores. Search never becomes a second history store.
 public enum GlobalSearchKind: String, CaseIterable, Codable, Sendable {
-    case dictation, meeting, command, quill, cotypist, screenHistory, chat, recap
+    case dictation, meeting, command, quill, cotypist, screenHistory, chat, recap, vidshot
 }
 
 public struct GlobalSearchQuery: Sendable {
@@ -14,10 +14,12 @@ public struct GlobalSearchQuery: Sendable {
     public var from: Date
     public var until: Date
     public var app: String?
+    public var person: MeetingParticipantDraft?
     public var limit: Int
+    public var offset: Int
     public init(text: String, kinds: Set<GlobalSearchKind> = Set(GlobalSearchKind.allCases),
-                from: Date = .distantPast, until: Date = .distantFuture, app: String? = nil, limit: Int = 50) {
-        self.text = text; self.kinds = kinds; self.from = from; self.until = until; self.app = app; self.limit = limit
+                from: Date = .distantPast, until: Date = .distantFuture, app: String? = nil, person: MeetingParticipantDraft? = nil, limit: Int = 50, offset: Int = 0) {
+        self.text = text; self.kinds = kinds; self.from = from; self.until = until; self.app = app; self.person = person; self.limit = limit; self.offset = offset
     }
 }
 
@@ -172,6 +174,21 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 }
                 guard try source.tables.allSatisfy({ try exists($0) }) else { continue }
                 let complete = try exists(source.view) && source.triggerNames.allSatisfy { try exists($0) }
+                if complete && source.prefix == "meeting" {
+                    // Upgrade the participant UPDATE trigger in place. Identity-only
+                    // merges do not change indexed text, so they must not rewrite
+                    // every transcript in the FTS index.
+                    let name = "\(source.view)_meeting_participants_UPDATE"
+                    let statement = try prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?")
+                    bind(name, statement, 1)
+                    let sql = sqlite3_step(statement) == SQLITE_ROW
+                        ? sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? "" : ""
+                    sqlite3_finalize(statement)
+                    if !sql.contains("UPDATE OF display_name") {
+                        try execute("DROP TRIGGER IF EXISTS \(name)")
+                        try execute(Self.sourceTrigger(source, table: "meeting_participants", key: "meeting_id", event: "UPDATE"))
+                    }
+                }
                 guard !complete else { continue }
                 // Dropping a source table removes its triggers, but leaves its view and indexed text.
                 // Repair the entire source atomically so deleted/changed rows cannot survive a migration.
@@ -180,22 +197,48 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 try execute("INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id) SELECT * FROM \(source.view)")
                 for (table, key) in source.watches {
                     for event in ["INSERT", "UPDATE", "DELETE"] {
-                        let rows = event == "INSERT" ? ["NEW"] : event == "DELETE" ? ["OLD"] : ["OLD", "NEW"]
-                        let refresh = rows.map { row in
-                            let identity = "'\(source.prefix):' || \(row).\(key)"
-                            return """
-                                DELETE FROM global_search_documents WHERE identity=\(identity);
-                                INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id)
-                                    \(source.select) AND \(source.primaryKey)=\(row).\(key);
-                                """
-                        }.joined(separator: "\n")
-                        try execute("CREATE TRIGGER IF NOT EXISTS \(source.view)_\(table)_\(event) AFTER \(event) ON \(table) BEGIN \(refresh) END")
+                        try execute(Self.sourceTrigger(source, table: table, key: key, event: event))
                     }
                 }
             }
             try execute("COMMIT")
             installedSchemaVersion = try schemaVersion()
         } catch { try? execute("ROLLBACK"); throw error }
+    }
+
+    /// Stable newest-first pages for one permitted class. Only identities leave this boundary;
+    /// Chat re-reads and validates each source before exposing text or metadata.
+    package func historyIDs(kind: GlobalSearchKind, phrase: String, from: Date, until: Date,
+                            app: String?, after: VisualMemoryCursor?, limit: Int, refreshSchema: Bool = true) throws -> [(id: String, date: Date)] {
+        lock.lock(); defer { lock.unlock() }
+        guard (1...20).contains(limit), from < until, phrase.utf8.count <= 512 else { throw Self.error }
+        if refreshSchema { try installAvailableSources() }
+        let match = phrase.isEmpty ? "" : " AND d.rowid IN (SELECT rowid FROM global_search_fts WHERE global_search_fts MATCH ?)"
+        let byApp = app == nil ? "" : " AND (d.app_name=? COLLATE NOCASE OR d.bundle_id=? COLLATE NOCASE)"
+        let cursor = after == nil ? "" : " AND (d.timestamp<? OR (d.timestamp=? AND d.source_id>?))"
+        let s = try prepare("SELECT d.source_id,d.timestamp FROM global_search_documents d WHERE d.kind=? AND d.timestamp>=? AND d.timestamp<?" + match + byApp + cursor + " ORDER BY d.timestamp DESC,d.source_id LIMIT ?")
+        defer { sqlite3_finalize(s) }
+        bind(kind.rawValue, s, 1)
+        sqlite3_bind_double(s, 2, from.timeIntervalSince1970)
+        sqlite3_bind_double(s, 3, until.timeIntervalSince1970)
+        var slot: Int32 = 4
+        if !phrase.isEmpty {
+            bind("\"" + phrase.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, slot); slot += 1
+        }
+        if let app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
+        if let after {
+            sqlite3_bind_double(s, slot, after.capturedAtUnix); sqlite3_bind_double(s, slot + 1, after.capturedAtUnix)
+            bind(after.id, s, slot + 2); slot += 3
+        }
+        sqlite3_bind_int(s, slot, Int32(limit))
+        var rows: [(String, Date)] = []
+        var status = sqlite3_step(s)
+        while status == SQLITE_ROW {
+            rows.append((String(cString: sqlite3_column_text(s, 0)), Date(timeIntervalSince1970: sqlite3_column_double(s, 1))))
+            status = sqlite3_step(s)
+        }
+        guard status == SQLITE_DONE else { throw Self.error }
+        return rows
     }
 
     /// Bounded, literal phrase search. An empty kind set means no results, never all content.
@@ -216,30 +259,37 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         guard !query.kinds.isEmpty, query.from < query.until else { return [] }
         try installAvailableSources()
         let text = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.utf8.count <= 4096 else { return [] }
+        guard (!text.isEmpty || query.person != nil), text.utf8.count <= 4096 else { return [] }
         let excluded: Set<GlobalSearchKind> = validateDerived == nil ? [.screenHistory, .chat, .recap] : [.screenHistory]
-        let kinds = query.kinds.subtracting(excluded).map(\.rawValue).sorted()
+        let kinds = query.kinds.subtracting(excluded).filter { query.person == nil || $0 == .meeting }.map(\.rawValue).sorted()
         guard !kinds.isEmpty else { return [] }
         let appClause = query.app == nil ? "" : " AND (d.bundle_id=? COLLATE NOCASE OR d.app_name=? COLLATE NOCASE)"
+        let personClause = query.person == nil ? "" : " AND EXISTS (SELECT 1 FROM meeting_participants p WHERE p.meeting_id=CAST(d.source_id AS INTEGER) AND p.is_suppressed=0 AND " + (query.person?.personID == nil ? "p.participant_identifier=?" : "p.person_id=?") + ")"
         let revision = try dataVersion()
         let limit = max(1, min(200, query.limit))
         let batchSize = limit
         func candidates(offset: Int) throws -> [GlobalSearchResult] {
+            let match = text.isEmpty ? "" : "global_search_fts MATCH ? AND "
+            let excerpt = text.isEmpty ? "substr(d.text,1,240)" : "snippet(global_search_fts,-1,'','',' … ',28)"
+            let order = text.isEmpty ? "d.timestamp DESC,d.identity" : "bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity"
             let s = try prepare("""
                 SELECT d.kind,d.source_id,d.timestamp,d.title,
-                    snippet(global_search_fts,-1,'','',' … ',28),d.app_name,d.bundle_id
+                    \(excerpt),d.app_name,d.bundle_id
                 FROM global_search_fts JOIN global_search_documents d ON d.rowid=global_search_fts.rowid
-                WHERE global_search_fts MATCH ? AND d.timestamp>=? AND d.timestamp<?
-                    AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)
-                ORDER BY bm25(global_search_fts,4.0,1.0),d.timestamp DESC,d.identity LIMIT ? OFFSET ?
+                WHERE \(match)d.timestamp>=? AND d.timestamp<?
+                    AND d.kind IN (\(kinds.map { _ in "?" }.joined(separator: ",")))\(appClause)\(personClause)
+                ORDER BY \(order) LIMIT ? OFFSET ?
                 """)
             defer { sqlite3_finalize(s) }
-            bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, 1)
-            sqlite3_bind_double(s, 2, query.from.timeIntervalSince1970)
-            sqlite3_bind_double(s, 3, query.until.timeIntervalSince1970)
-            var slot: Int32 = 4
+            var slot: Int32 = 1
+            if !text.isEmpty { bind("\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"", s, slot); slot += 1 }
+            sqlite3_bind_double(s, slot, query.from.timeIntervalSince1970); slot += 1
+            sqlite3_bind_double(s, slot, query.until.timeIntervalSince1970); slot += 1
             for kind in kinds { bind(kind, s, slot); slot += 1 }
             if let app = query.app { bind(app, s, slot); bind(app, s, slot + 1); slot += 2 }
+            if let person = query.person {
+                bind(person.personID ?? person.participantIdentifier, s, slot); slot += 1
+            }
             sqlite3_bind_int(s, slot, Int32(batchSize))
             sqlite3_bind_int64(s, slot + 1, Int64(offset))
             var batch: [GlobalSearchResult] = []
@@ -256,7 +306,7 @@ public final class GlobalSearchIndex: @unchecked Sendable {
             return batch
         }
         var result: [GlobalSearchResult] = []
-        var offset = 0
+        var offset = query.person == nil ? 0 : max(0, query.offset)
         while result.count < limit {
             try Task.checkCancellation()
             let batch = try candidates(offset: offset)
@@ -283,15 +333,35 @@ public final class GlobalSearchIndex: @unchecked Sendable {
         let tables: [String]
         let watches: [(String, String)]
         let select: String
-        var version: Int { ["quill", "chat", "recap"].contains(prefix) ? 2 : 1 }
+        var version: Int { ["meeting", "quill", "chat", "recap"].contains(prefix) ? 2 : 1 }
         var view: String { "global_search_\(prefix)_v\(version)" }
         var triggerNames: [String] {
             watches.flatMap { table, _ in ["INSERT", "UPDATE", "DELETE"].map { "\(view)_\(table)_\($0)" } }
         }
-        var primaryKey: String { prefix == "recap" ? "day_key" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
+        var primaryKey: String { prefix == "recap" ? "day_key" : prefix == "meeting" ? "m.id" : ["quill", "cotypist", "chat"].contains(prefix) ? "c.id" : "id" }
+    }
+    private static func sourceTrigger(_ source: Source, table: String, key: String, event: String) -> String {
+        let rows = event == "INSERT" ? ["NEW"] : event == "DELETE" ? ["OLD"] : ["OLD", "NEW"]
+        let refresh = rows.map { row in
+            let identity = "'\(source.prefix):' || \(row).\(key)"
+            return """
+                DELETE FROM global_search_documents WHERE identity=\(identity);
+                INSERT INTO global_search_documents(identity,kind,source_id,timestamp,title,text,app_name,bundle_id)
+                    \(source.select) AND \(source.primaryKey)=\(row).\(key);
+                """
+        }.joined(separator: "\n")
+        let clause = source.prefix == "meeting" && table == "meeting_participants" && event == "UPDATE"
+            ? "UPDATE OF display_name, email_address, is_suppressed, meeting_id" : event
+        return "CREATE TRIGGER IF NOT EXISTS \(source.view)_\(table)_\(event) AFTER \(clause) ON \(table) BEGIN \(refresh) END"
     }
     private static func unix(_ expression: String) -> String { "coalesce((julianday(\(expression))-2440587.5)*86400.0,0)" }
     private static let sources: [Source] = [
+        .init(prefix: "vidshot", tables: ["vidshots"], watches: [("vidshots", "id")], select: """
+            SELECT 'vidshot:' || id AS identity,'vidshot' AS kind,id AS source_id,created_at AS timestamp,
+                title,coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.transcript') END,'') AS text,
+                coalesce(CASE WHEN json_valid(body) THEN json_extract(body,'$.targetApp') END,'') AS app_name,'' AS bundle_id
+            FROM vidshots WHERE state IN ('ready','recovered','failed')
+            """),
         .init(prefix: "dictation", tables: ["dictations"], watches: [("dictations", "id")], select: """
             SELECT 'dictation:' || id AS identity, CASE WHEN source='cua' THEN 'command' ELSE 'dictation' END AS kind,
                 CAST(id AS TEXT) AS source_id, \(unix("timestamp")) AS timestamp,
@@ -299,11 +369,13 @@ public final class GlobalSearchIndex: @unchecked Sendable {
                 coalesce(target_app_name,'') AS app_name,coalesce(target_app_bundle_id,'') AS bundle_id
             FROM dictations WHERE deleted_at IS NULL
             """),
-        .init(prefix: "meeting", tables: ["meetings"], watches: [("meetings", "id")], select: """
-            SELECT 'meeting:' || id AS identity,'meeting' AS kind,CAST(id AS TEXT) AS source_id,
-                \(unix("start_time")) AS timestamp, title,
-                coalesce(raw_transcript,'') || char(10) || coalesce(manual_notes,'') || char(10) || coalesce(formatted_notes,'') AS text,
-                '' AS app_name,'' AS bundle_id FROM meetings WHERE deleted_at IS NULL
+        .init(prefix: "meeting", tables: ["meetings", "meeting_participants"], watches: [("meetings", "id"), ("meeting_participants", "meeting_id")], select: """
+            SELECT 'meeting:' || m.id AS identity,'meeting' AS kind,CAST(m.id AS TEXT) AS source_id,
+                \(unix("m.start_time")) AS timestamp, m.title,
+                coalesce(m.raw_transcript,'') || char(10) || coalesce(m.manual_notes,'') || char(10) || coalesce(m.formatted_notes,'') || char(10) ||
+                coalesce((SELECT group_concat(p.display_name || ' ' || coalesce(p.email_address,''),char(10))
+                          FROM meeting_participants p WHERE p.meeting_id=m.id AND p.is_suppressed=0),'') AS text,
+                '' AS app_name,'' AS bundle_id FROM meetings m WHERE m.deleted_at IS NULL
             """),
         .init(prefix: "quill", tables: ["quill_conversations","quill_conversation_turns"],
               watches: [("quill_conversations","id"),("quill_conversation_turns","conversation_id")], select: """

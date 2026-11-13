@@ -52,7 +52,73 @@ Order tabs General, Dictations, Meetings, Appearance, Experimental. iCloud Sync
 lives in General; Computer Use, Quill and Cotypist live in Experimental. The
 meeting-chat destination is labeled Chat.
 
+### Progressive Settings detail
+
+Within App Formatting, use sentence-case callout text for “Most-used apps”,
+body text for app names and caption text for usage. Each suggestion has a small
+accessible dismiss action beside Customize. Dismissal persists locally; Add App
+can still select any app. Omit repeated explanations from individual rows.
+
+Time Turner shows only its Screen history description and Set up action while
+disabled. Capture, exclusions, storage/retention controls and their status details
+appear once enabled. Hiding these controls does not change saved options or the
+retention lifecycle. The explicit setup flow still explains capture before enablement.
+
+### Permission recovery
+
+Permission setup offers Set up later and finishes on Timeline. Completed onboarding
+never makes dashboard navigation depend on recording permissions. Block only the
+requested capture or paste action, with Open permissions and Not now actions.
+Post-onboarding recovery defaults to Settings → General → Permissions. A restart
+requested from Time Turner setup returns to Time Turner with its permission step
+(2 of 3) open and freshly checked. This one-shot return also handles macOS Quit &
+Reopen; it never enables capture or skips the final setup step.
+Feature controls show the missing prerequisite beside Review access, including when
+a previously enabled feature loses permission. Guided setup retains a visible exit
+and a Manage permissions action; returning refreshes permission state.
+
+Accessibility, Input Monitoring and Screen Recording requests share the compact
+System Settings arrow and draggable app-row guide across onboarding, feature
+setup and General Permissions. Screen Recording first directs users to turn on
+the existing app row, with dragging as a fallback when it is missing. Microphone
+uses its native consent prompt rather than an unsupported drag instruction.
+The Screen Recording guide ends when the user returns to muesli, handing off to
+the shared restart notice even if the running process still reports old access.
+
+Requests for Accessibility, Input Monitoring and Screen Recording offer a single
+restart notice on returning from System Settings, with Restart muesli and Later.
+Require an observed System Settings visit after the request; dismissing a native
+prompt or switching to another app is not enough. Pending notices and saved setup
+destinations expire after 15 minutes, so abandoned setup cannot reappear later.
+Do not infer a grant from the request: use conditional copy when macOS still
+reports access unavailable. Settings → General → Permissions keeps a Restart
+action for already-enabled access that needs a fresh process. Restart uses normal
+shutdown, restores the originating permission step or Permissions, and refuses to interrupt recordings,
+transcription, imports, AI requests or an unsent chat draft. Never reset permissions
+or restart automatically on a background permission poll.
+Present restart notices and blocking errors above any open setup sheet, never
+queued behind it. Keep the manual restart action only in Settings → General →
+Permissions. Feature setup screens use their existing Manage permissions action
+for recovery after choosing Later; do not add feature-specific restart controls.
+Permission dialogs must allow AppKit termination so System Settings' Quit &
+Reopen and the shared restart notice reach normal shutdown safeguards. If a quit
+is rejected before shutdown starts, clear the pending restart and allow retry.
+
+Time Turner empty states use the shared Nunito Sans hierarchy: a 20pt semibold
+title, 14pt body detail and semantic primary/secondary text colors. SF Symbols
+retain their system symbol font. Do not use the platform's default empty-state
+text styling, which differs from the dashboard typography.
+
 ### Recording interactions
+
+While dictating during a meeting, the floating indicator is a 28pt-high single
+row, sized to its content: “Dictating”, a red dot for meeting recording (or a
+pause symbol for a paused meeting), a live waveform, and distinct Finish
+dictation and Cancel dictation controls. The meeting status has an accessible
+label and tooltip. Preparing and transcribing retain the meeting status; a
+stopped live-insertion warning takes precedence over the dictation label. The
+notch retains its two-wing layout, with meeting status on the left and waveform
+and dictation controls on the right.
 
 Pause/Resume and Stop retain single-line labels at their intrinsic size; narrow
 meeting headers move the status above the controls rather than compressing them.
@@ -81,12 +147,13 @@ the white action fill. Preserve semantic recording, warning, error and success
 colors.
 
 Fills keep the raw saved accent and semantic hues; foregrounds use a role
-matched to the surface beneath them (4.5:1 for labels, 3:1 for state glyphs):
+matched to the surface beneath them (6:1 for accent text on neutral/tinted
+surfaces, at least 4.5:1 for filled-button labels, 3:1 for state glyphs):
 
 | Role | Use |
 | --- | --- |
 | `onAccent` | Text and glyphs on `accent` fills. Black or white, whichever contrasts more with the resolved fill, so Dark Default and light presets get dark ink. |
-| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark only as needed. Never a fill. White in Ultra Dark. |
+| `accentText` | Accent-hued labels, links, chips, badges and selected icons on neutral surfaces and accent tints. A same-hue shade, deepened in Light and lightened in Dark to reach 6:1 on neutral surfaces and all accent-tint states. Never a fill. White in Ultra Dark. |
 | `accentStateShade` | Hover/pressed overlay on accent fills (8%/16%), always moving away from `onAccent`. |
 | `onSuccess` | Dark ink on `success` fills (Donate, onboarding confirmations). Never `onAccent`. |
 | `recordingFill` | #DC2626 with white labels for labelled Stop/Record. `recording` (#EF4444) remains for dots, waveforms and badges. |
@@ -276,12 +343,11 @@ The light-blue-on-site-ink lockup uses `#6AA0F4` over `#080E16`. The primary tra
 
 Audited against `origin/main` at `e1b52117ffb1ab6980f7266b72d9cb9e706a5afb`. Sources: `SidebarView.swift`, `MWaveformIcon.swift`, `FloatingIndicatorController.swift`, `IndicatorWaveformDynamics.swift`, `NotchIndicatorController.swift`, and `RecordingIndicatorStylePicker.swift` under `native/MuesliNative/Sources/MuesliNativeApp/`.
 
-Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. Browser emoji remain illustrative placeholders, not actual SF Symbols. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
+Corrected the missing Chat destination, Meetings symbols (`person.wave.2` expanded, `person.2` collapsed), preparing size/timing, waveform count/geometry/smoothing, waiting animation, and explicit meeting controls. Section 05 now distinguishes Classic, Minimal and Notch behavior. The sidebar icon grid uses locally generated SF Symbols and custom icons based on `TimeTurnerIcon.swift` and `VidshotIcon.swift`. Run `swift design-system/scripts/render-sidebar-symbols.swift` from the repository root to render the locally ignored SF Symbol previews; symbol names remain visible without them. Other browser specimens remain illustrative. This source audit does not certify pixel fidelity or all other component specifications; native visual and interaction checks still apply.
 
 ### Reorderable sidebar
 
-Only the top six navigation destinations can be reordered in expanded and icon-only
-layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
+The seven navigation destinations (Timeline, Time Turner, Dictations, Vidshots, Meetings, Chat and Dictionary) can be reordered in expanded and icon-only layouts. Models, Shortcuts, Settings and About stay fixed at the bottom. Drag a row
 to the upper or lower half of another row; an accent-colored insertion line marks
 the exact boundary before or after it. Meetings moves with its entire folder tree,
 and the line stays outside that group. Folder drags remain a separate interaction.
@@ -381,6 +447,41 @@ Opening an unavailable or deleted item reports that state in the same row while
 preserving the other results. Use existing semantic text colors and 12pt helper
 typography for this row.
 
+### Meeting people
+
+The Meetings browser uses a floating new-meeting button at the bottom right,
+above the chat composer. It uses the sidebar meeting icon, a small plus badge,
+and the semantic join green on hover, with an adjacent “Quick Note” label shown
+on hover or keyboard focus. The label does not intercept pointer events. Reserve
+scroll space beneath the last row.
+Meetings includes a People tab for browsing people and reviewing possible
+duplicates. Duplicate review uses the adaptive warning color for a subtle amber
+surface, border, and evidence label. Global search also offers People alongside
+the other content categories. Selecting a person opens their associated meetings,
+including with no text query. Meeting notes end with a compact list of other meetings with shared
+people. Calendar associations indicate invitations rather than verified attendance.
+The People popover allows a name to be entered directly and offers an explicit
+Find participants action. Suggestions appear as compact person rows and require
+the user to add or dismiss them. The app validates evidence before suggesting a
+name. Helper text discloses provider sharing and partial meeting coverage.
+
+## About privacy control
+
+About includes a Privacy card with the canonical “Disable anonymous analytics”
+switch, off by default. Use the compact SettingsRow switch and wrapping helper
+text explaining immediate local opt-out and the limit for already-sent requests.
+Keep the shared toggle accent in all themes; do not conflate this control with
+automatic issue-reporting prompts or optional hosted AI features.
+
+## Timeline privacy mode
+
+Place a compact, labelled Privacy switch with an eye-slash symbol at the trailing
+edge of the filter row below Timeline search. Use the canonical `private_mode`
+setting and shared switch accent; narrow layouts move trailing controls below the
+origin/app filters. When on, show a wrapping 12pt note: only meetings and their recordings are retained from new activity on this Mac, while Time Turner and Cotypist are paused. The help text
+explains that history from other devices still syncs and
+anonymous events use the separate analytics preference. Default off; local only.
+
 ### Chat meeting context
 
 The composer uses “Choose meetings” when no meeting is selected. The scope picker
@@ -393,3 +494,34 @@ context; explicit choices, typed drafts and existing chats remain stable.
 Attachment originals stay in place. The selected provider receives images and
 only the document pages requested through tools; on-device Gemma reads document
 text locally. Keep this disclosure at the shared 12pt helper-text size.
+
+### New-feature discovery badges
+
+Use one compact, static `New` capsule beside a major feature entry or setting,
+not every new control. Use Nunito Sans 11 semibold, white text, 5pt horizontal
+and 1pt vertical padding. The fill derives from the saved accent, deepened only
+as needed for 4.5:1 white-text contrast, including Ultra Dark. It has no shadow,
+animation or hit target; the parent control retains its normal click behavior.
+Badges disappear independently after feature interaction and stay dismissed across
+relaunches. Scrolling, rendering and the guided tour do not dismiss them. The
+0.8.6 introductions are Chat, Time Turner, Granola import, Cotypist, live dictation
+and App Formatting. Quill predates this release and does not receive a New badge.
+
+### Timeline presentation
+
+The activity filter shows its selected value without a separate visible label;
+retain its accessible name. Insights is reached through the Timeline and
+Dictations statistics tiles, not a sidebar destination. Saved sidebar orders
+ignore the retired Insights entry while preserving the other positions.
+
+Timeline does not display the inline iCloud companion/setup/status card. Keep
+the compact header sync control and Settings → General sync setup, status and
+recovery actions available. Background sync behavior and saved preferences are
+unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
+never use the raw saved accent as a label color on a neutral surface.
+
+New completed meetings show a segmented Summary / Your notes / Transcript control.
+Your notes reuses the live note editor and its inline save status; generated
+summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
+After that, Saved notes holds the current source, and a collapsed Previous notes
+disclosure in Summary exposes the other pre-upgrade document when present.

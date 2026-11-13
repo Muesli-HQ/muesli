@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import MuesliLLM
 
@@ -11,13 +12,13 @@ enum Qwen3PostProcessorLogging {
     }
 
     static var isPairLoggingEnabled: Bool {
-        guard isVerboseEnabled else { return false }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled else { return false }
         let raw = ProcessInfo.processInfo.environment[pairLogEnv]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return raw == "1" || raw == "true" || raw == "yes"
     }
 
     static func logVerbose(_ message: @autoclosure () -> String) {
-        guard isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
+        guard ContentPrivacy.shared.mayLogContent, isVerboseEnabled, !TranscriptCleanupDebugLogger.suppressContentLogging else { return }
         fputs("[muesli-native] \(message())\n", stderr)
     }
 }
@@ -226,12 +227,32 @@ actor InferenceGate {
     private struct Waiter {
         let id: UUID
         let continuation: CheckedContinuation<Bool, Never>
+        let background: Bool
     }
 
     private var isProcessing = false
     private var waiters: [Waiter] = []
 
-    func acquire(onWait: (@Sendable () -> Void)? = nil) async throws {
+    /// Keep the permit until the caller's operation unwinds, including cancellation.
+    nonisolated func withReservation<T>(
+        isolation: isolated (any Actor)? = #isolation,
+        onWait: (@Sendable () -> Void)? = nil,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        try await acquire(onWait: onWait)
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            try Task.checkCancellation()
+            await release()
+            return result
+        } catch {
+            await release()
+            throw error
+        }
+    }
+
+    func acquire(background: Bool = false, onWait: (@Sendable () -> Void)? = nil) async throws {
         try Task.checkCancellation()
         if !isProcessing {
             isProcessing = true
@@ -241,7 +262,7 @@ actor InferenceGate {
         let id = UUID()
         let acquired = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                waiters.append(Waiter(id: id, continuation: continuation))
+                waiters.append(Waiter(id: id, continuation: continuation, background: background))
                 onWait?()
             }
         } onCancel: {
@@ -251,12 +272,23 @@ actor InferenceGate {
     }
 
     func release() {
-        if waiters.isEmpty {
-            isProcessing = false
-            return
-        }
+        isProcessing = false
+        admitNext()
+    }
 
-        waiters.removeFirst().continuation.resume(returning: true)
+    private func admitNext() {
+        guard !isProcessing else { return }
+        guard let index = waiters.firstIndex(where: { !$0.background })
+            ?? waiters.indices.first else { return }
+        isProcessing = true
+        waiters.remove(at: index).continuation.resume(returning: true)
+    }
+
+    func withPermit<T: Sendable>(background: Bool = false, operation: @Sendable () async throws -> T) async throws -> T {
+        try await acquire(background: background)
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
     }
 
     func queuedWaiterCount() -> Int {

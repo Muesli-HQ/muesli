@@ -157,12 +157,19 @@ struct SidebarView: View {
 
     private func collapsedItem(tab: DashboardTab, icon: String, label: String, tooltip: String? = nil) -> some View {
         Button {
+            if let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
                     appState.searchQuery = ""
                     appState.selectedTab = .timeTurner
                 } else if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .vidshots {
+                    appState.searchQuery = ""
+                    appState.selectedVidshotID = nil
+                    appState.selectedTab = .vidshots
                 } else if tab == .meetings {
                     // Mirror the expanded Meetings action: returning to the
                     // rail must restore the browser, not leave a document open.
@@ -177,7 +184,11 @@ struct SidebarView: View {
                 }
             }
         } label: {
-            (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
+            Group {
+                if tab == .vidshots { VidshotIcon().frame(width: 16, height: 16) }
+                else if tab == .timeTurner { Image(nsImage: TimeTurnerIcon.image()) }
+                else { Image(systemName: icon) }
+            }
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(appState.selectedTab == tab ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                 .frame(width: 40, height: 36)
@@ -535,12 +546,19 @@ struct SidebarView: View {
     private func sidebarItem(tab: DashboardTab, icon: String, label: String, updateCTA: UpdateCTA? = nil) -> some View {
         let isSelected = appState.selectedTab == tab
         Button {
+            if let feature = NewFeature.sidebar(tab) {
+                NewFeatureDiscovery.shared.markUsed(feature)
+            }
             withAnimation(navigationAnimation) {
                 if tab == .timeTurner {
                     appState.searchQuery = ""
                     appState.selectedTab = .timeTurner
                 } else if tab == .timeline {
                     controller.showTimelineHome()
+                } else if tab == .vidshots {
+                    appState.searchQuery = ""
+                    appState.selectedVidshotID = nil
+                    appState.selectedTab = .vidshots
                 } else if tab == .meetingChat {
                     controller.showMeetingChatIndex()
                 } else if tab == .models, updateCTA != nil, appState.selectedTab != .models {
@@ -551,7 +569,11 @@ struct SidebarView: View {
             }
         } label: {
             HStack(spacing: MuesliTheme.spacing12) {
-                (tab == .timeTurner ? Image(nsImage: TimeTurnerIcon.image()) : Image(systemName: icon))
+                Group {
+                    if tab == .vidshots { VidshotIcon().frame(width: 14, height: 14) }
+                    else if tab == .timeTurner { Image(nsImage: TimeTurnerIcon.image()) }
+                    else { Image(systemName: icon) }
+                }
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                     .frame(width: sidebarIconColumnWidth, height: sidebarIconColumnWidth, alignment: .center)
@@ -559,6 +581,9 @@ struct SidebarView: View {
                     .font(MuesliTheme.font(size: 14, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                 Spacer()
+                if let feature = NewFeature.sidebar(tab) {
+                    NewFeatureBadge(feature: feature)
+                }
                 if let updateCTA {
                     HStack(spacing: 4) {
                         Image(systemName: updateCTA.icon)

@@ -39,6 +39,25 @@ struct ChatPDFProcessingTests {
         try #require(JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any])
     }
 
+    @Test func documentToolsReportOnlyRequestedSourceKindsOncePerAttempt() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let urls = ["previous.txt", "unused.md"].map { root.appendingPathComponent($0) }
+        for url in urls { try Data("Synthetic content".utf8).write(to: url) }
+        let refs = try ChatFileReader.references(urls: urls, existing: [])
+        let file = try #require(refs.first { $0.kind == .text })
+        let recorder = ProductAnalyticsTests.Recorder()
+        let emitter = ProductAnalyticsEmitter(consent: { recorder.token() }) { event, _ in recorder.record(event) }
+        let attempt = AnalyticsAttempt(.chat, emitter: emitter)
+        let tools = ChatDocumentTools(files: refs, supportsVision: false, analytics: attempt)
+        _ = try await tools.execute(.inspect("unknown"))
+        _ = try await tools.execute(.inspect(file.id))
+        _ = try await tools.execute(.read(file.id, 1, 0))
+        emitter.drain()
+        #expect(recorder.events.filter { $0.kind == .source_used }.map(\.parameters) == [
+            ["product.schema": "1", "source": "text"]
+        ])
+    }
+
     @Test func metadataPreparationMakesNoModelCallsOrStoredExtractionsEvenFor289Pages() async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("large.pdf"); try Self.pdf(at: url, pages: 289, linesPerPage: 30)
@@ -166,7 +185,7 @@ struct ChatPDFProcessingTests {
             let first = String(decoding: requests[0].inputItems, as: UTF8.self)
             #expect(!first.contains("cobalt lantern"))
             #expect(String(decoding: requests[0].tools, as: UTF8.self).contains("read_document"))
-            #expect(!String(decoding: requests[0].tools, as: UTF8.self).contains("search_meeting_sources"))
+            #expect(!String(decoding: requests[0].tools, as: UTF8.self).contains("search_history"))
             #expect(String(decoding: requests[1].inputItems, as: UTF8.self).contains("cobalt lantern"))
         } else {
             let requests = await probe.textRequests

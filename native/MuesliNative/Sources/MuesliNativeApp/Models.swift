@@ -488,6 +488,14 @@ struct BackendOption: Equatable {
     }
 
     /// Check if this model's files exist on disk.
+    static func feedbackCaptureBackend(preferred: BackendOption?, installed: [BackendOption]) -> BackendOption? {
+        // Measured families first, then the remaining local catalog in catalog order.
+        let ordered = parakeetFamily.filter { $0.backend == "fluidaudio" } + whisperFamily + [appleSpeechAnalyzer] + all
+        let candidates = ordered.filter { installed.contains($0) }
+        return resolveDownloaded(backend: preferred?.backend ?? "", model: preferred?.model ?? "",
+            fallback: nil, downloadedOptions: candidates)
+    }
+
     var isDownloaded: Bool {
         let fm = FileManager.default
         switch backend {
@@ -2051,6 +2059,7 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
     static let quilDefault = HotkeyConfig(keyCode: 63, label: "Fn")
     static let computerUseDefault = HotkeyConfig(keyCode: 54, label: "Right Cmd")
+    static let feedbackCaptureDefault = HotkeyConfig.combination(modifiers: [.option, .shift], keyCode: 1)
     static let meetingRecordingDefault = HotkeyConfig(
         keyCode: UInt16.max,
         label: "⌘⇧R",
@@ -2274,6 +2283,10 @@ enum CotypistWordPause: String, Codable, CaseIterable {
     }
 }
 
+private enum LegacyAutoStopCodingKey: String, CodingKey {
+    case zoomMeetingAutoStopEnabled = "zoom_meeting_auto_stop_enabled"
+}
+
 struct AppConfig: Codable, Equatable {
     var dictationHotkey: HotkeyConfig = .default
     var enablePushToTalk: Bool = true
@@ -2283,6 +2296,9 @@ struct AppConfig: Codable, Equatable {
     var enableComputerUseHotkey: Bool = false
     var meetingRecordingHotkey: HotkeyConfig = .meetingRecordingDefault
     var enableMeetingRecordingHotkey: Bool = false
+    var feedbackCaptureHotkey: HotkeyConfig = .feedbackCaptureDefault
+    var enableFeedbackCapture: Bool = false
+    var feedbackCaptureDrawModifier: FeedbackCaptureDrawModifier = .shift
     var computerUseHotkeyDefaultDisabledMigrationApplied: Bool = true
     var enableComputerUsePlanner: Bool = true
     var computerUsePlannerModel: String = ""
@@ -2319,6 +2335,7 @@ struct AppConfig: Codable, Equatable {
     var scheduledMeetingNotificationLeadTime: ScheduledMeetingNotificationLeadTime = .atStart
     var meetingJoinDefaultAction: MeetingJoinDefaultAction = .fallback
     var showMeetingDetectionNotification: Bool = true
+    var meetingAutoStopEnabled: Bool = false
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
@@ -2442,6 +2459,16 @@ struct AppConfig: Codable, Equatable {
     var timeTurnerBudget: String = "10"
     var timeTurnerScreenshotRetention: String = "7"
     var timeTurnerHistoryRetention: String = "30"
+    var recapModelSelection: FeatureTextModelSelection? = nil
+    var recapSchedule: String = "off"
+    var recapScheduleHour: String = "8"
+    var recapIncludeMeetings: Bool = true
+    var recapIncludeDictations: Bool = false
+    var recapIncludeCommands: Bool = false
+    var recapIncludeQuill: Bool = false
+    var recapIncludeCotypist: Bool = false
+    var recapIncludeChat: Bool = false
+    var recapIncludeVidshots: Bool = false
     var timeTurnerExcludedApps: String = ""
     var enableScreenContext: Bool = false
     var enableDictationOCRContext: Bool = false
@@ -2489,6 +2516,9 @@ struct AppConfig: Codable, Equatable {
         case enableComputerUseHotkey = "enable_computer_use_hotkey"
         case meetingRecordingHotkey = "meeting_recording_hotkey"
         case enableMeetingRecordingHotkey = "enable_meeting_recording_hotkey"
+        case feedbackCaptureHotkey = "feedback_capture_hotkey"
+        case enableFeedbackCapture = "feedback_capture"
+        case feedbackCaptureDrawModifier = "feedback_capture_draw_modifier"
         case computerUseHotkeyDefaultDisabledMigrationApplied = "computer_use_hotkey_default_disabled_migration_applied"
         case enableComputerUsePlanner = "enable_computer_use_planner"
         case computerUsePlannerModel = "computer_use_planner_model"
@@ -2523,6 +2553,7 @@ struct AppConfig: Codable, Equatable {
         case scheduledMeetingNotificationLeadTime = "scheduled_meeting_notification_lead_time"
         case meetingJoinDefaultAction = "meeting_join_default_action"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case meetingAutoStopEnabled = "meeting_auto_stop_enabled"
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
@@ -2625,6 +2656,16 @@ struct AppConfig: Codable, Equatable {
         case timeTurnerBudget = "time_turner_budget"
         case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
         case timeTurnerHistoryRetention = "time_turner_history_retention"
+        case recapModelSelection = "recap_model_selection"
+        case recapSchedule = "recap_schedule"
+        case recapScheduleHour = "recap_schedule_hour"
+        case recapIncludeMeetings = "recap_include_meetings"
+        case recapIncludeDictations = "recap_include_dictations"
+        case recapIncludeCommands = "recap_include_commands"
+        case recapIncludeQuill = "recap_include_quill"
+        case recapIncludeCotypist = "recap_include_cotypist"
+        case recapIncludeChat = "recap_include_chat"
+        case recapIncludeVidshots = "recap_include_vidshots"
         case timeTurnerExcludedApps = "time_turner_excluded_apps"
         case enableScreenContext = "enable_screen_context"
         case enableDictationOCRContext = "enable_dictation_ocr_context"
@@ -2665,6 +2706,9 @@ struct AppConfig: Codable, Equatable {
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey))
             .flatMap { $0.isValidDictationShortcut ? $0 : nil } ?? defaults.dictationHotkey
         let decodedEnablePushToTalk = try? c.decode(Bool.self, forKey: .enablePushToTalk)
+        feedbackCaptureHotkey = (try? c.decode(HotkeyConfig.self, forKey: .feedbackCaptureHotkey)) ?? defaults.feedbackCaptureHotkey
+        feedbackCaptureDrawModifier = (try? c.decode(FeedbackCaptureDrawModifier.self, forKey: .feedbackCaptureDrawModifier)) ?? .shift
+        enableFeedbackCapture = (try? c.decode(Bool.self, forKey: .enableFeedbackCapture)) ?? defaults.enableFeedbackCapture
         quilHotkey = (try? c.decode(HotkeyConfig.self, forKey: .quilHotkey)) ?? defaults.quilHotkey
         enableQuilMode = (try? c.decode(Bool.self, forKey: .enableQuilMode)) ?? defaults.enableQuilMode
         computerUseHotkey = (try? c.decode(HotkeyConfig.self, forKey: .computerUseHotkey))
@@ -2735,6 +2779,10 @@ struct AppConfig: Codable, Equatable {
             (try? c.decode(MeetingJoinDefaultAction.self, forKey: .meetingJoinDefaultAction))
             ?? defaults.meetingJoinDefaultAction
         showMeetingDetectionNotification = decodedShowMeetingDetectionNotification ?? defaults.showMeetingDetectionNotification
+        let legacyAutoStop = try? decoder.container(keyedBy: LegacyAutoStopCodingKey.self)
+            .decode(Bool.self, forKey: .zoomMeetingAutoStopEnabled)
+        meetingAutoStopEnabled = (try? c.decode(Bool.self, forKey: .meetingAutoStopEnabled))
+            ?? legacyAutoStop ?? defaults.meetingAutoStopEnabled
         mutedMeetingDetectionAppBundleIDs = (try? c.decode([String].self, forKey: .mutedMeetingDetectionAppBundleIDs)) ?? defaults.mutedMeetingDetectionAppBundleIDs
         meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         let decodedMeetingRecordingFileFormat = (try? c.decode(String.self, forKey: .meetingRecordingFileFormat))
@@ -2921,6 +2969,16 @@ struct AppConfig: Codable, Equatable {
         timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
         timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
         timeTurnerHistoryRetention = (try? c.decode(String.self, forKey: .timeTurnerHistoryRetention)) ?? "30"
+        recapModelSelection = try? c.decode(FeatureTextModelSelection.self, forKey: .recapModelSelection)
+        recapSchedule = (try? c.decode(String.self, forKey: .recapSchedule)) ?? "off"
+        recapScheduleHour = (try? c.decode(String.self, forKey: .recapScheduleHour)) ?? "8"
+        recapIncludeMeetings = (try? c.decode(Bool.self, forKey: .recapIncludeMeetings)) ?? true
+        recapIncludeDictations = (try? c.decode(Bool.self, forKey: .recapIncludeDictations)) ?? false
+        recapIncludeCommands = (try? c.decode(Bool.self, forKey: .recapIncludeCommands)) ?? false
+        recapIncludeQuill = (try? c.decode(Bool.self, forKey: .recapIncludeQuill)) ?? false
+        recapIncludeCotypist = (try? c.decode(Bool.self, forKey: .recapIncludeCotypist)) ?? false
+        recapIncludeChat = (try? c.decode(Bool.self, forKey: .recapIncludeChat)) ?? false
+        recapIncludeVidshots = (try? c.decode(Bool.self, forKey: .recapIncludeVidshots)) ?? false
         timeTurnerExcludedApps = (try? c.decode(String.self, forKey: .timeTurnerExcludedApps)) ?? ""
         enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
         enableDictationOCRContext = (try? c.decode(Bool.self, forKey: .enableDictationOCRContext)) ?? defaults.enableDictationOCRContext

@@ -19,7 +19,7 @@ APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
-DEFAULT_APP_VERSION="0.8.5"
+DEFAULT_APP_VERSION="0.8.6"
 APP_VERSION="${MUESLI_BUILD_VERSION:-$DEFAULT_APP_VERSION}"
 APP_BUNDLE_VERSION="${MUESLI_BUNDLE_VERSION:-$APP_VERSION}"
 APP_SHORT_VERSION="${MUESLI_SHORT_VERSION:-$APP_VERSION}"
@@ -399,13 +399,15 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key>
   <string>14.2</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
+  <string>$APP_DISPLAY_NAME records microphone audio for dictation, meetings, and Vidshot narration.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>$APP_DISPLAY_NAME checks your browser's active tab to identify meeting links.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>$APP_DISPLAY_NAME captures system audio from other applications during meeting recordings.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>$APP_DISPLAY_NAME captures screen content for meeting context.</string>
+  <string>$APP_DISPLAY_NAME captures screen content for meetings and selected Vidshot recordings.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads calendar events to help with meeting recordings.</string>
   <key>NSContactsUsageDescription</key>
@@ -433,13 +435,10 @@ bash "$ROOT/scripts/verify_no_litert.sh" "$STAGED_APP_DIR" "$APP_EXECUTABLE_NAME
 
 # Cotypist (experimental): the typeahead input method lives inside the app and is registered by
 # Muesli at launch. It owns keys and the inline ghost; Muesli does the rest. Muesli enables the
-# feature only when this helper is bundled, so this flag is the single switch. Dev bundle IDs get
-# it by default; a public release opts in with MUESLI_INCLUDE_COTYPIST=1 and then goes through the
-# same Developer ID signing, hardened runtime, timestamp and notarization as the app.
-INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-}"
-if [[ -z "$INCLUDE_COTYPIST" ]]; then
-  [[ "$BUNDLE_ID" == com.muesli.dev* ]] && INCLUDE_COTYPIST=1 || INCLUDE_COTYPIST=0
-fi
+# feature only when this helper is bundled. Include it in all builds by default; users still
+# enable Cotypist in Settings. MUESLI_INCLUDE_COTYPIST=0 explicitly omits the helper.
+# Release helpers use the app's Developer ID signing, hardened runtime and notarization.
+INCLUDE_COTYPIST="${MUESLI_INCLUDE_COTYPIST:-1}"
 if [[ "$INCLUDE_COTYPIST" == 1 ]]; then
   COTYPIST_DIR="$STAGED_APP_DIR/Contents/Library/Input Methods/MuesliCotypist.app"
   COTYPIST_ID="$BUNDLE_ID.inputmethod.Cotypist"

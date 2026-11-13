@@ -50,7 +50,7 @@ struct MeetingChatClientTests {
         let requests = await probe.requests
         #expect(requests.count == 2)
         let definitions = try #require(JSONSerialization.jsonObject(with: requests[0].tools) as? [[String: Any]])
-        #expect(Set(definitions.compactMap { $0["name"] as? String }) == ["search_meeting_sources", "browse_meeting_sources", "read_meeting_source", "read_full_meeting"])
+        #expect(Set(definitions.compactMap { $0["name"] as? String }) == ["search_history", "read_history"])
         let replay = try #require(JSONSerialization.jsonObject(with: requests[1].inputItems) as? [[String: Any]])
         #expect(replay.contains { $0["type"] as? String == "reasoning" && $0["encrypted_content"] as? String == "opaque-test-state" })
         let result = try #require(replay.first { $0["type"] as? String == "function_call_output" })
@@ -60,9 +60,9 @@ struct MeetingChatClientTests {
     }
 
     @Test func nativeFullReadRejectsForgedArguments() throws {
-        #expect(try MeetingChatNativeHarness.call(name: "read_full_meeting", arguments: #"{"meeting_id":4,"page":0}"#) == .readMeeting(4, 0))
-        for bad in [#"{"meeting_id":true,"page":0}"#, #"{"meeting_id":4,"page":-1}"#, #"{"meeting_id":4,"page":10000}"#, #"{"meeting_id":4,"page":0,"scope":"all"}"#] {
-            #expect(throws: (any Error).self) { try MeetingChatNativeHarness.call(name: "read_full_meeting", arguments: bad) }
+        #expect(try MeetingChatNativeHarness.call(name: "read_history", arguments: #"{"handle":"meeting:4","offset":0}"#) == .readMeeting(4, 0))
+        for bad in [#"{"meeting_id":true,"page":0}"#, #"{"handle":"meeting:4","offset":-1}"#, #"{"handle":"meeting:4","offset":10000}"#, #"{"handle":"meeting:4","offset":0,"scope":"all"}"#] {
+            #expect(throws: (any Error).self) { try MeetingChatNativeHarness.call(name: "read_history", arguments: bad) }
         }
     }
 
@@ -269,7 +269,7 @@ struct MeetingChatClientTests {
         await coordinator.createChat(scope: .init())
         await coordinator.send(question: "launch", config: AppConfig())
         await gate.waitUntilStarted()
-        #expect(coordinator.reasoningSummaries == ["Provider summary"])
+        #expect(coordinator.reasoningSummaries.filter { !$0.isEmpty } == ["Provider summary"])
         try store.deleteMeeting(id: id)
         await gate.finish(); await coordinator.waitForIdle()
         #expect(coordinator.reasoningSummaries.isEmpty)
@@ -313,7 +313,7 @@ struct MeetingChatClientTests {
 
     @Test @MainActor func newMeetingFactsCanRetrieveLazilyFromSafeConversation() async throws {
         var empty = evidence(); empty.passages = []
-        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch owner"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_history","kind":"meeting","query":"launch owner"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
         var calls: [MeetingChatToolCall] = []
         let (answer, _) = try await MeetingChatClient.run(question: "What did we agree in the meeting?", evidence: empty, history: [priorExchange()], config: AppConfig(), sessionID: UUID(), generator: generator,
             execute: { call, _ in calls.append(call); return .init(evidence: evidence()) }, activity: { _, _ in })
@@ -323,7 +323,7 @@ struct MeetingChatClientTests {
 
     @Test @MainActor func removedScopeCannotRetrieveNewFactsThroughConversationMode() async throws {
         var empty = evidence(); empty.passages = []; empty.coverage.eligibleMeetingCount = 0
-        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch owner"}"#, #"{"status":"insufficient_evidence","markdown":"Attach a meeting to check who was assigned."}"#])
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_history","kind":"meeting","query":"launch owner"}"#, #"{"status":"insufficient_evidence","markdown":"Attach a meeting to check who was assigned."}"#])
         let (answer, _) = try await MeetingChatClient.run(question: "Who was assigned?", evidence: empty, history: [priorExchange()], config: AppConfig(), sessionID: UUID(), generator: generator,
             execute: { _, current in Issue.record("Empty search scope must not retrieve"); return .init(evidence: current) }, activity: { _, _ in })
         #expect(answer.insufficientEvidence)
@@ -331,16 +331,16 @@ struct MeetingChatClientTests {
     }
 
     @Test func validatesRetrievalToolArguments() throws {
-        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"search_meeting_sources","query":" release date "}"#) == .search("release date"))
-        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"read_meeting_source","source":"S2"}"#) == .read("S2"))
-        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"browse_meeting_sources"}"#) == .browse)
-        for invalid in [#"{"tool":"shell","query":"ls"}"#, #"{"tool":"search_meeting_sources","query":"","scope":"all"}"#, #"{"tool":"read_meeting_source","source":"../secret"}"#] {
-            #expect(throws: MeetingChatError.self) { try MeetingChatClient.parseToolCall(invalid) }
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"search_history","kind":"meeting","query":" release date "}"#) == .search("release date"))
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"read_history","offset":0,"handle":"S2"}"#) == .read("S2"))
+        #expect(try MeetingChatClient.parseToolCall(#"{"tool":"search_history","kind":"meeting"}"#) == .browse)
+        for invalid in [#"{"tool":"shell","query":"ls"}"#, #"{"tool":"search_history","kind":"meeting","query":"","scope":"all"}"#, #"{"tool":"read_history","offset":0,"handle":"../secret"}"#] {
+            #expect(throws: (any Error).self) { try MeetingChatClient.parseToolCall(invalid) }
         }
     }
 
     @Test @MainActor func toolLoopFeedsResultsBackAndKeepsSessionIdentity() async throws {
-        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"launch"}"#, #"{"status":"answered","markdown":"Ship Friday [[S1]]"}"#])
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_history","kind":"meeting","query":"launch"}"#, #"{"status":"answered","markdown":"Ship Friday [[S1]]"}"#])
         var empty = evidence(); empty.passages = []; empty.dependencies = []
         let sessionID = UUID()
         var calls: [MeetingChatToolCall] = []
@@ -360,7 +360,7 @@ struct MeetingChatClientTests {
     }
 
     @Test @MainActor func toolLoopCannotExceedBudget() async throws {
-        let generator = ChatScriptedReplies(replies: (1...5).map { "{\"tool\":\"search_meeting_sources\",\"query\":\"query \($0)\"}" })
+        let generator = ChatScriptedReplies(replies: (1...5).map { "{\"tool\":\"search_history\",\"kind\":\"meeting\",\"query\":\"query \($0)\"}" })
         var calls = 0
         do {
             _ = try await MeetingChatClient.run(question: "Find it", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
@@ -372,7 +372,7 @@ struct MeetingChatClientTests {
     }
 
     @Test @MainActor func exhaustedToolBudgetGetsOneFinalizationPass() async throws {
-        let tools = (1...4).map { "{\"tool\":\"search_meeting_sources\",\"query\":\"query \($0)\"}" }
+        let tools = (1...4).map { "{\"tool\":\"search_history\",\"kind\":\"meeting\",\"query\":\"query \($0)\"}" }
         let generator = ChatScriptedReplies(replies: tools + [#"{"status":"answered","markdown":"Friday [[S1]]"}"#])
         var executions = 0
         let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
@@ -383,7 +383,7 @@ struct MeetingChatClientTests {
     }
 
     @Test @MainActor func sourceReadUsesAdjacentPassagesAndPreservesScope() async throws {
-        let generator = ChatScriptedReplies(replies: [#"{"tool":"read_meeting_source","source":"S1"}"#, #"{"status":"answered","markdown":"Launch Monday [[S2]]"}"#])
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"read_history","offset":0,"handle":"S1"}"#, #"{"status":"answered","markdown":"Launch Monday [[S2]]"}"#])
         let (store, coordinator, id) = try coordinatorFixture(generator: generator)
         try store.updateMeetingTranscript(id: id, rawTranscript: "Launch Friday\nActually Monday is agreed.")
         await coordinator.createChat(scope: .init(selection: .meetings([id])))
@@ -406,7 +406,7 @@ struct MeetingChatClientTests {
     }
 
     @Test @MainActor func repeatedCallFinalizesWithoutExecutingAgain() async throws {
-        let repeated = #"{"tool":"search_meeting_sources","query":"launch"}"#
+        let repeated = #"{"tool":"search_history","kind":"meeting","query":"launch"}"#
         let generator = ChatScriptedReplies(replies: [repeated, repeated, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
         var executions = 0
         let (answer, _) = try await MeetingChatClient.run(question: "When?", evidence: evidence(), history: [], config: AppConfig(), sessionID: UUID(), generator: generator,
@@ -463,7 +463,7 @@ struct MeetingChatClientTests {
     }
 
     @Test @MainActor func emptySearchPreservesEvidenceAndReportsZeroMatches() async throws {
-        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_meeting_sources","query":"zznomatch"}"#, #"{"tool":"search_meeting_sources","query":"launch"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
+        let generator = ChatScriptedReplies(replies: [#"{"tool":"search_history","kind":"meeting","query":"zznomatch"}"#, #"{"tool":"search_history","kind":"meeting","query":"launch"}"#, #"{"status":"answered","markdown":"Friday [[S1]]"}"#])
         let (_, coordinator, id) = try coordinatorFixture(generator: generator)
         await coordinator.createChat(scope: .init(selection: .meetings([id])))
         await coordinator.send(question: "launch", config: AppConfig()); await coordinator.waitForIdle()
@@ -521,6 +521,90 @@ struct MeetingChatClientTests {
         #expect(body["model"] as? String == "test-model")
         #expect(request.httpMethod == "POST")
         if backend == "openai" { #expect(body["store"] as? Bool == false) }
+    }
+
+    @Test(arguments: ["anthropic", "custom_llm"], [false, true])
+    func imageSummaryPreservesAnthropicOutputPolicy(backend: String, capped: Bool) async throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.anthropicModel = "claude-haiku-4-5"
+        config.customLLMModel = "claude-haiku-4-5"
+        config.customLLMFormat = "anthropic"
+        config.customLLMURL = "https://example.invalid/v1/messages"
+        config.meetingSummaryMaxOutputTokens = capped ? 5_000 : nil
+        let image = ChatImageInput(name: "synthetic", data: Data([1, 2, 3]))
+        for truncated in [false, true] {
+            let client = MeetingTextGenerationClient(credentialResolver: { _ in "synthetic" }, load: { request in
+                let data = try #require(request.httpBody)
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(body["max_tokens"] as? Int == (capped ? 5_000 : 64_000))
+                #expect(body["stream"] as? Bool == !capped)
+                let messages = try #require(body["messages"] as? [[String: Any]])
+                let content = try #require(messages.first?["content"] as? [[String: Any]])
+                #expect(content.contains { $0["type"] as? String == "image" })
+                let reason = truncated ? "max_tokens" : "end_turn"
+                let payload = capped
+                    ? #"{"stop_reason":"\#(reason)","content":[{"type":"text","text":"Notes"}]}"#
+                    : [
+                        #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Notes"}}"#,
+                        #"{"type":"message_delta","delta":{"stop_reason":"\#(reason)"}}"#,
+                        #"{"type":"message_stop"}"#
+                    ].map { "data: " + $0 + "\n\n" }.joined()
+                return (Data(payload.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            })
+            do {
+                let text = try await client.generate(.init(system: "S", user: "U", config: config,
+                    images: [image], allowSummaryImageEndpoints: true))
+                #expect(!truncated)
+                #expect(text == "Notes")
+            } catch MeetingSummaryOutputPolicy.OutputError.outputLimitReached {
+                #expect(truncated)
+            }
+        }
+    }
+
+    @Test(arguments: ["openai", "openrouter", "ollama", "lmstudio", "custom_llm"], [false, true])
+    func imageSummaryHonorsOptionalOutputCap(backend: String, capped: Bool) throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = backend
+        config.openAIModel = "gpt-5.4-mini"
+        config.lmStudioModel = "test"; config.customLLMModel = "test"
+        config.meetingSummaryMaxOutputTokens = capped ? 5_000 : nil
+        let input = MeetingTextGenerationRequest(system: "S", user: "U", config: config,
+            images: [ChatImageInput(name: "synthetic", data: Data([1]))], allowSummaryImageEndpoints: true)
+        let request = try MeetingTextGenerationClient.makeRequest(input, credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let limit = backend == "ollama" ? (body["options"] as? [String: Any])?["num_predict"] as? Int
+            : (body["max_output_tokens"] ?? body["max_completion_tokens"] ?? body["max_tokens"]) as? Int
+        #expect(limit == (capped ? 5_000 : nil))
+    }
+
+    @Test(arguments: ["ollama", "lmstudio", "custom_openai", "custom_anthropic"])
+    func summaryImagesUseEndpointVisionFormat(endpoint: String) throws {
+        var config = AppConfig()
+        config.meetingSummaryBackend = endpoint.hasPrefix("custom_") ? "custom_llm" : endpoint
+        config.ollamaModel = "vision-test"; config.lmStudioModel = "vision-test"
+        config.customLLMModel = "vision-test"; config.customLLMURL = "http://localhost:1234"
+        config.customLLMFormat = endpoint == "custom_anthropic" ? "anthropic" : "openai"
+        let image = ChatImageInput(name: "synthetic", data: Data([1, 2, 3]))
+        let input = MeetingTextGenerationRequest(system: "System", user: "User", config: config,
+            images: [image], allowSummaryImageEndpoints: true)
+        let request = try MeetingTextGenerationClient.makeRequest(input, credential: "synthetic")
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(body["messages"] as? [[String: Any]])
+        let user = try #require(messages.last)
+        if endpoint == "ollama" {
+            #expect((user["images"] as? [String]) == [image.data.base64EncodedString()])
+        } else {
+            let blocks = try #require(user["content"] as? [[String: Any]])
+            #expect(blocks.count == 2)
+            #expect(blocks.last?["type"] as? String == (endpoint == "custom_anthropic" ? "image" : "image_url"))
+        }
+        var chatInput = input
+        chatInput.allowSummaryImageEndpoints = false
+        #expect(throws: ChatFileError.self) { try MeetingTextGenerationClient.makeRequest(chatInput, credential: "synthetic") }
     }
     @Test(arguments: [ReasoningEffort.off, .low, .high])
     func openAIReasoningBudgetIncludesVisibleAnswer(effort: ReasoningEffort) throws {
@@ -722,10 +806,19 @@ struct MeetingChatClientTests {
     }
 }
 
+/// Synthetic providers first request the evidence they will cite, and answer after replay.
+private func fixtureLookup(_ request: MeetingTextGenerationRequest) throws -> String? {
+    guard request.user.contains("QUOTED SOURCES (JSON):\n[]"), !request.user.contains("HISTORICAL_ANSWER") else { return nil }
+    let query = request.user.components(separatedBy: "USER QUESTION:\n").last?.components(separatedBy: "\n").first ?? "launch"
+    let call = try JSONSerialization.data(withJSONObject: ["tool": "search_history", "kind": "meeting", "query": query])
+    return String(decoding: call, as: UTF8.self)
+}
+
 private actor ChatReplyGate: MeetingTextGenerating {
     private var started = false
     private var continuation: CheckedContinuation<String, Never>?
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if let lookup = try fixtureLookup(request) { return lookup }
         started = true
         return await withCheckedContinuation { continuation = $0 }
     }
@@ -738,6 +831,7 @@ private actor ChatReplyGate: MeetingTextGenerating {
 private actor ChatPromptProbe: MeetingTextGenerating {
     var requests: [MeetingTextGenerationRequest] = []
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if let lookup = try fixtureLookup(request) { return lookup }
         requests.append(request)
         if request.user.contains("QUOTED SOURCES (JSON):\n[]"), request.user.contains("HISTORICAL_ANSWER") {
             return #"{"status":"conversation","markdown":"Suggestion: confirm the launch plan with the team."}"#
@@ -761,6 +855,7 @@ private actor ChatSummaryGate: MeetingTextGenerating {
     private var started = false
     private var continuation: CheckedContinuation<Void, Never>?
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
+        if let lookup = try fixtureLookup(request) { return lookup }
         await request.onReasoningSummary?("Provider summary")
         started = true
         await withCheckedContinuation { continuation = $0 }
@@ -777,7 +872,8 @@ private actor ChatTitleGate: MeetingTextGenerating {
     var titleRequest: MeetingTextGenerationRequest?
     private var continuation: CheckedContinuation<String?, Never>?
     func generate(_ request: MeetingTextGenerationRequest) async throws -> String {
-        #"{"status":"answered","markdown":"Friday [[S1]]"}"#
+        if let lookup = try fixtureLookup(request) { return lookup }
+        return #"{"status":"answered","markdown":"Friday [[S1]]"}"#
     }
     func generateConversationTitle(_ request: MeetingTextGenerationRequest) async throws -> String? {
         titleRequest = request
@@ -800,8 +896,8 @@ private actor NativeHarnessProbe: MeetingTextGenerating {
         requests.append(request)
         if requests.count == 1 {
             let output: [[String: Any]] = [["type": "reasoning", "encrypted_content": "opaque-test-state"],
-                ["type": "function_call", "name": "read_full_meeting", "call_id": "native-call-1", "arguments": #"{"meeting_id":1,"page":0}"#]]
-            return .init(outputItems: try JSONSerialization.data(withJSONObject: output), calls: [.init(id: "native-call-1", name: "read_full_meeting", arguments: #"{"meeting_id":1,"page":0}"#)], text: "")
+                ["type": "function_call", "name": "read_history", "call_id": "native-call-1", "arguments": #"{"handle":"meeting:1","offset":0}"#]]
+            return .init(outputItems: try JSONSerialization.data(withJSONObject: output), calls: [.init(id: "native-call-1", name: "read_history", arguments: #"{"handle":"meeting:1","offset":0}"#)], text: "")
         }
         return .init(outputItems: Data("[]".utf8), calls: [], text: #"{"status":"answered","markdown":"Full meeting detail [[S2]]"}"#)
     }

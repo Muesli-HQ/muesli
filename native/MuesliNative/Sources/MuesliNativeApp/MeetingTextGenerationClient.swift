@@ -10,6 +10,9 @@ struct MeetingTextGenerationRequest {
     var onReasoningSummary: (@Sendable (String) async -> Void)? = nil
     var outputTokenLimit: Int? = nil
     var images: [ChatImageInput] = []
+    // Summary images may use vision-capable local/custom endpoints. Chat's
+    // attachment capability policy remains unchanged unless explicitly opted in.
+    var allowSummaryImageEndpoints = false
 }
 
 protocol MeetingTextGenerating: Sendable {
@@ -80,7 +83,7 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
     var load: @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }
     var chatGPT: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
         try await ChatGPTResponsesClient.respond(systemPrompt: request.system, userPrompt: request.user,
-            model: Self.model(request.config), maxOutputTokens: request.maxOutputTokens,
+            model: Self.model(request.config), maxOutputTokens: request.allowSummaryImageEndpoints ? request.config.meetingSummaryMaxOutputTokens : request.maxOutputTokens,
             reasoningEffort: request.config.meetingSummaryReasoningEffort, sessionID: request.sessionID, onReasoningSummary: request.onReasoningSummary, images: request.images, logCategory: "meeting-chat")
     }
     var claudeCode: @Sendable (MeetingTextGenerationRequest) async throws -> String = { request in
@@ -155,11 +158,35 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         if MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) == .customLLM {
             _ = try CustomLLMRequestHeaders.validated(request.config.customLLMHeaders)
         }
-        let urlRequest = try Self.makeRequest(request, credential: await credentialResolver(request.config))
+        let credential = try await credentialResolver(request.config)
+        var urlRequest = try Self.makeRequest(request, credential: credential)
+        let provider = MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend)
+        let anthropicSummary = request.allowSummaryImageEndpoints && (provider == .anthropic ||
+            (provider == .customLLM && request.config.customLLMFormat == CustomLLMFormat.anthropic.rawValue))
+        if anthropicSummary {
+            let limit = try await MeetingSummaryOutputPolicy.anthropicLimit(
+                model: Self.model(request.config), requested: request.config.meetingSummaryMaxOutputTokens,
+                messagesURL: urlRequest.url!, apiKey: credential,
+                workspaceID: provider == .anthropic ? MeetingSummaryClient.resolvedAnthropicWorkspaceID(config: request.config) : "",
+                extraHeaders: provider == .customLLM ? try CustomLLMRequestHeaders.validated(request.config.customLLMHeaders) : [:],
+                send: load)
+            guard let data = urlRequest.httpBody,
+                  var body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw MeetingTextGenerationError.invalidEndpoint
+            }
+            body["max_tokens"] = limit
+            body["stream"] = MeetingSummaryOutputPolicy.anthropicRequiresStreaming(outputLimit: limit)
+            urlRequest.httpBody = try ChatFileReader.requestData(body)
+        }
         let (data, response) = try await load(urlRequest)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw MeetingTextGenerationError.emptyResponse }
         guard (200..<300).contains(http.statusCode) else { throw MeetingTextGenerationError.failed(http.statusCode) }
+        if anthropicSummary {
+            let text = try MeetingSummaryOutputPolicy.anthropicText(from: data, redactProviderErrors: provider == .customLLM)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MeetingTextGenerationError.emptyResponse }
+            return text
+        }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MeetingTextGenerationError.emptyResponse }
         let text: String?
         switch MeetingSummaryBackendOption.resolved(request.config.meetingSummaryBackend) {
@@ -207,7 +234,9 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         let provider = MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)
         let model = model(config)
         guard !model.isEmpty else { throw MeetingTextGenerationError.missingConnection }
-        let content: Any = input.images.isEmpty || provider != .openRouter ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
+        let supportsChatImageFormat = provider == .openRouter || (input.allowSummaryImageEndpoints &&
+            (provider == .lmStudio || (provider == .customLLM && config.customLLMFormat != CustomLLMFormat.anthropic.rawValue)))
+        let content: Any = input.images.isEmpty || !supportsChatImageFormat ? input.user : ([["type": "text", "text": input.user]] + input.images.map(\.chatContent))
         let messages: [[String: Any]] = [["role": "system", "content": input.system], ["role": "user", "content": content]]
         var body: [String: Any] = ["model": model, "messages": messages, "max_tokens": input.maxOutputTokens]
         let url: URL
@@ -258,9 +287,23 @@ struct MeetingTextGenerationClient: MeetingTextGenerating {
         default: throw MeetingTextGenerationError.invalidEndpoint
         }
         if !input.images.isEmpty {
-            guard [.openAI, .openRouter, .anthropic].contains(provider) else { throw ChatFileError.unsupportedProvider }
+            let additional = input.allowSummaryImageEndpoints && [.ollama, .lmStudio, .customLLM].contains(provider)
+            guard [.openAI, .openRouter, .anthropic].contains(provider) || additional else { throw ChatFileError.unsupportedProvider }
             if anthropic {
                 body["messages"] = [["role": "user", "content": [["type": "text", "text": input.user]] + input.images.map(\.anthropicContent)]]
+            } else if provider == .ollama {
+                body["messages"] = [["role": "system", "content": input.system],
+                                    ["role": "user", "content": input.user, "images": input.images.map { $0.data.base64EncodedString() }]]
+            }
+        }
+        if input.allowSummaryImageEndpoints && !anthropic {
+            // Summary output is provider-controlled unless the user sets a cap.
+            let limit = MeetingSummaryOutputPolicy.normalizedLimit(config.meetingSummaryMaxOutputTokens)
+            for key in ["max_tokens", "max_completion_tokens", "max_output_tokens"] where body[key] != nil {
+                body[key] = limit
+            }
+            if provider == .ollama {
+                body["options"] = limit.map { ["num_predict": $0] }
             }
         }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = provider == .ollama || provider == .lmStudio || provider == .customLLM ? 300 : 120

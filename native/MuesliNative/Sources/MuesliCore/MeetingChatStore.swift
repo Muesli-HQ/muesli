@@ -5,16 +5,27 @@ import CryptoKit
 /// Opens the explicitly supplied app database per operation; no shared mutable connection.
 public struct MeetingChatStore: Sendable {
     public let databaseURL: URL
+    let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
     private let readOnly: Bool
     public init(databaseURL: URL, readOnly: Bool = false) {
         self.databaseURL = databaseURL; self.readOnly = readOnly
     }
     private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
-        try DictationStore(databaseURL: databaseURL, readOnly: readOnly).withChatDatabase(operation)
+        if readOnly {
+            return try DictationStore(databaseURL: databaseURL, readOnly: true).withChatDatabase(operation)
+        }
+        do {
+            try ContentPrivacy.shared.beginWrite(privacy)
+        } catch ContentPrivacy.Failure.ephemeralContent {
+            return try EphemeralChatDatabase.withConnection(url: databaseURL, session: privacy, operation: operation)
+        }
+        defer { ContentPrivacy.shared.endWrite() }
+        return try DictationStore(databaseURL: databaseURL, readOnly: readOnly).withChatDatabase(operation)
     }
-    public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil, expectedSourceVersion: Int64? = nil) throws -> MeetingChatSession {
+    public func createSession(scope: MeetingChatScope, title: String, anchorMeetingID: Int64? = nil, expectedSourceVersion: Int64? = nil, allowsRequestedMeetingDiscovery: Bool = false) throws -> MeetingChatSession {
         let now = Date()
         var session = MeetingChatSession(id: UUID(), title: title, scope: scope, createdAt: now, updatedAt: now, contextStartOrdinal: 0)
+        session.allowsRequestedMeetingDiscovery = allowsRequestedMeetingDiscovery
         session.titleIsAutomatic = true
         var anchor = anchorMeetingID
         if anchor == nil, case .meetings(let ids) = scope.selection, Set(ids).count == 1 { anchor = ids.first }
@@ -31,6 +42,15 @@ public struct MeetingChatStore: Sendable {
             session.anchorMeetingID = try self.session(session.id, db: db).anchorMeetingID
             return session
         } }
+    }
+    package func permitsLibrary(sessionID: UUID) throws -> Bool {
+        // Archive reads need durable dependency tracking. Private chats use
+        // their memory-backed meeting retrieval and do not write archive links.
+        guard ContentPrivacy.shared.permits(privacy) else { return false }
+        return try connection { db in
+            let current = try session(sessionID, db: db)
+            return current.scope == MeetingChatScope(selection: .meetings([])) && current.allowsRequestedMeetingDiscovery == true
+        }
     }
     /// Includes threads anchored to, explicitly scoped to, or with evidence from this meeting.
     /// Scope membership and evidence dependencies remain separate: selection alone is not consultation.
@@ -157,6 +177,7 @@ public struct MeetingChatStore: Sendable {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             var session = try session(id, db: db)
             if let title { session.title = title; session.titleIsAutomatic = false }
+            if scope != nil { session.allowsRequestedMeetingDiscovery = false }
             if let scope, scope != session.scope {
                 session.scope = scope
                 session.contextStartOrdinal = try nextOrdinal(sessionID: id, db: db)
@@ -213,12 +234,15 @@ public struct MeetingChatStore: Sendable {
         } }
     }
 
-    public func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, provider: String, model: String, attemptID: UUID = UUID(), fileAttachments: [ChatFileReference] = []) throws -> MeetingChatTurn {
+    public func beginTurn(sessionID: UUID, question: String, scope: MeetingChatScope, provider: String, model: String, attemptID: UUID = UUID(), fileAttachments: [ChatFileReference] = [], skillTitle: String? = nil, skillRecentMeetingScope: MeetingChatScope? = nil) throws -> MeetingChatTurn {
         try connection { db in try MeetingChatSQL.transaction(db: db) {
             var session = try session(sessionID, db: db)
             var turn = MeetingChatTurn(id: UUID(), sessionID: sessionID, ordinal: try nextOrdinal(sessionID: sessionID, db: db), question: question,
                 scope: scope, state: .finding, citations: [], provider: provider, model: model,
                 attemptID: attemptID, scopeLabel: try scopeLabel(scope, db: db))
+            if session.scope != scope { turn.composerScopeAtSend = session.scope }
+            turn.skillTitle = skillTitle
+            turn.skillRecentMeetingScope = skillRecentMeetingScope
             turn.fileAttachments = fileAttachments.isEmpty ? nil : fileAttachments
             let context = try historyContext(before: turn, byteLimit: nil, db: db).turns
             let inherited = context.flatMap { $0.fileDependencies ?? $0.fileAttachments ?? [] }
@@ -227,6 +251,10 @@ public struct MeetingChatStore: Sendable {
             let dependencies = references.filter { seenFiles.insert($0.id).inserted }
             turn.fileDependencies = dependencies.isEmpty ? nil : dependencies
             try MeetingChatSQL.execute("INSERT INTO meeting_chat_turns VALUES(?,?,?,?,?)", [.text(turn.id.uuidString), .text(sessionID.uuidString), .integer(Int64(turn.ordinal)), .text(turn.state.rawValue), .text(try MeetingChatSQL.encode(turn))], db: db)
+            for previous in context {
+                try MeetingChatSQL.execute("INSERT OR IGNORE INTO meeting_chat_history_dependencies SELECT ?,kind,source_id,parent_id FROM meeting_chat_history_dependencies WHERE turn_id=?",
+                    [.text(turn.id.uuidString), .text(previous.id.uuidString)], db: db)
+            }
             if turn.ordinal == 0, session.titleIsAutomatic == true {
                 session.title = String(question.prefix(64))
             }
@@ -331,7 +359,7 @@ public struct MeetingChatStore: Sendable {
                   turn.ordinal == (try nextOrdinal(sessionID: turn.sessionID, db: db)) - 1 else { return false }
             var session = try session(turn.sessionID, db: db)
             guard session.titleIsAutomatic == true, session.generatedTitleTurnID == nil,
-                  session.scope == turn.scope, turn.ordinal >= session.contextStartOrdinal else { return false }
+                  session.scope == (turn.composerScopeAtSend ?? turn.scope), turn.ordinal >= session.contextStartOrdinal else { return false }
             let dependencies = try MeetingChatSQL.rows("SELECT meeting_id,revision FROM meeting_chat_dependencies WHERE turn_id=?", [.text(turnID.uuidString)], db: db) {
                 MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
             }
@@ -380,6 +408,47 @@ public struct MeetingChatStore: Sendable {
             return snapshots
         }
     }
+    /// Read identifiers and revisions in the same snapshot so a concurrent folder move
+    /// or title edit cannot disclose a meeting that no longer matches the lookup.
+    public func discoverMeetings(in scope: MeetingChatScope, title: String, limit: Int, asOf now: Date) throws -> (passages: [MeetingChatPassage], hasMore: Bool) {
+        guard (1...10).contains(limit) else { throw MeetingChatError.invalidResponse }
+        return try connection { db in
+            try MeetingChatSQL.execute("BEGIN DEFERRED", db: db)
+            defer { try? MeetingChatSQL.execute("ROLLBACK", db: db) }
+            let matches = try latestMeetingIDs(in: scope, limit: limit + 1, asOf: now, titleContains: title, db: db)
+            let page = Array(matches.prefix(limit))
+            let snapshots = try MeetingChatSQL.snapshots(scope: .init(selection: .meetings(page)), db: db)
+            let byID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.meetingID, $0.titlePassage) })
+            return (page.compactMap { byID[$0] }, matches.count > limit)
+        }
+    }
+
+    private func latestMeetingIDs(in scope: MeetingChatScope, limit: Int, asOf now: Date, titleContains: String, db: OpaquePointer?) throws -> [Int64] {
+        var filters = ["deleted_at IS NULL", "meeting_status NOT IN ('recording','processing')", "julianday(start_time)<=julianday(?, 'unixepoch')"]
+        var args: [MeetingChatSQL.Value] = [.real(now.timeIntervalSince1970)]
+        switch scope.selection {
+        case .all: break
+        case .folder(let id): filters.append("folder_id=?"); args.append(.integer(id))
+        case .meetings(let ids):
+            guard !ids.isEmpty else { return [] }
+            filters.append("id IN (" + ids.map { _ in "?" }.joined(separator: ",") + ")")
+            args += ids.map { .integer($0) }
+        }
+        if let start = scope.startDate {
+            filters.append("julianday(start_time)>=julianday(?, 'unixepoch')"); args.append(.real(start.timeIntervalSince1970))
+        }
+        if let end = scope.endDateExclusive {
+            filters.append("julianday(start_time)<julianday(?, 'unixepoch')"); args.append(.real(end.timeIntervalSince1970))
+        }
+        if !titleContains.isEmpty {
+            filters.append("instr(lower(COALESCE(title,'')),lower(?))>0"); args.append(.text(titleContains))
+        }
+        return try MeetingChatSQL.rows("SELECT id FROM meetings WHERE " + filters.joined(separator: " AND ")
+            + " ORDER BY julianday(start_time) DESC, id DESC LIMIT ?", args + [.integer(Int64(limit))], db: db) {
+            sqlite3_column_int64($0, 0)
+        }
+    }
+
     /// Picker metadata is available immediately, even while the derived FTS index is cold.
     /// Filter source availability in SQLite without loading or hashing transcript payloads.
     public func sourceChoices() throws -> [MeetingChatSourceChoice] {

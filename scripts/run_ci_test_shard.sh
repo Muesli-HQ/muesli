@@ -24,6 +24,8 @@ case "${shard}" in
       CredentialMigrationTests
       TimeTurnerPauseStateTests
       TimeTurnerRecapTests
+      TimeTurnerRecapSourceTests
+      MuesliHistorySkillTests
       VisualMemoryStoreTests
       InsightsTests
       DictationStoreTests
@@ -46,12 +48,14 @@ case "${shard}" in
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
       MuesliCLITests
+      CapturesCLITests
       ChatGPTAuthTests
       ChatGPTResponsesTransportTests
       ChatGPTTokenStorageTests
       OpenRouterAuthTests
       SettingsPermissionRefreshReasonTests
       InteractionPermissionMonitorTests
+      PermissionRestartRecoveryTests
       AccessibilityPermissionGuideTests
       DictationTestLifecycleTests
       OnboardingFlowTests
@@ -59,12 +63,24 @@ case "${shard}" in
       FloatingIndicatorVisibilityTests
       FloatingIndicatorPointerInteractionTests
       IndicatorFrameSizeTests
-      NotchIndicatorTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
       MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
+      FeedbackCaptureInkTests
+      FeedbackCaptureInkOverlayTests
+      FeedbackCaptureInkPersistenceTests
+      FeedbackCaptureInkExportTests
+      FeedbackCaptureInkInputTests
+      FeedbackCaptureEventsTests
+      FeedbackCaptureContextTests
+      FeedbackCaptureInputTests
+      FeedbackCaptureRendererTests
+      FeedbackCaptureStoreTests
+      FeedbackCaptureLifecycleTests
+      FeedbackCaptureFinalizerTests
+      FeedbackCapturePillTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
       MeetingVideoAudioTests
@@ -74,6 +90,11 @@ case "${shard}" in
       CGPointCodableTests
       UpdateFailureGuidanceTests
       WordCountTests
+      DictationWordAnalyticsTests
+      ContentPrivacyTests
+      TelemetryPrivacyTests
+      ProductAnalyticsTests
+      ProductAnalyticsModelTests
       DictionaryFileOperationsTests
       CustomWordDictionaryTests
       ModelDownloadCoordinatorTests
@@ -91,6 +112,9 @@ case "${shard}" in
     ;;
   dictation-transcription)
     filters=(
+      NotchIndicatorTests
+      FeedbackCaptureTranscriptTests
+      FeedbackCaptureContextFinalizerTests
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests
@@ -177,10 +201,12 @@ case "${shard}" in
       DictationCorrectionMonitorTests
       DictionaryCorrectionSubstitutionTests
       Nemotron35ModelStoreTests
+      NemotronWavLoaderTests
     )
     ;;
   meetings)
     filters=(
+      BrowserMeetingActivityCollectorTests
       BufferedMeetingPartialEngineTests
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
@@ -196,6 +222,9 @@ case "${shard}" in
       MeetingCaptureShutdownTests
       ShutdownDeadlineTests
       MeetingMonitoringModePolicyTests
+      MeetingNotificationControllerTests
+      MeetingAutoStopPolicyTests
+      MeetingCandidateResolverTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
       MeetingMicRecoveryCoordinatorTests
@@ -232,6 +261,7 @@ case "${shard}" in
       MeetingChatClientTests
       MeetingChatContextBudgetTests
       MeetingChatNativeBudgetTests
+      MuesliTaskRunnerTests
       MeetingChatNavigationTests
       MeetingChatExporterTests
       MeetingChatNotesActionTests
@@ -245,6 +275,7 @@ case "${shard}" in
       MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
+      MeetingMarkdownAutoExporterTests
       TranscriptFormatterTests
       TranscriptReconcilerTests
       SpeakerAttributionTests

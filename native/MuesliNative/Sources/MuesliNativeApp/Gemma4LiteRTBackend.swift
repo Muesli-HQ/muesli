@@ -10,7 +10,7 @@ enum Gemma4LiteRTLogging {
     }
 
     static func log(_ message: String) {
-        guard isEnabled else { return }
+        guard ContentPrivacy.shared.mayLogContent, isEnabled else { return }
         fputs("[gemma4-litert] \(message)\n", stderr)
     }
 

@@ -64,6 +64,7 @@ struct QuillAssistantView: View {
                 Button {
                     NSPasteboard.general.clearContents()
                     copied = NSPasteboard.general.setString(answer, forType: .string)
+                    if copied { ProductAnalytics.event(.quill, .result_action, fields: [.action: .copy]) }
                 } label: {
                     HStack(spacing: 5) {
                         AIIcon(copied ? .check : .copy)

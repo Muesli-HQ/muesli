@@ -10,6 +10,16 @@ struct MeetingChatView: View {
     var docked = false
     @State private var expanded = false
     @State private var showHistory = false
+    @State private var skillIndex = 0
+    @State private var dismissedSkill: MuesliSkillQuery?
+    @State private var skillEditor: SkillEditorDraft?
+    private var catalog: [MuesliHistoryTask] { MuesliHistoryTask.catalog(custom: appState.config.customMeetingTemplates) }
+    private var skillQuery: MuesliSkillQuery? {
+        guard !coordinator.isBusy, !coordinator.isUpdatingChat,
+              let query = MuesliSkillQuery.find(in: coordinator.composerDraft, selection: composerSelection),
+              query != dismissedSkill else { return nil }
+        return query
+    }
     @State private var showScope = false
     @State private var showModelPicker = false
     @State private var showFilePicker = false
@@ -56,7 +66,7 @@ struct MeetingChatView: View {
         case .all: return "All saved meetings"
         case .folder(let id): return "\(appState.folders.first { $0.id == id }?.name ?? "Folder") · This folder only"
         case .meetings(let ids):
-            if ids.isEmpty { return "Choose meetings" }
+            if ids.isEmpty { return coordinator.scopeForRecentMeetingRequest.selection == .all ? "Saved history" : "Choose meetings" }
             if ids.count == 1, let source = coordinator.sourceChoices.first(where: { $0.id == ids[0] }) { return source.title }
             return "\(ids.count) selected meeting\(ids.count == 1 ? "" : "s")"
         }
@@ -141,6 +151,16 @@ struct MeetingChatView: View {
         .padding(.horizontal, docked && expanded ? 16 : 0)
         .padding(.vertical, docked && expanded ? 12 : 0)
         .background(MuesliTheme.backgroundBase)
+        .sheet(item: $skillEditor) { draft in
+            MeetingTemplatesManagerView(appState: appState, controller: controller, onClose: { skillEditor = nil },
+                initialDraft: draft, onSaved: { id in
+                    let updated = MuesliHistoryTask.catalog(custom: controller.customMeetingTemplates())
+                    if let skill = updated.first(where: { $0.id == "template-" + id }) {
+                        tagSkill(skill, draft: skillQuery?.removing(from: coordinator.composerDraft) ?? coordinator.composerDraft)
+                    }
+                    skillEditor = nil
+                })
+        }
         .sheet(isPresented: $showScope) { MeetingChatScopePicker(scope: coordinator.scope, folders: appState.folders, meetings: coordinator.sourceChoices) { scope in Task { await coordinator.setScope(scope) } } }
         .popover(item: $citation) { source in
             MeetingChatCitationView(citation: source, coordinator: coordinator) {
@@ -176,6 +196,8 @@ struct MeetingChatView: View {
             } else if case let .failure(error) = result { coordinator.errorMessage = error.localizedDescription }
         }
         .onChange(of: mention) { _, _ in mentionIndex = 0 }
+        .onChange(of: skillQuery) { _, _ in skillIndex = 0 }
+        .onChange(of: coordinator.selectedSessionID) { _, _ in dismissedSkill = nil; skillIndex = 0 }
         .onChange(of: coordinator.turns.count) { _, _ in
             if let activeID = coordinator.activeTurnID, coordinator.turns.contains(where: { $0.id == activeID }) {
                 scrollAnchor.wrappedValue = activeID
@@ -211,6 +233,19 @@ struct MeetingChatView: View {
             }
                 .buttonStyle(.muesli(.quiet)).help("Recent chats").accessibilityLabel("Recent chats")
                 .popover(isPresented: $showHistory) { history.frame(width: 280, height: 340) }
+            Menu {
+                ForEach(catalog) { skill in
+                    Button(skill.title) { tagSkill(skill, draft: coordinator.composerDraft) }
+                }
+                Divider()
+                Button("New skill…") { skillEditor = SkillEditorDraft() }
+                Button("Import SKILL.md…") { importSkill() }
+            } label: {
+                Label("Skills", systemImage: "sparkles")
+            }
+            .buttonStyle(.muesli(.quiet))
+            .disabled(coordinator.isBusy)
+            .accessibilityIdentifier("chat.historyTasks")
             if docked {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Chat").font(MuesliTheme.font(size: 13, weight: .semibold))
@@ -331,7 +366,8 @@ struct MeetingChatView: View {
             if let error = coordinator.errorMessage {
                 Text(error).foregroundStyle(MuesliTheme.warningText).font(MuesliTheme.font(.callout)).textSelection(.enabled)
             }
-            if let mention { mentionSuggestions(mention) }
+            if let skillQuery { skillSuggestions(skillQuery) }
+            else if let mention { mentionSuggestions(mention) }
             if coordinator.isBusy && coordinator.activeTurnID == nil {
                 AIShimmer(coordinator.phase.isEmpty ? "Saving question" : coordinator.phase)
                     .padding(.horizontal, 4).padding(.bottom, 3)
@@ -345,13 +381,13 @@ struct MeetingChatView: View {
             }, editor: {
                 ZStack(alignment: .topLeading) {
                     if coordinator.composerDraft.isEmpty {
-                        Text("What’s on your mind?")
+                        Text("What’s on your mind? Type / for skills.")
                             .foregroundStyle(MuesliTheme.textTertiary).padding(.leading, 5).padding(.top, 8).allowsHitTesting(false)
                     }
-                    MeetingChatComposerEditor(text: $coordinator.composerDraft, selection: $composerSelection,
+                    MeetingChatComposerEditor(catalog: catalog, text: $coordinator.composerDraft, selection: $composerSelection,
                                               focusRequest: hasRequestedComposerFocus ? composerFocusRequest : nil, undoIdentity: coordinator.composerUndoIdentity, onFocus: { composerFocused = $0 }, onKey: handleComposerKey)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
+                        .accessibilityLabel("Question about saved meetings. Type @ to attach a meeting or / to choose a skill.")
                 }
             }, footer: {
                 // Footer actions share a 28pt hit height; padding sits inside each label so
@@ -371,7 +407,7 @@ struct MeetingChatView: View {
                             }
                         }.padding(.horizontal, 6).frame(height: 28)
                     }
-                        .buttonStyle(.muesli(.quiet)).help("Meeting context: " + scopeLabel)
+                        .buttonStyle(.muesli(.quiet)).help("Search scope: " + scopeLabel)
                         .accessibilityLabel("Choose meeting context").accessibilityIdentifier("meeting-chat-scope")
                         .disabled(footerControlsDisabled)
                     Spacer(minLength: 4)
@@ -476,6 +512,100 @@ struct MeetingChatView: View {
         }
     }
 
+    private func skillSuggestions(_ query: MuesliSkillQuery) -> some View {
+        let matches = query.matches(in: catalog)
+        return VStack(alignment: .leading, spacing: 1) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        if matches.isEmpty {
+                            Text("No matching skills").font(MuesliTheme.callout()).padding(8)
+                        } else {
+                            ForEach(Array(matches.enumerated()), id: \.element.id) { index, skill in
+                                Button { chooseSkill(skill, query: query) } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: skill.icon).foregroundStyle(MuesliTheme.accentText)
+                                        Text(skill.title).font(MuesliTheme.callout()).lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        if skill.personal { Text("Personal").font(MuesliTheme.caption()).foregroundStyle(.secondary) }
+                                        if index == skillIndex {
+                                            Image(systemName: "return").foregroundStyle(MuesliTheme.textSecondary)
+                                                .accessibilityHidden(true)
+                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                                    .background(index == skillIndex ? MuesliTheme.surfaceSelected : Color.clear,
+                                                in: RoundedRectangle(cornerRadius: 5))
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .id(skill.id)
+                                .contextMenu {
+                                    Button("Duplicate…") { editSkill(skill, duplicate: true) }
+                                    if skill.personal { Button("Edit…") { editSkill(skill, duplicate: false) } }
+                                }
+                                .help(skill.summary)
+                                .accessibilityLabel("Open skill: " + skill.title)
+                                .accessibilityHint(skill.summary)
+                            }
+                        }
+                    }
+                }
+                .frame(height: CGFloat(min(5, max(matches.count, 1))) * 27)
+                .onChange(of: skillIndex) { _, index in
+                    if matches.indices.contains(index) { proxy.scrollTo(matches[index].id) }
+                }
+            }
+            HStack {
+                Button("New skill…") { skillEditor = SkillEditorDraft(name: query.query) }
+                Spacer()
+                Button("Import…") { importSkill() }
+            }.buttonStyle(.plain).font(MuesliTheme.caption()).padding(6)
+        }
+        .padding(4)
+        .frame(maxWidth: 248, alignment: .leading)
+        .background(MuesliTheme.backgroundRaised, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MuesliTheme.surfaceBorder).allowsHitTesting(false))
+        .accessibilityIdentifier("chat.skillSuggestions")
+    }
+
+    private func editSkill(_ skill: MuesliHistoryTask, duplicate: Bool) {
+        do {
+            skillEditor = SkillEditorDraft(editID: duplicate ? nil : String(skill.id.dropFirst("template-".count)),
+                name: duplicate ? skill.title + " copy" : skill.title,
+                prompt: try skill.loadInstructions(), icon: skill.icon)
+        } catch { coordinator.errorMessage = error.localizedDescription }
+    }
+
+    private func importSkill() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Review skill"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            do { skillEditor = try SkillEditorDraft(importing: url) }
+            catch { coordinator.errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func chooseSkill(_ skill: MuesliHistoryTask, query: MuesliSkillQuery) {
+        guard skillQuery == query, query.matches(in: catalog).contains(skill) else { return }
+        // Like @ attachments, the edit goes through the native text sync/undo path.
+        // Picking a skill never sends a chat turn or invokes a provider.
+        tagSkill(skill, draft: query.removing(from: coordinator.composerDraft))
+    }
+
+    private func tagSkill(_ skill: MuesliHistoryTask, draft: String) {
+        let prompt = MuesliSkillInvocation(draft: draft, catalog: catalog)?.prompt ?? draft
+        let text = "$" + skill.id + " " + prompt
+        coordinator.composerDraft = text
+        composerSelection = NSRange(location: (text as NSString).length, length: 0)
+        dismissedSkill = nil
+        focusComposer()
+    }
+
     private func mentionSuggestions(_ mention: MeetingChatMentionQuery) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -556,6 +686,16 @@ struct MeetingChatView: View {
     }
 
     private func handleComposerKey(_ key: MeetingChatComposerEditor.Key) -> Bool {
+        if let query = skillQuery, query.interceptsSubmission(in: catalog) {
+            switch key {
+            case .up: skillIndex = max(0, skillIndex - 1)
+            case .down: skillIndex = min(max(0, query.matches(in: catalog).count - 1), skillIndex + 1)
+            case .escape: dismissedSkill = query
+            case .submit, .tab:
+                if query.matches(in: catalog).indices.contains(skillIndex) { chooseSkill(query.matches(in: catalog)[skillIndex], query: query) }
+            }
+            return true
+        }
         if let mention {
             switch key {
             case .up:
@@ -579,9 +719,23 @@ struct MeetingChatView: View {
     }
 
     private func send() {
+        if let query = skillQuery, query.interceptsSubmission(in: catalog) {
+            if query.matches(in: catalog).indices.contains(skillIndex) { chooseSkill(query.matches(in: catalog)[skillIndex], query: query) }
+            return
+        }
         guard !coordinator.isBusy, !coordinator.isUpdatingChat else { return }
         guard controller.canUseSummaryProvider(MeetingSummaryBackendOption.resolved(requestConfig.meetingSummaryBackend)) else {
             coordinator.errorMessage = "Connect your meeting AI provider in AI Settings. Your question is saved here."; return
+        }
+        if let run = MuesliSkillInvocation(draft: coordinator.composerDraft, catalog: catalog) {
+            guard !run.skill.requiresQuery || !run.prompt.isEmpty else {
+                coordinator.errorMessage = "Add a project or topic after the skill tag."
+                focusComposer()
+                return
+            }
+        } else if coordinator.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("$template-") {
+            coordinator.errorMessage = "This template is no longer available. Choose another skill or remove its tag."
+            return
         }
         let question = coordinator.composerDraft; let config = appState.config; let draft = preparedIsDraft; let sessionID = coordinator.selectedSessionID
         Task {
@@ -595,75 +749,90 @@ struct MeetingChatView: View {
     }
     @ViewBuilder private func turnView(_ turn: MeetingChatTurn) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            AIMessage(role: .user) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if let files = turn.fileAttachments, !files.isEmpty {
-                        filePreviews(files, editable: false, allowsPreview: turn.state != .sourceDeleted)
+            let questionText = turn.skillTitle.map { title in
+                ([title] + turn.question.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).dropFirst().map(String.init)).joined(separator: " ")
+            } ?? turn.question
+            HoverMessageActions(alignment: .trailing) {
+                AIMessage(role: .user) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let files = turn.fileAttachments, !files.isEmpty {
+                            filePreviews(files, editable: false, allowsPreview: turn.state != .sourceDeleted)
+                        }
+                        Text(questionText).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
                     }
-                    Text(turn.question).font(MuesliTheme.body()).lineSpacing(4).textSelection(.enabled)
                 }
+            } actions: {
+                MeetingChatCopyButton(text: questionText)
+                    .buttonStyle(.borderless).font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
             }
-            AIMessage(role: .assistant) {
-                VStack(alignment: .leading, spacing: 14) {
-                    if turn.state.isPending {
-                        VStack(alignment: .leading, spacing: 10) {
-                            // Streaming reasoning already provides its own thinking indicator.
-                            if !(turn.id == coordinator.activityTurnID && coordinator.reasoningIsStreaming && !visibleReasoningSummaries.isEmpty) {
-                                MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
-                                     ? coordinator.phase
-                                     : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
-                                    .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
-                            }
-                            if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
-                                AIDisclosure(title: "\(coordinator.activities.count) research steps", icon: .search) {
+            HoverMessageActions(alignment: .leading) {
+                AIMessage(role: .assistant) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if turn.state.isPending {
+                            VStack(alignment: .leading, spacing: 10) {
+                                // Streaming reasoning already provides its own thinking indicator.
+                                if !(turn.id == coordinator.activityTurnID && coordinator.reasoningIsStreaming && !visibleReasoningSummaries.isEmpty) {
+                                    MeetingChatWaitingLabel(phase: turn.id == coordinator.activeTurnID && !coordinator.phase.isEmpty
+                                         ? coordinator.phase
+                                         : (turn.state == .finding ? "Finding meeting context" : "Writing answer"))
+                                        .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
+                                }
+                                if turn.id == coordinator.activeTurnID && !coordinator.activities.isEmpty {
+                                    AIDisclosure(title: "\(coordinator.activities.count) research steps", icon: .search) {
+                                        activityRows
+                                    }
+                                }
+                            }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if turn.id == coordinator.activityTurnID {
+                            if !turn.state.isPending && !coordinator.activities.isEmpty {
+                                AIDisclosure(title: "Research · \(coordinator.activities.count) steps", icon: .search) {
                                     activityRows
                                 }
                             }
-                        }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if turn.id == coordinator.activityTurnID {
-                        if !turn.state.isPending && !coordinator.activities.isEmpty {
-                            AIDisclosure(title: "Research · \(coordinator.activities.count) steps", icon: .search) {
-                                activityRows
+                            if !visibleReasoningSummaries.isEmpty {
+                                AIReasoning(summary: visibleReasoningSummaries.joined(separator: "\n\n"),
+                                            state: coordinator.reasoningIsStreaming ? .streaming : .completed)
                             }
                         }
-                        if !visibleReasoningSummaries.isEmpty {
-                            AIReasoning(summary: visibleReasoningSummaries.joined(separator: "\n\n"),
-                                        state: coordinator.reasoningIsStreaming ? .streaming : .completed)
-                        }
-                    }
-                    if let answer = turn.originalAnswer {
-                        MeetingChatAnswerView(answer: answer, citations: turn.citations)
-                            .environment(\.openURL, OpenURLAction { url in
-                                let key = String(url.path.dropFirst())
-                                guard url.scheme == "muesli-citation", let source = turn.citations.first(where: { $0.sourceKey == key }) else { return .discarded }
-                                citation = source; return .handled
-                            })
-                        if !turn.citations.isEmpty {
-                            MeetingChatSourcesView(citations: turn.citations) { citation = $0 }
-                        }
-                        if let documents = turn.documentCoverage, !documents.isEmpty {
-                            ForEach(documents, id: \.fileID) { document in
-                                let name = turn.fileAttachments?.first { $0.id == document.fileID }?.name ?? "PDF"
-                                Text("\(name): all \(document.totalPages) pages inspected."
-                                     + (document.wasCondensed ? " Answer uses condensed notes." : "")
-                                     + (document.pagesWithoutText > 0 ? " \(document.pagesWithoutText) pages had no recoverable text." : ""))
-                                    .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
-                                    .textSelection(.enabled)
+                        if let answer = turn.originalAnswer {
+                            MeetingChatAnswerView(answer: answer, citations: turn.citations)
+                                .environment(\.openURL, OpenURLAction { url in
+                                    let key = String(url.path.dropFirst())
+                                    guard url.scheme == "muesli-citation", let source = turn.citations.first(where: { $0.sourceKey == key }) else { return .discarded }
+                                    ProductAnalytics.event(.chat, .result_action, fields: [.action: .citation_open])
+                                    citation = source; return .handled
+                                })
+                            if !turn.citations.isEmpty {
+                                MeetingChatSourcesView(citations: turn.citations) {
+                                    ProductAnalytics.event(.chat, .result_action, fields: [.action: .citation_open])
+                                    citation = $0
+                                }
                             }
+                            if let documents = turn.documentCoverage, !documents.isEmpty {
+                                ForEach(documents, id: \.fileID) { document in
+                                    let name = turn.fileAttachments?.first { $0.id == document.fileID }?.name ?? "PDF"
+                                    Text("\(name): all \(document.totalPages) pages inspected."
+                                         + (document.wasCondensed ? " Answer uses condensed notes." : "")
+                                         + (document.pagesWithoutText > 0 ? " \(document.pagesWithoutText) pages had no recoverable text." : ""))
+                                        .font(MuesliTheme.font(.caption)).foregroundStyle(MuesliTheme.textSecondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        } else if turn.state == .sourceDeleted {
+                            Label { Text(turn.error ?? "Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
+                                .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
+                        } else if !turn.state.isPending {
+                            Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }
+                                .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
+                            Button {
+                                let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config, contextWindowTokens: modelContextWindow) }
+                            } label: { Label { Text("Try again") } icon: { AIIcon(.rotateCcw) } }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                         }
-                        answerActions(turn)
-                    } else if turn.state == .sourceDeleted {
-                        Label { Text(turn.error ?? "Answer removed because a source meeting was deleted") } icon: { AIIcon(.fileText) }
-                            .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
-                    } else if !turn.state.isPending {
-                        Label { Text(turn.error ?? (turn.state == .stopped ? "Request stopped" : "Request interrupted")) } icon: { AIIcon(.circleAlert) }
-                            .font(MuesliTheme.font(.callout)).foregroundStyle(MuesliTheme.textSecondary)
-                        Button {
-                            let config = appState.config; Task { await coordinator.retry(turnID: turn.id, config: config, contextWindowTokens: modelContextWindow) }
-                        } label: { Label { Text("Try again") } icon: { AIIcon(.rotateCcw) } }.disabled(coordinator.isBusy || coordinator.isUpdatingChat)
                     }
                 }
+            } actions: {
+                if turn.originalAnswer != nil { answerActions(turn) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -745,6 +914,7 @@ struct MeetingChatMentionQuery: Equatable {
 /// AppKit supplies reliable caret/IME handling on the app's macOS 14 deployment target.
 private struct MeetingChatComposerEditor: NSViewRepresentable {
     enum Key { case up, down, escape, submit, tab }
+    var catalog: [MuesliHistoryTask]
     @Binding var text: String
     @Binding var selection: NSRange
     var focusRequest: UUID?
@@ -757,9 +927,9 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         let scroll = NSScrollView()
         let editor = Editor()
         editor.identifier = NSUserInterfaceItemIdentifier("meeting-chat-editor")
-        editor.string = text
         editor.delegate = context.coordinator
         context.coordinator.editor = editor
+        editor.catalog = catalog
         editor.onKey = onKey
         editor.onFocus = onFocus
         editor.isRichText = false
@@ -778,7 +948,9 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true
         editor.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        editor.setAccessibilityLabel("Question about saved meetings. Type @ to attach a meeting.")
+        editor.setAccessibilityLabel("Question about saved meetings. Type @ to attach a meeting or / to choose a skill.")
+        editor.string = SkillTagPresentation.displayText(text, catalog: catalog)
+        editor.styleSkillTag(in: text, accent: NSColor(MuesliTheme.accentText))
         scroll.documentView = editor
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -787,7 +959,7 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
         let width = max(100, proposal.width ?? 400)
-        return CGSize(width: width, height: MeetingChatComposerLayout.height(for: text, width: width))
+        return CGSize(width: width, height: MeetingChatComposerLayout.height(for: text, width: width, catalog: catalog))
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -795,13 +967,17 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.isUpdating = true
         defer { context.coordinator.isUpdating = false }
+        editor.catalog = catalog
         editor.onKey = onKey
         editor.onFocus = onFocus
-        MeetingChatComposerTextSync.apply(text, to: editor, resetUndo: context.coordinator.undoIdentity != undoIdentity)
+        guard !editor.hasMarkedText() else { return }
+        MeetingChatComposerTextSync.apply(SkillTagPresentation.displayText(text, catalog: catalog), to: editor, resetUndo: context.coordinator.undoIdentity != undoIdentity)
+        editor.styleSkillTag(in: text, accent: NSColor(MuesliTheme.accentText))
         context.coordinator.undoIdentity = undoIdentity
         let length = (text as NSString).length
         let safe = NSRange(location: min(selection.location, length), length: min(selection.length, max(0, length - selection.location)))
-        if editor.selectedRange() != safe { editor.setSelectedRange(safe) }
+        let visible = SkillTagPresentation(draft: text, catalog: catalog)?.displayRange(for: safe) ?? safe
+        if editor.selectedRange() != visible { editor.setSelectedRange(visible) }
         // A nil request means no automatic focus, not a request to resign focus.
         // Pointer focus must survive the idle-to-editing layout change.
         if let focusRequest, context.coordinator.lastFocusRequest != focusRequest {
@@ -832,21 +1008,69 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
                   manager === editor.undoManager else { return }
             // Native undo can update storage without the ordinary typing delegate callback.
             // Scope the notification to this editor's manager and avoid duplicate publications.
-            if parent.text != editor.string { parent.text = editor.string }
-            parent.selection = editor.selectedRange()
+            publishEdit(editor)
         }
 
         func textDidChange(_ notification: Notification) {
             guard !isUpdating, let editor = notification.object as? NSTextView else { return }
-            parent.text = editor.string
-            parent.selection = editor.selectedRange()
+            publishEdit(editor)
+        }
+        private func publishEdit(_ editor: NSTextView) {
+            let draft = SkillTagPresentation.draft(from: editor.attributedString(), catalog: parent.catalog)
+            if parent.text != draft { parent.text = draft }
+            parent.selection = draft == editor.string ? editor.selectedRange() :
+                (SkillTagPresentation(draft: draft, catalog: parent.catalog)?.draftRange(for: editor.selectedRange()) ?? editor.selectedRange())
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard !isUpdating, let editor = notification.object as? NSTextView else { return }
-            parent.selection = editor.selectedRange()
+            let draft = SkillTagPresentation.draft(from: editor.attributedString(), catalog: parent.catalog)
+            parent.selection = draft == editor.string ? editor.selectedRange() :
+                (SkillTagPresentation(draft: draft, catalog: parent.catalog)?.draftRange(for: editor.selectedRange()) ?? editor.selectedRange())
         }
     }
     final class Editor: NSTextView {
+        var catalog: [MuesliHistoryTask] = [] {
+            didSet { if oldValue != catalog { styledAccent = nil } }
+        }
+        private var styledDraft = ""
+        private var styledAccent: NSColor?
+        private var hadSkillTag = false
+
+        func styleSkillTag(in draft: String, accent: NSColor) {
+            guard !hasMarkedText(), let storage = textStorage,
+                  styledDraft != draft || styledAccent != accent else { return }
+            styledDraft = draft
+            styledAccent = accent
+            let tag = SkillTagPresentation(draft: draft, catalog: catalog)
+            guard tag != nil || hadSkillTag else { return }
+            hadSkillTag = tag != nil
+            let body: [NSAttributedString.Key: Any] = [.font: AppFonts.regular(14), .foregroundColor: NSColor.labelColor]
+            storage.beginEditing()
+            storage.addAttributes(body, range: NSRange(location: 0, length: storage.length))
+            let fullRange = NSRange(location: 0, length: storage.length)
+            storage.removeAttribute(SkillTagPresentation.attribute, range: fullRange)
+            storage.removeAttribute(.underlineStyle, range: fullRange)
+            if let tag {
+                storage.addAttributes([.font: AppFonts.bold(14), .foregroundColor: accent,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue, SkillTagPresentation.attribute: tag.skill.id],
+                    range: tag.visibleRange)
+            }
+            storage.endEditing()
+            typingAttributes.merge(body) { _, new in new }
+            typingAttributes.removeValue(forKey: SkillTagPresentation.attribute)
+            typingAttributes.removeValue(forKey: .underlineStyle)
+        }
+
+        override func writeSelection(to pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+            let draft = SkillTagPresentation.draft(from: attributedString(), catalog: catalog)
+            if type == .string, draft != string, let tag = SkillTagPresentation(draft: draft, catalog: catalog),
+               NSIntersectionRange(selectedRange(), tag.visibleRange) == tag.visibleRange {
+                let selected = (draft as NSString).substring(with: tag.draftRange(for: selectedRange()))
+                return pasteboard.setString(selected, forType: type)
+            }
+            return super.writeSelection(to: pasteboard, type: type)
+        }
+
         private var pendingFocus = false
         func requestComposerFocus() {
             pendingFocus = true
@@ -890,6 +1114,28 @@ private struct MeetingChatComposerEditor: NSViewRepresentable {
 }
 
 
+/// Keep the action strip in layout so moving onto Copy never moves the message away.
+private struct HoverMessageActions<Message: View, Actions: View>: View {
+    let alignment: HorizontalAlignment
+    @ViewBuilder let message: () -> Message
+    @ViewBuilder let actions: () -> Actions
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityShowButtonShapes) private var showButtonShapes
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+    var body: some View {
+        VStack(alignment: alignment, spacing: 4) {
+            message()
+            actions()
+                .focusSection()
+                .focused($focused)
+                .opacity(hovering || focused || voiceOver || showButtonShapes ? 1 : 0)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
 private struct MeetingChatCopyButton: View {
     let text: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -899,6 +1145,7 @@ private struct MeetingChatCopyButton: View {
         Button {
             NSPasteboard.general.clearContents()
             if NSPasteboard.general.setString(text, forType: .string) {
+                ProductAnalytics.event(.chat, .result_action, fields: [.action: .copy])
                 copyID = UUID()
             }
         } label: {
@@ -912,7 +1159,7 @@ private struct MeetingChatCopyButton: View {
             .frame(minWidth: 64, alignment: .leading)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: copyID == nil)
-        .help(copyID == nil ? "Copy answer" : "Answer copied")
+        .help(copyID == nil ? "Copy message" : "Message copied")
         .task(id: copyID) {
             guard copyID != nil else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -944,9 +1191,12 @@ enum MeetingChatWaitingStatus {
 
 /// Measure the native font at the available width and cap long drafts for scrolling.
 enum MeetingChatComposerLayout {
-    static func height(for text: String, width: CGFloat) -> CGFloat {
-        let measured = NSAttributedString(string: text + "\u{200B}", attributes: [.font: AppFonts.font(size: 14)])
-            .boundingRect(with: NSSize(width: max(80, width - 10), height: CGFloat.greatestFiniteMagnitude),
+    static func height(for text: String, width: CGFloat, catalog: [MuesliHistoryTask] = MuesliHistoryTask.allCases) -> CGFloat {
+        let content = NSMutableAttributedString(string: SkillTagPresentation.displayText(text, catalog: catalog) + "\u{200B}", attributes: [.font: AppFonts.regular(14)])
+        if let range = SkillTagPresentation(draft: text, catalog: catalog)?.visibleRange {
+            content.addAttribute(.font, value: AppFonts.bold(14), range: range)
+        }
+        let measured = content.boundingRect(with: NSSize(width: max(80, width - 10), height: CGFloat.greatestFiniteMagnitude),
                           options: [.usesLineFragmentOrigin, .usesFontLeading])
         return min(144, max(34, ceil(measured.height) + 16))
     }

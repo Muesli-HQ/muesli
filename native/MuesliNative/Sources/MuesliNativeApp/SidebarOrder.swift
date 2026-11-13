@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 enum SidebarOrder {
     static let preferenceKey = "dashboard.sidebar.order.v1"
     static let defaults: [DashboardTab] = [
-        .timeline, .timeTurner, .dictations, .meetings, .meetingChat, .insights, .dictionary
+        .timeline, .timeTurner, .dictations, .vidshots, .meetings, .meetingChat, .dictionary
     ]
 
     static func tabs(from saved: String) -> [DashboardTab] {
@@ -213,6 +213,7 @@ extension DashboardTab {
         case .timeline: "Timeline"
         case .timeTurner: "Time Turner"
         case .dictations: "Dictations"
+        case .vidshots: "Vidshots"
         case .meetings: "Meetings"
         case .meetingChat: "Chat"
         case .insights: "Insights"
@@ -229,6 +230,7 @@ extension DashboardTab {
         case .timeline: "clock"
         case .timeTurner: "clock.arrow.circlepath"
         case .dictations: "waveform"
+        case .vidshots: "viewfinder"
         case .meetings: "person.2"
         case .meetingChat: "bubble.left.and.bubble.right"
         case .insights: "chart.bar.xaxis"

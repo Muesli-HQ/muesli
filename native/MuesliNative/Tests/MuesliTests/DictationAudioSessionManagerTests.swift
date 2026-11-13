@@ -2,6 +2,7 @@ import CoreAudio
 import Foundation
 import MuesliCore
 import Testing
+import os
 @testable import MuesliNativeApp
 
 @Suite("DictationAudioSessionManager")
@@ -91,7 +92,11 @@ struct DictationAudioSessionManagerTests {
         harness.eventQueue.sync {}
         #expect(harness.manager.isRetiringStartup)
         #expect(harness.events.filter { if case .failed = $0 { return true }; return false }.count == 1)
-        harness.manager.beginRecording(mode: "retry", duckingEnabled: false, mediaPauseEnabled: false)
+        var retryIntervalClosed = false
+        harness.manager.beginRecording(mode: "retry", duckingEnabled: false, mediaPauseEnabled: false) {
+            retryIntervalClosed = true
+        }
+        #expect(retryIntervalClosed, "A refused retry must immediately release its meeting microphone exclusion")
         lateBuffer?(Date())
         gate.signal()
         harness.wait()
@@ -614,6 +619,13 @@ struct DictationAudioSessionManagerTests {
     func delayedRouteRefreshDoesNotArmActivateHeadphoneRoute() {
         let harness = Harness(routeKind: .headphoneLike, preferredInputDeviceID: 82)
 
+        let cancelled = DispatchSemaphore(value: 0)
+        harness.manager.onEvent = { event in
+            if case .latency("route_refresh_cancelled:idle_routeChange", _) = event {
+                cancelled.signal()
+            }
+        }
+
         harness.manager.refreshRoute(intent: .idlePrewarm(.routeChange), delay: 0.2, canWarmUp: true)
         harness.manager.arm(source: "hotkey")
         harness.wait()
@@ -622,16 +634,10 @@ struct DictationAudioSessionManagerTests {
         #expect(harness.recorder.activateCalls == 0)
         #expect(harness.recorder.warmUpCalls == 0)
 
-        Thread.sleep(forTimeInterval: 0.25)
+        #expect(cancelled.wait(timeout: .now() + 5) == .success)
         harness.wait()
-
         #expect(harness.recorder.warmUpCalls == 0)
-        #expect(harness.events.contains { event in
-            if case .latency(let name, _) = event {
-                return name == "route_refresh_cancelled:idle_routeChange"
-            }
-            return false
-        })
+        #expect(harness.recorder.activateCalls == 0)
     }
 
     @Test("recorder callbacks emit stream active, speech detected, and no audio timeout")
@@ -868,7 +874,7 @@ private final class Harness {
     }
 }
 
-private final class FakeDictationRecorder: DictationAudioRecording {
+final class FakeDictationRecorder: DictationAudioRecording {
     var preferredInputDeviceID: AudioObjectID?
     var keepsAudioGraphWarm = false
     var onFirstCapturedAudioBuffer: ((Date) -> Void)?
@@ -882,9 +888,14 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     var warmUpCalls = 0
     var activateCalls = 0
     var coolDownCalls = 0
-    var startCalls = 0
-    var stopCalls = 0
-    var cancelCalls = 0
+    private let observations = OSAllocatedUnfairLock(initialState: (start: 0, stop: 0, cancel: 0))
+    var startCalls: Int { observations.withLock { $0.start } }
+    var stopCalls: Int { observations.withLock { $0.stop } }
+    var cancelCalls: Int { observations.withLock { $0.cancel } }
+    var startError: Error?
+    var onStart: (() -> Void)?
+    var onActivate: (() -> Void)?
+    var onStop: (() -> Void)?
     var stopURL: URL?
     var lastWarmInputDeviceID: AudioObjectID?
     var activeRecordingID: UUID?
@@ -913,6 +924,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
 
     func activateWarmEngine(preferredInputDeviceID: AudioObjectID?) throws {
         activateCalls += 1
+        onActivate?()
         if let activateError {
             throw activateError
         }
@@ -924,7 +936,9 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     }
 
     func start() throws -> UUID {
-        startCalls += 1
+        observations.withLock { $0.start += 1 }
+        if let startError { throw startError }
+        onStart?()
         startEntered?.signal()
         startGate?.wait()
         if callbackDuringStart { onFirstCapturedAudioBuffer?(Date()) }
@@ -934,13 +948,14 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     }
 
     func stop() -> URL? {
-        stopCalls += 1
+        onStop?()
+        observations.withLock { $0.stop += 1 }
         activeRecordingID = nil
         return stopURL
     }
 
     func cancel() {
-        cancelCalls += 1
+        observations.withLock { $0.cancel += 1 }
         activeRecordingID = nil
     }
 
@@ -949,7 +964,7 @@ private final class FakeDictationRecorder: DictationAudioRecording {
     }
 }
 
-private final class FakeDuckingManager: AudioDuckingManaging {
+final class FakeDuckingManager: AudioDuckingManaging {
     var beginCalls: [Bool] = []
     var ensureCalls = 0
     var restoreCalls = 0
@@ -998,7 +1013,7 @@ private final class FakeMediaPlaybackManager: MediaPlaybackManaging {
     }
 }
 
-private final class FakeDictationRoute: DictationAudioRouting {
+final class FakeDictationRoute: DictationAudioRouting {
     var onPreferredInputDeviceChanged: ((AudioObjectID?) -> Void)?
     var selectedInputDeviceUID: String?
     var routeKind: AudioOutputRouteKind

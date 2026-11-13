@@ -9,6 +9,84 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Feedback checks chord conflicts without changing the shared bare modifier rule")
+    func feedbackChordConflicts() async throws {
+        let feedback = HotkeyConfig.feedbackCaptureDefault
+        let bareOption = HotkeyConfig(keyCode: 61, label: "Right Option")
+        #expect(ShortcutHotkeyPolicy.hotkeysConflict(feedback, bareOption))
+        #expect(!ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(feedback, bareOption))
+        #expect(ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(feedback, config: AppConfig()).didUpdate)
+        for modifiers: NSEvent.ModifierFlags in [[.option], [.option, .shift], [.option, .shift, .command]] {
+            let chord = HotkeyConfig.combination(modifiers: modifiers, keyCode: 1)
+            #expect(ShortcutHotkeyPolicy.feedbackCaptureHotkeysConflict(feedback, chord))
+            var config = AppConfig(); config.dictationHotkey = chord
+            #expect(!ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(feedback, config: config).didUpdate)
+        }
+        try await withShortcutSettings { controller, config in
+            #expect(!controller.updateFeedbackCaptureHotkey(bareOption).didUpdate)
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("feedback_capture_hotkey", value: "key:61")
+            }
+            let definition = try #require(controller.settingsDefinitions().first { $0.id == "feedback_capture_hotkey" })
+            #expect(!definition.choices.contains { $0.id.hasPrefix("key:") })
+            try await controller.applySetting("feedback_capture", value: "on")
+            #expect(config.load().enableFeedbackCapture)
+            #expect(controller.updateDictationHotkey(feedback).didUpdate == false)
+            #expect(controller.updateMeetingRecordingHotkey(feedback).didUpdate == false)
+            #expect(controller.updateQuilHotkey(.combination(modifiers: [.option], keyCode: 1)).didUpdate == false)
+            #expect(controller.updateFeedbackCaptureHotkey(.combination(modifiers: [.control], keyCode: 9)).didUpdate)
+            #expect(config.load().feedbackCaptureHotkey == .combination(modifiers: [.control], keyCode: 9))
+            #expect(controller.settingsDefinitions().contains { $0.id == "feedback_capture_hotkey" })
+            controller.resetShortcutDefaults()
+            #expect(config.load().feedbackCaptureHotkey == .feedbackCaptureDefault)
+            #expect(!config.load().enableFeedbackCapture)
+        }
+    }
+
+    @Test("Completed onboarding keeps dashboard destinations accessible without recording setup")
+    func dashboardAfterDeferredPermissions() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try database.migrateIfNeeded()
+        let configStore = makeTestConfigStore(supportDirectory: directory)
+        var config = AppConfig()
+        config.hasCompletedOnboarding = true
+        config.onboardingUseCase = OnboardingUseCase.everything.rawValue
+        config.enablePushToTalk = false
+        configStore.save(config)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: database, configStore: configStore)
+        // No startup, permission grants or capture. Navigation must work independently.
+        for tab: DashboardTab in [.timeline, .meetingChat, .meetings, .settings] {
+            controller.openHistoryWindow(tab: tab)
+            #expect(controller.appState.selectedTab == tab)
+        }
+        controller.appState.selectedSettingsPane = .experimental
+        controller.showPermissionsSettings()
+        #expect(controller.appState.selectedTab == .settings)
+        #expect(controller.appState.selectedSettingsPane == .general)
+        #expect(controller.appState.requestsPermissionsSettings)
+        let settings = controller.settingsDefinitions()
+        for id in ["ocr_context", "cotypist_screen_context"] {
+            #expect(settings.first { $0.id == id }?.requestPermission != nil)
+        }
+    }
+
+    @Test("Recap sources use canonical settings with mandatory screen history")
+    func recapSourceDefinitions() async throws {
+        try await withShortcutSettings { controller, _ in
+            let definitions = controller.settingsDefinitions()
+            for kind in TimeTurnerRecapInput.allCases {
+                let setting = try #require(definitions.first { $0.id == kind.settingID })
+                #expect(setting.read(controller.config) == (kind == .meetings ? "on" : "off"))
+            }
+            #expect(!definitions.contains { $0.id == "recap_include_time_turner" })
+        }
+    }
+
     @Test("Time Turner reductions require confirmation but remain voice discoverable")
     func timeTurnerDeletionPolicy() async throws {
         try await withShortcutSettings { controller, _ in
@@ -381,6 +459,15 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test func canonicalSettingPersistsThroughSharedExecutor() async throws {
+        try await withShortcutSettings { controller, config in
+            let definition = try #require(controller.settingsDefinitions().first { $0.id == "feedback_capture_draw_modifier" })
+            #expect(definition.choices.map(\.id) == ["shift", "option", "control", "fn"])
+            try await controller.applySetting("feedback_capture_draw_modifier", value: "option")
+            #expect(config.load().feedbackCaptureDrawModifier == .option)
+        }
+    }
+
     final class Harness {
         var config = AppConfig()
         var saved = AppConfig()
@@ -634,7 +721,12 @@ struct ComputerUseSettingsTests {
         configStore.save(initial)
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: configStore)
+            dictationStore: store, configStore: configStore,
+            // This test changes between Core and Flex. Real downloads can cause
+            // updateConfig to substitute a different available meeting model.
+            downloadedBackendOptions: { BackendOption.bodhanFamily })
+        #expect(controller.config.sttModel == model.rawValue)
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.flex.rawValue)
         let definitions = controller.settingsDefinitions()
         #expect(definitions.first { $0.id == "bodhan_language" }?.availability("en") == nil)
         #expect(definitions.first { $0.id == "bodhan_output" }?.availability(BodhanOutputMode.native.rawValue) == nil)
@@ -661,6 +753,8 @@ struct ComputerUseSettingsTests {
         let language = try #require(definitions.first { $0.id == "bodhan_language" })
         let snapshot = language.snapshot(config: controller.config)
         controller.updateConfig { $0.meetingTranscriptionModel = BodhanModel.core.rawValue }
+        #expect(controller.config.meetingTranscriptionBackend == "bodhan")
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.core.rawValue)
         // Final-producing live models supersede the saved Core meeting model.
         for backend in [MeetingLiveCaptionBackend.appleSpeech, .nemotron35] {
             controller.updateConfig {
@@ -670,6 +764,7 @@ struct ComputerUseSettingsTests {
             #expect(language.availability("hne") == nil)
         }
         controller.updateConfig { $0.enableLiveStreamingPartials = false }
+        #expect(controller.config.meetingTranscriptionModel == BodhanModel.core.rawValue)
         #expect(language.availability("hne") != nil)
         await #expect(throws: (any Error).self) {
             _ = try await MuesliSettings.apply(.init(setting: "bodhan_language", value: "hne"), settings: definitions,
@@ -1197,7 +1292,7 @@ struct ComputerUseSettingsTests {
     @Test("shortcut values round-trip supported keys without arbitrary values or an expanded combination catalog")
     func shortcutValueRules() {
         for target in ShortcutAssignment.allCases {
-            for key in ShortcutAssignment.singleKeys {
+            for key in target.assignableSingleKeys {
                 #expect(target.hotkey(for: ShortcutAssignment.value(for: key)) == key)
             }
             for invalid in ["key:0", "key:059", "control", "control+control+k", "shift+command+k", "control+k+", "run shell"] {

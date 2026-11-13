@@ -19,22 +19,26 @@ struct TimeTurnerPage: View {
                             Spacer(minLength: 20)
                             captureControls.fixedSize()
                         }
-                        dayControls.fixedSize()
+                        if appState.timeTurnerSection != .todos { dayControls.fixedSize() }
                     }.frame(minWidth: 1050)
                     VStack(alignment: .leading, spacing: 12) {
                         pageTitle
                         captureControls
-                        dayControls.frame(maxWidth: .infinity)
+                        if appState.timeTurnerSection != .todos { dayControls.frame(maxWidth: .infinity) }
                     }
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 24) {
-                        tab("History", recap: false)
-                        tab("Recap", recap: true)
+                        tab("History", section: .history)
+                        tab("Recap", section: .recap)
+                        tab("To-dos", section: .todos)
                     }
                     Divider().overlay(MuesliTheme.surfaceBorder)
                 }
-                if appState.timeTurnerShowsRecap {
+                if appState.timeTurnerSection == .todos {
+                    TimeTurnerTodosView(appState: appState, controller: controller)
+                        .id(appState.timeTurnerNavigationID)
+                } else if appState.timeTurnerShowsRecap {
                     TimeTurnerRecapView(day: appState.timeTurnerDay, selection: appState.timeTurnerSelectedRecap, controller: controller) { capture in
                         appState.openTimeTurnerCapture(capture)
                     }
@@ -67,9 +71,9 @@ struct TimeTurnerPage: View {
         Text("Time Turner").font(MuesliTheme.font(size: 26, weight: .bold)).fixedSize()
     }
 
-    private func tab(_ title: String, recap: Bool) -> some View {
-        let selected = appState.timeTurnerShowsRecap == recap
-        return Button { appState.timeTurnerShowsRecap = recap } label: {
+    private func tab(_ title: String, section: AppState.TimeTurnerSection) -> some View {
+        let selected = appState.timeTurnerSection == section
+        return Button { appState.timeTurnerFocusedTodo = nil; appState.timeTurnerSection = section } label: {
             Text(title)
                 .font(MuesliTheme.font(size: 14, weight: selected ? .semibold : .medium))
                 .foregroundStyle(selected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
@@ -91,6 +95,7 @@ struct TimeTurnerPage: View {
     private var dayControls: some View {
         HStack(spacing: 10) {
             Button { moveDay(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Previous day")
+                .disabled(Calendar.current.startOfDay(for: browsingDay) <= earliestDay)
             Button { showsCalendar.toggle() } label: {
                 HStack(spacing: 8) {
                     Text(appState.timeTurnerShowsRecap ? (appState.timeTurnerSelectedRecap?.dayLabel ?? dayLabel) : dayLabel)
@@ -101,8 +106,8 @@ struct TimeTurnerPage: View {
             .popover(isPresented: $showsCalendar) {
                 DatePicker("Day", selection: Binding(get: { browsingDay }, set: {
                     appState.timeTurnerSelectedRecap = nil
-                    appState.timeTurnerDay = $0
-                }), in: ...Date(), displayedComponents: .date)
+                    appState.timeTurnerDay = max(earliestDay, min(Date(), $0))
+                }), in: earliestDay...Date(), displayedComponents: .date)
                     .datePickerStyle(.graphical).labelsHidden().padding()
             }
             Button { moveDay(1) } label: { Image(systemName: "chevron.right") }
@@ -115,6 +120,9 @@ struct TimeTurnerPage: View {
             }
         }
     }
+    private var earliestDay: Date {
+        Calendar.current.startOfDay(for: min(controller.visualMemory.captureReadyAt ?? Date(), Date()))
+    }
     private var dayLabel: String { appState.timeTurnerDay.formatted(.dateTime.day().month(.abbreviated).year()) }
 
     private var browsingDay: Date {
@@ -124,7 +132,7 @@ struct TimeTurnerPage: View {
     private func moveDay(_ offset: Int) {
         if let day = Calendar.current.date(byAdding: .day, value: offset, to: browsingDay) {
             appState.timeTurnerSelectedRecap = nil
-            appState.timeTurnerDay = day
+            appState.timeTurnerDay = max(earliestDay, min(Date(), day))
         }
     }
 }

@@ -463,6 +463,7 @@ struct SettingsView: View {
                 stopPermissionMonitoring()
             }
             .onChange(of: appState.selectedTab) { _, tab in
+                if tab != .settings { appState.requestsPermissionsSettings = false }
                 if tab == .settings {
                     selectedPane = appState.selectedSettingsPane
                     refreshDownloadedModelOptions(force: true)
@@ -474,11 +475,23 @@ struct SettingsView: View {
                 selectedPane = pane
             }
             .onChange(of: selectedPane) { _, pane in
+                if pane != .general { appState.requestsPermissionsSettings = false }
                 appState.selectedSettingsPane = pane
                 calendarPermission.refresh()
                 if pane == .dictation || pane == .meetings {
                     loadCachedAudioInputDevices()
                 }
+            }
+            .task(id: appState.requestsPermissionsSettings && selectedPane == .general && appState.selectedTab == .settings) {
+                guard appState.requestsPermissionsSettings, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                await Task.yield()
+                guard !Task.isCancelled, selectedPane == .general,
+                      appState.selectedTab == .settings else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { scrollProxy.scrollTo("settings.permissions", anchor: .top) }
+                appState.requestsPermissionsSettings = false
             }
             .task(id: SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)) {
                 let request = SettingsTourScrollRequest(target: activeFeatureTourTarget, pane: selectedPane)
@@ -583,7 +596,6 @@ struct SettingsView: View {
             .onChange(of: syncQRCodePresentationPhase) { _, phase in
                 guard phase == .dismiss else { return }
                 isShowingIPhoneBridgeQRCode = false
-                TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_settings"])
             }
             .sheet(isPresented: $isCleanupPromptManagerPresented) {
                 TranscriptCleanupPromptsManagerView(
@@ -850,7 +862,6 @@ struct SettingsView: View {
     private func showSyncSetupQRCode(source: String) {
         isShowingIPhoneBridgeQRCode = true
         controller.beginIPhoneBridgeDeviceDiscovery()
-        TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": source])
     }
 
     private var syncFlowAction: ICloudSyncFlowAction {
@@ -980,7 +991,8 @@ struct SettingsView: View {
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsCompactRow(
                     "Watch text appear during hands-free mode",
-                    description: "Preview as you speak; apply enabled cleanup when you stop."
+                    description: "Preview as you speak; apply enabled cleanup when you stop.",
+                    newFeature: .liveDictation
                 ) {
                     settingsControl("buffered_live_dictation")
                 }
@@ -1951,7 +1963,7 @@ struct SettingsView: View {
 
             dictationCleanupSettingsSection
 
-            settingsSection("App Formatting") {
+            settingsSection("App Formatting", newFeature: .appFormatting) {
                 DictationFormattingSettingsView(appState: appState, controller: controller)
             }
             .id(FeatureTourTarget.appFormatting.rawValue)
@@ -1985,7 +1997,7 @@ struct SettingsView: View {
     /// Cotypist (experimental, dev builds): on means its input source is active. Turning it on
     /// selects it, or opens Keyboard settings with a guide until the user has added it.
     private var cotypistSettingsSection: some View {
-        settingsSection("Cotypist") {
+        settingsSection("Cotypist", newFeature: .cotypist) {
             settingsCompactRow("Typeahead suggestions", description: cotypistStatus) {
                 settingsControl("cotypist_enabled")
             }
@@ -2323,6 +2335,14 @@ struct SettingsView: View {
 
     private var experimentalSettingsPane: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing24) {
+            settingsSection("Vidshot", icon: VidshotIcon.image()) {
+                settingsRow("Enable Vidshot", description: "Record a window or screen region with microphone narration. Captures stay on this Mac.") {
+                    settingsControl("feedback_capture")
+                }
+                settingsRow("Draw modifier") { settingsControl("feedback_capture_draw_modifier") }
+                compactActionButton(controller.feedbackCaptureOwnsMicrophone ? "Finish Vidshot" : "Start Vidshot") { controller.toggleFeedbackCapture() }
+                    .disabled(!appState.config.enableFeedbackCapture)
+            }
             TimeTurnerSettingsView(controller: controller, appState: appState)
             computerUseSettingsPane
             quilSettingsSection
@@ -2443,6 +2463,10 @@ struct SettingsView: View {
                     settingsControl("auto_record_meetings")
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
+                settingsCompactRow("Stop recording when a meeting ends", description: "Supports Zoom, Teams, Webex and browser meetings. Checks connectivity with Google when the meeting signal disappears. If the check fails, recording may continue for up to 8 minutes.") {
+                    settingsControl("meeting_auto_stop")
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Save meeting recording") {
                     settingsControl("recording_policy")
                 }
@@ -2509,6 +2533,7 @@ struct SettingsView: View {
                     Divider().background(MuesliTheme.surfaceBorder)
                     mutedMeetingDetectionAppsControl
                 }
+
             }
 
             settingsSection("Calendars") {
@@ -2597,6 +2622,7 @@ struct SettingsView: View {
                     accent: Color(nsColor: RecordingIndicatorPalette.accent(hex: appState.config.recordingColorHex))) { style in
                     controller.setSettingFromUI("indicator_style", value: style.rawValue)
                 }
+                .disabled(controller.feedbackCaptureOwnsMicrophone)
                 .id(FeatureTourTarget.recordingIndicatorStyle.rawValue)
                 .padding(.bottom, MuesliTheme.spacing8)
                 if appState.config.recordingIndicatorStyle == .notch {
@@ -3141,35 +3167,28 @@ struct SettingsView: View {
             permissionStatusRow(
                 "Microphone",
                 granted: micGranted,
-                action: { AVCaptureDevice.requestAccess(for: .audio) { _ in } },
+                action: FeaturePermission.microphone.request,
                 pane: "Privacy_Microphone"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Accessibility",
                 granted: accessibilityGranted,
-                action: {
-                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                    AXIsProcessTrustedWithOptions(opts)
-                },
+                action: FeaturePermission.accessibility.request,
                 pane: "Privacy_Accessibility"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Input Monitoring",
                 granted: inputMonitoringGranted,
-                action: {
-                    if !CGRequestListenEventAccess() {
-                        openPrivacyPane("Privacy_ListenEvent")
-                    }
-                },
+                action: FeaturePermission.inputMonitoring.request,
                 pane: "Privacy_ListenEvent"
             )
             Divider().background(MuesliTheme.surfaceBorder)
             permissionStatusRow(
                 "Screen Recording",
                 granted: screenRecordingGranted,
-                action: { CGRequestScreenCaptureAccess() },
+                action: FeaturePermission.screenRecording.request,
                 pane: "Privacy_ScreenCapture"
             )
             if appState.config.useCoreAudioTap {
@@ -3202,7 +3221,14 @@ struct SettingsView: View {
                 SettingsNote(errorMessage, tone: .error)
                     .padding(.bottom, MuesliTheme.spacing4)
             }
+            Divider().background(MuesliTheme.surfaceBorder)
+            SettingsRow(label: "", description: "Already enabled access in System Settings? Restart muesli to apply permission changes.") {
+                compactActionButton("Restart muesli…") {
+                    controller.confirmPermissionRestart()
+                }
+            }
         }
+        .id("settings.permissions")
     }
 
     @ViewBuilder
@@ -3273,6 +3299,11 @@ struct SettingsView: View {
     }
 
     private func openPrivacyPane(_ pane: String) {
+        if let permission = [FeaturePermission.accessibility, .inputMonitoring, .screenRecording]
+            .first(where: { $0.privacyPane == pane }) {
+            permission.openSettings()
+            return
+        }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
         }
@@ -3312,7 +3343,7 @@ struct SettingsView: View {
             settingsControl("ocr_context")
         } else {
             accentActionButton("Grant") {
-                _ = CGRequestScreenCaptureAccess()
+                FeaturePermission.screenRecording.request()
                 refreshPermissionStatuses(for: .permissionRequested)
             }
         }
@@ -3390,10 +3421,11 @@ struct SettingsView: View {
     private func settingsSection(
         _ title: String,
         icon: NSImage? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder content: () -> some View
     ) -> some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-            SettingsSectionHeading(title: title, icon: icon)
+            SettingsSectionHeading(title: title, icon: icon, newFeature: newFeature)
 
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -3422,9 +3454,10 @@ struct SettingsView: View {
     private func settingsCompactRow(
         _ label: String,
         description: String? = nil,
+        newFeature: NewFeature? = nil,
         @ViewBuilder control: () -> some View
     ) -> some View {
-        SettingsRow(label: label, description: description, controlWidth: nil, control: control)
+        SettingsRow(label: label, description: description, controlWidth: nil, newFeature: newFeature, control: control)
     }
 
     /// Optional setup reference, kept out of the way but available without hovering.

@@ -11,6 +11,7 @@ struct LocalStorageUsageView: View {
         (.models, "Downloaded models", "cpu", .blue),
         (.meetingAudio, "Meeting audio", "waveform", .teal),
         (.meetingVideo, "Meeting video", "video", .purple),
+        (.feedbackCaptures, "Vidshot captures", "camera.viewfinder", .red),
         (.database, "Notes, transcripts & app database", "externaldrive", .orange),
         (.waveformCache, "Audio waveform cache", "waveform.path", .pink),
         (.other, "Other app data", "folder", .gray)
@@ -46,7 +47,11 @@ struct LocalStorageUsageView: View {
                 ForEach(categories, id: \.0) { category, title, icon, color in
                     VStack(spacing: 10) {
                         HStack(spacing: 10) {
-                            Image(systemName: icon).foregroundStyle(color).frame(width: 20)
+                            if category == .feedbackCaptures {
+                                VidshotIcon().frame(width: 16, height: 16).foregroundStyle(color).frame(width: 20)
+                            } else {
+                                Image(systemName: icon).foregroundStyle(color).frame(width: 20)
+                            }
                             if category == .models && !usage.models.isEmpty {
                                 Button { showModels.toggle() } label: {
                                     HStack(spacing: 6) {

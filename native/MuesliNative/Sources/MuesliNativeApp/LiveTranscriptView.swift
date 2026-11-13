@@ -217,7 +217,7 @@ struct LiveTranscriptView: View {
     /// outside the durable transcript until their chunk is committed.
     var partialYou: String = ""
     var partialOthers: String = ""
-    @State private var presentation = LiveTranscriptPresentationModel()
+    @State var presentation = LiveTranscriptPresentationModel()
     @State private var didCopy = false
     @State private var follow = LiveTranscriptFollowState()
     private let topID = "liveTranscriptTop"

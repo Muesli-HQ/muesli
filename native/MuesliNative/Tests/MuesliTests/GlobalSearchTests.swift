@@ -18,6 +18,7 @@ struct GlobalSearchTests {
                 CREATE TABLE dictations(id INTEGER PRIMARY KEY,timestamp TEXT,raw_text TEXT,source TEXT,target_app_name TEXT,target_app_bundle_id TEXT,deleted_at REAL);
                 CREATE TABLE computer_use_traces(dictation_id INTEGER,final_message TEXT,trace_json TEXT);
                 CREATE TABLE meetings(id INTEGER PRIMARY KEY,start_time TEXT,title TEXT,raw_transcript TEXT,manual_notes TEXT,formatted_notes TEXT,deleted_at REAL);
+                CREATE TABLE meeting_participants(meeting_id INTEGER,participant_identifier TEXT,display_name TEXT,email_address TEXT,is_suppressed INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE quill_conversations(id INTEGER PRIMARY KEY,timestamp TEXT,deleted_at REAL);
                 CREATE TABLE quill_conversation_turns(id INTEGER PRIMARY KEY,conversation_id INTEGER REFERENCES quill_conversations(id) ON DELETE CASCADE,body TEXT);
                 CREATE TABLE cotypist_sessions(id INTEGER PRIMARY KEY,timestamp TEXT,target_app_name TEXT,target_app_bundle_id TEXT,deleted_at REAL);
@@ -38,6 +39,87 @@ struct GlobalSearchTests {
             try sql("PRAGMA foreign_keys=ON")
         }
         deinit { sqlite3_close(db); try? FileManager.default.removeItem(at: root) }
+    }
+
+    @Test("Participant names and email addresses follow meeting search updates")
+    func meetingParticipantsAreIndexed() throws {
+        let f = try Fixture()
+        try f.sql("""
+            INSERT INTO meetings VALUES(1,'2026-11-01T10:00:00Z','Planning','','','',NULL);
+            INSERT INTO meeting_participants VALUES(1,'person:1','Amara Stone','amara@example.test',0);
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        #expect(try index.search(.init(text: "Amara", kinds: [.meeting])).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "amara@example.test", kinds: [.meeting])).map(\.sourceID) == ["1"])
+        let person = MeetingParticipantDraft(participantIdentifier: "person:1", displayName: "Amara Stone", emailAddress: "amara@example.test")
+        #expect(try index.search(.init(text: "", kinds: [.meeting], person: person)).map(\.sourceID) == ["1"])
+        #expect(try index.search(.init(text: "absent", kinds: [.meeting], person: person)).isEmpty)
+        try f.sql("UPDATE meeting_participants SET display_name='Bianca',email_address='bianca@example.test' WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Amara", kinds: [.meeting])).isEmpty)
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).count == 1)
+        try f.sql("UPDATE meeting_participants SET is_suppressed=1 WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).isEmpty)
+        #expect(try index.search(.init(text: "", kinds: [.meeting], person: person)).isEmpty)
+        try f.sql("UPDATE meeting_participants SET is_suppressed=0 WHERE meeting_id=1")
+        try f.sql("DELETE FROM meeting_participants WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).isEmpty)
+    }
+
+    @Test("Identity-only participant updates do not rewrite meeting transcripts")
+    func participantIdentityUpdatesDoNotReindex() throws {
+        let f = try Fixture()
+        try f.sql("""
+            ALTER TABLE meeting_participants ADD COLUMN person_id TEXT;
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<250)
+              INSERT INTO meetings SELECT i,'2026-11-01T10:00:00Z','Meeting',hex(zeroblob(10000)),'','',NULL FROM n;
+            INSERT INTO meeting_participants SELECT id,'contact:alice','Alice',NULL,0,'before' FROM meetings;
+            """)
+        let index = try GlobalSearchIndex(databaseURL: f.url)
+        // Simulate an installation with the older unrestricted v2 trigger.
+        try f.sql("""
+            DROP TRIGGER global_search_meeting_v2_meeting_participants_UPDATE;
+            CREATE TRIGGER global_search_meeting_v2_meeting_participants_UPDATE AFTER UPDATE ON meeting_participants
+              BEGIN DELETE FROM global_search_documents WHERE identity='meeting:' || OLD.meeting_id; END;
+            """)
+        let upgraded = try GlobalSearchIndex(databaseURL: f.url)
+        _ = upgraded
+        try f.sql("""
+            CREATE TABLE search_rewrites(n INTEGER);
+            CREATE TRIGGER count_search_deletes AFTER DELETE ON global_search_documents BEGIN INSERT INTO search_rewrites VALUES(1); END;
+            UPDATE meeting_participants SET person_id='after';
+            """)
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(f.db, "SELECT count(*) FROM search_rewrites", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_int(statement, 0) == 0)
+        sqlite3_reset(statement)
+        try f.sql("UPDATE meeting_participants SET display_name='Bianca' WHERE meeting_id=1")
+        #expect(try index.search(.init(text: "Bianca", kinds: [.meeting])).map(\.sourceID) == ["1"])
+    }
+
+    @Test("Person meeting results can page through more than 100 meetings")
+    func personMeetingPages() throws {
+        let f = try Fixture()
+        for id in 1...105 {
+            try f.sql("INSERT INTO meetings VALUES(\(id),'2026-11-01T10:00:00Z','Meeting','','','',NULL)")
+            try f.sql("INSERT INTO meeting_participants VALUES(\(id),'contact:alice','Alice','alice@example.test',0)")
+        }
+        let service = try GlobalSearchService(databaseURL: f.url)
+        let person = MeetingParticipantDraft(participantIdentifier: "contact:alice", displayName: "Alice", emailAddress: "alice@example.test")
+        let first = try service.search(.init(text: "", kinds: [.meeting], person: person, limit: 100))
+        let second = try service.search(.init(text: "", kinds: [.meeting], person: person, limit: 100, offset: 100))
+        #expect(first.count == 100)
+        #expect(second.count == 5)
+        #expect(Set((first + second).map(\.sourceID)).count == 105)
+        // The panel requests an extra row to determine whether another page exists.
+        // Text hits vary in title relevance and BM25 rank across the page boundary.
+        try f.sql("UPDATE meetings SET title=CASE WHEN id % 3 = 0 THEN 'Alice meeting' ELSE 'Meeting' END")
+        let preview = try service.search(.init(text: "Alice", kinds: [.meeting], person: person, limit: 101))
+        let more = try service.search(.init(text: "Alice", kinds: [.meeting], person: person, limit: 100, offset: 100))
+        #expect(preview.count == 101)
+        #expect(more.count == 5)
+        #expect(Set((Array(preview.prefix(100)) + more).map(\.sourceID)).count == 105)
     }
 
     @Test("Evidence failures withhold only unverifiable candidates and report partial completeness", arguments: [GlobalSearchKind.chat, .recap])

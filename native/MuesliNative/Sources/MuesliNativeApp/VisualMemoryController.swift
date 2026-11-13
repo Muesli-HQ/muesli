@@ -26,9 +26,12 @@ final class VisualMemoryController {
         let name: String
     }
     var historyApps: [HistoryApp] = []
+    var captureReadyAt: Date?
     var catalogRevision = 0
     var message: String?
     var messageMeetingID: Int64?
+    var recordingNeedsScreenPermission = false
+    var ambientMissingPermission: FeaturePermission?
     private var recordedSessions: Set<UUID> = []
     private var sessionClipIDs: [UUID: Set<String>] = [:]
     private var recordingSessionID: UUID?
@@ -80,7 +83,7 @@ final class VisualMemoryController {
     @ObservationIgnored private var token = UUID()
     @ObservationIgnored private var ambientTask: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    private var locked: Bool { ambientPauseState.systemSuspended }
+    var locked: Bool { ambientPauseState.systemSuspended }
     @ObservationIgnored private var ambientConfig: AppConfig?
     @ObservationIgnored private var ambientGeneration = UUID()
     @ObservationIgnored private var lastFingerprint: Data?
@@ -142,8 +145,8 @@ final class VisualMemoryController {
         })
     }
 
-    // Called only on the utility maintenance task, never during UI rendering.
-    nonisolated private static func recoverableDuration(_ url: URL) -> Double? {
+    // Probe on a background task, never during UI rendering.
+    nonisolated static func recoverableDuration(_ url: URL) -> Double? {
         let asset = AVURLAsset(url: url)
         guard asset.isPlayable, !asset.tracks(withMediaType: .video).isEmpty else { return nil }
         let duration = CMTimeGetSeconds(asset.duration)
@@ -172,9 +175,10 @@ final class VisualMemoryController {
                 let store = self.store, meetingStore = self.meetingStore
                 do {
                     let snapshot = try await Task.detached(priority: .utility) {
-                        (try meetingStore?.items() ?? [], try store?.summary())
+                        (try meetingStore?.items() ?? [], try store?.summary(), try store?.captureReadyAt())
                     }.value
                     if generation == self.reloadGeneration {
+                        self.captureReadyAt = snapshot.2
                         if self.items != snapshot.0 { self.items = snapshot.0 }
                         if self.summaryRevision != snapshot.1?.revision {
                             self.summaryRevision = snapshot.1?.revision
@@ -250,14 +254,18 @@ final class VisualMemoryController {
 
     func requestRecording(meetingID: Int64, sessionID: UUID, startedAt: Date, presentationWindow: NSWindow, isStillActive: @escaping () -> Bool) {
         guard recordingMeetingID == nil, !isPreparing, !isFinalizing else { return }
+        ProductAnalytics.event(.meeting_video, .started)
         isPreparing = true; message = nil; messageMeetingID = meetingID; token = UUID()
+        recordingNeedsScreenPermission = false
         let attempt = token
         startTask = Task {
             defer { if token == attempt { isPreparing = false } }
             do {
                 await initializationTask?.value
                 guard token == attempt, isStillActive() else { return }
-                guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+                if !CGPreflightScreenCaptureAccess() { FeaturePermission.screenRecording.request() }
+                guard CGPreflightScreenCaptureAccess() else {
+                    recordingNeedsScreenPermission = true
                     throw ScreenVideoRecorder.error("Allow Screen Recording in System Settings, then try again.")
                 }
                 let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -454,6 +462,12 @@ final class VisualMemoryController {
                 self?.reload()
             }
         }
+        if ContentPrivacy.shared.isEnabled {
+            ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
+            ambientStatus = "Paused — Privacy mode"
+            lastFingerprint = nil; lastText = ""; lastSource = ""
+            return
+        }
         if !config.timeTurnerEnabled || audioFallbackActive {
             ambientTask?.cancel(); ambientTask = nil; ambientGeneration = UUID()
             ambientStatus = audioFallbackActive && config.timeTurnerEnabled ? "Paused during meeting audio capture" : "Off"
@@ -498,14 +512,29 @@ final class VisualMemoryController {
     }
 
     private func captureMoment(generation: UUID) async {
+        let privacy = ContentPrivacy.shared.capture()
+        guard ContentPrivacy.shared.permits(privacy) else { return }
         guard generation == ambientGeneration, !Task.isCancelled else { return }
+        if captureReadyAt == nil, ambientConfig?.timeTurnerEnabled == true,
+           CGPreflightScreenCaptureAccess(), AXIsProcessTrusted(), let store {
+            let ready = Date()
+            let recorded = try? await Task.detached(priority: .utility) { try store.markCaptureReady(at: ready) }.value
+            guard generation == ambientGeneration, !Task.isCancelled, ContentPrivacy.shared.permits(privacy) else { return }
+            captureReadyAt = recorded
+        }
         guard !ambientPaused, !locked else { ambientStatus = "Paused"; return }
         guard !isInactive else { ambientStatus = "Paused — inactive"; return }
         guard recordingMeetingID == nil else { ambientStatus = "Paused during screen recording"; return }
         guard ProcessInfo.processInfo.thermalState != .serious, ProcessInfo.processInfo.thermalState != .critical else {
             ambientStatus = "Paused to reduce heat"; return
         }
-        guard CGPreflightScreenCaptureAccess() else { ambientStatus = "Screen Recording permission needed"; return }
+        ambientMissingPermission = FeaturePermission.missingForScreenHistory(
+            screen: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
+        if let missing = ambientMissingPermission {
+            ambientStatus = "\(missing.rawValue) permission needed"
+            lastFingerprint = nil
+            return
+        }
         guard let store, let app = NSWorkspace.shared.frontmostApplication,
               let bundle = app.bundleIdentifier else { return }
         let excluded = [Bundle.main.bundleIdentifier ?? "", "com.apple.systempreferences", "com.apple.keychainaccess", "com.1password.1password", "com.agilebits.onepassword7"]
@@ -562,6 +591,8 @@ final class VisualMemoryController {
                 text: result.text, path: path, bytes: Int64(result.data.count), captureCompletedAt: captureCompleted,
                 pixelWidth: image.width, pixelHeight: image.height, appName: app.localizedName ?? bundle, windowTitle: title)
             try await Task.detached(priority: .utility) {
+                try ContentPrivacy.shared.beginWrite(privacy)
+                defer { ContentPrivacy.shared.endWrite() }
                 let url = try store.url(for: path)
                 try result.data.write(to: url, options: .atomic)
                 do { try store.save([item]) }

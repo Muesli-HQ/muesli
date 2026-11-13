@@ -1,13 +1,17 @@
+import MuesliCore
 import Foundation
 import os
 
 /// Shared ownership keeps the recording alive until both the edit and any
 /// cancelled-but-still-unwinding preview have stopped reading it.
 final class QuilRecordedAudio: Sendable {
+    private let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
     private let preserveOriginal = OSAllocatedUnfairLock(initialState: false)
     let url: URL
     init(url: URL) { self.url = url }
     func copyForRecovery(to directory: URL) throws -> URL {
+        try ContentPrivacy.shared.beginWrite(privacy)
+        defer { ContentPrivacy.shared.endWrite() }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let destination = directory.appendingPathComponent("quill-\(UUID()).wav")
@@ -20,7 +24,7 @@ final class QuilRecordedAudio: Sendable {
         }
     }
     deinit {
-        if !preserveOriginal.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) }
+        if !preserveOriginal.withLock({ $0 }) || !ContentPrivacy.shared.permits(privacy) { try? FileManager.default.removeItem(at: url) }
     }
 
 }

@@ -37,6 +37,8 @@ struct DictationRecoveryStore: Sendable {
 
     func save(wavURL: URL, startedAt: Date, durationSeconds: Double,
               modelName: String, failureMessage: String, partialTranscript: String? = nil) throws -> FailedDictation {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
         let files = FileManager.default
         let attributes = try files.attributesOfItem(atPath: wavURL.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular else {

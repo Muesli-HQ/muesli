@@ -12,6 +12,7 @@ struct ShortcutsView: View {
     @State private var computerUseShortcutMessage: String?
     @State private var quilShortcutMessage: String?
     @State private var meetingRecordingShortcutMessage: String?
+    @State private var feedbackCaptureShortcutMessage: String?
     @State private var pendingShortcut: PendingShortcut?
 
     private struct PendingShortcut: Equatable {
@@ -44,6 +45,8 @@ struct ShortcutsView: View {
                     computerUseShortcutSection
 
                     quilShortcutSection
+
+                    feedbackCaptureShortcutSection
 
                     meetingRecordingShortcutSection
 
@@ -81,6 +84,9 @@ struct ShortcutsView: View {
         .onChange(of: appState.config.enableQuilMode) { _, enabled in
             reconcileIndependentShortcutState()
             if !enabled, recordingTarget == .quil { stopRecording() }
+        }
+        .onChange(of: appState.config.enableFeedbackCapture) { _, enabled in
+            if !enabled, recordingTarget == .feedbackCapture { stopRecording() }
         }
         .onChange(of: appState.config.enableMeetingRecordingHotkey) { _, enabled in
             reconcileIndependentShortcutState()
@@ -250,6 +256,39 @@ struct ShortcutsView: View {
             RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
                 .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
         )
+    }
+
+    private var feedbackCaptureShortcutSection: some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: MuesliTheme.spacing8) {
+                        VidshotIcon().frame(width: 18, height: 18).foregroundStyle(MuesliTheme.accentText)
+                        Text("Vidshot").font(MuesliTheme.headline())
+                    }
+                    Text("Select a window or region to record. Press again to finish.")
+                        .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                }
+                Spacer()
+                MuesliSettingControl(controller: controller, id: "feedback_capture")
+                    .toggleStyle(.switch).tint(MuesliTheme.accent).labelsHidden()
+            }
+            Divider().background(MuesliTheme.surfaceBorder)
+            HStack(spacing: MuesliTheme.spacing12) {
+                hotkeyBadge(appState.config.feedbackCaptureHotkey)
+                compactChangeButton(for: .feedbackCapture)
+                Spacer()
+            }
+            if recordingTarget == .feedbackCapture {
+                Text(recorder.rejectedChord
+                    ? "Choose a modifier and letter chord"
+                    : "Press a modifier and letter chord. Esc to cancel.")
+                    .font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+            } else if let feedbackCaptureShortcutMessage { shortcutMessage(feedbackCaptureShortcutMessage) }
+        }
+        .padding(MuesliTheme.spacing16).background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium).strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1))
     }
 
     private var meetingRecordingShortcutSection: some View {
@@ -541,6 +580,8 @@ struct ShortcutsView: View {
         switch target {
         case .meetingRecording:
             return "Press a key or modifier..."
+        case .feedbackCapture:
+            return "Press a modifier and letter..."
         case .quil:
             return "Press one key or a two-key shortcut..."
         case .dictation:
@@ -585,6 +626,7 @@ struct ShortcutsView: View {
             computerUseShortcutMessage = nil
             meetingRecordingShortcutMessage = nil
             quilShortcutMessage = nil
+            feedbackCaptureShortcutMessage = nil
         } label: {
             Text("Reset to Defaults")
                 .font(MuesliTheme.body())
@@ -602,6 +644,8 @@ struct ShortcutsView: View {
                 && !appState.config.enableComputerUseHotkey
                 && appState.config.quilHotkey == .quilDefault
                 && !appState.config.enableQuilMode
+                && appState.config.feedbackCaptureHotkey == .feedbackCaptureDefault
+                && !appState.config.enableFeedbackCapture
                 && appState.config.meetingRecordingHotkey == .meetingRecordingDefault
                 && !appState.config.enableMeetingRecordingHotkey
                 && appState.config.hotkeyTriggerThresholdMS == HotkeyTriggerTiming.defaultThresholdMilliseconds
@@ -660,16 +704,19 @@ struct ShortcutsView: View {
         switch target {
         case .dictation:
             dictationShortcutMessage = message
-            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil; feedbackCaptureShortcutMessage = nil }
         case .computerUse:
             computerUseShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil; feedbackCaptureShortcutMessage = nil }
         case .quil:
             quilShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; feedbackCaptureShortcutMessage = nil }
+        case .feedbackCapture:
+            feedbackCaptureShortcutMessage = message
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; meetingRecordingShortcutMessage = nil; quilShortcutMessage = nil }
         case .meetingRecording:
             meetingRecordingShortcutMessage = message
-            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil }
+            if message == nil { dictationShortcutMessage = nil; computerUseShortcutMessage = nil; quilShortcutMessage = nil; feedbackCaptureShortcutMessage = nil }
         }
     }
 
