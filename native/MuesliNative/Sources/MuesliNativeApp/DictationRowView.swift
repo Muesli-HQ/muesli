@@ -157,10 +157,6 @@ struct DictationRowView: View {
                         }
                     }
 
-                    if record.hasRetainedAudio, let controller = recordingController {
-                        DictationRecordingControls(record: record, controller: controller)
-                    }
-
                     if twoLineHeight > 0 && threeLineHeight > twoLineHeight {
                         Button {
                             showsFullText.toggle()
@@ -178,6 +174,10 @@ struct DictationRowView: View {
                         .padding(.vertical, -6)
                         .accessibilityLabel(showsFullText ? "Collapse dictation text" : "Show full dictation text")
                         .accessibilityIdentifier("dictation.expand.\(record.id)")
+                    }
+
+                    if record.hasRetainedAudio, let controller = recordingController {
+                        DictationRecordingControls(record: record, controller: controller)
                     }
 
                     if isExpanded, let trace = record.computerUseTrace {
