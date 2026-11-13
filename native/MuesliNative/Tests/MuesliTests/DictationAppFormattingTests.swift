@@ -162,22 +162,37 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
-    @Test("A filtered-empty streaming result keeps the WAV available for recovery")
+    @Test("Empty streaming recovery owns the save and only alerts its originating session", arguments: [false, true])
     @MainActor
-    func emptyStreamingRecordingRecovery() async throws {
+    func emptyStreamingRecordingRecovery(newerDictation: Bool) async throws {
         let (directory, database, _, controller, board) = try streamingFixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("stream.wav")
         let wav = WavWriter.header(dataSize: 64) + Data(repeating: 0, count: 64)
         try wav.write(to: url)
+        var alerts: [String] = []
+        controller.dictationOutputTestHooks = .init(pasteboard: board, presentedAlert: { alerts.append($0) })
         let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
         controller.finishStreamingFormattingForTesting("REDACTED", sessionID: id, stoppedWAV: url)
+        #expect(controller.appState.activeAudioImportCount == 1)
+        #expect(controller.clearDictationHistory() == nil)
+        #expect(alerts == ["Dictation is in progress"])
+        alerts.removeAll()
+        if newerDictation {
+            let newer = controller.startStreamingFormattingForTesting(bundleID: "new.app")
+            controller.finishStreamingFormattingForTesting("", sessionID: newer)
+        }
         let deadline = ContinuousClock.now + .seconds(5)
-        while controller.appState.failedDictations.isEmpty && ContinuousClock.now < deadline {
+        while controller.appState.activeAudioImportCount > 0 && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(25))
         }
         let recovery = try #require(controller.appState.failedDictations.first)
         #expect(try Data(contentsOf: controller.failedDictationAudioURL(recovery)) == wav)
+        #expect(alerts == (newerDictation ? [] : ["dictation recovery"]))
+        let clear = try #require(controller.clearDictationHistory())
+        await clear.value
+        #expect(controller.appState.failedDictations.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: controller.failedDictationAudioURL(recovery).path))
         #expect(try database.recentDictations().isEmpty)
     }
 

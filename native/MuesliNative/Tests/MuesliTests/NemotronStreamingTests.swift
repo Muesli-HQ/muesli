@@ -1177,7 +1177,7 @@ private final class NativeNemotronFixture: @unchecked Sendable {
             return current
         }
         if loaded.failLoad { throw NemotronRNNTError.notLoaded }
-        let tokenizer = [1: loaded.revision == "a" ? "▁Meeting" : "▁Changed", 2: "▁Dictation"]
+        let tokenizer = [1: "<bg-BG>", 3: loaded.revision == "a" ? "▁Meeting" : "▁Changed", 2: "▁Dictation"]
         return .init(revision: loaded.revision, tokenizer: tokenizer) { [self] config, samples, state in
             let file = (samples.first ?? 0) < 0.5
             if orderedTail && file && snapshot.filePredictions == 1 && snapshot.captured && snapshot.dictationPredictions == 1 {
@@ -1199,7 +1199,7 @@ private final class NativeNemotronFixture: @unchecked Sendable {
                 #expect(await waitUntil { self.snapshot.waits == 2 }, "File prediction 2 must queue before dictation yields")
             }
             if file && snapshot.filePredictions == 3 { for await _ in finalRelease.stream {} }
-            let tokens = [file ? 1 : 2]
+            let tokens = [1, file ? 3 : 2]
             state.allTokens += tokens
             return tokens
         }

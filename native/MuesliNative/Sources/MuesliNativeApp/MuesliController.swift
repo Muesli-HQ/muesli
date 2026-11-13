@@ -37,6 +37,7 @@ struct DictationOutputTestHooks {
     var dispatchPaste: (PasteShortcut) -> Bool = { _ in true }
     var monitorCorrections: (String) -> Void = { _ in }
     var warning: (String) -> Void = { _ in }
+    var presentedAlert: ((String) -> Void)?
     var temporaryVoiceNote: ((String) -> Void)?
     var settled: () -> Void = {}
 }
@@ -1022,6 +1023,8 @@ public final class MuesliController: NSObject {
     var hasStarted = false
     let medASRTerms = MedASRTermsState()
     private var dictationRecoveryTask: Task<Void, Never>?
+    private var pendingStreamingRecoverySaves: [UUID: Task<Void, Never>] = [:]
+    private var streamingRecoveryAlertID: UUID?
     private var discardingDictationRecoveryIDs: Set<UUID> = []
     private var dictationRecoveryRefreshGeneration = 0
 
@@ -1612,6 +1615,7 @@ public final class MuesliController: NSObject {
         shutdownStep = "iCloud sync engine"
         await syncEngineCancellationTask?.value
         await dictationRecoveryTask?.value
+        for save in pendingStreamingRecoverySaves.values { await save.value }
         nativeRecordingGate.invalidate()
         shutdownStep = "transcription coordinator"
         await transcriptionCoordinator.shutdown()
@@ -10602,6 +10606,12 @@ public final class MuesliController: NSObject {
         aboveExistingSheet: Bool = false,
         completion: ((NSApplication.ModalResponse) -> Void)? = nil
     ) -> Bool {
+        #if DEBUG
+        if let observe = dictationOutputTestHooks?.presentedAlert {
+            observe(fallbackLogContext)
+            return true
+        }
+        #endif
         NSApp.activate(ignoringOtherApps: true)
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
             fputs(Self.alertFallbackLogMessage(
@@ -12992,6 +13002,7 @@ public final class MuesliController: NSObject {
     }
 
     private func beginDictationOutput(mode: DictationOutputMode? = nil, activation: AnalyticsValue = .hold) {
+        streamingRecoveryAlertID = nil
         dictationPrivacy = ContentPrivacy.shared.capture()
         if !isDictationTestMode {
             dictationAnalytics?.finish(.cancelled)
@@ -13820,9 +13831,9 @@ public final class MuesliController: NSObject {
     }
 
     func startStreamingFormattingForTesting(bundleID: String?, voiceNote: Bool = false) -> UUID {
+        beginDictationOutput(mode: voiceNote ? .voiceNote : .paste)
         clearCapturedDictationSessionContext()
         dictationPrivacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
-        currentDictationOutputMode = voiceNote ? .voiceNote : .paste
         captureDictationFormatting(targetBundleID: bundleID)
         let id = UUID()
         isNemotron35Streaming = true
@@ -14436,7 +14447,15 @@ public final class MuesliController: NSObject {
     private func recoverEmptyStreamingRecording(_ recording: DictationRecordingFile, startedAt: Date, duration: TimeInterval) {
         let privacy = dictationPrivacy
         let store = dictationRecoveryStore
-        Task {
+        let saveID = UUID()
+        streamingRecoveryAlertID = saveID
+        appState.activeAudioImportCount += 1
+        pendingStreamingRecoverySaves[saveID] = Task {
+            defer {
+                appState.activeAudioImportCount -= 1
+                pendingStreamingRecoverySaves[saveID] = nil
+                if streamingRecoveryAlertID == saveID { streamingRecoveryAlertID = nil }
+            }
             do {
                 let record = try await Task.detached {
                     try ContentPrivacy.$session.withValue(privacy) {
@@ -14451,12 +14470,14 @@ public final class MuesliController: NSObject {
                     await refreshFailedDictations()
                     return
                 }
+                guard streamingRecoveryAlertID == saveID, dictationState == .idle, !isShuttingDown else { return }
                 presentFailedDictation(record)
             } catch DictationRecoveryStore.Failure.noCapturedAudio {
                 return
             } catch {
                 guard ContentPrivacy.shared.permits(privacy) else { return }
                 recording.keepOriginalForManualRecovery()
+                guard streamingRecoveryAlertID == saveID, dictationState == .idle, !isShuttingDown else { return }
                 presentUnsavedDictationRecovery(recording.url)
             }
         }
