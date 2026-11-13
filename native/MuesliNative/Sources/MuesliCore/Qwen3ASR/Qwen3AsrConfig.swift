@@ -62,6 +62,8 @@ public enum MuesliQwen3AsrConfig {
     public static let assistantTokenId = 77_091
     public static let newlineTokenId = 198
 
+    static let controlTokenIds = eosTokenIds.union([imStartTokenId, audioStartTokenId, audioEndTokenId, audioTokenId, asrTextTokenId])
+
     // MARK: Generation
 
     public static let maxSequenceLength = 4096

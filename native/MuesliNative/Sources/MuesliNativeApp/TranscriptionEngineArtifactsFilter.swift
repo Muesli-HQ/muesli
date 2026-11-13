@@ -18,10 +18,10 @@ public struct TranscriptionEngineArtifactsFilter {
         "laughter and applause",
     ]
     private static let decoratedCue = try! NSRegularExpression(
-        pattern: #"\[[^\[\]]*\]|\([^()]*\)|<[^<>]*>|(?<!\*)\*\*(?!\*)[^*]+\*\*(?!\*)|(?<!\*)\*(?!\*)[^*]+\*(?!\*)"#
+        pattern: #"\[[^\[\]]*\]|\([^()]*\)|(?<!\*)\*\*(?!\*)[^*]+\*\*(?!\*)|(?<!\*)\*(?!\*)[^*]+\*(?!\*)"#
     )
     private static let unfinishedCue = try! NSRegularExpression(
-        pattern: #"[\[(<][^\[\]()<>*]*$|\*{1,2}[^*\[\]()<>]*\*?$"#
+        pattern: #"[\[(][^\[\]()*]*$|\*{1,2}[^*\[\]()<>]*\*?$"#
     )
 
     private static func cueBody(_ text: String) -> String {
@@ -67,21 +67,8 @@ public struct TranscriptionEngineArtifactsFilter {
 
     private static let artifactPatterns: [String] = [
         #"(?i)\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|silence|inaudible|music|applause|laughter|screaming|cheering)\s*\]"#,
-        #"(?i)[\[(<]\s*(?:speaking\s+in\s+)?(?:a\s+)?foreign\s+language\s*[\])>]"#,
-        #"(?i)<\s*(?:eou|eob|unk|blank|pad)\s*>"#,
+        #"(?i)[\[(]\s*(?:speaking\s+in\s+)?(?:a\s+)?foreign\s+language\s*[\])]"#,
     ]
-
-    // Named controls from the Cohere and Whisper decoders, including Whisper's
-    // 20 ms timestamps (0.00 through 30.00). Preserve arbitrary pipe-delimited tags.
-    private static let controlTokens: NSRegularExpression = {
-        let controls = ["nospeech", "nocaptions", "startofcontext", "startoftranscript",
-                        "startofprev", "endoftext", "notimestamp", "notimestamps", "nodiarize",
-                        "pnc", "noitn", "emo:undefined", "transcribe", "translate"]
-        let languages = WhisperKitLanguage.allCases.filter { $0 != .auto }.map(\.rawValue)
-        let names = (controls + languages).map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-        let pattern = #"<\|(?:"# + names + #"|(?:[0-9]|[12][0-9])\.[0-9][02468]|30\.00)\|>"#
-        return try! NSRegularExpression(pattern: pattern)
-    }()
 
     // Issue #754 reports an ordinary subword sequence, not a reserved token ID.
     // Only the uppercase standalone spelling is evidence of the placeholder.
@@ -112,8 +99,7 @@ public struct TranscriptionEngineArtifactsFilter {
 
     /// Only run on recognized speech, before user dictionaries or formatting.
     public static func cleanRecognitionArtifacts(_ text: String) -> String {
-        let withoutControls = removeMatchesPreservingLayout(controlTokens, from: text)
-        let result = removeMatchesPreservingLayout(redacted, from: withoutControls)
+        let result = removeMatchesPreservingLayout(redacted, from: text)
         if result != text && result.allSatisfy({ $0.isWhitespace || $0.isPunctuation }) { return "" }
         let source = result as NSString
         let matches = repeatedWords.matches(in: result, range: NSRange(location: 0, length: source.length))
@@ -132,7 +118,7 @@ public struct TranscriptionEngineArtifactsFilter {
         #"(?i)\bif a word is unclear,?\s*use the most likely word that fits well within the context of the overall sentence(?:\s+transcription)?\.?"#,
     ]
 
-    /// Removes known engine control tokens and non-speech annotations, then strips
+    /// Decoder controls are handled by each model. Remove caption cues and strip
     /// prompt leakage while preserving ordinary transcript text.
     static func apply(_ text: String) -> String {
         var stripped = cleanRecognitionArtifacts(stripCues(text, holdUnfinished: false))
@@ -167,7 +153,6 @@ public struct TranscriptionEngineArtifactsFilter {
         var result = removeMatchesPreservingLayout(decoratedCue, from: text) {
             cueLabels.contains(cueBody($0))
         }
-        result = removeMatchesPreservingLayout(controlTokens, from: result)
         for pattern in artifactPatterns {
             guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
             result = removeMatchesPreservingLayout(expression, from: result)

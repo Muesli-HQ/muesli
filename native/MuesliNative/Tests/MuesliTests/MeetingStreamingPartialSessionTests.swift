@@ -7,6 +7,13 @@ import Testing
 
 @Suite("Meeting streaming partial session")
 struct MeetingStreamingPartialSessionTests {
+    @Test func eouTextFallbackRequiresAnUnambiguousVocabulary() {
+        var vocab = [0: "<unk>", 1024: "<EOU>", 1025: "<EOB>", 5: "applause"]
+        #expect(Set(ParakeetEOUMeetingPartialEngine.unambiguousControls(in: vocab)) == ["<unk>", "<EOU>", "<EOB>"])
+        vocab[8] = "<"
+        #expect(ParakeetEOUMeetingPartialEngine.unambiguousControls(in: vocab).isEmpty)
+    }
+
     @Test("successful streaming text and silence never invoke recorded-audio transcription")
     func streamingSuccessSkipsBatch() async {
         let timing = MeetingChunkTimingSnapshot(startSampleIndex: 0, sampleCount: 16_000)

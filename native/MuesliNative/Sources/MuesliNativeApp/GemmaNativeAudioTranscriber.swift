@@ -33,9 +33,19 @@ enum GemmaNativeAudioPolicy {
         return samples.allSatisfy { abs($0) <= 0.0000001 }
     }
 
+    // Reject a structured response as a whole: deleting delimiters alone could
+    // publish reasoning or tool arguments as speech.
+    static func speechTokens(_ tokens: [Int]) throws -> [Int] {
+        if tokens.contains(where: { (46...51).contains($0) || [98, 100, 101, 105, 106].contains($0) }) {
+            throw GemmaNativeAudioError.invalidResponse
+        }
+        let nonSpeech: Set<Int> = [0, 1, 2, 3, 4, 52, 255999, 256000, 258880, 258881, 258882, 258883, 258884]
+        return tokens.filter { !nonSpeech.contains($0) }
+    }
+
     @available(macOS 15, *)
     static func validatedOutput(_ raw: String, completed: Bool) throws -> String {
-        guard completed, !raw.contains("<|"), !raw.contains("<turn|>"), !raw.contains("<channel|>"), !raw.contains("<eos>") else {
+        guard completed else {
             throw GemmaNativeAudioError.invalidResponse
         }
         let text = Gemma4LiteRTTranscriber.cleanTranscript(raw)
@@ -351,7 +361,7 @@ actor GemmaNativeAudioTranscriber {
                 decodeSeconds: Date().timeIntervalSince(generationStart), vadSeconds: vadSeconds, skippedSilence: false)
         }
         let block = try await effectiveBlock(model: model, requested: mtpBlockOverride ?? mtpBlock)
-        let (raw, info, tokenCount) = try await generateRaw(input: input, model: model, context: state.context, block: block, maxTokens: maxOutputTokens)
+        let (raw, info, tokenCount) = try await generateRaw(input: input, model: model, context: state.context, block: block, maxTokens: maxOutputTokens, speechOnly: systemPrompt == nil)
         let text: String
         do {
             if systemPrompt != nil {
@@ -383,7 +393,7 @@ actor GemmaNativeAudioTranscriber {
         }
     }
     private func generateRaw(input: LMInput, cache: [KVCache]? = nil, model: Gemma4LiteRTModel, context: ModelContext,
-                             block: Int, maxTokens: Int) async throws -> (String, GenerateCompletionInfo, Int) {
+                             block: Int, maxTokens: Int, speechOnly: Bool = false) async throws -> (String, GenerateCompletionInfo, Int) {
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0, topK: 1, prefill: .init(stepSize: 2048, chunking: .remainder))
         let stream: AsyncStream<TokenGeneration>
         let generationTask: Task<Void, Never>?
@@ -414,7 +424,8 @@ actor GemmaNativeAudioTranscriber {
         } onCancel: { generationTask?.cancel() }
         try Task.checkCancellation()
         guard let info = completion else { throw GemmaNativeAudioError.invalidResponse }
-        let raw = context.tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
+        let decodedIDs = speechOnly ? try GemmaNativeAudioPolicy.speechTokens(tokens) : tokens
+        let raw = context.tokenizer.decode(tokenIds: decodedIDs, skipSpecialTokens: false)
         return (raw, info, tokens.count)
 
     }
