@@ -15,6 +15,9 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public var text: String
     public var appName: String?
     public var windowTitle: String?
+    /// Present for whole-display captures; legacy/focused-window captures omit it.
+    public var display: VisualMemoryDisplay?
+    public var includedApps: [VisualMemoryApp]?
     public var path: String
     public var duration: Double
     public var meetingOffset: Double
@@ -29,7 +32,9 @@ public struct VisualMemoryItem: Codable, Identifiable, Sendable, Equatable {
     public init(id: String = UUID().uuidString, kind: Kind, meetingID: Int64? = nil,
                 capturedAt: Date = Date(), source: String, bundleID: String = "", text: String = "",
                 path: String, duration: Double = 0, meetingOffset: Double = 0, frameIndex: Int? = nil, bytes: Int64 = 0,
-                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil, appName: String? = nil, windowTitle: String? = nil) {
+                captureCompletedAt: Date? = nil, pixelWidth: Int? = nil, pixelHeight: Int? = nil, appName: String? = nil, windowTitle: String? = nil,
+                display: VisualMemoryDisplay? = nil, includedApps: [VisualMemoryApp]? = nil) {
+        self.display = display; self.includedApps = includedApps
         self.appName = appName; self.windowTitle = windowTitle
         self.id = id; self.kind = kind; self.meetingID = meetingID; self.capturedAt = capturedAt
         self.source = source; self.bundleID = bundleID; self.text = text; self.path = path
@@ -44,6 +49,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSRecursiveLock()
     private var hasCaptureTable = false
+    private var hasCaptureApps = false
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(root: URL, readOnly: Bool = false) throws {
@@ -55,6 +61,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         }
         sqlite3_busy_timeout(db, 5_000)
         hasCaptureTable = try scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='time_turner_captures'") > 0
+        hasCaptureApps = try scalar("SELECT count(*) FROM sqlite_master WHERE name='time_turner_capture_apps'") > 0
         if readOnly {
             if try scalar("SELECT count(*) FROM sqlite_master WHERE name='evidence_search'") == 0 {
                 try execute("PRAGMA temp_store=MEMORY")
@@ -71,6 +78,8 @@ public final class VisualMemoryStore: @unchecked Sendable {
         try migrateCaptureTable()
         try migrateRetention()
         try migrateSearchRowIDs()
+        try migrateDisplays()
+        hasCaptureApps = true
         try execute("CREATE TABLE IF NOT EXISTS time_turner_lifecycle(id INTEGER PRIMARY KEY CHECK(id=1), capture_ready_at REAL NOT NULL)")
         // Existing captures prove capture was ready before this version was installed.
         try execute("INSERT OR IGNORE INTO time_turner_lifecycle SELECT 1,captured FROM evidence WHERE kind='moment' ORDER BY captured LIMIT 1")
@@ -136,7 +145,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
     /// compatibility record; triggers keep typed columns in sync even for older writers.
     private func migrateCaptureTable() throws {
         let version = try scalar("PRAGMA user_version")
-        guard version <= 3 else { throw NSError(domain: "VisualMemoryStore", code: 1,
+        guard version <= 4 else { throw NSError(domain: "VisualMemoryStore", code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Screen history was created by a newer Muesli version."]) }
         guard version < 1 else { return }
         try execute("BEGIN IMMEDIATE")
@@ -248,6 +257,76 @@ public final class VisualMemoryStore: @unchecked Sendable {
         } catch { try? execute("ROLLBACK"); throw error }
     }
 
+    /// Additive projection: each screenshot owns one OCR body and zero or more apps.
+    /// App rows survive screenshot expiry and disappear with their observation.
+    private func migrateDisplays() throws {
+        guard try scalar("PRAGMA user_version") < 4 else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            if try scalar("PRAGMA user_version") < 4 {
+                try execute("""
+                    ALTER TABLE time_turner_captures ADD COLUMN display_uuid TEXT;
+                    ALTER TABLE time_turner_captures ADD COLUMN display_name TEXT;
+                    ALTER TABLE time_turner_captures ADD COLUMN display_id INTEGER;
+                    CREATE TABLE time_turner_capture_apps (
+                        capture_id TEXT NOT NULL, bundle_id TEXT NOT NULL COLLATE NOCASE,
+                        app_name TEXT NOT NULL COLLATE NOCASE,
+                        PRIMARY KEY(capture_id,bundle_id)
+                    );
+                    CREATE INDEX capture_apps_bundle ON time_turner_capture_apps(bundle_id,capture_id);
+                    CREATE INDEX capture_apps_name ON time_turner_capture_apps(app_name,capture_id);
+                    CREATE TRIGGER capture_apps_delete AFTER DELETE ON time_turner_captures BEGIN
+                        DELETE FROM time_turner_capture_apps WHERE capture_id=OLD.id;
+                    END;
+                    """)
+                let projection = """
+                    UPDATE time_turner_captures SET
+                        display_uuid=json_extract(e.body,'$.display.uuid'),
+                        display_name=json_extract(e.body,'$.display.name'),
+                        display_id=json_extract(e.body,'$.display.id'),
+                        app_name=CASE WHEN json_type(e.body,'$.display')='object' THEN '' ELSE app_name END
+                    FROM evidence e WHERE e.id=time_turner_captures.id
+                    """
+                // Scalar strings from json_each are plain SQL text, not JSON documents.
+                let validApp = """
+                    CASE WHEN a.type='object' THEN
+                        json_type(a.value,'$.bundleID') IS 'text' AND json_type(a.value,'$.name') IS 'text'
+                    ELSE 0 END
+                    """
+                // Keep the Codable body readable too. Preserve valid siblings, OCR and other fields.
+                try execute("""
+                    UPDATE evidence SET body=json_remove(body,'$.includedApps')
+                    WHERE kind='moment' AND json_type(body,'$.includedApps') NOT IN ('array','null');
+                    UPDATE evidence SET body=json_set(body,'$.includedApps',(
+                        SELECT json_group_array(json(a.value)) FROM json_each(evidence.body,'$.includedApps') a
+                        WHERE \(validApp)))
+                    WHERE kind='moment' AND json_type(body,'$.includedApps')='array'
+                      AND EXISTS (SELECT 1 FROM json_each(evidence.body,'$.includedApps') a WHERE NOT (\(validApp)));
+                    """)
+                let apps = """
+                    SELECT e.id,json_extract(a.value,'$.bundleID'),json_extract(a.value,'$.name')
+                    FROM evidence e, json_each(e.body,'$.includedApps') a
+                    WHERE e.kind='moment' AND json_type(e.body,'$.includedApps')='array' AND (\(validApp))
+                    """
+                let focused = """
+                    SELECT id,bundle_id,app_name FROM time_turner_captures WHERE (bundle_id!='' OR app_name!='')
+                    """
+                try execute(projection)
+                try execute("INSERT OR IGNORE INTO time_turner_capture_apps " + apps)
+                try execute("INSERT OR IGNORE INTO time_turner_capture_apps " + focused)
+                try execute("""
+                    CREATE TRIGGER capture_display_insert AFTER INSERT ON time_turner_captures BEGIN
+                        \(projection) AND e.id=NEW.id;
+                        INSERT OR IGNORE INTO time_turner_capture_apps \(apps) AND e.id=NEW.id;
+                        INSERT OR IGNORE INTO time_turner_capture_apps \(focused) AND id=NEW.id;
+                    END;
+                    PRAGMA user_version=4;
+                    """)
+            }
+            try execute("COMMIT")
+        } catch { try? execute("ROLLBACK"); throw error }
+    }
+
     private func bindAndRun(_ sql: String, value: String) throws {
         var s: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { throw failure() }
@@ -280,18 +359,22 @@ public final class VisualMemoryStore: @unchecked Sendable {
     }
     public func finishMediaDeletions() throws {
         lock.lock(); defer { lock.unlock() }
-        let pending = try strings("SELECT path FROM pending_media_deletions")
-        guard !pending.isEmpty else { return }
-        let active = Set(try strings("""
-            SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
-            UNION SELECT json_extract(body,'$.path') FROM evidence
-                WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
-            """))
-        for path in pending {
-            guard !active.contains(path) else { continue }
-            let file = try url(for: path)
-            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-            try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: path)
+        guard try scalar("SELECT EXISTS(SELECT 1 FROM pending_media_deletions)") != 0 else { return }
+        // Serialize the reference check and unlink with capture publication, including
+        // writers using a different connection to this catalog.
+        try transaction {
+            let pending = try strings("SELECT path FROM pending_media_deletions")
+            let active = Set(try strings("""
+                SELECT media_relative_path FROM time_turner_captures WHERE media_deleted_at_unix IS NULL
+                UNION SELECT json_extract(body,'$.path') FROM evidence
+                    WHERE kind!='moment' AND json_extract(body,'$.mediaDeletedAt') IS NULL
+                """))
+            for path in pending {
+                guard !active.contains(path) else { continue }
+                let file = try url(for: path)
+                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+                try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: path)
+            }
         }
     }
 
@@ -362,37 +445,76 @@ public final class VisualMemoryStore: @unchecked Sendable {
         }
         return resolved
     }
-    public func save(_ items: [VisualMemoryItem]) throws {
-        lock.lock(); defer { lock.unlock() }
+    private func transaction(_ body: () throws -> Void) throws {
         try execute("BEGIN IMMEDIATE")
         do {
-            for item in items {
-                _ = try url(for: item.path)
-                let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT INTO evidence VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,meeting_id=excluded.meeting_id,captured=excluded.captured,body=excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, item.id, -1, transient)
-                sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
-                if let id = item.meetingID { sqlite3_bind_int64(stmt, 3, id) } else { sqlite3_bind_null(stmt, 3) }
-                sqlite3_bind_double(stmt, 4, item.capturedAt.timeIntervalSince1970)
-                sqlite3_bind_text(stmt, 5, body, -1, transient)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
-                try removeSearch(item.id)
-                var search: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search(rowid,id,text) SELECT rowid,?,? FROM evidence WHERE id=?", -1, &search, nil) == SQLITE_OK else { throw failure() }
-                defer { sqlite3_finalize(search) }
-                sqlite3_bind_text(search, 1, item.id, -1, transient)
-                sqlite3_bind_text(search, 2, item.source + " " + item.text, -1, transient)
-                sqlite3_bind_text(search, 3, item.id, -1, transient)
-                guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
-            }
-            if let first = items.filter({ $0.kind == .moment }).map(\.capturedAt).min() {
-                try markCaptureReady(at: first)
-            }
+            try body()
             try execute("COMMIT")
-        } catch { try? execute("ROLLBACK"); throw error }
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
+
+    public func save(_ items: [VisualMemoryItem]) throws {
+        lock.lock(); defer { lock.unlock() }
+        try transaction { try writeEvidence(items) }
+    }
+
+    /// Publish a newly acquired screenshot and its searchable evidence together.
+    /// The caller owns a fresh media path. Its cleanup obligation survives process
+    /// exit, SQLite rollback, or a transient failure to unlink the rejected file.
+    public func saveCapture(_ item: VisualMemoryItem, media: Data, validate: () throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        let file = try url(for: item.path)
+        guard item.kind == .moment, !FileManager.default.fileExists(atPath: file.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        try validate()
+        try bindAndRun("INSERT INTO pending_media_deletions(path) VALUES(?)", value: item.path)
+        do {
+            try transaction {
+                // A cleanup on another connection may have claimed this path first.
+                try bindAndRun("DELETE FROM pending_media_deletions WHERE path=?", value: item.path)
+                guard sqlite3_changes(db) == 1 else { throw CancellationError() }
+                try validate()
+                try media.write(to: file, options: .withoutOverwriting)
+                try writeEvidence([item])
+                try validate()
+            }
+        } catch {
+            try finishMediaDeletions()
+            throw error
+        }
+    }
+
+    private func writeEvidence(_ items: [VisualMemoryItem]) throws {
+        for item in items {
+            _ = try url(for: item.path)
+            let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self)
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT INTO evidence VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,meeting_id=excluded.meeting_id,captured=excluded.captured,body=excluded.body", -1, &stmt, nil) == SQLITE_OK else { throw failure() }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, item.id, -1, transient)
+            sqlite3_bind_text(stmt, 2, item.kind.rawValue, -1, transient)
+            if let id = item.meetingID { sqlite3_bind_int64(stmt, 3, id) } else { sqlite3_bind_null(stmt, 3) }
+            sqlite3_bind_double(stmt, 4, item.capturedAt.timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 5, body, -1, transient)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw failure() }
+            try removeSearch(item.id)
+            var search: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT INTO evidence_search(rowid,id,text) SELECT rowid,?,? FROM evidence WHERE id=?", -1, &search, nil) == SQLITE_OK else { throw failure() }
+            defer { sqlite3_finalize(search) }
+            sqlite3_bind_text(search, 1, item.id, -1, transient)
+            sqlite3_bind_text(search, 2, item.source + " " + item.text, -1, transient)
+            sqlite3_bind_text(search, 3, item.id, -1, transient)
+            guard sqlite3_step(search) == SQLITE_DONE else { throw failure() }
+        }
+        if let first = items.filter({ $0.kind == .moment }).map(\.capturedAt).min() {
+            try markCaptureReady(at: first)
+        }
+    }
+
     /// Do not let background compaction restore media or records removed by retention.
     public func replaceMedia(_ replacements: [VisualMemoryItem], ifUnchanged expected: [VisualMemoryItem]) throws -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -475,7 +597,7 @@ public final class VisualMemoryStore: @unchecked Sendable {
         if let cachedSummary, cachedSummary.revision == revision { return cachedSummary }
         var apps: [String: String] = [:]
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT bundle_id,MAX(COALESCE(app_name,bundle_id)) FROM time_turner_captures WHERE bundle_id!='' GROUP BY bundle_id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
+        guard sqlite3_prepare_v2(db, hasCaptureApps ? "SELECT bundle_id,MAX(app_name) FROM time_turner_capture_apps WHERE bundle_id!='' GROUP BY bundle_id" : "SELECT bundle_id,MAX(COALESCE(app_name,bundle_id)) FROM time_turner_captures WHERE bundle_id!='' GROUP BY bundle_id", -1, &statement, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(statement) }
         var status = sqlite3_step(statement)
         while status == SQLITE_ROW {
@@ -561,7 +683,9 @@ public final class VisualMemoryStore: @unchecked Sendable {
         let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchClause = phrase.isEmpty ? "" : " AND id IN (SELECT id FROM evidence_search WHERE evidence_search MATCH ?)"
         let legacyAppClause = app == nil ? "" : " AND (lower(json_extract(body,'$.bundleID'))=lower(?) OR lower(CASE WHEN instr(json_extract(body,'$.source'),' · ')>0 THEN substr(json_extract(body,'$.source'),1,instr(json_extract(body,'$.source'),' · ')-1) ELSE json_extract(body,'$.source') END)=lower(?))"
-        let appClause = app == nil ? "" : (hasCaptureTable
+        let appClause = app == nil ? "" : (hasCaptureApps
+            ? " AND id IN (SELECT capture_id FROM time_turner_capture_apps WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
+            : hasCaptureTable
             ? " AND id IN (SELECT id FROM time_turner_captures WHERE bundle_id=? COLLATE NOCASE OR app_name=? COLLATE NOCASE)"
             : legacyAppClause)
         let comparison = chronological ? ">" : "<"

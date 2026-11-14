@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import Testing
 import SQLite3
 import ImageIO
@@ -8,6 +9,332 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+
+    @Test func displayPrivacyChecksSecureFieldsInTheSecondWindow() {
+        let focused = CGRect(x: 10, y: 10, width: 400, height: 240)
+        let other = focused.offsetBy(dx: 420, dy: 0)
+        let bounds = [0: focused, 1: other]
+        // Both AX roots belong to one app. Only the second has a nested password field.
+        let children = [0: [2], 1: [3], 3: [4]]
+        var secureNode: Int?
+        var unreadableNode: Int?
+        func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
+            var inspected = 0
+            return TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 1], frame: { bounds[$0] },
+                inspect: { node in
+                    inspected += 1
+                    guard node != unreadableNode else { return nil }
+                    return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
+                },
+                withinBudget: { inspected < budget })
+        }
+        #expect(permits([focused, other]))
+        secureNode = 4 // Secure control appears between capture and the second check.
+        #expect(permits([focused]))
+        #expect(!permits([focused, other]))
+        #expect(!permits([other]))
+        secureNode = nil
+        unreadableNode = 3
+        #expect(!permits([focused, other]))
+        unreadableNode = nil
+        #expect(!permits([focused, other], budget: 3))
+        #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
+        #expect(!TimeTurnerWindowPrivacy.permits(frames: [focused], windows: [0, 1],
+            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }))
+    }
+
+    @Test func largeWindowsRequireACompletePrivacyInspection() {
+        let first = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let second = first.offsetBy(dx: 800, dy: 0)
+        // One wide window and one deep tree, with a shared child and a cycle.
+        func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
+            TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 2000],
+                frame: { $0 == 0 ? first : second }, inspect: { node in
+                    guard node != unreadable else { return nil }
+                    let children: [Int]
+                    switch node {
+                    case 0: children = Array(1...1500)
+                    case 2000..<3500: children = [node + 1]
+                    case 3500: children = [2000, 1500]
+                    default: children = []
+                    }
+                    return (node == secure ? kAXSecureTextFieldSubrole : nil, children)
+                }, withinBudget: { true })
+        }
+        #expect(permits([first]))
+        #expect(permits([first, second]))
+        #expect(!permits([first], secure: 1)) // Last child visited in the wide window.
+        #expect(!permits([first, second], secure: 3500))
+        #expect(!permits([second], unreadable: 3499))
+    }
+
+    @Test func batchedPrivacyReadRejectsPartialOrMalformedAXResults() throws {
+        func error(_ code: AXError) throws -> AXValue {
+            var code = code
+            return try #require(AXValueCreate(.axError, &code))
+        }
+        func decode(_ values: NSArray) -> (subrole: String?, children: [AXUIElement])? {
+            TimeTurnerWindowPrivacy.decodeNode(values, withinBudget: { true })
+        }
+        let unsupported = try error(.attributeUnsupported)
+        let timedOut = try error(.cannotComplete)
+        let node = AXUIElementCreateSystemWide()
+        #expect(decode([unsupported, [node], kAXWindowRole])?.children.count == 1)
+        #expect(decode([kAXSecureTextFieldSubrole, [], kAXTextFieldRole])?.subrole == kAXSecureTextFieldSubrole)
+        #expect(decode([NSNull(), unsupported, kAXStaticTextRole]) != nil)
+        #expect(decode([timedOut, [], kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, timedOut, kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, NSNull(), kAXWindowRole]) == nil)
+        #expect(decode([unsupported, ["invalid"], kAXWindowRole]) == nil)
+        #expect(decode([unsupported]) == nil)
+        #expect(TimeTurnerWindowPrivacy.decodeNode([unsupported, [node], kAXWindowRole], withinBudget: { false }) == nil)
+    }
+
+    @Test func missingAXChildrenRequireAKnownLeaf() {
+        for error in [AXError.attributeUnsupported, .noValue] {
+            for role in ["AXWindow", "AXGroup", "AXWebArea", "AXTextField", "AXUnknown", ""] {
+                #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: role))
+            }
+            #expect(TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: kAXStaticTextRole))
+            #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXWindowsAttribute, role: kAXStaticTextRole))
+        }
+        #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: .cannotComplete, attribute: kAXChildrenAttribute, role: kAXButtonRole))
+    }
+
+    @Test func privacyToggleDuringCaptureRejectsOriginalImageBeforeRecognition() throws {
+        let policy = ContentPrivacy(enabled: false)
+        let session = policy.capture()
+        let bitmap = try #require(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8,
+            bytesPerRow: 512, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let snapshot = try #require(bitmap.makeImage())
+        policy.setEnabled(true)
+        policy.setEnabled(false)
+        #expect(throws: CancellationError.self) {
+            _ = try VisualMemoryEncoding.encode(.init(image: snapshot), privacy: session, policy: policy)
+        }
+    }
+
+    @Test @MainActor func displayPrivacyBudgetSpansAppsAndRevalidation() async {
+        var now: TimeInterval = 0
+        var budget = TimeTurnerAXBudget(interval: 2, uptime: { now })
+        let firstApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.5
+            return true
+        }
+        #expect(firstApp)
+        let secondApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.25
+            return true
+        }
+        #expect(secondApp)
+        now += 20 // Image acquisition and OCR happen between the two AX passes.
+        let revalidated = await budget.permits { deadline in
+            #expect(deadline == 21)
+            now += 0.5 // Good AX data arriving too late must be discarded.
+            return true
+        }
+        #expect(!revalidated)
+        let anotherDisplay = await budget.permits { _ in
+            Issue.record("An exhausted cycle started another AX call")
+            return true
+        }
+        #expect(!anotherDisplay)
+        var nextCycle = TimeTurnerAXBudget(interval: 60, uptime: { now })
+        #expect(nextCycle.remaining == 2)
+        let slowApp = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { deadline in
+            now = deadline
+            return true
+        }
+        #expect(!slowApp)
+        let unchecked = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { _ in
+            Issue.record("Preflight used the time reserved for revalidation")
+            return true
+        }
+        #expect(!unchecked)
+        let eligible = await nextCycle.permits { deadline in deadline == now + 1 }
+        #expect(eligible)
+    }
+
+    @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
+        let selected: Set<String> = ["external-a", "external-b"]
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))
+        // A newly connected display, even with a reused numeric display ID, is not selected.
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "built-in", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: []))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "focused", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "unknown", selected: selected))
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "all_displays", selected: []))
+        // Reconnection uses the saved UUID, independent of enumeration order or numeric ID.
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-b", scope: "selected_displays", selected: selected))
+    }
+    private func removeDisplaySchema(_ db: OpaquePointer?) throws {
+        #expect(sqlite3_exec(db, """
+            DROP TRIGGER capture_display_insert;
+            DROP TRIGGER capture_apps_delete;
+            DROP TABLE time_turner_capture_apps;
+            ALTER TABLE time_turner_captures DROP COLUMN display_uuid;
+            ALTER TABLE time_turner_captures DROP COLUMN display_name;
+            ALTER TABLE time_turner_captures DROP COLUMN display_id;
+            PRAGMA user_version=3;
+            """, nil, nil, nil) == SQLITE_OK)
+    }
+
+    @Test func displayPolicyHandlesExternalCoordinatesAndExclusions() {
+        let left = CGRect(x: -1920, y: -200, width: 1920, height: 1080)
+        let laptop = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let spanning = CGRect(x: -300, y: 100, width: 600, height: 500)
+        for display in [left, laptop] {
+            #expect(VisualMemoryDisplayPolicy.includes(window: spanning, layer: 0, display: display,
+                bundleID: "editor", title: "Work", excluded: []))
+        }
+        #expect(!VisualMemoryDisplayPolicy.includes(window: CGRect(x: 300, y: 0, width: 600, height: 500),
+            layer: 0, display: left, bundleID: "editor", title: "Work", excluded: []))
+        for (bundle, title, layer) in [("private", "Work", 0), ("editor", "Incognito", 0), ("editor", "Work", 25)] {
+            #expect(!VisualMemoryDisplayPolicy.includes(window: spanning, layer: layer, display: left,
+                bundleID: bundle, title: title, excluded: ["private"]))
+        }
+    }
+
+    @Test func displaysDeduplicateIndependentlyAndReconnectFresh() {
+        var changes = VisualMemoryDisplayChanges()
+        let fingerprint = Data([1, 2])
+        changes.record(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(changes.isUnchanged(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor"))
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+        changes.record(display: "external", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(!changes.isUnchanged(display: "external", fingerprint: Data([3]), text: "same", source: "Editor"))
+        changes.retain(displays: ["laptop"])
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+    }
+
+    @Test func displayMetadataAndAppSearchSurviveRetentionAndReopening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date()
+        var item = VisualMemoryItem(kind: .moment, capturedAt: now, source: "External · Browser · Editor", text: "planning", path: "a.heic",
+            display: .init(id: 2, uuid: "external-uuid", name: "External"),
+            includedApps: [.init(bundleID: "browser", name: "Browser"), .init(bundleID: "editor", name: "Editor")])
+        try store.save([item])
+        #expect(try store.searchMoments(app: "EDITOR").map(\.id) == [item.id])
+        #expect(try store.searchMoments(app: "Browser").map(\.id) == [item.id])
+        #expect(try store.summary().apps["editor"] == "Editor")
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.moment(id: item.id)?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").count == 1)
+        // Archive updates must preserve display attribution and remove obsolete app rows.
+        item.path = "archive.mp4"; item.frameIndex = 0
+        item.includedApps = [.init(bundleID: "editor", name: "Editor")]
+        try store.save([item])
+        #expect(try store.searchMoments(app: "browser").isEmpty)
+        try store.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try reader.searchMoments(app: "editor").first?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").first?.mediaDeletedAt != nil)
+        try store.delete(ids: [item.id])
+        #expect(try store.summary().apps.isEmpty)
+        #expect(try reader.searchMoments(app: "editor").isEmpty)
+    }
+
+    @Test func rejectedCaptureStaysUnsearchableWhenCleanupFailsAndRetriesAfterReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(kind: .moment, source: "Monitor", text: "private excerpt", path: "candidate.heic",
+            display: .init(id: 2, uuid: "external", name: "External"), includedApps: [.init(bundleID: "editor", name: "Editor")])
+        let media = Data([1, 2, 3])
+        let file = root.appendingPathComponent(item.path)
+        do {
+            let store = try VisualMemoryStore(root: root)
+            let reader = try VisualMemoryStore(root: root, readOnly: true)
+            let privacy = ContentPrivacy()
+            let session = privacy.capture()
+            #expect(throws: (any Error).self) {
+                try store.saveCapture(item, media: media) {
+                    if FileManager.default.fileExists(atPath: file.path) {
+                        // Revoke after the file and index rows were written but before COMMIT.
+                        #expect(try reader.searchMoments(text: "private").isEmpty)
+                        privacy.setEnabled(true)
+                        // Force the immediate unlink to fail the store's path-safety check.
+                        try FileManager.default.removeItem(at: file)
+                        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: root.deletingLastPathComponent())
+                    }
+                    guard privacy.permits(session) else { throw CancellationError() }
+                }
+            }
+            #expect(try reader.moment(id: item.id) == nil)
+            #expect(try reader.searchMoments(app: "editor").isEmpty)
+            #expect(try reader.searchMoments(text: "private").isEmpty)
+            #expect(try reader.captureReadyAt() == nil)
+            try FileManager.default.removeItem(at: file)
+            try media.write(to: file)
+        }
+        let reopened = try VisualMemoryStore(root: root)
+        try reopened.finishMediaDeletions()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        try reopened.saveCapture(item, media: media) {}
+        try reopened.finishMediaDeletions()
+        #expect(try Data(contentsOf: file) == media)
+        #expect(try reopened.searchMoments(text: "private").map(\.id) == [item.id])
+    }
+
+    @Test func versionThreeMigrationBackfillsFocusedAndDisplayApps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "old", kind: .moment, source: "Editor", bundleID: "editor", path: "old.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", path: "display.heic",
+            display: .init(id: 42, uuid: "monitor", name: "External"), includedApps: [.init(bundleID: "browser", name: "Browser")])
+        do { let store = try VisualMemoryStore(root: root); try store.save([item, display]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        let legacyReader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try legacyReader.searchMoments(app: "editor").count == 1)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(app: "editor").count == 1)
+        #expect(try upgraded.moment(id: "old")?.display == nil)
+        #expect(try upgraded.summary().apps["editor"] == "Editor")
+        #expect(try upgraded.searchMoments(app: "browser").map(\.id) == [display.id])
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT display_uuid,display_id,app_name FROM time_turner_captures WHERE id='display'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(statement, 0)) == "monitor")
+        #expect(sqlite3_column_int(statement, 1) == 42)
+        #expect(String(cString: sqlite3_column_text(statement, 2)) == "")
+    }
+
+    @Test func migrationKeepsOCRAndValidAppsWhenIncludedAppsIsMalformed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let focused = VisualMemoryItem(id: "focused", kind: .moment, source: "Editor", bundleID: "editor",
+                                      text: "focused evidence", path: "focused.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", text: "display evidence",
+                                      path: "display.heic", display: .init(id: 2, uuid: "external", name: "External"))
+        do { let store = try VisualMemoryStore(root: root); try store.save([focused, display]) }
+        var db: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        try #require(sqlite3_exec(db, """
+            UPDATE evidence SET body=json_set(body,'$.includedApps','invalid') WHERE id='focused';
+            UPDATE evidence SET body=json_set(body,'$.includedApps',json_array(
+                'broken',null,7,json_object('name','missing ID'),json_object('bundleID',3,'name','wrong type'),
+                json_object('bundleID','browser','name','Browser'))) WHERE id='display';
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "focused", app: "editor") == [focused])
+        let apps = [VisualMemoryApp(bundleID: "browser", name: "Browser")]
+        var recovered = try #require(store.searchMoments(text: "display", app: "Browser").first)
+        #expect(recovered.includedApps == apps)
+        #expect(recovered.display == display.display)
+        recovered.text = "updated evidence"
+        try store.save([recovered])
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "updated", app: "browser") == [recovered])
+    }
+
     @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -151,6 +478,7 @@ struct VisualMemoryStoreTests {
         do { let writer = try VisualMemoryStore(root: root); try writer.save([item]) }
         var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
         defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "UPDATE evidence_search SET rowid=99; PRAGMA user_version=2", nil, nil, nil) == SQLITE_OK)
         let upgraded = try VisualMemoryStore(root: root)
         #expect(try upgraded.searchMoments(text: "before").count == 1)
@@ -256,6 +584,7 @@ struct VisualMemoryStoreTests {
             #expect(sqlite3_exec(db, "DROP TRIGGER " + name, nil, nil, nil) == SQLITE_OK)
             #expect(sqlite3_exec(db, sql.replacingOccurrences(of: columns, with: ""), nil, nil, nil) == SQLITE_OK)
         }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "DROP TRIGGER capture_retention_insert; ALTER TABLE time_turner_captures DROP COLUMN media_deleted_at_unix; DROP TABLE pending_capture_deletions; DROP TABLE pending_media_deletions; PRAGMA user_version=1;", nil, nil, nil) == SQLITE_OK)
         sqlite3_close(db)
         let upgraded = try VisualMemoryStore(root: root)

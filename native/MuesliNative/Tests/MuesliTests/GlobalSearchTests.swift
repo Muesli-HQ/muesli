@@ -591,6 +591,23 @@ struct GlobalSearchTests {
         #expect(validations == 2)
     }
 
+    @Test func wholeDisplaySearchMatchesAnyIncludedAppWithoutDuplicatingOCR() throws {
+        let f = try Fixture()
+        let memory = try VisualMemoryStore(root: f.root.appendingPathComponent("visual-memory"))
+        let item = VisualMemoryItem(id: "monitor", kind: .moment, source: "External · Browser · Editor",
+            text: "orchid plan", path: "monitor.heic", display: .init(id: 2, uuid: "external", name: "External"),
+            includedApps: [.init(bundleID: "browser", name: "Browser"), .init(bundleID: "editor", name: "Editor")])
+        try memory.save([item])
+        let service = try GlobalSearchService(databaseURL: f.url, screenHistory: memory)
+        for app in ["browser", "EDITOR"] {
+            let results = try service.search(.init(text: "orchid", kinds: [.screenHistory], app: app))
+            #expect(results.map(\.sourceID) == ["monitor"])
+            #expect(results.first?.appName == "Browser, Editor")
+            #expect(results.first?.bundleID == "")
+        }
+        #expect(try service.search(.init(text: "orchid", kinds: [.screenHistory], app: "excluded")).isEmpty)
+    }
+
     @Test("Federated OCR remains searchable after media expiry and disappears after history deletion")
     func screenHistory() throws {
         let f = try Fixture()

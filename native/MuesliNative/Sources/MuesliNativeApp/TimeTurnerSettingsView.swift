@@ -11,6 +11,7 @@ struct TimeTurnerSettingsView: View {
     @State private var presentationCatalog = SettingsPresentationCatalog()
     @State private var exclusionNames: [String: String] = [:]
     @State private var setup = false
+    @State private var chooseDisplays = false
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
     private var memory: VisualMemoryController { controller.visualMemory }
@@ -36,6 +37,12 @@ struct TimeTurnerSettingsView: View {
                     subsection("Capture")
                     SettingsRow(label: "Pause on inactivity", description: "Pause after 1 minute without keyboard or mouse input. Resume when you return.", controlWidth: nil) {
                         MuesliSettingControl(controller: controller, id: "time_turner_pause_on_inactivity")
+                    }
+                    SettingsRow(label: "Capture") {
+                        MuesliSettingControl(controller: controller, id: "time_turner_capture_scope")
+                    }
+                    SettingsRow(label: "Displays", description: appState.config.timeTurnerSelectedDisplays.values.sorted().joined(separator: ", "), controlWidth: nil) {
+                        Button("Choose displays…") { chooseDisplays = true }
                     }
                     SettingsRow(label: "Check screen every") {
                         MuesliSettingControl(controller: controller, id: "time_turner_interval")
@@ -102,6 +109,9 @@ struct TimeTurnerSettingsView: View {
         .onChange(of: appState.requestsTimeTurnerSetup) { _, _ in consumeSetupRequest() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .sheet(isPresented: $setup, onDismiss: refresh) { TimeTurnerSetupView(controller: controller, appState: appState) }
+        .sheet(isPresented: $chooseDisplays) {
+            TimeTurnerDisplaySelectionSheet(controller: controller, selection: appState.config.timeTurnerSelectedDisplays)
+        }
     }
 
     private func subsection(_ title: String) -> some View {
@@ -160,13 +170,20 @@ struct TimeTurnerSettingsView: View {
     private var estimate: String {
         guard let average = memory.averageImageBytes else { return "Storage estimate available after capture." }
         let interval = max(2, Int64(appState.config.timeTurnerInterval) ?? 10)
-        let size = ByteCountFormatter.string(fromByteCount: average * 28_800 / interval, countStyle: .file)
+        let displays = appState.config.timeTurnerCaptureScope == "selected_displays"
+            ? appState.config.timeTurnerSelectedDisplays.count
+            : (appState.config.timeTurnerCaptureScope == "all_displays" ? max(1, NSScreen.screens.count) : 1)
+        let size = ByteCountFormatter.string(fromByteCount: average * Int64(displays) * 28_800 / interval, countStyle: .file)
         return "Estimated \(size) per 8 active hours, before compression."
     }
 }
 
 enum TimeTurnerSetupStep: Int {
-    case introduction, permissions, storage
+    case introduction, permissions, displays, storage, reviewAccess
+
+    static func entry(for config: AppConfig, requested: Self) -> Self {
+        config.timeTurnerEnabled ? .reviewAccess : requested
+    }
 }
 
 struct TimeTurnerSetupView: View {
@@ -175,6 +192,9 @@ struct TimeTurnerSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var presentationCatalog = SettingsPresentationCatalog()
     @State private var step = 0
+    @State private var captureChoice: TimeTurnerCaptureChoice
+    @State private var originalChoice: TimeTurnerCaptureChoice
+    @State private var displaysInitialized: Bool
     @State private var screen = CGPreflightScreenCaptureAccess()
     @State private var accessibility = AXIsProcessTrusted()
     @State private var enabling = false
@@ -185,28 +205,36 @@ struct TimeTurnerSetupView: View {
     init(controller: MuesliController, appState: AppState, initialStep: TimeTurnerSetupStep = .introduction) {
         self.controller = controller
         self.appState = appState
-        _step = State(initialValue: initialStep.rawValue)
+        _step = State(initialValue: TimeTurnerSetupStep.entry(for: appState.config, requested: initialStep).rawValue)
+        let choice = TimeTurnerCaptureChoice(config: appState.config)
+        _captureChoice = State(initialValue: choice)
+        _originalChoice = State(initialValue: choice)
+        _displaysInitialized = State(initialValue: choice.scope == .selected || !choice.displays.isEmpty)
     }
+
+    private var reviewingAccess: Bool { step == TimeTurnerSetupStep.reviewAccess.rawValue }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
                 Label { Text("Time Turner") } icon: { Image(nsImage: TimeTurnerIcon.image()) }.font(MuesliTheme.font(.title2).bold())
                 Spacer()
-                Text("\(step + 1) of 3").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
+                if !reviewingAccess {
+                    Text("\(step + 1) of 4").font(MuesliTheme.font(.caption)).foregroundStyle(.secondary)
+                }
             }
-            ProgressView(value: Double(step + 1), total: 3)
+            if !reviewingAccess { ProgressView(value: Double(step + 1), total: 4) }
             if step == 0 {
                 Text("Your first turn through time").font(MuesliTheme.font(.largeTitle).bold())
                 Text("Find the page, conversation or idea you saw earlier—without remembering where it was.").font(MuesliTheme.font(.title3)).foregroundStyle(.secondary)
-                Label("Snapshots of your focused window, with searchable text", systemImage: "macwindow")
+                Label("Snapshots of your windows or displays, with searchable text", systemImage: "macwindow")
                 Label("Stored on this Mac, with a storage limit", systemImage: "internaldrive")
                 Label("Pause anytime and choose apps to exclude", systemImage: "hand.raised")
                 Text("This enables ongoing screen history, separate from dictation context or meeting recordings. Nothing is captured until you choose Start Time Turner.").font(MuesliTheme.font(.callout)).foregroundStyle(.secondary)
-            } else if step == 1 {
+            } else if step == TimeTurnerSetupStep.permissions.rawValue || reviewingAccess {
                 Text(ready ? "You're already set" : "A couple of permissions").font(MuesliTheme.font(.title).bold())
                 Text(ready ? "Muesli already has the permissions Time Turner needs. No need to grant them again." : "Allow the missing permissions below, then return here. We'll check again automatically.").foregroundStyle(.secondary)
-                permissionRow(.screenRecording, detail: "Save an image of the focused window.", granted: screen) {
+                permissionRow(.screenRecording, detail: "Save images of your selected capture scope.", granted: screen) {
                     PermissionRestartResumeStore.shared.save(.timeTurnerPermissions)
                     FeaturePermission.screenRecording.request()
                     refresh()
@@ -224,6 +252,20 @@ struct TimeTurnerSetupView: View {
                         dismiss()
                         controller.showPermissionsSettings()
                     }
+                }
+            } else if step == TimeTurnerSetupStep.displays.rawValue {
+                Picker("Capture", selection: $captureChoice.scope) {
+                    ForEach(TimeTurnerCaptureScope.allCases, id: \.self) { scope in
+                        Text(scope.label).tag(scope)
+                    }
+                }.pickerStyle(.segmented)
+                switch captureChoice.scope {
+                case .focused:
+                    SettingsNote("Save the focused window on whichever display you’re using.")
+                case .all:
+                    SettingsNote("Save eligible windows on every connected display, including displays you connect later.")
+                case .selected:
+                    TimeTurnerDisplayPicker(selection: $captureChoice.displays, initialized: $displaysInitialized)
                 }
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
@@ -249,9 +291,12 @@ struct TimeTurnerSetupView: View {
             Spacer(minLength: 0)
             HStack {
                 Button("Not now") { PermissionRestartResumeStore.shared.clear(); dismiss() }.keyboardShortcut(.cancelAction)
-                if step > 0 { Button("Back") { PermissionRestartResumeStore.shared.clear(); step -= 1 } }
+                if step > 0 && !reviewingAccess { Button("Back") { PermissionRestartResumeStore.shared.clear(); step -= 1 } }
                 Spacer()
-                if step < 2 {
+                if reviewingAccess {
+                    Button("Done") { PermissionRestartResumeStore.shared.clear(); dismiss() }
+                        .buttonStyle(.borderedProminent).disabled(!ready)
+                } else if step < TimeTurnerSetupStep.storage.rawValue {
                     Button("Continue") {
                         refresh()
                         if step == TimeTurnerSetupStep.permissions.rawValue {
@@ -259,13 +304,13 @@ struct TimeTurnerSetupView: View {
                             PermissionRestartResumeStore.shared.clear()
                         }
                         step += 1
-                    }.buttonStyle(.borderedProminent).disabled(step == 1 && !ready)
+                    }.buttonStyle(.borderedProminent).disabled((step == 1 && !ready) || (step == TimeTurnerSetupStep.displays.rawValue && !captureChoice.isValid))
                 } else {
-                    Button(appState.config.timeTurnerEnabled ? "Finish" : "Start Time Turner") { enable() }
-                        .buttonStyle(.borderedProminent).disabled(!ready || enabling)
+                    Button("Start Time Turner") { enable() }
+                        .buttonStyle(.borderedProminent).disabled(!ready || enabling || !captureChoice.isValid)
                 }
             }
-        }.padding(28).frame(width: 560, height: 490)
+        }.padding(28).frame(width: 560, height: 540).font(MuesliTheme.body())
         .environment(\.muesliSettingDefinitions, presentationCatalog.definitions(for: controller))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
         .onReceive(permissionRefresh) { _ in refresh() }
@@ -287,15 +332,17 @@ struct TimeTurnerSetupView: View {
         }.padding(14).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
     private func enable() {
+        guard !controller.config.timeTurnerEnabled else { dismiss(); return }
         refresh(); guard ready else {
             ProductAnalytics.event(.time_turner, .activation_finished, outcome: .blocked, fields: [.stage: .permission])
             step = 1; return
         }
+        guard captureChoice.isValid else { step = TimeTurnerSetupStep.displays.rawValue; return }
         enabling = true
         Task { @MainActor in
             defer { enabling = false }
             do {
-                try await controller.applySetting("time_turner_enabled", value: "on")
+                try await controller.finishTimeTurnerSetup(choice: captureChoice, original: originalChoice)
                 ProductAnalytics.event(.time_turner, .activation_finished, outcome: .success)
                 PermissionRestartResumeStore.shared.clear()
                 dismiss()

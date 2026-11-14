@@ -9,6 +9,123 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Display selection requires explicit resources and persists atomically")
+    func timeTurnerSelectedDisplays() async throws {
+        try await withShortcutSettings { controller, configStore in
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
+            }
+            #expect(controller.config.timeTurnerCaptureScope == "focused")
+            // Exercise the enabled scheduler without taking any real screenshots.
+            controller.visualMemory.toggleAmbientPause()
+            controller.updateConfig { $0.timeTurnerEnabled = true }
+            defer { controller.updateConfig { $0.timeTurnerEnabled = false } }
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: ["external-uuid": "External monitor"])
+            #expect(configStore.load().timeTurnerCaptureScope == "selected_displays")
+            #expect(configStore.load().timeTurnerSelectedDisplays == ["external-uuid": "External monitor"])
+            #expect(controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
+            let previousGeneration = controller.visualMemory.ambientGeneration
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: ["laptop": "Built-in"])
+            #expect(controller.visualMemory.ambientGeneration != previousGeneration)
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "external-uuid"))
+            #expect(controller.visualMemory.selectsDisplay(uuid: "laptop"))
+            // Empty selection cannot erase the saved set or silently enable all monitors.
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: [:])
+            }
+            #expect(configStore.load().timeTurnerSelectedDisplays.count == 1)
+            try await controller.applySetting("time_turner_capture_scope", value: "focused")
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "laptop"))
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays")
+            #expect(controller.config.timeTurnerSelectedDisplays.count == 1)
+        }
+    }
+
+    @Test("A failed display save preserves the effective capture scope and supports retry")
+    func timeTurnerDisplaySaveFailure() async throws {
+        try await withShortcutSettings { controller, store in
+            controller.visualMemory.toggleAmbientPause()
+            controller.updateConfig { $0.timeTurnerEnabled = true }
+            defer { controller.updateConfig { $0.timeTurnerEnabled = false } }
+            let generation = controller.visualMemory.ambientGeneration
+            let original = TimeTurnerCaptureChoice(config: controller.config)
+            let file = store.configPath()
+            let backup = file.appendingPathExtension("backup")
+            try FileManager.default.moveItem(at: file, to: backup)
+            try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+            let selected = ["external": "External"]
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: selected)
+            }
+            #expect(TimeTurnerCaptureChoice(config: controller.config) == original)
+            #expect(TimeTurnerCaptureChoice(config: controller.appState.config) == original)
+            #expect(controller.visualMemory.ambientGeneration == generation)
+            // Stop remains immediate on a broken disk, but setup cannot start capture without a durable save.
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.applySetting("time_turner_enabled", value: "off")
+            }
+            #expect(!controller.config.timeTurnerEnabled)
+            controller.timeTurnerPermissionsAreGranted = { true }
+            await #expect(throws: MuesliSettings.Failure.self) {
+                try await controller.finishTimeTurnerSetup(choice: original, original: original)
+            }
+            #expect(!controller.config.timeTurnerEnabled)
+            try FileManager.default.removeItem(at: file)
+            try FileManager.default.moveItem(at: backup, to: file)
+            try await controller.finishTimeTurnerSetup(choice: original, original: original)
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays", selectedDisplays: selected)
+            #expect(store.load().timeTurnerSelectedDisplays == selected)
+            #expect(controller.visualMemory.selectsDisplay(uuid: "external"))
+            try await controller.applySetting("time_turner_capture_scope", value: "focused")
+            #expect(store.load().timeTurnerCaptureScope == "focused")
+            #expect(!controller.visualMemory.selectsDisplay(uuid: "external"))
+        }
+    }
+
+    @Test("Re-enabling capture retains its scope until the user explicitly changes it")
+    func timeTurnerReenable() async throws {
+        try await withShortcutSettings { controller, configStore in
+            controller.timeTurnerPermissionsAreGranted = { true }
+            controller.visualMemory.toggleAmbientPause()
+            let saved = ["offline-display": "External"]
+            for scope in TimeTurnerCaptureScope.allCases {
+                controller.updateConfig {
+                    $0.timeTurnerEnabled = true
+                    $0.timeTurnerCaptureScope = scope.rawValue
+                    $0.timeTurnerSelectedDisplays = saved
+                }
+                try await controller.applySetting("time_turner_enabled", value: "off")
+                let original = TimeTurnerCaptureChoice(config: controller.config)
+                try await controller.finishTimeTurnerSetup(choice: original, original: original)
+                let reopened = configStore.load()
+                #expect(reopened.timeTurnerEnabled)
+                #expect(reopened.timeTurnerCaptureScope == scope.rawValue)
+                #expect(reopened.timeTurnerSelectedDisplays == saved)
+            }
+            try await controller.applySetting("time_turner_enabled", value: "off")
+            let original = TimeTurnerCaptureChoice(config: controller.config)
+            var edited = original
+            edited.scope = .focused
+            try await controller.finishTimeTurnerSetup(choice: edited, original: original)
+            #expect(configStore.load().timeTurnerCaptureScope == "focused")
+            try await controller.applySetting("time_turner_enabled", value: "off")
+        }
+    }
+
+    @Test("Permission recovery preserves every existing capture scope and skips monitor selection")
+    func timeTurnerPermissionRecovery() {
+        var config = AppConfig()
+        #expect(TimeTurnerSetupStep.entry(for: config, requested: .introduction) == .introduction)
+        #expect(TimeTurnerSetupStep.entry(for: config, requested: .permissions) == .permissions)
+        config.timeTurnerEnabled = true
+        for scope in ["focused", "all_displays", "selected_displays"] {
+            config.timeTurnerCaptureScope = scope
+            for entry in [TimeTurnerSetupStep.introduction, .permissions] {
+                #expect(TimeTurnerSetupStep.entry(for: config, requested: entry) == .reviewAccess)
+            }
+        }
+    }
+
     @Test("Feedback checks chord conflicts without changing the shared bare modifier rule")
     func feedbackChordConflicts() async throws {
         let feedback = HotkeyConfig.feedbackCaptureDefault

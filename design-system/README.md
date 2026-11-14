@@ -525,3 +525,13 @@ Your notes reuses the live note editor and its inline save status; generated
 summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
 After that, Saved notes holds the current source, and a collapsed Previous notes
 disclosure in Summary exposes the other pre-upgrade document when present.
+
+Time Turner Capture settings use the canonical Capture menu: Focused window,
+All displays, or Selected displays. Setup restores the saved capture scope after permissions. Choosing Selected displays
+opens monitor previews using the meeting screen picker's thumbnail renderer. The
+first selection starts with connected monitors checked. Finish saves explicit changes. Settings
+“Choose displays…” edits the same persistent selection with Save/Cancel. Disconnected
+monitors retain their selection; newly connected ones require selection. Preview
+cards use semantic borders, checkmarks and accessible selection traits. Whole-display history shows a display symbol and
+display/app label instead of attributing the image to a single app. All displays
+keeps one compact scrubber; each monitor's sample remains independently selectable.
