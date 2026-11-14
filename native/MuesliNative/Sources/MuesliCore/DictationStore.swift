@@ -485,6 +485,7 @@ public final class DictationStore {
         try repairLegacyMacOriginSources(db: db)
         try renameLegacyGranolaImportFolder(db: db)
         _ = try purgeSoftDeletedTextRecords(olderThan: Self.defaultTombstoneRetentionInterval, db: db)
+        try removeOrphanedRecordings(db: db)
     }
 
     private func renameLegacyGranolaImportFolder(db: OpaquePointer?) throws {
@@ -1014,36 +1015,109 @@ public final class DictationStore {
     /// Attach only to a still-live row. In particular, a delayed audio write cannot
     /// restore a recording after a local clear or a deletion synced from another device.
     public func saveDictationAudio(_ data: Data, id: Int64) throws {
+        try saveDictationAudio(id: id) { try data.write(to: $0, options: .atomic) }
+    }
+
+    public func saveDictationAudio(from source: URL, id: Int64) throws {
+        try saveDictationAudio(id: id) { try FileManager.default.copyItem(at: source, to: $0) }
+    }
+
+    private var dictationRecordingDirectory: URL {
+        databaseURL.deletingLastPathComponent().appendingPathComponent("\(databaseURL.lastPathComponent) Recordings", isDirectory: true)
+    }
+
+    private func recordingURL(id: Int64) -> URL {
+        dictationRecordingDirectory.appendingPathComponent("Dictation-\(id).wav")
+    }
+
+    private func createRecordingDirectory() throws {
+        try FileManager.default.createDirectory(at: dictationRecordingDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    }
+
+    private func saveDictationAudio(id: Int64, write: (URL) throws -> Void) throws {
         try ContentPrivacy.shared.beginWrite()
         defer { ContentPrivacy.shared.endWrite() }
         let db = try openDatabase()
         defer { sqlite3_close(db) }
-        var statement: OpaquePointer?
-        let sql = "INSERT INTO dictation_audio SELECT id, ? FROM dictations WHERE id = ? AND deleted_at IS NULL"
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
-        defer { sqlite3_finalize(statement) }
-        guard data.count <= Int(sqlite3_limit(db, SQLITE_LIMIT_LENGTH, -1)) else {
-            throw CocoaError(.fileWriteOutOfSpace)
+        try exec("BEGIN IMMEDIATE", db: db)
+        let url = recordingURL(id: id)
+        var created = false
+        do {
+            try withStatement("INSERT INTO dictation_audio SELECT id, X'' FROM dictations WHERE id = ? AND deleted_at IS NULL",
+                              db: db, bind: { sqlite3_bind_int64($0, 1, id) })
+            guard sqlite3_changes(db) == 1 else { throw DictationStoreError.dictationNotFound(id: id) }
+            try createRecordingDirectory()
+            try write(url)
+            created = true
+            try exec("COMMIT", db: db)
+        } catch {
+            if created { try? FileManager.default.removeItem(at: url) }
+            try? exec("ROLLBACK", db: db)
+            throw error
         }
-        bindOptionalBlob(data, at: 1, statement: statement)
-        sqlite3_bind_int64(statement, 2, id)
-        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError(db) }
-        guard sqlite3_changes(db) == 1 else { throw DictationStoreError.dictationNotFound(id: id) }
+    }
+
+    /// Resolve the original WAV, promoting an older inline recording once.
+    public func dictationRecordingURL(id: Int64) throws -> URL {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        defer { if sqlite3_get_autocommit(db) == 0 { try? exec("ROLLBACK", db: db) } }
+        var length: Int64?
+        try withStatement("SELECT length(wav) FROM dictation_audio WHERE dictation_id = ?", db: db,
+                          bind: { sqlite3_bind_int64($0, 1, id) }, row: { length = sqlite3_column_int64($0, 0) })
+        guard let length else { throw DictationStoreError.dictationNotFound(id: id) }
+        let url = recordingURL(id: id)
+        if length > 0 {
+            var data: Data?
+            try withStatement("SELECT wav FROM dictation_audio WHERE dictation_id = ?", db: db,
+                              bind: { sqlite3_bind_int64($0, 1, id) }, row: { data = optionalDataColumn($0, index: 0) })
+            guard let data else { throw CocoaError(.fileReadCorruptFile) }
+            try createRecordingDirectory()
+            try data.write(to: url, options: .atomic)
+            try withStatement("UPDATE dictation_audio SET wav = X'' WHERE dictation_id = ?", db: db,
+                              bind: { sqlite3_bind_int64($0, 1, id) })
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { throw CocoaError(.fileNoSuchFile) }
+        try exec("COMMIT", db: db)
+        return url
     }
 
     public func dictationAudio(id: Int64) throws -> Data {
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT wav FROM dictation_audio WHERE dictation_id = ?", -1, &statement, nil) == SQLITE_OK else { throw lastError(db) }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, id)
-        let status = sqlite3_step(statement)
-        guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
-        guard status == SQLITE_ROW, let bytes = sqlite3_column_blob(statement, 0) else {
-            throw DictationStoreError.dictationNotFound(id: id)
+        if readOnly {
+            let db = try openDatabase()
+            defer { sqlite3_close(db) }
+            var present = false
+            var inline: Data?
+            try withStatement("SELECT wav FROM dictation_audio WHERE dictation_id = ?", db: db,
+                              bind: { sqlite3_bind_int64($0, 1, id) }, row: {
+                present = true
+                inline = optionalDataColumn($0, index: 0)
+            })
+            guard present else { throw DictationStoreError.dictationNotFound(id: id) }
+            if let inline, !inline.isEmpty { return inline }
+            return try Data(contentsOf: recordingURL(id: id))
         }
-        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+        return try Data(contentsOf: dictationRecordingURL(id: id))
+    }
+
+    // Serialize reconciliation with attachment and legacy promotion. Also cleans
+    // up an interrupted write or a deletion committed just before process exit.
+    private func removeOrphanedRecordings(db: OpaquePointer?) throws {
+        let files = FileManager.default
+        guard files.fileExists(atPath: dictationRecordingDirectory.path) else { return }
+        try exec("BEGIN IMMEDIATE", db: db)
+        defer { if sqlite3_get_autocommit(db) == 0 { try? exec("ROLLBACK", db: db) } }
+        var live = Set<Int64>()
+        try withStatement("SELECT dictation_id FROM dictation_audio", db: db, row: { live.insert(sqlite3_column_int64($0, 0)) })
+        for url in try files.contentsOfDirectory(at: dictationRecordingDirectory, includingPropertiesForKeys: nil) {
+            let name = url.deletingPathExtension().lastPathComponent
+            guard name.hasPrefix("Dictation-"), let id = Int64(name.dropFirst("Dictation-".count)),
+                  url.lastPathComponent == recordingURL(id: id).lastPathComponent, !live.contains(id) else { continue }
+            try files.removeItem(at: url)
+        }
+        try exec("COMMIT", db: db)
     }
 
     public func dictationWaveform(id: Int64) throws -> Data? {
@@ -3812,6 +3886,7 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.dictationNotFound(id: id)
         }
+        try removeOrphanedRecordings(db: db)
     }
 
     public func deleteMeeting(id: Int64) throws {
@@ -3884,6 +3959,7 @@ public final class DictationStore {
             """,
             db: db
         )
+        try removeOrphanedRecordings(db: db)
     }
 
     /// Marks computer use traces left in "running" state as interrupted. This
@@ -5871,6 +5947,9 @@ public final class DictationStore {
                 try reconcileFollowUpLinks(db: db)
             }
             try exec("COMMIT", db: db)
+            if applied.contains(where: { $0.kind == .dictation && $0.isDeleted }) {
+                try removeOrphanedRecordings(db: db)
+            }
             return applied
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)

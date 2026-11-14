@@ -12,8 +12,8 @@ struct DictationRecordingCleanup {
     }
 }
 
-/// Owns a stopped WAV through deferred paste bookkeeping, or a private playback
-/// copy for as long as the history player or transcription task needs it.
+/// Owns a stopped WAV through deferred paste bookkeeping, or references the persistent
+/// history WAV for playback or transcription.
 final class DictationRecordingFile: Sendable {
     let url: URL
     private let cleanupURL: OSAllocatedUnfairLock<URL?>
@@ -24,17 +24,8 @@ final class DictationRecordingFile: Sendable {
     }
 
     init(historyID: Int64, databaseURL: URL) throws {
-        let data = try DictationStore(databaseURL: databaseURL).dictationAudio(id: historyID)
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                                                 attributes: [.posixPermissions: 0o700])
-        cleanupURL = .init(initialState: directory)
-        url = directory.appendingPathComponent("dictation.wav")
-        do { try data.write(to: url, options: .withoutOverwriting) }
-        catch {
-            try? FileManager.default.removeItem(at: directory)
-            throw error
-        }
+        url = try DictationStore(databaseURL: databaseURL).dictationRecordingURL(id: historyID)
+        cleanupURL = .init(initialState: nil)
     }
 
     /// Recovery storage failed. The original file now belongs to the user.

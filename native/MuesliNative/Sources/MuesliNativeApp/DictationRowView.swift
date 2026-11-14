@@ -395,8 +395,10 @@ private struct DictationRecordingControls: View {
                     || controller.appState.modelFileMutationCount > 0 || controller.appState.isMeetingRecording
                     || controller.appState.isMeetingStarting || controller.appState.privateMode)
             }
-            Button("Save WAV…") { controller.exportDictationRecording(id: record.id) }
-                .help("Save a copy of the recording and show it in Finder")
+            Button { controller.revealDictationRecordingInFinder(id: record.id) } label: {
+                Label("Show Recording", systemImage: "folder")
+            }
+            .help("Show recording in Finder")
         }
         .font(MuesliTheme.captionMedium())
         .confirmationDialog("Replace this transcript?", isPresented: Binding(

@@ -3,7 +3,6 @@ import AVFoundation
 import CloudKit
 import CoreAudio
 import Foundation
-import UniformTypeIdentifiers
 import Sparkle
 import TelemetryDeck
 import MuesliCore
@@ -300,7 +299,7 @@ enum MeetingRetranscriptionError: Error, LocalizedError {
         case .busy:
             return "Wait for the current recording or transcription to finish before re-transcribing a meeting."
         case .recordingUnavailable:
-            return "The saved meeting recording is no longer available on disk."
+            return "The saved recording is no longer available on disk."
         case .noDownloadedTranscriptionModel:
             return "Download a transcription model before re-transcribing this meeting."
         case .emptyTranscript:
@@ -9956,12 +9955,12 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func revealMeetingRecordingInFinder(path: String) {
+    func revealRecordingInFinder(path: String) {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             presentErrorAlert(
                 title: "Recording Not Found",
-                message: "The saved meeting recording is no longer available on disk."
+                message: "The saved recording is no longer available on disk."
             )
             return
         }
@@ -15143,9 +15142,8 @@ public final class MuesliController: NSObject {
                         try DictationRecoveryStore.validateCapturedAudio(recording.url)
                         let audio = try AVAudioFile(forReading: recording.url)
                         guard Double(audio.length) / audio.fileFormat.sampleRate > Double(max(1, minutes)) * 60 else { return false }
-                        let data = try Data(contentsOf: recording.url, options: .mappedIfSafe)
                         let store = DictationStore(databaseURL: databaseURL)
-                        try store.saveDictationAudio(data, id: id)
+                        try store.saveDictationAudio(from: recording.url, id: id)
                         return true
                     }
                 }.value
@@ -15199,23 +15197,13 @@ public final class MuesliController: NSObject {
         }
     }
 
-    func exportDictationRecording(id: Int64) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.wav]
-        panel.nameFieldStringValue = "Dictation-\(id).wav"
-        panel.canCreateDirectories = true
-        let databaseURL = dictationStore.resolvedDatabaseURL
-        MeetingExporter.presentSavePanel(panel) { destination in
-            Task {
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        let data = try DictationStore(databaseURL: databaseURL).dictationAudio(id: id)
-                        try data.write(to: destination, options: .atomic)
-                    }.value
-                    NSWorkspace.shared.activateFileViewerSelecting([destination])
-                } catch {
-                    self.presentErrorAlert(title: "Could not export dictation audio", message: error.localizedDescription)
-                }
+    func revealDictationRecordingInFinder(id: Int64) {
+        Task {
+            do {
+                let file = try await loadDictationRecording(id: id)
+                revealRecordingInFinder(path: file.url.path)
+            } catch {
+                presentErrorAlert(title: "Recording Not Found", message: error.localizedDescription)
             }
         }
     }

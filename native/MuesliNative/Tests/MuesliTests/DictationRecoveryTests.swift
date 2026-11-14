@@ -52,6 +52,7 @@ struct DictationRecoveryTests {
         #expect(row.waveformPreview == preview)
         let file = try DictationRecordingFile(historyID: id, databaseURL: database)
         #expect(try Data(contentsOf: file.url) == bytes)
+        #expect(try DictationStore(databaseURL: database).dictationRecordingURL(id: id) == file.url)
         let model = DictationModelIdentity(backend: "test", model: "other-model", name: "Other model")
         try store.replaceDictationTranscript(id: id, originalText: "before", text: "second version", model: model)
         #expect(throws: (any Error).self) {
@@ -61,13 +62,23 @@ struct DictationRecoveryTests {
         #expect(try store.dictation(id: id)?.rawText == "second version")
         #expect(try store.dictationAudio(id: id) == bytes)
         try store.deleteDictation(id: id)
+        #expect(!FileManager.default.fileExists(atPath: file.url.path))
         try store.saveDictationWaveform(preview, id: id)
         #expect(try store.dictationWaveform(id: id) == nil)
         #expect(throws: (any Error).self) { try store.dictationAudio(id: id) }
         #expect(throws: (any Error).self) { try store.saveDictationAudio(bytes, id: id) }
         let another = try store.insertDictation(text: "another", durationSeconds: 65, startedAt: Date(), endedAt: Date())
-        try store.saveDictationAudio(bytes, id: another)
+        // A recording retained by the earlier build has its WAV inline.
+        var db: OpaquePointer?
+        try #require(sqlite3_open(database.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        try #require(sqlite3_exec(db, "INSERT INTO dictation_audio VALUES (\(another), X'\(hex)')", nil, nil, nil) == SQLITE_OK)
+        let migrated = try store.dictationRecordingURL(id: another)
+        #expect(try Data(contentsOf: migrated) == bytes)
+        #expect(try store.dictationRecordingURL(id: another) == migrated)
         try store.clearDictations()
+        #expect(!FileManager.default.fileExists(atPath: migrated.path))
         #expect(throws: (any Error).self) { try store.dictationAudio(id: another) }
     }
 
