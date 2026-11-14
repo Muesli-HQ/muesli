@@ -433,6 +433,45 @@ struct BackendOption: Equatable {
         backend == "whisper" && !WhisperKitLanguage.isEnglishOnlyModel(model)
     }
 
+    /// Which spoken languages this model transcribes, shown beside model pickers
+    /// so people can tell before recording whether their language is covered.
+    /// A model given an unsupported language returns plausible text in the wrong
+    /// language rather than an error (#733). Nil when macOS manages languages or
+    /// the model is not a general transcription model.
+    var languageCoverage: String? {
+        switch backend {
+        case "parakeet-unified", "medasr":
+            return "Languages: English only."
+        case "fluidaudio":
+            if model == BackendOption.parakeetEnglish.model {
+                return "Languages: English only."
+            }
+            return "Languages: 25 European languages. Other languages, such as Turkish, Arabic, Hindi or Chinese, come out as text in the wrong language."
+        case "whisper":
+            if WhisperKitLanguage.isEnglishOnlyModel(model) {
+                return "Languages: English only."
+            }
+            return "Languages: auto-detect, or pin one of \(WhisperKitLanguage.allCases.count - 1)."
+        case "nemotron35":
+            return "Languages: auto-detect, or pin one of \(Nemotron35Language.allCases.count - 1)."
+        case "qwen":
+            return "Languages: auto-detect, or pin one of \(Qwen3AsrLanguage.allCases.count - 1)."
+        case "cohere":
+            let names = CohereTranscribeLanguage.allCases.map(\.label).joined(separator: ", ")
+            return "Languages: \(names)."
+        case "bodhan":
+            return "Languages: English and \(BodhanLanguage.allCases.count - 2) Indian languages."
+        default:
+            return nil
+        }
+    }
+
+    /// The model description followed by its language coverage, for model cards.
+    var descriptionWithLanguages: String {
+        guard let languageCoverage else { return description }
+        return "\(description)\n\(languageCoverage)"
+    }
+
     static func resolveDownloaded(
         backend: String,
         model: String,
@@ -2712,13 +2751,31 @@ struct AppConfig: Codable, Equatable {
             ?? defaults.openRouterDictationModel
         dictationInputDeviceUID = try? c.decode(String.self, forKey: .dictationInputDeviceUID)
         meetingInputDeviceUID = try? c.decode(String.self, forKey: .meetingInputDeviceUID)
-        cohereLanguage = CohereTranscribeLanguage.resolvedCode(try? c.decode(String.self, forKey: .cohereLanguage))
+        let rawCohereLanguage = try? c.decode(String.self, forKey: .cohereLanguage)
+        cohereLanguage = CohereTranscribeLanguage.resolvedCode(rawCohereLanguage)
         bodhanOutputMode = BodhanOutputMode.resolved(try? c.decode(String.self, forKey: .bodhanOutputMode)).rawValue
-        bodhanLanguage = BodhanLanguage.resolvedCode(try? c.decode(String.self, forKey: .bodhanLanguage))
-        nemotron35Language = Nemotron35Language.resolvedCode(try? c.decode(String.self, forKey: .nemotron35Language))
-        whisperLanguage = WhisperKitLanguage.resolvedCode(try? c.decode(String.self, forKey: .whisperLanguage))
-        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(try? c.decode(String.self, forKey: .qwen3AsrLanguage))
-        parakeetLanguage = ParakeetLanguage.resolvedCode(try? c.decode(String.self, forKey: .parakeetLanguage))
+        let rawBodhanLanguage = try? c.decode(String.self, forKey: .bodhanLanguage)
+        bodhanLanguage = BodhanLanguage.resolvedCode(rawBodhanLanguage)
+        let rawNemotron35Language = try? c.decode(String.self, forKey: .nemotron35Language)
+        nemotron35Language = Nemotron35Language.resolvedCode(rawNemotron35Language)
+        let rawWhisperLanguage = try? c.decode(String.self, forKey: .whisperLanguage)
+        whisperLanguage = WhisperKitLanguage.resolvedCode(rawWhisperLanguage)
+        let rawQwen3AsrLanguage = try? c.decode(String.self, forKey: .qwen3AsrLanguage)
+        qwen3AsrLanguage = Qwen3AsrLanguage.resolvedCode(rawQwen3AsrLanguage)
+        let rawParakeetLanguage = try? c.decode(String.self, forKey: .parakeetLanguage)
+        parakeetLanguage = ParakeetLanguage.resolvedCode(rawParakeetLanguage)
+        for (key, raw, resolved, fallback) in [
+            (CodingKeys.cohereLanguage, rawCohereLanguage, cohereLanguage, CohereTranscribeLanguage.defaultLanguage.rawValue),
+            (.bodhanLanguage, rawBodhanLanguage, bodhanLanguage, BodhanLanguage.defaultLanguage.rawValue),
+            (.nemotron35Language, rawNemotron35Language, nemotron35Language, Nemotron35Language.defaultLanguage.rawValue),
+            (.whisperLanguage, rawWhisperLanguage, whisperLanguage, WhisperKitLanguage.defaultLanguage.rawValue),
+            (.qwen3AsrLanguage, rawQwen3AsrLanguage, qwen3AsrLanguage, Qwen3AsrLanguage.defaultLanguage.rawValue),
+            (.parakeetLanguage, rawParakeetLanguage, parakeetLanguage, ParakeetLanguage.defaultLanguage.rawValue),
+        ] {
+            LanguageSettingFallback.logIfUnrecognized(
+                key: key.stringValue, rawValue: raw, resolvedCode: resolved, defaultCode: fallback
+            )
+        }
         appleSpeechLanguage = AppleSpeechLanguageOption.normalize(try? c.decode(String.self, forKey: .appleSpeechLanguage))
         meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
         meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
