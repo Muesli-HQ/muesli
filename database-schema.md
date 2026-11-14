@@ -96,6 +96,23 @@ that has entered Privacy mode. Anonymous finite lifecycle events remain governed
 by the separate analytics switch; unsaved private dictations do not contribute
 to the saved-word baseline or daily word counts.
 
+### Retained long dictations
+
+When enabled in Settings → Dictations, a completed recording longer than the
+chosen threshold (minimum one minute) can be replayed or retranscribed from its
+history row. `dictation_audio(dictation_id PRIMARY KEY, wav BLOB NOT NULL)`
+links the row to the local file `<database filename> Recordings/Dictation-<id>.wav`
+beside the database. An empty blob denotes file storage. Older nonempty blobs
+are promoted atomically on first access. Finder, playback and retranscription use
+the same WAV. History queries project existence without reading the audio. The local `dictation_waveforms(dictation_id PRIMARY KEY, preview BLOB NOT NULL)`
+table caches the meeting player’s compact peak and duration format. Its foreign key
+cascades on audio deletion. Older recordings populate this cache on first display.
+Local and synced tombstones delete the attachment row through a trigger. The store removes orphaned WAVs after deletion and at startup. WAV data
+and its availability are excluded from text sync and serialized history records.
+A local retranscription updates text, word count, model identity and sync state
+on the existing live row after successful recognition. Failed-recording recovery
+continues to use its independent archive regardless of this preference.
+
 ### Local word analytics checkpoint outside SQLite
 
 `DictationWordAnalytics` owns `analytics-word-count.json` beside the active
@@ -249,6 +266,7 @@ see [MedASR setup](docs/medasr.md).
 
 ```mermaid
 erDiagram
+    dictations ||--o| dictation_audio : "locally retained WAV"
     dictations ||--o| computer_use_traces : "has optional trace"
 
     meeting_folders ||--o{ meeting_folders : "contains child folders"

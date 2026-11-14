@@ -120,7 +120,7 @@ struct DictationsView: View {
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
 
-                                VStack(spacing: 0) {
+                                LazyVStack(spacing: 0) {
                                     ForEach(group.records) { record in
                                         DictationRowView(
                                             record: record,
@@ -133,7 +133,8 @@ struct DictationsView: View {
                                             },
                                             onDelete: {
                                                 controller.deleteDictation(id: record.id)
-                                            }
+                                            },
+                                            recordingController: controller
                                         )
                                         .contextMenu {
                                             Button {

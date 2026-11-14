@@ -550,8 +550,9 @@ struct AppleSpeechLiveTranscriptAccumulator: Sendable {
     }
 }
 
-private actor ParakeetEOUMeetingPartialEngine: MeetingStreamingPartialEngine {
+actor ParakeetEOUMeetingPartialEngine: MeetingStreamingPartialEngine {
     private let manager = StreamingEouAsrManager(chunkSize: .ms320)
+    private var controlPieces: [String] = []
     private let label: String
 
     init(label: String) {
@@ -559,11 +560,25 @@ private actor ParakeetEOUMeetingPartialEngine: MeetingStreamingPartialEngine {
     }
 
     func loadModels(from directory: URL) async throws {
+        let tokenizer = try Tokenizer(vocabPath: directory.appendingPathComponent("vocab.json"))
+        controlPieces = Self.unambiguousControls(in: tokenizer.vocabulary)
         try await manager.loadModels(from: directory)
     }
 
+    // The SDK exposes only decoded partials. Its EOU vocabulary has no literal
+    // "<" pieces, so only these three IDs can produce an opening angle bracket.
+    // If a future vocabulary can spell tags normally, preserve its output.
+    static func unambiguousControls(in vocabulary: [Int: String]) -> [String] {
+        let reserved = [0: "<unk>", 1024: "<EOU>", 1025: "<EOB>"]
+        guard vocabulary.allSatisfy({ !$0.value.contains("<") || reserved[$0.key] == $0.value }) else { return [] }
+        return reserved.compactMap { vocabulary[$0.key] == $0.value ? $0.value : nil }
+    }
+
     func setPartialHandler(_ handler: @escaping @Sendable (String) -> Void) async {
-        await manager.setPartialCallback(handler)
+        let controls = controlPieces
+        await manager.setPartialCallback { text in
+            handler(controls.reduce(text) { $0.replacingOccurrences(of: $1, with: "") })
+        }
     }
 
     func process(samples: [Float]) async throws {

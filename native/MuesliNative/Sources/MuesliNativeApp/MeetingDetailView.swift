@@ -1427,7 +1427,7 @@ struct MeetingDetailView: View {
 
                 if let savedRecordingPath = meeting.savedRecordingPath {
                     Button {
-                        controller.revealMeetingRecordingInFinder(path: savedRecordingPath)
+                        controller.revealRecordingInFinder(path: savedRecordingPath)
                     } label: {
                         Label("Show Recording", systemImage: "folder")
                     }

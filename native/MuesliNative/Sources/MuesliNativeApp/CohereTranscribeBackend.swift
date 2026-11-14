@@ -79,19 +79,8 @@ enum CohereTranscribeUtils {
         return merged
     }
 
-    /// Strip hallucinated tails: text after <|endoftext|> and repeated sentence fragments.
     static func cleanTranscript(_ text: String) -> String {
-        var cleaned = text
-        if let range = cleaned.range(of: "<|endoftext|>") {
-            cleaned = String(cleaned[cleaned.startIndex..<range.lowerBound])
-        }
-        for token in ["<|nospeech|>", "<|startofcontext|>", "<|startoftranscript|>",
-                       "<|notimestamp|>", "<|nodiarize|>", "<|pnc|>", "<|noitn|>",
-                       "<|emo:undefined|>"] {
-            cleaned = cleaned.replacingOccurrences(of: token, with: "")
-        }
-        cleaned = trimRepeatedSuffix(cleaned)
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        trimRepeatedSuffix(text).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func trimRepeatedSuffix(_ text: String) -> String {
@@ -566,7 +555,7 @@ private final class CohereMelSpectrogram {
 
 // MARK: - SentencePiece Tokenizer
 
-private final class CohereSentencePieceDecoder {
+final class CohereSentencePieceDecoder {
     private let vocabulary: [Int: String]
 
     init(modelURL: URL) throws {
@@ -575,7 +564,8 @@ private final class CohereSentencePieceDecoder {
     }
 
     func decode(tokenIds: [Int]) -> String {
-        let pieces = tokenIds.compactMap { vocabulary[$0] }
+        // The shipped SentencePiece vocabulary reserves IDs 0 through 254.
+        let pieces = tokenIds.compactMap { $0 > 254 ? vocabulary[$0] : nil }
         let raw = pieces.joined()
         return raw.replacingOccurrences(of: "\u{2581}", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)

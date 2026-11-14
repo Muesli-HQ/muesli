@@ -331,7 +331,7 @@ struct MuesliAudioTranscriptionPipeline {
                 fputs("[muesli-cli] \(message)\n", stderr)
             }
         )
-        var transcript = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var transcript = TranscriptionEngineArtifactsFilter.cleanRecognitionArtifacts(transcription.text).trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.hasMeaningfulSpeech(transcript) else {
             throw CLIError.invalidInput("No speech was transcribed from the selected audio file.", fix: "Check that the file contains audible speech and try again.")
         }

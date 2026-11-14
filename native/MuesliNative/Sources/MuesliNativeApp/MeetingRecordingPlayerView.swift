@@ -2,7 +2,7 @@ import AVFoundation
 import CryptoKit
 import SwiftUI
 
-private struct RecordingWaveformData: Equatable {
+struct RecordingWaveformData: Equatable, Sendable {
     static let defaultBucketCount = 512
     private static let cacheMagic = Data("MWF1".utf8)
     private static let cacheVersion: UInt16 = 1
@@ -20,6 +20,7 @@ private struct RecordingWaveformData: Equatable {
         var globalFrame = 0
 
         while file.framePosition < file.length {
+            try Task.checkCancellation()
             let remaining = Int(file.length - file.framePosition)
             let framesToRead = AVAudioFrameCount(min(Int(capacity), remaining))
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else {
@@ -87,7 +88,9 @@ private struct RecordingWaveformData: Equatable {
         let peakCount = Int(count)
         guard peakCount > 0, data.distance(from: cursor, to: data.endIndex) >= peakCount else { return nil }
         let peaks = Array(data[cursor..<data.index(cursor, offsetBy: peakCount)])
-        return RecordingWaveformData(peaks: peaks, duration: Double(bitPattern: durationBits))
+        let duration = Double(bitPattern: durationBits)
+        guard duration.isFinite, duration >= 0, duration < Double(Int.max) else { return nil }
+        return RecordingWaveformData(peaks: peaks, duration: duration)
     }
 }
 
@@ -314,15 +317,30 @@ private extension Data {
 }
 
 struct MeetingRecordingPlayerView: View {
-    let recordingPath: String
+    private let recordingPath: String?
+    private let dictationID: Int64?
+    private let controller: MuesliController?
+    @State private var playbackFile: DictationRecordingFile?
+    @State private var preparingPlayback = false
+
+    init(recordingPath: String) {
+        self.recordingPath = recordingPath
+        dictationID = nil
+        controller = nil
+    }
+
+    init(dictationID: Int64, preview: Data?, controller: MuesliController) {
+        self.dictationID = dictationID
+        self.controller = controller
+        recordingPath = nil
+        _waveform = State(initialValue: (preview ?? controller.cachedDictationWaveform(id: dictationID)).flatMap(RecordingWaveformData.decodeCacheData))
+    }
 
     @State private var waveform: RecordingWaveformData?
     @State private var player: AVAudioPlayer?
     @State private var isPlaying = false
     @State private var currentTime: TimeInterval = 0
     @State private var loadFailed = false
-
-    private let timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         HStack(spacing: MuesliTheme.spacing12) {
@@ -341,11 +359,12 @@ struct MeetingRecordingPlayerView: View {
                     )
             }
             .buttonStyle(.plain)
-            .disabled(player == nil)
+            .disabled(waveform == nil || preparingPlayback || loadFailed)
+            .accessibilityLabel(isPlaying ? "Pause recording" : "Play recording")
             .help(isPlaying ? "Pause recording" : "Play recording")
 
             Group {
-                if let waveform {
+                if let waveform, !loadFailed {
                     RecordingWaveformView(
                         peaks: waveform.peaks,
                         progress: progress,
@@ -385,20 +404,41 @@ struct MeetingRecordingPlayerView: View {
         .task(id: recordingPath) {
             await loadRecording()
         }
-        .onReceive(timer) { _ in
-            guard let player else { return }
-            currentTime = player.currentTime
-            if !player.isPlaying, isPlaying {
-                isPlaying = false
-                if player.currentTime >= max(player.duration - 0.1, 0) {
-                    currentTime = 0
-                    player.currentTime = 0
+        .task(id: preparingPlayback) {
+            guard preparingPlayback, let controller, let dictationID else { return }
+            defer { if !Task.isCancelled { preparingPlayback = false } }
+            do {
+                let file = try await controller.loadDictationRecording(id: dictationID)
+                try Task.checkCancellation()
+                let audio = try AVAudioPlayer(contentsOf: file.url)
+                playbackFile = file
+                player = audio
+                audio.currentTime = currentTime
+                togglePlayback()
+            } catch {
+                if !Task.isCancelled { loadFailed = true }
+            }
+        }
+        .task(id: isPlaying) {
+            guard isPlaying, let player else { return }
+            while !Task.isCancelled {
+                currentTime = player.currentTime
+                if !player.isPlaying {
+                    isPlaying = false
+                    if player.currentTime >= max(player.duration - 0.1, 0) {
+                        currentTime = 0
+                        player.currentTime = 0
+                    }
+                    return
                 }
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
         .onDisappear {
             player?.stop()
             player = nil
+            playbackFile = nil
+            preparingPlayback = false
             isPlaying = false
         }
     }
@@ -416,27 +456,40 @@ struct MeetingRecordingPlayerView: View {
     private func loadRecording() async {
         player?.stop()
         player = nil
-        waveform = nil
         loadFailed = false
         currentTime = 0
         isPlaying = false
 
-        let url = URL(fileURLWithPath: recordingPath)
         do {
+            if let dictationID, let controller {
+                if waveform == nil {
+                    let preview = try await controller.dictationWaveform(id: dictationID)
+                    try Task.checkCancellation()
+                    waveform = preview
+                }
+                return
+            }
+            guard let recordingPath else { return }
+            waveform = nil
+            let url = URL(fileURLWithPath: recordingPath)
             let loadedWaveform = try await Task.detached(priority: .utility) {
                 try await RecordingWaveformCache.shared.waveform(for: url)
             }.value
+            try Task.checkCancellation()
             let loadedPlayer = try AVAudioPlayer(contentsOf: url)
             loadedPlayer.prepareToPlay()
             waveform = loadedWaveform
             player = loadedPlayer
         } catch {
-            loadFailed = true
+            if !Task.isCancelled { loadFailed = true }
         }
     }
 
     private func togglePlayback() {
-        guard let player else { return }
+        guard let player else {
+            preparingPlayback = dictationID != nil
+            return
+        }
         if player.isPlaying {
             player.pause()
             isPlaying = false
@@ -451,10 +504,9 @@ struct MeetingRecordingPlayerView: View {
     }
 
     private func seek(to progress: CGFloat) {
-        guard let player else { return }
         let clamped = min(max(progress, 0), 1)
-        player.currentTime = player.duration * Double(clamped)
-        currentTime = player.currentTime
+        currentTime = duration * Double(clamped)
+        player?.currentTime = currentTime
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

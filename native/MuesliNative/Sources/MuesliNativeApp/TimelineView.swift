@@ -265,7 +265,7 @@ struct TimelineView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .padding(.leading, MuesliTheme.spacing4)
 
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(group.entries) { entry in
                                 timelineRow(entry).id(entry.id)
                             }
@@ -299,7 +299,8 @@ struct TimelineView: View {
                 onCopyTrace: record.computerUseTrace == nil ? nil : {
                     controller.copyToClipboard(ComputerUseTraceFormatter.debugText(for: record))
                 },
-                onDelete: { controller.deleteDictation(id: record.id) }
+                onDelete: { controller.deleteDictation(id: record.id) },
+                recordingController: controller
             )
         case .meeting(let record):
             TimelineMeetingRow(record: record) {

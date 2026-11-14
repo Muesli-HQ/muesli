@@ -2385,6 +2385,13 @@ struct AppConfig: Codable, Equatable {
     ]
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
+    var retainLongDictationAudio = false
+    var dictationAudioThresholdMinutes = 1
+
+    func shouldRetainDictationAudio(duration: Double) -> Bool {
+        retainLongDictationAudio && duration > Double(max(1, dictationAudioThresholdMinutes)) * 60
+    }
+
     var enableDictionaryCorrectionPrompts: Bool = false
     var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
@@ -2579,6 +2586,8 @@ struct AppConfig: Codable, Equatable {
         case customWords = "custom_words"
         case dictionarySuggestions = "dictionary_suggestions"
         case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
+        case retainLongDictationAudio = "retain_long_dictation_audio"
+        case dictationAudioThresholdMinutes = "dictation_audio_threshold_minutes"
         case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
         case enableAutomaticDiagnosticIssuePrompts = "enable_automatic_diagnostic_issue_prompts"
         case folderOrder = "folder_order"
@@ -2860,6 +2869,8 @@ struct AppConfig: Codable, Equatable {
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
         dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
         dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
+        retainLongDictationAudio = (try? c.decode(Bool.self, forKey: .retainLongDictationAudio)) ?? false
+        dictationAudioThresholdMinutes = max(1, (try? c.decode(Int.self, forKey: .dictationAudioThresholdMinutes)) ?? 1)
         enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
         enableAutomaticDiagnosticIssuePrompts = (try? c.decode(Bool.self, forKey: .enableAutomaticDiagnosticIssuePrompts)) ?? defaults.enableAutomaticDiagnosticIssuePrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder

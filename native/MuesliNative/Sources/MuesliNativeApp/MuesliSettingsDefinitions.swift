@@ -179,7 +179,8 @@ extension MuesliController {
         return settings
     }
 
-    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil) -> [MuesliSetting] {
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil,
+                             manualRecordingMinutes: Int? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -474,6 +475,15 @@ extension MuesliController {
                 return nil
             }) { value in
                 self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
+            }
+        toggle("retain_long_dictation_audio", "Keep long dictation recordings", \.retainLongDictationAudio)
+        let recordingMinutes = Set([1, 2, 3, 4, 5, 10, 15, 30, 60, config.dictationAudioThresholdMinutes]
+            + [manualRecordingMinutes].compactMap { $0 }.filter { $0 >= 1 }).sorted()
+        add("dictation_audio_threshold_minutes", "Keep dictation audio longer than",
+            recordingMinutes.map { Choice(id: String($0), label: $0 == 1 ? "1 minute" : "\($0) minutes") },
+            read: { String($0.dictationAudioThresholdMinutes) }) { value in
+                guard let minutes = Int(value), minutes >= 1 else { return }
+                self.updateConfig { $0.dictationAudioThresholdMinutes = minutes }
             }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
                requestPermission: self.showPermissionsSettings,

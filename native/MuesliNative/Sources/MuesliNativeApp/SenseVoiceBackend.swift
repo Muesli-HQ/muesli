@@ -50,7 +50,12 @@ actor SenseVoiceTranscriber {
             progressSnapshot?(preparing)
             progress?(0.95, "Loading SenseVoice...")
             let models = try SenseVoiceModels.load(from: modelDirectory, precision: Self.precision)
-            return SenseVoiceManager(models: models)
+            var vocabulary = models.vocabulary
+            for (id, piece) in models.vocabulary {
+                vocabulary[id] = Self.decoderPiece(id: id, piece: piece)
+            }
+            return SenseVoiceManager(models: SenseVoiceModels(preprocessor: models.preprocessor,
+                encoder: models.encoder, vocabulary: vocabulary))
         }
         let preparing = ModelDownloadProgress.preparing(
             modelID: plan.modelID,
@@ -68,7 +73,18 @@ actor SenseVoiceTranscriber {
         let start = CFAbsoluteTimeGetCurrent()
         let text = try await manager.transcribe(audioURL: wavURL)
         let processingTime = CFAbsoluteTimeGetCurrent() - start
-        return (text, processingTime)
+        return (Self.restoreLiteralText(text), processingTime)
+    }
+
+    // FluidAudio removes pipe tags after joining pieces. Protect ordinary pieces
+    // during that pass so a literal tag can span any number of speech tokens.
+    static func decoderPiece(id: Int, piece: String) -> String {
+        if (0...2).contains(id) || (24884...25054).contains(id) { return "" }
+        return piece.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+    }
+
+    static func restoreLiteralText(_ text: String) -> String {
+        text.replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&amp;", with: "&")
     }
 
     func shutdown() {
