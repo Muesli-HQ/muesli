@@ -951,6 +951,7 @@ public final class MuesliController: NSObject {
     private var meetingStartStatus: String?
     private var isShowingCalendarNotification = false
     private var presentedMeetingCandidate: MeetingCandidate?
+    private var autoRecordAttempt = AutoRecordAttemptGuard()
     private var meetingEndTimer: Timer?
     private var activeMeetingCalendarEndDate: Date?
     private var latestMeetingActivityCandidate: MeetingCandidate?
@@ -4954,16 +4955,8 @@ public final class MuesliController: NSObject {
                         )
                         if didShow { self.autoRecordedCalendarEventIDs.insert(key) }
                         else { self.isShowingCalendarNotification = false }
-                    case .startRecording:
+                    case .waitForJoin:
                         self.autoRecordedCalendarEventIDs.insert(key)
-                        _ = self.startMeetingRecording(
-                            title: currentEvent.title,
-                            calendarOccurrence: currentEvent.resolvedCalendarOccurrence,
-                            openDocument: false,
-                            endDate: currentEvent.endDate,
-                            autoStopSource: currentEvent.meetingURL.flatMap { MeetingAutoStopSource(meetingURL: $0) },
-                            startOrigin: .calendarAutoRecord
-                        )
                     }
                 }
                 return
@@ -8406,6 +8399,7 @@ public final class MuesliController: NSObject {
                     endDate: endDate,
                     previousMeetingNotes: previousMeetingNotes
                 )
+                if let calendarOccurrence { self.autoRecordAttempt.claim(calendarOccurrence.identityKey) }
             } catch is CancellationError {
                 if self.meetingStartAttempt?.owner == attemptOwner {
                     self.meetingCapture?.session.discard()
@@ -11365,8 +11359,32 @@ public final class MuesliController: NSObject {
         if !didShow { meetingSignalLossPromptState.markAutoDismissed() }
     }
 
+    private func startRecordingDetectedCall(_ candidate: MeetingCandidate, endingAtEventEnd: Bool = false) {
+        let calendarEvent = matchingCalendarEvent(for: candidate)
+        let recordingTitle = calendarEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
+        let endDate = calendarEvent.flatMap { event in
+            endingAtEventEnd
+                ? appState.visibleUpcomingCalendarEvents.first { $0.resolvedCalendarOccurrence == event.calendarOccurrence }?.endDate
+                : nil
+        }
+        if startMeetingRecordingFromEntryPoint(
+            title: recordingTitle,
+            calendarOccurrence: calendarEvent?.calendarOccurrence,
+            endDate: endDate,
+            autoStopSource: MeetingAutoStopSource(candidate: candidate),
+            presentation: .backgroundPill,
+            startOrigin: .detectedPrompt
+        ) {
+            meetingMonitor.markRecordingStarted(candidate)
+            presentedMeetingCandidate = nil
+            showPendingMeetingCompletionNotificationIfPossible()
+        } else {
+            meetingMonitor.refreshState()
+        }
+    }
+
     private func presentMeetingDetection(_ candidate: MeetingCandidate) {
-        guard config.showMeetingDetectionNotification,
+        guard config.showMeetingDetectionNotification || config.autoRecordMeetings,
               !isShowingCalendarNotification,
               !isMeetingRecording(),
               !isStartingMeetingRecording else { return }
@@ -11377,6 +11395,23 @@ public final class MuesliController: NSObject {
         }
 
         let matchingEvent = matchingCalendarEvent(for: candidate)
+        let eventKey = matchingEvent?.calendarOccurrence?.identityKey ?? matchingEvent?.id
+        switch ScheduledMeetingNotificationPolicy.joinedCallAction(
+            showsDetection: config.showMeetingDetectionNotification,
+            autoRecordMeetings: config.autoRecordMeetings,
+            hasCalendarEvent: matchingEvent != nil,
+            hasLiveMedia: candidate.hasLiveMediaEvidence,
+            alreadyAttempted: eventKey.map(autoRecordAttempt.hasClaimed) ?? false
+        ) {
+        case .ignore:
+            return
+        case .record:
+            if let eventKey { autoRecordAttempt.claim(eventKey) }
+            startRecordingDetectedCall(candidate, endingAtEventEnd: true)
+            return
+        case .showToast:
+            break
+        }
         let title = matchingEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
         presentedMeetingCandidate = candidate
         let preferredScreen = meetingSourceWindowLocator.screen(for: candidate)
@@ -11387,22 +11422,7 @@ public final class MuesliController: NSObject {
             preferredScreen: preferredScreen,
             platform: MeetingPlatform(candidate.platform),
             onStartRecording: { [weak self] in
-                guard let self else { return }
-                let calendarEvent = self.matchingCalendarEvent(for: candidate)
-                let recordingTitle = calendarEvent?.title ?? (candidate.platform == .unknown ? candidate.appName : candidate.platform.displayName)
-                if self.startMeetingRecordingFromEntryPoint(
-                    title: recordingTitle,
-                    calendarOccurrence: calendarEvent?.calendarOccurrence,
-                    autoStopSource: MeetingAutoStopSource(candidate: candidate),
-                    presentation: .backgroundPill,
-                    startOrigin: .detectedPrompt
-                ) {
-                    self.meetingMonitor.markRecordingStarted(candidate)
-                    self.presentedMeetingCandidate = nil
-                    self.showPendingMeetingCompletionNotificationIfPossible()
-                } else {
-                    self.meetingMonitor.refreshState()
-                }
+                self?.startRecordingDetectedCall(candidate)
             },
             onDismiss: { [weak self] in
                 guard let self else { return }

@@ -27,7 +27,90 @@ struct MeetingNotificationControllerTests {
         #expect(controller.testingRecentMeetingCandidate() == nil)
     }
 
-    @Test("calendar auto-record preserves recordings and asks when a call may already be active")
+    struct JoinedCallRow: Sendable, CustomTestStringConvertible {
+        let toasts: Bool, autoRecord: Bool, hasEvent: Bool, live: Bool, tried: Bool
+        let action: ScheduledMeetingNotificationPolicy.JoinedCallAction
+        var testDescription: String {
+            "toasts=\(toasts) autoRecord=\(autoRecord) event=\(hasEvent) live=\(live) tried=\(tried) -> \(action)"
+        }
+    }
+
+    static let joinedCallRows: [JoinedCallRow] = [
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, tried: false, action: .record),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: true, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: true, hasEvent: false, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: true, live: false, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: true, tried: true, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, tried: false, action: .showToast),
+        .init(toasts: true, autoRecord: false, hasEvent: false, live: false, tried: true, action: .showToast),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, tried: false, action: .record),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: true, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: true, hasEvent: false, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: true, live: false, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: true, tried: true, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, tried: false, action: .ignore),
+        .init(toasts: false, autoRecord: false, hasEvent: false, live: false, tried: true, action: .ignore),
+    ]
+
+    @Test("a call records once per event with auto-record, a calendar match and live media, else it toasts if toasts are on",
+          arguments: joinedCallRows)
+    func joinedCallAction(row: JoinedCallRow) {
+        #expect(ScheduledMeetingNotificationPolicy.joinedCallAction(
+            showsDetection: row.toasts, autoRecordMeetings: row.autoRecord, hasCalendarEvent: row.hasEvent,
+            hasLiveMedia: row.live, alreadyAttempted: row.tried
+        ) == row.action)
+    }
+
+    @Test("only an audio-input process attributed to the app counts as a live call, not global mic or camera, or a focused URL")
+    func liveMediaEvidence() {
+        func candidate(_ evidence: Set<MeetingCandidate.Evidence>) -> MeetingCandidate {
+            MeetingCandidate(id: "meet", platform: .googleMeet, appName: "Chrome", url: "meet.google.com/aaa-bbbb-ccc",
+                evidence: evidence, startedAt: Date(), meetingTitle: nil, sourceBundleID: nil)
+        }
+        #expect(candidate([.audioInputProcess, .browserURL]).hasLiveMediaEvidence)
+        #expect(!candidate([.micActive]).hasLiveMediaEvidence)
+        #expect(!candidate([.cameraActive, .micActive, .browserURL]).hasLiveMediaEvidence)
+        #expect(!candidate([.browserURL, .foregroundApp, .calendarEvent]).hasLiveMediaEvidence)
+        #expect(!candidate([]).hasLiveMediaEvidence)
+    }
+
+    @Test("auto-record tries each calendar event once, even when a one-off event is rescheduled")
+    func autoRecordAttemptsEachEventOnce() {
+        var attempts = AutoRecordAttemptGuard()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func key(_ id: String, series: String? = nil, _ at: Date) -> String {
+            CalendarOccurrenceReference(
+                provider: .eventKit, calendarID: "cal", eventID: id, seriesID: series, originalStartTime: at
+            ).identityKey
+        }
+        let first = attempts.claim(key("standup", start))
+        let rescheduled = attempts.claim(key("standup", start.addingTimeInterval(3_600)))
+        let dayOne = attempts.claim(key("daily", series: "s", start))
+        let dayTwo = attempts.claim(key("daily", series: "s", start.addingTimeInterval(86_400)))
+        let dayOneAgain = attempts.claim(key("daily", series: "s", start))
+        let otherEvent = attempts.claim(key("review", start))
+        #expect([first, rescheduled, dayOne, dayTwo, dayOneAgain, otherEvent] == [true, false, true, true, false, true])
+    }
+
+    @Test("calendar auto-record preserves recordings, asks when a call may be active, and never starts without one")
     func autoRecordConflictDecision() {
         let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision
         #expect(decision(true, true, true) == .keepCurrentRecording)
@@ -35,7 +118,7 @@ struct MeetingNotificationControllerTests {
         #expect(decision(false, true, false) == .askBeforeRecording)
         #expect(decision(false, false, true) == .askBeforeRecording)
         #expect(decision(false, false, nil) == .askBeforeRecording)
-        #expect(decision(false, false, false) == .startRecording)
+        #expect(decision(false, false, false) == .waitForJoin)
         #expect(!ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
             recordingRoom: "meet.google.com/aaa-bbbb-ccc", scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
         ))
