@@ -274,8 +274,9 @@ struct DictationRowView: View {
         }
         .onTapGesture {
             if hasExpandableDetails {
-                withAnimation(rowAnimation) {
-                    isExpanded.toggle()
+                // Nested trace disclosures must not collapse their parent row.
+                if !isComputerUseCommand || !isExpanded {
+                    withAnimation(rowAnimation) { isExpanded.toggle() }
                 }
             } else {
                 copy(.copy, using: onCopy)
@@ -291,48 +292,52 @@ struct DictationRowView: View {
 
     @ViewBuilder
     private func computerUseTraceView(_ trace: ComputerUseTraceRecord) -> some View {
-        VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            Divider()
-                .opacity(0.5)
+        if isComputerUseCommand {
+            ReadableComputerUseTraceView(trace: trace)
+        } else {
+            VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                Divider()
+                    .opacity(0.5)
 
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                ForEach(trace.events) { event in
-                    VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                        HStack(spacing: MuesliTheme.spacing8) {
-                            if !isQuilTransformation {
-                                Text(event.step.map { "Step \($0)" } ?? "Run")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(MuesliTheme.textTertiary)
-                                    .frame(width: 48, alignment: .leading)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    ForEach(trace.events) { event in
+                        VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+                            HStack(spacing: MuesliTheme.spacing8) {
+                                if !isQuilTransformation {
+                                    Text(event.step.map { "Step \($0)" } ?? "Run")
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(MuesliTheme.textTertiary)
+                                        .frame(width: 48, alignment: .leading)
+                                }
+
+                                Text(event.title)
+                                    .font(MuesliTheme.captionMedium())
+                                    .foregroundStyle(MuesliTheme.textSecondary)
+
+                                if let status = ComputerUseTraceFormatter.displayStatus(for: event) {
+                                    Text(status)
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(statusColor(status))
+                                }
                             }
 
-                            Text(event.title)
-                                .font(MuesliTheme.captionMedium())
-                                .foregroundStyle(MuesliTheme.textSecondary)
-
-                            if let status = ComputerUseTraceFormatter.displayStatus(for: event) {
-                                Text(status)
-                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(statusColor(status))
-                            }
+                            Text(event.body)
+                                .font(MuesliTheme.font(
+                                    size: 12,
+                                    weight: .regular,
+                                    design: ["model_output", "quil_model"].contains(event.kind) ? .monospaced : .default
+                                ))
+                                .foregroundStyle(MuesliTheme.textPrimary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.leading, isQuilTransformation ? 0 : 56)
                         }
-
-                        Text(event.body)
-                            .font(MuesliTheme.font(
-                                size: 12,
-                                weight: .regular,
-                                design: ["model_output", "quil_model"].contains(event.kind) ? .monospaced : .default
-                            ))
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.leading, isQuilTransformation ? 0 : 56)
                     }
                 }
             }
+            .padding(.top, MuesliTheme.spacing4)
         }
-        .padding(.top, MuesliTheme.spacing4)
     }
 
     private func statusColor(_ status: String) -> Color {
@@ -341,7 +346,7 @@ struct DictationRowView: View {
             return MuesliTheme.successText
         case "confirm", "needsconfirmation":
             return MuesliTheme.warningText
-        case "timed_out", "timedout":
+        case "timed_out", "timedout", "incomplete":
             return MuesliTheme.warningText
         case "failed", "unsupported":
             return MuesliTheme.destructiveText
@@ -430,5 +435,75 @@ struct TimelineRowActionButton: View {
         .buttonStyle(.muesli(.quiet))
         .help(help)
         .accessibilityLabel(label)
+    }
+}
+
+private struct ReadableComputerUseTraceView: View {
+    let trace: ComputerUseTraceRecord
+    @State private var rows: [ComputerUseTraceFormatter.ReadableRow] = []
+    @State private var budget: String?
+    @State private var diagnosticsExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            Text("Planner summary").font(.caption).foregroundStyle(.secondary)
+            Text(trace.finalMessage).font(.system(size: 12)).textSelection(.enabled)
+            if let budget { Text(budget).font(.caption).foregroundStyle(.secondary) }
+            ForEach(rows) { row in
+                ReadableComputerUseTraceRow(row: row)
+            }
+            DisclosureGroup("Run diagnostics", isExpanded: $diagnosticsExpanded) {
+                if diagnosticsExpanded {
+                    ForEach(trace.events.filter { ["transcript", "backend", "context_budget"].contains($0.kind) }) { event in
+                        Text(event.body).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    }
+                }
+            }.font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.top, 8)
+        .onAppear { refresh() }
+        .onChange(of: trace.events) { _, _ in refresh() }
+    }
+    private func refresh() {
+        rows = ComputerUseTraceFormatter.readableRows(trace.events)
+        budget = ComputerUseTraceFormatter.budgetSummary(trace.events)
+    }
+}
+
+private struct ReadableComputerUseTraceRow: View {
+    let row: ComputerUseTraceFormatter.ReadableRow
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let first = row.events.first?.step {
+                    let last = row.events.last?.step ?? first
+                    Text(first == last ? "\(first)" : "\(first)–\(last)")
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Text(row.title).font(.system(size: 13, weight: .medium))
+            }
+            Text(row.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(row.outcome).font(.system(size: 11))
+                .foregroundStyle(row.outcome.hasPrefix("Error") ? Color.red : Color.secondary)
+            DisclosureGroup("Raw details", isExpanded: $expanded) {
+                if expanded {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(row.events) { event in
+                                Text("Step \(event.step.map(String.init) ?? "—") · \(event.kind) · \(event.timestamp)")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(event.body).font(.system(size: 11, design: .monospaced))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }.padding(8)
+                    }.frame(maxHeight: 260)
+                }
+            }.font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
     }
 }
