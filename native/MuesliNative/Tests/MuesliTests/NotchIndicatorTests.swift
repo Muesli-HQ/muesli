@@ -839,10 +839,21 @@ struct NotchIndicatorTests {
         _ = try #require(NSScreen.main)
         for recovers in [true, false] {
             var checks = 0
-            let notch = NotchIndicatorController(isPanelOnScreen: { panel in
+            var missingPanel: NSPanel?
+            let notch = NotchIndicatorController(resolveGeometry: { screen in
+                NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                    y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 78)
+            }, isPanelOnScreen: { panel in
                 #expect(panel.isVisible)
                 checks += 1
-                return recovers && checks == 2
+                if let missingPanel {
+                    #expect(panel !== missingPanel)
+                    #expect(!missingPanel.isVisible)
+                    #expect(panel.frame == missingPanel.frame)
+                    return recovers && panel !== missingPanel && NotchIndicatorController.windowServerShows(panel)
+                }
+                missingPanel = panel
+                return false
             })
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             var fallback: InteractiveFloatingPanel?

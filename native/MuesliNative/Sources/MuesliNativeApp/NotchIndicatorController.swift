@@ -446,16 +446,7 @@ final class NotchIndicatorController {
         self.meeting = meeting
         self.handsFree = handsFree
         if panel == nil {
-            let panel = NotchIndicatorPanel(contentRect: .zero,
-                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-            panel.level = .statusBar
-            panel.backgroundColor = .clear
-            panel.isOpaque = false
-            panel.hasShadow = false
-            panel.hidesOnDeactivate = false
-            panel.isReleasedWhenClosed = false
-            panel.collectionBehavior = [.canJoinAllApplications, .canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            self.panel = panel
+            panel = makeRecordingPanel(frame: geometry.frame())
         }
         if status != nil && !continuesStatus { expanded = true }
         if renderImmediately {
@@ -470,27 +461,47 @@ final class NotchIndicatorController {
         return true
     }
 
-    private func verifyRecordingPanel(_ panel: NSPanel) {
+    private func makeRecordingPanel(frame: CGRect) -> NSPanel {
+        let panel = NotchIndicatorPanel(contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllApplications, .canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        return panel
+    }
+
+    private func verifyRecordingPanel(_ initialPanel: NSPanel) {
         guard recordingPanelCheck == nil else { return }
-        recordingPanelCheck = Task { @MainActor [weak self, weak panel] in
-            // WindowServer publishes ordering asynchronously, even for healthy panels.
+        recordingPanelCheck = Task { @MainActor [weak self] in
+            var candidate = initialPanel
             for attempt in 0..<2 {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
-                guard let self, let panel, self.panel === panel else { return }
-                if let screen = panel.screen, let geometry = self.resolveGeometry(screen), geometry != self.geometry {
+                guard let self, self.panel === candidate, self.recording else { return }
+                if let screen = candidate.screen, let geometry = self.resolveGeometry(screen), geometry != self.geometry {
                     self.geometry = geometry
                     self.render()
                 }
-                if self.isPanelOnScreen(panel) {
+                if self.isPanelOnScreen(candidate) {
+                    if attempt == 1 { self.logPresentation("replacement confirmed on screen") }
                     self.recordingPanelCheck = nil
                     return
                 }
-                self.logPresentation(attempt == 0 ? "recording absent from WindowServer: retry" :
-                    "recording absent from WindowServer: fallback")
                 if attempt == 0 {
-                    panel.orderOut(nil)
-                    panel.orderFrontRegardless()
+                    self.logPresentation("recording absent from WindowServer: replace")
+                    let replacement = self.makeRecordingPanel(frame: candidate.frame)
+                    candidate.orderOut(nil)
+                    candidate.contentView = nil
+                    candidate.close()
+                    self.panel = replacement
+                    self.render()
+                    replacement.orderFrontRegardless()
+                    candidate = replacement
                 } else {
+                    self.logPresentation("replacement absent from WindowServer: fallback")
                     self.recordingPanelCheck = nil
                     self.onRecordingPanelUnavailable?()
                 }
