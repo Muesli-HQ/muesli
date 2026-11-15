@@ -34,9 +34,32 @@ struct TimeTurnerCaptureChoice: Equatable {
     var scope: TimeTurnerCaptureScope
     var displays: [String: String]
 
+    init(scope: TimeTurnerCaptureScope, displays: [String: String]) {
+        self.scope = scope
+        self.displays = displays
+    }
+
     init(config: AppConfig) {
         scope = TimeTurnerCaptureScope(rawValue: config.timeTurnerCaptureScope) ?? .focused
         displays = config.timeTurnerSelectedDisplays
+    }
+
+    func includesEntireDisplay(_ id: String) -> Bool {
+        scope == .all || (scope == .selected && displays[id] != nil)
+    }
+
+    mutating func toggleDisplay(_ id: String, connected: [String: String]) {
+        guard let name = connected[id] else { return }
+        switch scope {
+        case .focused: displays = [id: name]
+        case .all:
+            displays = connected
+            displays.removeValue(forKey: id)
+        case .selected:
+            if displays[id] != nil { displays.removeValue(forKey: id) }
+            else { displays[id] = name }
+        }
+        scope = .selected
     }
 
     var isValid: Bool { scope != .selected || !displays.isEmpty }
@@ -45,7 +68,7 @@ struct TimeTurnerCaptureChoice: Equatable {
 /// A resource picker, like app exclusions. Changes stay in a draft until Finish/Save.
 /// Preview frames live only in memory and are not added to screen history.
 struct TimeTurnerDisplayPicker: View {
-    @Binding var selection: [String: String]
+    @Binding var choice: TimeTurnerCaptureChoice
     @Binding var initialized: Bool
     @State private var sources: [MeetingScreenSource] = []
     @State private var revision = 0
@@ -53,18 +76,29 @@ struct TimeTurnerDisplayPicker: View {
     @State private var loading = true
     @State private var error: String?
 
+    private var connected: [String: String] {
+        Dictionary(sources.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private var instructions: String {
+        switch choice.scope {
+        case .focused: "Follow the active window across displays. Choose a display below to capture it instead."
+        case .all: "Capture every connected display, including ones you connect later. Deselect a display to choose a subset."
+        case .selected: "Capture the checked displays whenever they’re connected."
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose displays").font(MuesliTheme.title2())
-            Text("Capture these displays whenever they’re connected. New displays won’t be added automatically.")
+            Text(instructions)
                 .font(MuesliTheme.body()).foregroundStyle(MuesliTheme.textSecondary)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
                     ForEach(sources) { source in
-                        let selected = selection[source.id] != nil
+                        let selected = choice.includesEntireDisplay(source.id)
                         Button {
-                            if selected { selection.removeValue(forKey: source.id) }
-                            else { selection[source.id] = source.title }
+                            initialized = true
+                            choice.toggleDisplay(source.id, connected: connected)
                         } label: {
                             VStack(alignment: .leading, spacing: 8) {
                                 MeetingScreenThumbnail(source: source)
@@ -92,13 +126,15 @@ struct TimeTurnerDisplayPicker: View {
                             .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                 }.padding(2)
-                ForEach(selection.keys.filter { id in !sources.contains { $0.id == id } }.sorted(), id: \.self) { id in
-                    HStack {
-                        Label(selection[id] ?? "Display", systemImage: "display")
-                        Text("Disconnected").foregroundStyle(MuesliTheme.textSecondary)
-                        Spacer()
-                        Button("Remove") { selection.removeValue(forKey: id) }
-                    }.font(MuesliTheme.body()).padding(.vertical, 6)
+                if choice.scope == .selected && !loading && error == nil {
+                    ForEach(choice.displays.keys.filter { id in !sources.contains { $0.id == id } }.sorted(), id: \.self) { id in
+                        HStack {
+                            Label(choice.displays[id] ?? "Display", systemImage: "display")
+                            Text("Disconnected").foregroundStyle(MuesliTheme.textSecondary)
+                            Spacer()
+                            Button("Remove") { choice.displays.removeValue(forKey: id) }
+                        }.font(MuesliTheme.body()).padding(.vertical, 6)
+                    }
                 }
                 if loading { ProgressView().controlSize(.small).padding() }
                 if let error { Text(error).font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary) }
@@ -107,11 +143,14 @@ struct TimeTurnerDisplayPicker: View {
                 }
             }
             HStack {
-                Text("\(selection.count) selected").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                if choice.scope == .selected {
+                    Text("\(choice.displays.count) selected").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textSecondary)
+                }
                 Spacer()
                 Button("Refresh") { revision += 1 }
             }
         }
+        .onChange(of: choice.scope) { _, _ in initializeSelectionIfNeeded() }
         .task(id: revision) { await load() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in revision += 1 }
     }
@@ -131,11 +170,7 @@ struct TimeTurnerDisplayPicker: View {
                     filter: SCContentFilter(display: display, excludingWindows: []), isDisplay: true, icon: nil)
             }
             previewRevision += 1
-            // Preselect connected displays only for the first presentation, never on hot-plug.
-            if !initialized && !sources.isEmpty {
-                selection = Dictionary(sources.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
-                initialized = true
-            }
+            initializeSelectionIfNeeded()
             loading = false
         } catch {
             guard !Task.isCancelled else { return }
@@ -145,25 +180,32 @@ struct TimeTurnerDisplayPicker: View {
             loading = false
         }
     }
+
+    private func initializeSelectionIfNeeded() {
+        guard choice.scope == .selected, !initialized, !sources.isEmpty else { return }
+        choice.displays = connected
+        initialized = true
+    }
 }
 
 struct TimeTurnerDisplaySelectionSheet: View {
     let controller: MuesliController
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: [String: String]
+    @State private var choice: TimeTurnerCaptureChoice
     @State private var initialized: Bool
     @State private var saving = false
     @State private var saveError: String?
 
     init(controller: MuesliController, selection: [String: String]) {
         self.controller = controller
-        _selection = State(initialValue: selection)
+        _choice = State(initialValue: TimeTurnerCaptureChoice(scope: .selected, displays: selection))
         _initialized = State(initialValue: !selection.isEmpty)
     }
 
     var body: some View {
         VStack(spacing: 20) {
-            TimeTurnerDisplayPicker(selection: $selection, initialized: $initialized)
+            Text("Choose displays").font(MuesliTheme.title2())
+            TimeTurnerDisplayPicker(choice: $choice, initialized: $initialized)
             if let saveError { SettingsNote(saveError, tone: .warning) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -174,11 +216,11 @@ struct TimeTurnerDisplaySelectionSheet: View {
                         defer { saving = false }
                         do {
                             try await controller.applySetting("time_turner_capture_scope", value: TimeTurnerCaptureScope.selected.rawValue,
-                                                              selectedDisplays: selection)
+                                                              selectedDisplays: choice.displays)
                             dismiss()
                         } catch { saveError = error.localizedDescription }
                     }
-                }.buttonStyle(.borderedProminent).disabled(selection.isEmpty)
+                }.buttonStyle(.borderedProminent).disabled(!choice.isValid)
             }
         }.disabled(saving).padding(24).frame(width: 560, height: 470)
             .font(MuesliTheme.body())

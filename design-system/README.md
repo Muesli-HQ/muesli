@@ -408,7 +408,7 @@ surfaces in `TimeTurnerPage` and `TimeTurnerRecapView`.
 
 Time Turner settings use the standard section headings, bordered cards and
 `SettingsRow` control columns. All controls live in one Time Turner card, with inset Capture, Excluded apps
-and Storage & retention subsections separated by dividers. Capture switches
+and Storage & retention subsections separated by dividers. Setup shows connected monitor previews in every capture mode. Selecting an individual monitor switches the setup draft to Selected displays. Capture switches
 have visible labels; storage budget and usage stay within that card. Permission setup
 stays in onboarding, with a recovery action only when required access is missing.
 

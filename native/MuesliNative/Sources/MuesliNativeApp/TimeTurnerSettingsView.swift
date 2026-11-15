@@ -259,14 +259,7 @@ struct TimeTurnerSetupView: View {
                         Text(scope.label).tag(scope)
                     }
                 }.pickerStyle(.segmented)
-                switch captureChoice.scope {
-                case .focused:
-                    SettingsNote("Save the focused window on whichever display you’re using.")
-                case .all:
-                    SettingsNote("Save eligible windows on every connected display, including displays you connect later.")
-                case .selected:
-                    TimeTurnerDisplayPicker(selection: $captureChoice.displays, initialized: $displaysInitialized)
-                }
+                TimeTurnerDisplayPicker(choice: $captureChoice, initialized: $displaysInitialized)
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())
                 VStack(spacing: MuesliTheme.spacing8) {
@@ -288,7 +281,7 @@ struct TimeTurnerSetupView: View {
                 if !ready { Text("A required permission is missing. Go back to review permissions.").foregroundStyle(.orange) }
             }
             if let error { Text(error).font(MuesliTheme.font(.caption)).foregroundStyle(.red) }
-            Spacer(minLength: 0)
+            if step != TimeTurnerSetupStep.displays.rawValue { Spacer(minLength: 0) }
             HStack {
                 Button("Not now") { PermissionRestartResumeStore.shared.clear(); dismiss() }.keyboardShortcut(.cancelAction)
                 if step > 0 && !reviewingAccess { Button("Back") { PermissionRestartResumeStore.shared.clear(); step -= 1 } }

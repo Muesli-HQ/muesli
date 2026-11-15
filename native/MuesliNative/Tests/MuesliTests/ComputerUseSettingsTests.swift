@@ -9,6 +9,28 @@ import Testing
 @Suite("Computer use settings")
 @MainActor
 struct ComputerUseSettingsTests {
+    @Test("Monitor previews edit the setup draft from every capture mode")
+    func timeTurnerSetupMonitorPreviews() {
+        let connected = ["built-in": "Retina", "external": "HA240Y"]
+        var choice = TimeTurnerCaptureChoice(scope: .focused, displays: ["old": "Disconnected"])
+        #expect(!choice.includesEntireDisplay("external"))
+        choice.toggleDisplay("external", connected: connected)
+        #expect(choice.scope == .selected)
+        #expect(choice.displays == ["external": "HA240Y"])
+
+        choice.scope = .all
+        #expect(choice.includesEntireDisplay("built-in"))
+        #expect(choice.includesEntireDisplay("external"))
+        choice.toggleDisplay("built-in", connected: connected)
+        #expect(choice.scope == .selected)
+        #expect(choice.displays == ["external": "HA240Y"])
+        choice.toggleDisplay("external", connected: connected)
+        #expect(!choice.isValid)
+        choice.toggleDisplay("external", connected: connected)
+        #expect(choice.isValid)
+        #expect(choice.includesEntireDisplay("external"))
+    }
+
     @Test("Display selection requires explicit resources and persists atomically")
     func timeTurnerSelectedDisplays() async throws {
         try await withShortcutSettings { controller, configStore in
