@@ -192,7 +192,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if controller.isMeetingRecording() {
             let pauseTitle = controller.isMeetingRecordingPaused() ? "Resume Meeting Recording" : "Pause Meeting Recording"
             menu.addItem(actionItem(title: pauseTitle, action: #selector(MuesliController.toggleMeetingRecordingPause)))
-            menu.addItem(actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
+            if let sessionID = controller.activeMeetingRecordingSessionID {
+                let stop = actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.stopMeetingRecordingFromMenuBar(_:)))
+                stop.representedObject = sessionID
+                menu.addItem(stop)
+            }
             if controller.visualMemory.recordingMeetingID != nil {
                 menu.addItem(actionItem(title: controller.visualMemory.pauseState.userPaused ? "Resume Screen Recording" : "Pause Screen Recording", action: #selector(MuesliController.toggleMeetingScreenPause)))
                 menu.addItem(actionItem(title: "Stop Screen Recording", action: #selector(MuesliController.stopMeetingScreenRecording)))

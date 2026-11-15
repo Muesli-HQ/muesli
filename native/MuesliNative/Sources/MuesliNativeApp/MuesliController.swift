@@ -776,6 +776,7 @@ public final class MuesliController: NSObject {
         return capture.session
     }
     var activeMeetingStartedAt: Date? { activeMeetingSession?.startTime }
+    var activeMeetingRecordingSessionID: UUID? { activeMeetingSession?.screenRecordingSessionID }
 
     private var activeMeetingID: Int64? {
         guard let capture = meetingCapture, !capture.session.capturePhase.isEnding else { return nil }
@@ -8223,6 +8224,12 @@ public final class MuesliController: NSObject {
         )
     }
 
+    @objc func stopMeetingRecordingFromMenuBar(_ sender: NSMenuItem) {
+        guard let sessionID = sender.representedObject as? UUID,
+              sessionID == activeMeetingRecordingSessionID else { return }
+        stopMeetingRecording()
+    }
+
     @objc func startMeetingScreenRecording() {
         guard let session = activeMeetingSession, let id = activeMeetingID, !session.isPaused else { return }
         guard let window = alertPresentationWindow(showHistoryIfNeeded: true) else {
@@ -13812,15 +13819,19 @@ public final class MuesliController: NSObject {
         hotkey.onStop = { [weak self] in self?.handleStop() }
         hotkey.onCancel = { [weak self] in self?.handleCancel() }
         dictationAudioSessionManager = manager
+        testingInstallMeetingCapture(meeting)
+        manager.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handleDictationAudioSessionEvent(event) }
+        }
+    }
+
+    func testingInstallMeetingCapture(_ meeting: MeetingSession?) {
         meetingCapture = meeting.map { (1, $0) }
         if let meeting {
             let owner = ObjectIdentifier(meeting)
             meeting.onCaptureQuiesced = { [weak self] in
                 Task { @MainActor in self?.completeMeetingCaptureShutdown(owner: owner) }
             }
-        }
-        manager.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handleDictationAudioSessionEvent(event) }
         }
     }
 
