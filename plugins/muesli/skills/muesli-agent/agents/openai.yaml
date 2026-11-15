@@ -1,0 +1,4 @@
+interface:
+  display_name: "Muesli Agent"
+  short_description: "Analyze Muesli transcripts and use the local CLI"
+  default_prompt: "Analyze a Muesli transcript I provide, or use the local Muesli CLI when you have shell access on my Mac."

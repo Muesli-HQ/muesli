@@ -1,0 +1,14 @@
+{
+  "name": "muesli",
+  "owner": {
+    "name": "Muesli"
+  },
+  "plugins": [
+    {
+      "name": "muesli",
+      "source": "./plugins/muesli",
+      "version": "0.2.0",
+      "description": "Analyze Muesli transcripts and use the local Muesli CLI on macOS."
+    }
+  ]
+}
