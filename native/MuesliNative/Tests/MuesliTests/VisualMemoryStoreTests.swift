@@ -20,7 +20,7 @@ struct VisualMemoryStoreTests {
         var unreadableNode: Int?
         func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
             var inspected = 0
-            return TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 1], omitContainedUnmatched: false, frame: { bounds[$0] },
+            return TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 1], omitUnmatched: false, frame: { bounds[$0] },
                 inspect: { node in
                     inspected += 1
                     guard node != unreadableNode else { return nil }
@@ -39,7 +39,7 @@ struct VisualMemoryStoreTests {
         unreadableNode = nil
         #expect(!permits([focused, other], budget: 3))
         #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
-        #expect(TimeTurnerWindowPrivacy.inspectedIndices(frames: [focused], windows: [0, 1], omitContainedUnmatched: false,
+        #expect(TimeTurnerWindowPrivacy.inspectedIndices(frames: [focused], windows: [0, 1], omitUnmatched: false,
             frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }) == nil)
     }
 
@@ -53,7 +53,7 @@ struct VisualMemoryStoreTests {
         let overlay = CGRect(x: main.minX, y: main.minY, width: main.width, height: 149)
         func inspect(_ frames: [CGRect], roots: [CGRect], secure: Int? = nil, omit: Bool = true) -> IndexSet? {
             TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: Array(roots.indices),
-                omitContainedUnmatched: omit, frame: { roots[$0] }, inspect: { node in
+                omitUnmatched: omit, frame: { roots[$0] }, inspect: { node in
                     (node == secure ? kAXSecureTextFieldSubrole : nil, [])
                 }, withinBudget: { true })
         }
@@ -64,7 +64,9 @@ struct VisualMemoryStoreTests {
         #expect(inspect([overlay, main], roots: [main], secure: 0) == nil)
         #expect(inspect([overlay, main], roots: [main, overlay], secure: 1) == nil)
         #expect(inspect([overlay, main], roots: [main, main]) == nil)
-        #expect(inspect([overlay.offsetBy(dx: -1, dy: 0), main], roots: [main]) == nil)
+        let overhang = overlay.offsetBy(dx: -1, dy: 0)
+        #expect(inspect([overhang, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([overhang, main], roots: [main, overlay], secure: 1) == nil)
     }
 
     @Test func largeWindowsRequireACompletePrivacyInspection() {
@@ -72,7 +74,7 @@ struct VisualMemoryStoreTests {
         let second = first.offsetBy(dx: 800, dy: 0)
         // One wide window and one deep tree, with a shared child and a cycle.
         func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
-            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 2000], omitContainedUnmatched: false,
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 2000], omitUnmatched: false,
                 frame: { $0 == 0 ? first : second }, inspect: { node in
                     guard node != unreadable else { return nil }
                     let children: [Int]

@@ -30,7 +30,7 @@ struct TimeTurnerAXBudget {
 /// ScreenCaptureKit and AX both expose window bounds in global screen coordinates.
 /// Only allow pixels from windows whose accessibility trees could be inspected.
 enum TimeTurnerWindowPrivacy {
-    static func inspectedIndices(processID: pid_t, frames: [CGRect], deadline: TimeInterval, omitContainedUnmatched: Bool) -> IndexSet? {
+    static func inspectedIndices(processID: pid_t, frames: [CGRect], deadline: TimeInterval, omitUnmatched: Bool) -> IndexSet? {
         guard ProcessInfo.processInfo.systemUptime < deadline else { return nil }
         let app = AXUIElementCreateApplication(processID)
         AXUIElementSetMessagingTimeout(app, 0.15)
@@ -39,7 +39,7 @@ enum TimeTurnerWindowPrivacy {
               let windowValues, CFArrayGetCount(windowValues) <= 64,
               let windows = windowValues as? [AXUIElement] else { return nil }
         let attributes = [kAXSubroleAttribute, kAXChildrenAttribute, kAXRoleAttribute] as CFArray
-        return inspectedIndices(frames: frames, windows: windows, omitContainedUnmatched: omitContainedUnmatched, frame: { window in
+        return inspectedIndices(frames: frames, windows: windows, omitUnmatched: omitUnmatched, frame: { window in
             AXUIElementSetMessagingTimeout(window, 0.15)
             return DictationContextCapture.windowFrame(window)
         }, inspect: { node in
@@ -93,7 +93,7 @@ enum TimeTurnerWindowPrivacy {
         }
     }
 
-    static func inspectedIndices<Node: Hashable>(frames: [CGRect], windows: [Node], omitContainedUnmatched: Bool,
+    static func inspectedIndices<Node: Hashable>(frames: [CGRect], windows: [Node], omitUnmatched: Bool,
                                                  frame: (Node) -> CGRect?, inspect: (Node) -> (subrole: String?, children: [Node])?,
                                                  withinBudget: () -> Bool) -> IndexSet? {
         guard !frames.isEmpty else { return nil }
@@ -107,19 +107,17 @@ enum TimeTurnerWindowPrivacy {
         for (offset, rect) in frames.enumerated() {
             guard withinBudget() else { return nil }
             let matches = bounds.indices.filter { bounds[$0].equalTo(rect) }
-            if matches.isEmpty && omitContainedUnmatched { continue }
+            if matches.isEmpty && omitUnmatched { continue }
             guard matches.count == 1, let index = matches.first else { return nil }
             indices.insert(offset)
             pending.append(windows[index])
         }
-        // Some apps publish a second, smaller compositor surface over the real AX window.
-        // Never map its pixels to the parent. Only the exact matches may enter the SC filter.
-        guard !indices.isEmpty else { return nil }
-        for (offset, rect) in frames.enumerated() where !indices.contains(offset) {
-            guard withinBudget(), indices.contains(where: { frames[$0].contains(rect) }) else { return nil }
-        }
+        guard !indices.isEmpty, Set(pending).count == indices.count else { return nil }
+        // Compositor surfaces can move independently of their AX window. Exclude every
+        // unmatched surface by ID. Check all AX roots when the mapping is incomplete so
+        // a second private window with differing geometry still blocks this app.
+        if indices.count != frames.count { pending = windows }
         var seen = Set(pending)
-        guard seen.count == indices.count else { return nil }
         while let node = pending.popLast() {
             guard withinBudget(), let info = inspect(node),
                   info.subrole != kAXSecureTextFieldSubrole else { return nil }

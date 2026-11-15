@@ -562,13 +562,13 @@ final class VisualMemoryController {
     }
 
     private nonisolated static func inspectedCaptureWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval,
-                                                           omitContainedUnmatched: Bool = false) async -> IndexSet? {
+                                                           omitUnmatched: Bool = false) async -> IndexSet? {
         await Task.detached(priority: .utility) {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0, let app = NSRunningApplication(processIdentifier: processID),
                   !hasSecureField(in: app, timeout: Float(min(remaining, 0.15))) else { return nil }
             return TimeTurnerWindowPrivacy.inspectedIndices(processID: processID, frames: frames, deadline: deadline,
-                                                           omitContainedUnmatched: omitContainedUnmatched)
+                                                           omitUnmatched: omitUnmatched)
         }.value
     }
 
@@ -791,7 +791,7 @@ final class VisualMemoryController {
                 var verified: IndexSet?
                 if await axBudget.permits(reserving: axBudget.revalidationReserve, { deadline in
                     verified = await Self.inspectedCaptureWindows(processID: pid, frames: group.map(\.frame),
-                                                                  deadline: deadline, omitContainedUnmatched: true)
+                                                                  deadline: deadline, omitUnmatched: true)
                     return verified != nil
                 }), let verified {
                     verifiedIDs.formUnion(verified.map { group[$0].windowID })
@@ -832,7 +832,7 @@ final class VisualMemoryController {
                     for (pid, included) in Dictionary(grouping: windows, by: { $0.owningApplication?.processID }) {
                         guard let pid, let group = candidates[pid], await axBudget.permits({ deadline in
                             guard let verified = await Self.inspectedCaptureWindows(processID: pid, frames: group.map(\.frame),
-                                deadline: deadline, omitContainedUnmatched: true) else { return false }
+                                deadline: deadline, omitUnmatched: true) else { return false }
                             let ids = Set(verified.map { group[$0].windowID })
                             return included.allSatisfy { ids.contains($0.windowID) }
                         }) else {
