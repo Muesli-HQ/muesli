@@ -776,6 +776,7 @@ public final class MuesliController: NSObject {
         return capture.session
     }
     var activeMeetingStartedAt: Date? { activeMeetingSession?.startTime }
+    var activeMeetingRecordingSessionID: UUID? { activeMeetingSession?.screenRecordingSessionID }
 
     private var activeMeetingID: Int64? {
         guard let capture = meetingCapture, !capture.session.capturePhase.isEnding else { return nil }
@@ -2278,7 +2279,13 @@ public final class MuesliController: NSObject {
         let previousMeetingRecordingHotkeyTriggerThresholdMS = config.meetingRecordingHotkeyTriggerThresholdMS
         let previousEnableDictionaryCorrectionPrompts = config.enableDictionaryCorrectionPrompts
         let previousEnableLiveStreamingPartials = config.enableLiveStreamingPartials
+        let previousConfig = config
         mutate(&config)
+        if !previousConfig.hasSameAmbientCaptureSettings(as: config)
+            || previousConfig.timeTurnerRetentionPolicy != config.timeTurnerRetentionPolicy
+            || previousConfig.useCoreAudioTap != config.useCoreAudioTap {
+            visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
+        }
         if previousFeedbackCaptureEnabled && !config.enableFeedbackCapture { storedFeedbackCapture?.finish() }
         if previousFeedbackCaptureEnabled != config.enableFeedbackCapture || previousFeedbackCaptureHotkey != config.feedbackCaptureHotkey {
             configureFeedbackCaptureHotkeyMonitor()
@@ -3677,7 +3684,34 @@ public final class MuesliController: NSObject {
         ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .formatting])
     }
 
-    func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil) async throws {
+    var timeTurnerPermissionsAreGranted: () -> Bool = { CGPreflightScreenCaptureAccess() && AXIsProcessTrusted() }
+
+    /// Publish a new capture boundary only after its scope and monitor UUIDs are durable.
+    func persistTimeTurnerCaptureSettings(_ change: (inout AppConfig) -> Void) throws {
+        var next = config
+        change(&next)
+        guard configStore.save(next),
+              let data = try? Data(contentsOf: configStore.configPath()),
+              let saved = try? JSONDecoder().decode(AppConfig.self, from: data),
+              saved.hasSameAmbientCaptureSettings(as: next) else {
+            throw MuesliSettings.Failure.rejected("Couldn’t save the capture settings. Please try again.")
+        }
+        let changed = !config.hasSameAmbientCaptureSettings(as: next)
+        let enabledChanged = config.timeTurnerEnabled != next.timeTurnerEnabled
+        config = next
+        if changed {
+            visualMemory.configureAmbient(config, audioFallbackActive: isMeetingRecording() && !config.useCoreAudioTap)
+        }
+        publishConfig()
+        if enabledChanged {
+            statusBarController?.refresh()
+            statusBarController?.refreshIcon()
+            if hasStarted { configureRecapClock() }
+        }
+    }
+
+    func applySetting(_ id: String, value: String, dictationToggleShortcut: HotkeyConfig? = nil,
+                      selectedDisplays: [String: String]? = nil) async throws {
         if let feature = NewFeature.setting(id) {
             NewFeatureDiscovery.shared.markUsed(feature)
         }
@@ -3685,8 +3719,12 @@ public final class MuesliController: NSObject {
            id != "dictation_activation" || value != HotkeyMonitor.CombinationActivation.toggle.rawValue {
             throw MuesliSettings.Failure.rejected("A captured toggle shortcut can only set dictation Toggle mode.")
         }
+        if selectedDisplays != nil, id != "time_turner_capture_scope" || value != TimeTurnerCaptureScope.selected.rawValue {
+            throw MuesliSettings.Failure.rejected("Monitor selection requires Selected displays.")
+        }
         let definitions = settingsDefinitions(dictationToggleShortcut: dictationToggleShortcut,
-            manualRecordingMinutes: id == "dictation_audio_threshold_minutes" ? Int(value) : nil)
+            manualRecordingMinutes: id == "dictation_audio_threshold_minutes" ? Int(value) : nil,
+            selectedDisplays: selectedDisplays)
         _ = try await MuesliSettings.apply(.init(setting: id, value: value), settings: definitions,
             snapshots: definitions.map { $0.snapshot(config: config, source: .manualUI) }, source: .manualUI, config: { self.config },
             persistedConfig: {
@@ -8184,6 +8222,12 @@ public final class MuesliController: NSObject {
         startMeetingRecordingFromEntryPoint(
             dashboardWindowPresentation: .compactMeetingTrailing
         )
+    }
+
+    @objc func stopMeetingRecordingFromMenuBar(_ sender: NSMenuItem) {
+        guard let sessionID = sender.representedObject as? UUID,
+              sessionID == activeMeetingRecordingSessionID else { return }
+        stopMeetingRecording()
     }
 
     @objc func startMeetingScreenRecording() {
@@ -13775,15 +13819,19 @@ public final class MuesliController: NSObject {
         hotkey.onStop = { [weak self] in self?.handleStop() }
         hotkey.onCancel = { [weak self] in self?.handleCancel() }
         dictationAudioSessionManager = manager
+        testingInstallMeetingCapture(meeting)
+        manager.onEvent = { [weak self] event in
+            Task { @MainActor in self?.handleDictationAudioSessionEvent(event) }
+        }
+    }
+
+    func testingInstallMeetingCapture(_ meeting: MeetingSession?) {
         meetingCapture = meeting.map { (1, $0) }
         if let meeting {
             let owner = ObjectIdentifier(meeting)
             meeting.onCaptureQuiesced = { [weak self] in
                 Task { @MainActor in self?.completeMeetingCaptureShutdown(owner: owner) }
             }
-        }
-        manager.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handleDictationAudioSessionEvent(event) }
         }
     }
 

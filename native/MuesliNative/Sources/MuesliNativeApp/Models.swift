@@ -2432,6 +2432,9 @@ struct AppConfig: Codable, Equatable {
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var timeTurnerEnabled: Bool = false
     var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerCaptureScope: String = "focused"
+    /// Stable display UUID → last known name; absent monitors remain selected.
+    var timeTurnerSelectedDisplays: [String: String] = [:]
     var timeTurnerInterval: String = "10"
     var timeTurnerBudget: String = "10"
     var timeTurnerScreenshotRetention: String = "7"
@@ -2628,6 +2631,8 @@ struct AppConfig: Codable, Equatable {
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case timeTurnerEnabled = "time_turner_enabled"
         case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerCaptureScope = "time_turner_capture_scope"
+        case timeTurnerSelectedDisplays = "time_turner_selected_displays"
         case timeTurnerInterval = "time_turner_interval"
         case timeTurnerBudget = "time_turner_budget"
         case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
@@ -2942,6 +2947,8 @@ struct AppConfig: Codable, Equatable {
         }
         timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
         timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerCaptureScope = (try? c.decode(String.self, forKey: .timeTurnerCaptureScope)) ?? "focused"
+        timeTurnerSelectedDisplays = (try? c.decode([String: String].self, forKey: .timeTurnerSelectedDisplays)) ?? [:]
         timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
         timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
         timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"
