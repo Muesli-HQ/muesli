@@ -37,16 +37,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let controller: MuesliController
     private let runtime: RuntimePaths
     private let statusItem: NSStatusItem
-    private let menu = NSMenu()
+    private let menu: NSMenu
+    private var isTrackingMenu = false
+    private var needsPresentationUpdate = true
     private var countdownOverride: String?
     private let captureDot = NSView(frame: .zero)
     private var captureIndicatorTimer: Timer?
 
     deinit { captureIndicatorTimer?.invalidate() }
 
-    init(controller: MuesliController, runtime: RuntimePaths) {
+    init(controller: MuesliController, runtime: RuntimePaths, menu: NSMenu = NSMenu()) {
         self.controller = controller
         self.runtime = runtime
+        self.menu = menu
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         menu.delegate = self
@@ -57,12 +60,27 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func setStatus(_ text: String) {}
 
     func refresh() {
-        rebuildMenu()
+        if !isTrackingMenu { needsPresentationUpdate = true }
         updateMenuBarTitle()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === self.menu, !isTrackingMenu || needsPresentationUpdate else { return }
+        needsPresentationUpdate = false
         rebuildMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        // AppKit tracks the actual item objects down the whole submenu chain.
+        // Replacing them while the pointer is moving dismisses the open submenu.
+        isTrackingMenu = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        isTrackingMenu = false
+        needsPresentationUpdate = true
     }
 
     func setCountdownOverride(_ text: String?) {

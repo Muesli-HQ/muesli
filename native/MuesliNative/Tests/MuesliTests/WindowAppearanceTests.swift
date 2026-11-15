@@ -10,6 +10,39 @@ import TelemetryDeck
 @Suite("WindowAppearance", .serialized)
 struct WindowAppearanceTests {
 
+    @Test("Status refreshes preserve tracked submenu items until the next opening", arguments: [true, false])
+    func statusMenuTracking(updateBeforeOpen: Bool) throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let runtime = RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let controller = MuesliController(runtime: runtime, dictationStore: store,
+                                         configStore: makeTestConfigStore(supportDirectory: directory))
+        let menu = NSMenu()
+        let status = StatusBarController(controller: controller, runtime: runtime, menu: menu)
+        if updateBeforeOpen { status.menuNeedsUpdate(menu) }
+        status.menuWillOpen(menu)
+        if !updateBeforeOpen { status.menuNeedsUpdate(menu) }
+        let parent = try #require(menu.item(withTitle: "Time Turner"))
+        let submenu = try #require(parent.submenu)
+        let settings = try #require(submenu.item(withTitle: "Time Turner Settings…"))
+        for _ in 0..<3 {
+            status.refresh()
+            status.menuNeedsUpdate(menu)
+        }
+        #expect(menu.item(withTitle: "Time Turner") === parent)
+        #expect(parent.submenu?.item(withTitle: "Time Turner Settings…") === settings)
+        status.menuDidClose(menu)
+        status.menuWillOpen(menu)
+        status.menuNeedsUpdate(menu)
+        let reopened = try #require(menu.item(withTitle: "Time Turner"))
+        #expect(reopened !== parent)
+        status.menuDidClose(menu)
+    }
+
     @Test("Sidebar order restores defaults, removes unknown/duplicate IDs and appends new tabs")
     func sidebarOrderRecovery() {
         #expect(SidebarOrder.tabs(from: "") == SidebarOrder.defaults)
