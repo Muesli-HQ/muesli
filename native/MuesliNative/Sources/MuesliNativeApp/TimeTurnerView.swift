@@ -200,16 +200,17 @@ struct MemoryExplorerView: View {
     @State private var selectedCaptureID: String?
     @State private var showsSearch = false
     let inline: Bool
-    let onNavigate: ((Date, Date) -> Void)?
+    let onNavigate: ((Date, Date, VisualMemoryItem?, String?) -> Void)?
     let focusedSize: CGSize?
     let onClose: (() -> Void)?
     private var focusPresenter: TimeTurnerFocusPresenter { .shared }
     @State private var lastHapticTime = Date.distantPast
-    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, externalDay: Binding<Date>? = nil, focusedSize: CGSize? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date) -> Void)? = nil) {
+    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, externalDay: Binding<Date>? = nil, focusedSize: CGSize? = nil, initialDisplayFilter: String? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date, VisualMemoryItem?, String?) -> Void)? = nil) {
         self.memory = memory
         self.externalDay = externalDay
         self.inline = inline
         self.focusedSize = focusedSize
+        _displayFilter = State(initialValue: initialDisplayFilter)
         self.onClose = onClose
         self.onNavigate = onNavigate
         let selectedDay = externalDay?.wrappedValue ?? initialMoment?.capturedAt ?? Date()
@@ -222,14 +223,42 @@ struct MemoryExplorerView: View {
     @State private var showsText = false
     private func expandExplorer() {
         guard inline, let selected else { return }
-        focusPresenter.present(owner: NSApp.keyWindow, moment: selected, memory: memory) { date, time in
+        focusPresenter.present(owner: NSApp.keyWindow, moment: selected, memory: memory, displayFilter: displayFilter) { date, time, moment, filter in
             day = date
-            selectedCaptureID = nil
+            if filter != displayFilter { filterDisplay(filter) }
+            selectedCaptureID = moment?.id
             playhead = time
         }
     }
     private func closeExplorer() { if let onClose { onClose() } else { dismiss() } }
-    private var ordered: [VisualMemoryItem] { daySnapshot.moments }
+    @State private var displayFilter: String?
+    @State private var connectedDisplays = TimeTurnerDisplayIdentity.connected
+    private var displayChoices: [String: String] {
+        var names = daySnapshot.displays
+        if Calendar.current.isDateInToday(day) {
+            for display in connectedDisplays where memory.selectsDisplay(uuid: display.uuid) {
+                names[display.uuid] = display.name
+            }
+        }
+        return names
+    }
+    private var ordered: [VisualMemoryItem] { daySnapshot.moments(for: displayFilter) }
+    private func filterDisplay(_ uuid: String?) {
+        displayFilter = uuid
+        selectedCaptureID = nil
+        let filtered = daySnapshot.moments(for: uuid)
+        scrubScale = VisualMemoryScrubScale(dates: filtered.map(\.capturedAt))
+        if let nearest = VisualMemoryDayTimeline.nearestIndex(in: filtered, to: playhead) {
+            playhead = filtered[nearest].capturedAt
+            selectedCaptureID = filtered[nearest].id
+        }
+    }
+    private var emptyDetail: String {
+        guard let displayFilter else { return "Choose another day to browse your screen history." }
+        guard Calendar.current.isDateInToday(day) else { return "There are no saved captures for this display on this day." }
+        if memory.pausedDisplays.contains(displayFilter) { return "Capture is paused for this display." }
+        return memory.displayStatuses[displayFilter] ?? "Waiting for an eligible capture."
+    }
     private var index: Int {
         if let selectedCaptureID, let exact = ordered.firstIndex(where: { $0.id == selectedCaptureID }) { return exact }
         return VisualMemoryDayTimeline.nearestIndex(in: ordered, to: playhead) ?? 0
@@ -243,9 +272,23 @@ struct MemoryExplorerView: View {
     private func moveDay(_ amount: Int) {
         if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = max(earliestDay, min(Date(), next)) }
     }
+    private func sourceLabel(_ item: VisualMemoryItem) -> String {
+        if let display = item.display, let apps = item.includedApps, !apps.isEmpty {
+            return apps.map(\.name).joined(separator: ", ") + " · " + display.name
+        }
+        return item.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))
+    }
     @ViewBuilder private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
-        if let display = item.display {
-            Image(systemName: "display").font(.system(size: size)).frame(width: size, height: size)
+        if let apps = item.includedApps, !apps.isEmpty {
+            HStack(spacing: -size * 0.45) {
+                ForEach(apps.prefix(2), id: \.bundleID) { app in
+                    TargetApplicationIconView(appName: app.name, bundleIdentifier: app.bundleID, size: size)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.source).help(item.source)
+        } else if let display = item.display {
+            Image(systemName: "display").frame(width: size, height: size)
                 .accessibilityLabel(display.name).help(item.source)
         } else {
             TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
@@ -264,12 +307,13 @@ struct MemoryExplorerView: View {
     private func iconMarkers(width: CGFloat) -> [AppMarker] {
         let scale = scrubScale
         var markers: [AppMarker] = []
-        var previousBundle: String?
+        var previous: VisualMemoryItem?
         for item in ordered {
-            defer { previousBundle = item.display?.uuid ?? item.bundleID }
-            guard (item.display?.uuid ?? item.bundleID) != previousBundle else { continue }
+            defer { previous = item }
+            if let previous, previous.bundleID == item.bundleID,
+               previous.includedApps == item.includedApps, previous.display?.uuid == item.display?.uuid { continue }
             let x = min(max(14, width - 14), max(14, scale.fraction(for: item.capturedAt) * width))
-            guard markers.last.map({ x - $0.x >= 30 }) ?? true else { continue }
+            guard markers.last.map({ x - $0.x >= 38 }) ?? true else { continue }
             markers.append(AppMarker(item: item, x: x, lane: 0))
         }
         return markers
@@ -322,7 +366,7 @@ struct MemoryExplorerView: View {
                     MemoryScrubSurface { fraction in
                         let nextTime = scale.date(at: fraction) ?? playhead
                         let nextIndex = VisualMemoryDayTimeline.nearestIndex(in: ordered, to: nextTime)
-                        if let nextIndex, ordered[nextIndex].bundleID != selected?.bundleID,
+                        if let nextIndex, (ordered[nextIndex].bundleID != selected?.bundleID || ordered[nextIndex].includedApps != selected?.includedApps),
                            Date().timeIntervalSince(lastHapticTime) > 0.08 {
                             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                             lastHapticTime = Date()
@@ -355,7 +399,7 @@ struct MemoryExplorerView: View {
                     Text("Time Turner").font(MuesliTheme.font(size: 16, weight: .semibold))
                 } else if let selected {
                     appIcon(selected, size: 20)
-                    Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·")))
+                    Text(sourceLabel(selected))
                         .font(MuesliTheme.font(.caption)).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
                 }
                 Spacer()
@@ -369,13 +413,26 @@ struct MemoryExplorerView: View {
                 .modifier(TimeTurnerControlSurface(enabled: !inline))
                 }
                 Spacer()
+                let choices = displayChoices
+                if choices.count > 1 || displayFilter != nil || (!choices.isEmpty && selected == nil) {
+                    Menu {
+                        Picker("Display", selection: Binding(get: { displayFilter }, set: filterDisplay)) {
+                            Text("All displays").tag(String?.none)
+                            ForEach(choices.keys.sorted { (choices[$0] ?? "", $0) < (choices[$1] ?? "", $1) }, id: \.self) { uuid in
+                                Text(choices[uuid] ?? "Display").tag(Optional(uuid))
+                            }
+                        }
+                    } label: {
+                        Label(displayFilter.flatMap { choices[$0] } ?? "All displays", systemImage: "display.2")
+                    }.fixedSize().accessibilityLabel("Filter history by display")
+                }
                 Button { showsSearch.toggle() } label: { Image(systemName: "magnifyingglass") }
                     .accessibilityLabel("Search screen history")
                     .help("Search by text, app, and date")
                     .popover(isPresented: $showsSearch) {
                         TimeTurnerSearchView(memory: memory, initialDay: day) { item in
                             daySnapshot.prepare(for: item.capturedAt)
-                            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
+                            filterDisplay(nil)
                             day = item.capturedAt
                             selectedCaptureID = item.id
                             playhead = item.capturedAt
@@ -400,9 +457,9 @@ struct MemoryExplorerView: View {
                             .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !inline {
                         HStack(spacing: 12) {
-                            Image(systemName: "macwindow")
+                            appIcon(selected)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))).lineLimit(1).font(MuesliTheme.font(size: 12, weight: .medium))
+                                Text(sourceLabel(selected)).lineLimit(1).font(MuesliTheme.font(size: 12, weight: .medium))
                                 Text(selected.capturedAt.formatted(date: .abbreviated, time: .standard)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 8)
@@ -437,8 +494,8 @@ struct MemoryExplorerView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
-                TimeTurnerEmptyState(title: "No captures on this day", symbol: "calendar",
-                                     detail: "Choose another day to browse your screen history.")
+                TimeTurnerEmptyState(title: displayFilter == nil ? "No captures on this day" : "No captures for this display", symbol: displayFilter == nil ? "calendar" : "display",
+                                     detail: emptyDetail)
             }
         }
         .task(id: "\(day)|\(memory.catalogRevision)") {
@@ -446,7 +503,11 @@ struct MemoryExplorerView: View {
             let moments = (try? await memory.moments(on: requestedDay)) ?? []
             guard !Task.isCancelled, requestedDay == day else { return }
             daySnapshot.load(moments, on: requestedDay)
-            scrubScale = VisualMemoryScrubScale(dates: moments.map(\.capturedAt))
+            if let displayFilter, displayChoices[displayFilter] == nil { self.displayFilter = nil }
+            scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            connectedDisplays = TimeTurnerDisplayIdentity.connected
         }
         .onChange(of: externalDay?.wrappedValue) { _, value in
             if let value { day = value }
@@ -454,12 +515,13 @@ struct MemoryExplorerView: View {
         .onChange(of: day) { _, _ in
             externalDay?.wrappedValue = day
             daySnapshot.prepare(for: day)
-            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
+            displayFilter = nil
+            scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start
             }
         }
-        .onChange(of: playhead) { _, value in onNavigate?(day, value) }
+        .onChange(of: selected?.id) { _, _ in onNavigate?(day, playhead, selected, displayFilter) }
         .frame(width: inline ? nil : (focusedSize?.width ?? 1000), height: inline ? (ordered.isEmpty ? nil : 520) : (focusedSize?.height ?? 760))
         .frame(minHeight: inline && ordered.isEmpty ? 220 : nil)
         .modifier(TimeTurnerGlass(cornerRadius: inline ? 18 : 24))

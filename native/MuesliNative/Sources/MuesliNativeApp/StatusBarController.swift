@@ -543,6 +543,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
         if controller.config.timeTurnerEnabled {
             add(controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture", #selector(toggleTimeTurnerPause))
+            for display in TimeTurnerDisplayIdentity.connected where controller.visualMemory.allowsDisplayPause(uuid: display.uuid) {
+                let paused = controller.visualMemory.pausedDisplays.contains(display.uuid)
+                let item = add("\(paused ? "Resume" : "Pause") \(display.name)", #selector(toggleTimeTurnerDisplay(_:)))
+                item.representedObject = display.uuid
+                item.toolTip = controller.visualMemory.displayStatuses[display.uuid]
+            }
             add("Turn Off Time Turner", #selector(disableTimeTurner))
             if let app = NSWorkspace.shared.frontmostApplication,
                let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier {
@@ -562,6 +568,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleTimeTurnerPause() { controller.visualMemory.toggleAmbientPause(); refresh() }
+    @objc private func toggleTimeTurnerDisplay(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        controller.visualMemory.toggleDisplayPause(uuid: uuid)
+        refresh()
+    }
     @objc private func disableTimeTurner() { controller.setSettingFromUI("time_turner_enabled", value: "off") }
     @objc private func setupTimeTurner() {
         controller.appState.requestsTimeTurnerSetup = true

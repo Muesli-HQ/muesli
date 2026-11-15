@@ -10,6 +10,14 @@ enum TimeTurnerDisplayIdentity {
         return CFUUIDCreateString(nil, uuid.takeRetainedValue()) as String
     }
 
+    static var connected: [VisualMemoryDisplay] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                  CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay, let uuid = stableID(id) else { return nil }
+            return VisualMemoryDisplay(id: id, uuid: uuid, name: screen.localizedName)
+        }
+    }
+
     static func metadata(_ display: SCDisplay) -> VisualMemoryDisplay {
         let name = NSScreen.screens.first {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.displayID

@@ -533,6 +533,7 @@ preserves the current scope, including the focused-window default. Checking indi
 monitors saves only those displays, even when every connected monitor is checked. Finish saves the draft. Settings
 “Choose displays…” edits the same persistent selection with Save/Cancel. Disconnected
 monitors retain their selection; newly connected ones require selection. Preview
-cards use semantic borders, checkmarks and accessible selection traits. Whole-display history shows a display symbol and
-display/app label instead of attributing the image to a single app. All displays
-keeps one compact scrubber; each monitor's sample remains independently selectable.
+cards use semantic borders, checkmarks and accessible selection traits. History shows icons for the apps included in a capture alongside its monitor name.
+The display filter includes monitors with saved history and today’s connected, configured
+monitors, even before their first capture. The menu bar offers independent pause and
+resume actions for each connected monitor in display capture mode.

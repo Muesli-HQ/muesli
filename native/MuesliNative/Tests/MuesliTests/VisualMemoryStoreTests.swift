@@ -335,6 +335,35 @@ struct VisualMemoryStoreTests {
         #expect(try reopened.searchMoments(text: "updated", app: "browser") == [recovered])
     }
 
+    @Test func displayCaptureRotatesAcrossConnectedMonitors() {
+        let screens: [UInt32] = [12, 3, 8]
+        let first = VisualMemoryDisplayPolicy.captureOrder(screens, after: nil, id: \.self)
+        #expect(first == [3, 8, 12])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: first.first, id: \.self) == [8, 12, 3])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: 12, id: \.self) == first)
+        #expect(VisualMemoryDisplayPolicy.captureOrder([3, 12], after: 8, id: \.self) == [12, 3])
+    }
+
+    @Test func displayFilterKeepsLegacyCapturesAndIndependentDisplaySamples() {
+        let now = Date()
+        let legacy = VisualMemoryItem(kind: .moment, capturedAt: now, source: "Editor", path: "1.heic")
+        var internalScreen = legacy
+        internalScreen.id = "internal"
+        internalScreen.display = .init(id: 1, uuid: "laptop", name: "Retina")
+        var external = internalScreen
+        external.id = "external"
+        external.display = .init(id: 2, uuid: "monitor", name: "HA240Y")
+        var day = TimeTurnerDaySnapshot()
+        day.load([legacy, internalScreen, external], on: now)
+        #expect(day.moments(for: nil).count == 3)
+        #expect(day.moments(for: "monitor") == [external])
+        #expect(day.displays["monitor"] == "HA240Y")
+        #expect(day.moments(for: "new").isEmpty)
+        day.load([], on: now)
+        #expect(day.displays.isEmpty)
+        #expect(day.moments(for: "monitor").isEmpty)
+    }
+
     @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

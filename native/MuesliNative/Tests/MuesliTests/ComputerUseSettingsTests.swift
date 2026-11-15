@@ -67,6 +67,27 @@ struct ComputerUseSettingsTests {
         }
     }
 
+    @Test("Per-display pause invalidates pending samples and preserves the configured selection")
+    func timeTurnerPauseOneDisplay() async throws {
+        try await withShortcutSettings { controller, _ in
+            let left = UUID().uuidString, right = UUID().uuidString
+            let memory = controller.visualMemory
+            // Keep global capture paused throughout this synthetic test.
+            memory.toggleAmbientPause()
+            try await controller.applySetting("time_turner_capture_scope", value: "selected_displays",
+                                              selectedDisplays: [left: "Laptop", right: "Monitor"])
+            let generation = memory.ambientGeneration
+            memory.toggleDisplayPause(uuid: right)
+            #expect(memory.pausedDisplays.contains(right))
+            #expect(!memory.pausedDisplays.contains(left))
+            #expect(memory.selectsDisplay(uuid: right))
+            #expect(memory.ambientGeneration != generation)
+            memory.toggleDisplayPause(uuid: right)
+            #expect(!memory.pausedDisplays.contains(right))
+            #expect(memory.ambientPaused)
+        }
+    }
+
     @Test("A failed display save preserves the effective capture scope and supports retry")
     func timeTurnerDisplaySaveFailure() async throws {
         try await withShortcutSettings { controller, store in

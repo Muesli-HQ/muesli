@@ -19,6 +19,13 @@ public struct VisualMemoryApp: Codable, Sendable, Equatable, Hashable {
 
 /// Pure policy shared by capture planning and synthetic multi-monitor regressions.
 public enum VisualMemoryDisplayPolicy {
+    /// Rotate the first display across sampling cycles while keeping the total privacy-check budget fixed.
+    public static func captureOrder<T>(_ displays: [T], after previous: UInt32?, id: KeyPath<T, UInt32>) -> [T] {
+        let sorted = displays.sorted { $0[keyPath: id] < $1[keyPath: id] }
+        guard let previous, let start = sorted.firstIndex(where: { $0[keyPath: id] > previous }) else { return sorted }
+        return Array(sorted[start...] + sorted[..<start])
+    }
+
     /// Selection never falls back to an unselected display after disconnection.
     public static func selects(uuid: String, scope: String, selected: Set<String>) -> Bool {
         scope == "all_displays" || (scope == "selected_displays" && selected.contains(uuid))
