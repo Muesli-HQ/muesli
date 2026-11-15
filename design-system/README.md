@@ -408,7 +408,7 @@ surfaces in `TimeTurnerPage` and `TimeTurnerRecapView`.
 
 Time Turner settings use the standard section headings, bordered cards and
 `SettingsRow` control columns. All controls live in one Time Turner card, with inset Capture, Excluded apps
-and Storage & retention subsections separated by dividers. Setup shows connected monitor previews in every capture mode. Selecting an individual monitor switches the setup draft to Selected displays. Capture switches
+and Storage & retention subsections separated by dividers. Capture switches
 have visible labels; storage budget and usage stay within that card. Permission setup
 stays in onboarding, with a recovery action only when required access is missing.
 
@@ -527,9 +527,10 @@ After that, Saved notes holds the current source, and a collapsed Previous notes
 disclosure in Summary exposes the other pre-upgrade document when present.
 
 Time Turner Capture settings use the canonical Capture menu: Focused window,
-All displays, or Selected displays. Setup restores the saved capture scope after permissions. Choosing Selected displays
-opens monitor previews using the meeting screen picker's thumbnail renderer. The
-first selection starts with connected monitors checked. Finish saves explicit changes. Settings
+All displays, or Selected displays. After permissions, setup shows a single checklist of
+connected monitors using the meeting screen picker's thumbnails. Continuing without edits
+preserves the current scope, including the focused-window default. Checking individual
+monitors saves only those displays, even when every connected monitor is checked. Finish saves the draft. Settings
 “Choose displays…” edits the same persistent selection with Save/Cancel. Disconnected
 monitors retain their selection; newly connected ones require selection. Preview
 cards use semantic borders, checkmarks and accessible selection traits. Whole-display history shows a display symbol and

@@ -254,11 +254,8 @@ struct TimeTurnerSetupView: View {
                     }
                 }
             } else if step == TimeTurnerSetupStep.displays.rawValue {
-                Picker("Capture", selection: $captureChoice.scope) {
-                    ForEach(TimeTurnerCaptureScope.allCases, id: \.self) { scope in
-                        Text(scope.label).tag(scope)
-                    }
-                }.pickerStyle(.segmented)
+                Text("Which displays do you want to capture?")
+                    .font(MuesliTheme.title2())
                 TimeTurnerDisplayPicker(choice: $captureChoice, initialized: $displaysInitialized)
             } else {
                 Text("Make room for your day").font(MuesliTheme.font(.title).bold())

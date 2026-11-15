@@ -17,6 +17,10 @@ struct ComputerUseSettingsTests {
         choice.toggleDisplay("external", connected: connected)
         #expect(choice.scope == .selected)
         #expect(choice.displays == ["external": "HA240Y"])
+        choice.toggleDisplay("built-in", connected: connected)
+        #expect(choice.displays == connected)
+        #expect(choice.scope == .selected)
+        #expect(!choice.includesEntireDisplay("another-monitor"))
 
         choice.scope = .all
         #expect(choice.includesEntireDisplay("built-in"))

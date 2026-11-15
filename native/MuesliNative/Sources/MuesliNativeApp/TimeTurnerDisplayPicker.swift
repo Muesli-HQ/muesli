@@ -82,8 +82,8 @@ struct TimeTurnerDisplayPicker: View {
 
     private var instructions: String {
         switch choice.scope {
-        case .focused: "Follow the active window across displays. Choose a display below to capture it instead."
-        case .all: "Capture every connected display, including ones you connect later. Deselect a display to choose a subset."
+        case .focused: "Choose one or more displays, or continue with just the focused window."
+        case .all: "All displays are checked, including any you connect later. Uncheck a display to limit capture."
         case .selected: "Capture the checked displays whenever they’re connected."
         }
     }
@@ -150,7 +150,6 @@ struct TimeTurnerDisplayPicker: View {
                 Button("Refresh") { revision += 1 }
             }
         }
-        .onChange(of: choice.scope) { _, _ in initializeSelectionIfNeeded() }
         .task(id: revision) { await load() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in revision += 1 }
     }
