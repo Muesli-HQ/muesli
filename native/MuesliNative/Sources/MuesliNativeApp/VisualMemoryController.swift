@@ -550,12 +550,25 @@ final class VisualMemoryController {
         return DictationContextCapture.axStringValue(element, attribute: kAXSubroleAttribute as String) == "AXSecureTextField"
     }
 
-    private nonisolated static func permitsCaptureWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval) async -> Bool {
+    static func screenshotConfiguration(size: CGSize, pixelScale: CGFloat) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(2, Int(size.width * pixelScale))
+        configuration.height = max(2, Int(size.height * pixelScale))
+        // ScreenCaptureKit otherwise includes child windows outside the inspected window list.
+        configuration.includeChildWindows = false
+        configuration.showsCursor = false
+        configuration.scalesToFit = true
+        return configuration
+    }
+
+    private nonisolated static func inspectedCaptureWindows(processID: pid_t, frames: [CGRect], deadline: TimeInterval,
+                                                           omitContainedUnmatched: Bool = false) async -> IndexSet? {
         await Task.detached(priority: .utility) {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
             guard remaining > 0, let app = NSRunningApplication(processIdentifier: processID),
-                  !hasSecureField(in: app, timeout: Float(min(remaining, 0.15))) else { return false }
-            return TimeTurnerWindowPrivacy.permits(processID: processID, frames: frames, deadline: deadline)
+                  !hasSecureField(in: app, timeout: Float(min(remaining, 0.15))) else { return nil }
+            return TimeTurnerWindowPrivacy.inspectedIndices(processID: processID, frames: frames, deadline: deadline,
+                                                           omitContainedUnmatched: omitContainedUnmatched)
         }.value
     }
 
@@ -619,17 +632,13 @@ final class VisualMemoryController {
             }
             var budget = TimeTurnerAXBudget(interval: Double(ambientConfig?.timeTurnerInterval ?? "10") ?? 10)
             let safeBeforeCapture = await budget.permits(reserving: budget.revalidationReserve) { deadline in
-                await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
+                await Self.inspectedCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline) != nil
             }
             guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
             guard safeBeforeCapture else { ambientStatus = "Skipped for privacy"; return }
             let filter = SCContentFilter(desktopIndependentWindow: window)
-            let configuration = SCStreamConfiguration()
-            configuration.width = max(2, Int(window.frame.width * CGFloat(filter.pointPixelScale)))
-            configuration.height = max(2, Int(window.frame.height * CGFloat(filter.pointPixelScale)))
-            configuration.showsCursor = false
+            let configuration = Self.screenshotConfiguration(size: window.frame.size, pixelScale: CGFloat(filter.pointPixelScale))
             configuration.ignoreShadowsSingleWindow = true
-            configuration.scalesToFit = true
             let captured = Date()
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
             let captureCompleted = Date()
@@ -644,7 +653,7 @@ final class VisualMemoryController {
                   after.window?.title == focused.title else { return }
             guard !after.secure else { ambientStatus = "Skipping private content"; return }
             let safeAfterCapture = await budget.permits { deadline in
-                await Self.permitsCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline)
+                await Self.inspectedCaptureWindows(processID: pid, frames: [window.frame], deadline: deadline) != nil
             }
             guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
             guard safeAfterCapture else { ambientStatus = "Skipped for privacy"; return }
@@ -774,13 +783,19 @@ final class VisualMemoryController {
                                          by: { $0.owningApplication?.processID })
             var axBudget = TimeTurnerAXBudget(interval: Double(ambientConfig?.timeTurnerInterval ?? "10") ?? 10)
             var checkedProcesses = Set<pid_t>()
+            var verifiedIDs = Set<CGWindowID>()
             for window in orderedWindows {
                 guard generation == ambientGeneration, permitsAmbientCapture, ContentPrivacy.shared.permits(privacy) else { return }
                 guard let pid = window.owningApplication?.processID, checkedProcesses.insert(pid).inserted,
                       let group = candidates[pid] else { continue }
-                if !(await axBudget.permits(reserving: axBudget.revalidationReserve, { deadline in
-                    await Self.permitsCaptureWindows(processID: pid, frames: group.map(\.frame), deadline: deadline)
-                })) {
+                var verified: IndexSet?
+                if await axBudget.permits(reserving: axBudget.revalidationReserve, { deadline in
+                    verified = await Self.inspectedCaptureWindows(processID: pid, frames: group.map(\.frame),
+                                                                  deadline: deadline, omitContainedUnmatched: true)
+                    return verified != nil
+                }), let verified {
+                    verifiedIDs.formUnion(verified.map { group[$0].windowID })
+                } else {
                     excluded.formUnion(group.compactMap { $0.owningApplication?.bundleIdentifier })
                 }
             }
@@ -794,16 +809,12 @@ final class VisualMemoryController {
                 guard !displayWindows.isEmpty else { statuses[identity.uuid] = "No eligible windows"; continue }
                 statuses[identity.uuid] = "Privacy check incomplete"
                 guard axBudget.remaining > 0 else { continue }
-                let windows = displayWindows.filter { !excluded.contains($0.owningApplication?.bundleIdentifier ?? "") }
+                let windows = displayWindows.filter { verifiedIDs.contains($0.windowID) && !excluded.contains($0.owningApplication?.bundleIdentifier ?? "") }
                 guard !windows.isEmpty else { continue }
                 do {
                     let filter = SCContentFilter(display: display, including: windows)
                     filter.includeMenuBar = false
-                    let configuration = SCStreamConfiguration()
-                    configuration.width = max(2, Int(filter.contentRect.width * CGFloat(filter.pointPixelScale)))
-                    configuration.height = max(2, Int(filter.contentRect.height * CGFloat(filter.pointPixelScale)))
-                    configuration.showsCursor = false
-                    configuration.scalesToFit = true
+                    let configuration = Self.screenshotConfiguration(size: filter.contentRect.size, pixelScale: CGFloat(filter.pointPixelScale))
                     let captured = Date()
                     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                     let completed = Date()
@@ -819,8 +830,11 @@ final class VisualMemoryController {
                     }
                     var secure = false
                     for (pid, included) in Dictionary(grouping: windows, by: { $0.owningApplication?.processID }) {
-                        guard let pid, await axBudget.permits({ deadline in
-                            await Self.permitsCaptureWindows(processID: pid, frames: included.map(\.frame), deadline: deadline)
+                        guard let pid, let group = candidates[pid], await axBudget.permits({ deadline in
+                            guard let verified = await Self.inspectedCaptureWindows(processID: pid, frames: group.map(\.frame),
+                                deadline: deadline, omitContainedUnmatched: true) else { return false }
+                            let ids = Set(verified.map { group[$0].windowID })
+                            return included.allSatisfy { ids.contains($0.windowID) }
                         }) else {
                             secure = true; break
                         }

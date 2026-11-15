@@ -30,16 +30,16 @@ struct TimeTurnerAXBudget {
 /// ScreenCaptureKit and AX both expose window bounds in global screen coordinates.
 /// Only allow pixels from windows whose accessibility trees could be inspected.
 enum TimeTurnerWindowPrivacy {
-    static func permits(processID: pid_t, frames: [CGRect], deadline: TimeInterval) -> Bool {
-        guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+    static func inspectedIndices(processID: pid_t, frames: [CGRect], deadline: TimeInterval, omitContainedUnmatched: Bool) -> IndexSet? {
+        guard ProcessInfo.processInfo.systemUptime < deadline else { return nil }
         let app = AXUIElementCreateApplication(processID)
         AXUIElementSetMessagingTimeout(app, 0.15)
         var windowValues: CFArray?
         guard AXUIElementCopyAttributeValues(app, kAXWindowsAttribute as CFString, 0, 65, &windowValues) == .success,
               let windowValues, CFArrayGetCount(windowValues) <= 64,
-              let windows = windowValues as? [AXUIElement] else { return false }
+              let windows = windowValues as? [AXUIElement] else { return nil }
         let attributes = [kAXSubroleAttribute, kAXChildrenAttribute, kAXRoleAttribute] as CFArray
-        return permits(frames: frames, windows: windows, frame: { window in
+        return inspectedIndices(frames: frames, windows: windows, omitContainedUnmatched: omitContainedUnmatched, frame: { window in
             AXUIElementSetMessagingTimeout(window, 0.15)
             return DictationContextCapture.windowFrame(window)
         }, inspect: { node in
@@ -93,31 +93,41 @@ enum TimeTurnerWindowPrivacy {
         }
     }
 
-    static func permits<Node: Hashable>(frames: [CGRect], windows: [Node],
-                                        frame: (Node) -> CGRect?, inspect: (Node) -> (subrole: String?, children: [Node])?,
-                                        withinBudget: () -> Bool) -> Bool {
-        guard !frames.isEmpty, frames.count <= windows.count else { return false }
+    static func inspectedIndices<Node: Hashable>(frames: [CGRect], windows: [Node], omitContainedUnmatched: Bool,
+                                                 frame: (Node) -> CGRect?, inspect: (Node) -> (subrole: String?, children: [Node])?,
+                                                 withinBudget: () -> Bool) -> IndexSet? {
+        guard !frames.isEmpty else { return nil }
         var bounds: [CGRect] = []
         for window in windows {
-            guard withinBudget(), let rect = frame(window) else { return false }
+            guard withinBudget(), let rect = frame(window) else { return nil }
             bounds.append(rect)
         }
         var pending: [Node] = []
-        for rect in frames {
+        var indices = IndexSet()
+        for (offset, rect) in frames.enumerated() {
+            guard withinBudget() else { return nil }
             let matches = bounds.indices.filter { bounds[$0].equalTo(rect) }
-            guard matches.count == 1, let index = matches.first else { return false }
+            if matches.isEmpty && omitContainedUnmatched { continue }
+            guard matches.count == 1, let index = matches.first else { return nil }
+            indices.insert(offset)
             pending.append(windows[index])
         }
+        // Some apps publish a second, smaller compositor surface over the real AX window.
+        // Never map its pixels to the parent. Only the exact matches may enter the SC filter.
+        guard !indices.isEmpty else { return nil }
+        for (offset, rect) in frames.enumerated() where !indices.contains(offset) {
+            guard withinBudget(), indices.contains(where: { frames[$0].contains(rect) }) else { return nil }
+        }
         var seen = Set(pending)
-        guard seen.count == frames.count else { return false }
+        guard seen.count == indices.count else { return nil }
         while let node = pending.popLast() {
             guard withinBudget(), let info = inspect(node),
-                  info.subrole != kAXSecureTextFieldSubrole else { return false }
+                  info.subrole != kAXSecureTextFieldSubrole else { return nil }
             for child in info.children {
-                guard withinBudget() else { return false }
+                guard withinBudget() else { return nil }
                 if seen.insert(child).inserted { pending.append(child) }
             }
         }
-        return withinBudget()
+        return withinBudget() ? indices : nil
     }
 }

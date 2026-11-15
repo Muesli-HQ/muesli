@@ -535,5 +535,5 @@ monitors saves only those displays, even when every connected monitor is checked
 monitors retain their selection; newly connected ones require selection. Preview
 cards use semantic borders, checkmarks and accessible selection traits. History shows icons for the apps included in a capture alongside its monitor name.
 The display filter includes monitors with saved history and today’s connected, configured
-monitors, even before their first capture. The menu bar offers independent pause and
-resume actions for each connected monitor in display capture mode.
+monitors, even before their first capture. In display capture mode, the menu bar’s Pause Capture or Resume Capture submenu
+groups the global action and individual monitor controls.

@@ -256,6 +256,7 @@ struct MemoryExplorerView: View {
     private var emptyDetail: String {
         guard let displayFilter else { return "Choose another day to browse your screen history." }
         guard Calendar.current.isDateInToday(day) else { return "There are no saved captures for this display on this day." }
+        if memory.ambientPaused { return "Capture is paused. Resume capture to save new moments." }
         if memory.pausedDisplays.contains(displayFilter) { return "Capture is paused for this display." }
         return memory.displayStatuses[displayFilter] ?? "Waiting for an eligible capture."
     }

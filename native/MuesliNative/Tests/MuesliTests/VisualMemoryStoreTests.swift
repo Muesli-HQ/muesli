@@ -20,13 +20,13 @@ struct VisualMemoryStoreTests {
         var unreadableNode: Int?
         func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
             var inspected = 0
-            return TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 1], frame: { bounds[$0] },
+            return TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 1], omitContainedUnmatched: false, frame: { bounds[$0] },
                 inspect: { node in
                     inspected += 1
                     guard node != unreadableNode else { return nil }
                     return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
                 },
-                withinBudget: { inspected < budget })
+                withinBudget: { inspected < budget }) != nil
         }
         #expect(permits([focused, other]))
         secureNode = 4 // Secure control appears between capture and the second check.
@@ -39,8 +39,32 @@ struct VisualMemoryStoreTests {
         unreadableNode = nil
         #expect(!permits([focused, other], budget: 3))
         #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
-        #expect(!TimeTurnerWindowPrivacy.permits(frames: [focused], windows: [0, 1],
-            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }))
+        #expect(TimeTurnerWindowPrivacy.inspectedIndices(frames: [focused], windows: [0, 1], omitContainedUnmatched: false,
+            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }) == nil)
+    }
+
+    @Test @MainActor func screenCaptureDoesNotImplicitlyAddUninspectedChildWindows() {
+        let config = VisualMemoryController.screenshotConfiguration(size: CGSize(width: 1920, height: 1080), pixelScale: 1)
+        #expect(!config.includeChildWindows)
+    }
+
+    @Test func externalDisplayOnlyIncludesExactVerifiedWindows() {
+        let main = CGRect(x: -1037, y: -1050, width: 1920, height: 1050)
+        let overlay = CGRect(x: main.minX, y: main.minY, width: main.width, height: 149)
+        func inspect(_ frames: [CGRect], roots: [CGRect], secure: Int? = nil, omit: Bool = true) -> IndexSet? {
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: Array(roots.indices),
+                omitContainedUnmatched: omit, frame: { roots[$0] }, inspect: { node in
+                    (node == secure ? kAXSecureTextFieldSubrole : nil, [])
+                }, withinBudget: { true })
+        }
+        #expect(inspect([overlay, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([main, overlay], roots: [main]) == IndexSet(integer: 0))
+        #expect(inspect([overlay, main], roots: [main], omit: false) == nil)
+        #expect(inspect([overlay], roots: [main]) == nil)
+        #expect(inspect([overlay, main], roots: [main], secure: 0) == nil)
+        #expect(inspect([overlay, main], roots: [main, overlay], secure: 1) == nil)
+        #expect(inspect([overlay, main], roots: [main, main]) == nil)
+        #expect(inspect([overlay.offsetBy(dx: -1, dy: 0), main], roots: [main]) == nil)
     }
 
     @Test func largeWindowsRequireACompletePrivacyInspection() {
@@ -48,7 +72,7 @@ struct VisualMemoryStoreTests {
         let second = first.offsetBy(dx: 800, dy: 0)
         // One wide window and one deep tree, with a shared child and a cycle.
         func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
-            TimeTurnerWindowPrivacy.permits(frames: frames, windows: [0, 2000],
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 2000], omitContainedUnmatched: false,
                 frame: { $0 == 0 ? first : second }, inspect: { node in
                     guard node != unreadable else { return nil }
                     let children: [Int]
@@ -59,7 +83,7 @@ struct VisualMemoryStoreTests {
                     default: children = []
                     }
                     return (node == secure ? kAXSecureTextFieldSubrole : nil, children)
-                }, withinBudget: { true })
+                }, withinBudget: { true }) != nil
         }
         #expect(permits([first]))
         #expect(permits([first, second]))

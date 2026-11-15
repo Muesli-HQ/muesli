@@ -535,19 +535,31 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let parent = NSMenuItem(title: "Time Turner", action: nil, keyEquivalent: "")
         parent.image = TimeTurnerIcon.image()
         let submenu = NSMenu(title: "Time Turner")
-        @discardableResult func add(_ title: String, _ action: Selector) -> NSMenuItem {
+        @discardableResult func add(_ title: String, _ action: Selector, to destination: NSMenu? = nil) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
-            submenu.addItem(item)
+            (destination ?? submenu).addItem(item)
             return item
         }
         if controller.config.timeTurnerEnabled {
-            add(controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture", #selector(toggleTimeTurnerPause))
-            for display in TimeTurnerDisplayIdentity.connected where controller.visualMemory.allowsDisplayPause(uuid: display.uuid) {
-                let paused = controller.visualMemory.pausedDisplays.contains(display.uuid)
-                let item = add("\(paused ? "Resume" : "Pause") \(display.name)", #selector(toggleTimeTurnerDisplay(_:)))
-                item.representedObject = display.uuid
-                item.toolTip = controller.visualMemory.displayStatuses[display.uuid]
+            let captureTitle = controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture"
+            let displays = TimeTurnerDisplayIdentity.connected.filter { controller.visualMemory.allowsDisplayPause(uuid: $0.uuid) }
+            if displays.isEmpty {
+                add(captureTitle, #selector(toggleTimeTurnerPause))
+            } else {
+                let captureMenu = NSMenu(title: captureTitle)
+                let captureItem = NSMenuItem(title: captureTitle, action: nil, keyEquivalent: "")
+                captureItem.submenu = captureMenu
+                submenu.addItem(captureItem)
+                add(controller.visualMemory.ambientPaused ? "Resume Capture Globally" : "Pause Capture Globally",
+                    #selector(toggleTimeTurnerPause), to: captureMenu)
+                captureMenu.addItem(.separator())
+                for display in displays {
+                    let paused = controller.visualMemory.pausedDisplays.contains(display.uuid)
+                    let item = add("\(paused ? "Resume" : "Pause") \(display.name)", #selector(toggleTimeTurnerDisplay(_:)), to: captureMenu)
+                    item.representedObject = display.uuid
+                    item.toolTip = controller.visualMemory.displayStatuses[display.uuid]
+                }
             }
             add("Turn Off Time Turner", #selector(disableTimeTurner))
             if let app = NSWorkspace.shared.frontmostApplication,
