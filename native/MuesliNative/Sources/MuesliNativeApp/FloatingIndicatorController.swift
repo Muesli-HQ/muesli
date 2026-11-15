@@ -279,6 +279,7 @@ final class FloatingIndicatorController: NSObject {
     private(set) var meetingFeedbackMessage: String?
     private var meetingFeedbackGeneration = 0
     private(set) var activityRevision = 0
+    private var recordingUsesFloatingFallback = false
     private var geometryRevision: UInt64 = 0
     #if DEBUG
     var testingHoverGeometryReconciled: (() -> Void)?
@@ -391,9 +392,23 @@ final class FloatingIndicatorController: NSObject {
             guard let self, self.state == .recording, self.isToggleDictation || self.hasDictationOverlap else { return }
             self.onStopToggleDictation?()
         }
+        notchIndicator.onRecordingPanelUnavailable = { [weak self] in
+            guard let self, self.state == .recording, let config = self.lastLoadedConfig else { return }
+            self.recordingUsesFloatingFallback = true
+            self.setState(.recording, config: config)
+        }
         notchIndicator.powerProvider = { [weak self] in self?.powerProvider?() ?? -160 }
         NotificationCenter.default.addObserver(self, selector: #selector(displayConfigurationChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+    }
+
+    @objc private func activeSpaceChanged() {
+        guard state == .recording, let config = lastLoadedConfig,
+              config.indicatorAnchor == .notch || instructionMode == .quill else { return }
+        recordingUsesFloatingFallback = false
+        setState(state, config: config)
     }
 
     @objc private func displayConfigurationChanged() {
@@ -402,6 +417,7 @@ final class FloatingIndicatorController: NSObject {
         // Moving it must not replay idle or restart its dismissal deadline.
         if refreshNotchFeedbackPlacement() { return }
         guard !isShowingLoading, !isComputerUseCursorMode else { return }
+        recordingUsesFloatingFallback = false
         setState(state, config: config)
     }
 
@@ -1009,6 +1025,9 @@ final class FloatingIndicatorController: NSObject {
         }
         let state: DictationState = isMeetingRecording
             ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
+        if state != .recording || lastLoadedConfig?.indicatorAnchor != config.indicatorAnchor {
+            recordingUsesFloatingFallback = false
+        }
         if state != .recording || (isMeetingRecording && !hasDictationOverlap) { insertionStopReason = nil }
         guard presentsWindows else { self.state = state; return }
         geometryRevision &+= 1
@@ -1070,7 +1089,7 @@ final class FloatingIndicatorController: NSObject {
         }
         // The same session owns both presentations; instruction text survives
         // status updates and expanding/collapsing until the session returns idle.
-        if config.indicatorAnchor == .notch || instructionMode == .quill,
+        if !recordingUsesFloatingFallback, config.indicatorAnchor == .notch || instructionMode == .quill,
            let screen = NSScreen.main {
             let title: String
             switch state {
@@ -1791,6 +1810,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func close() {
+        recordingUsesFloatingFallback = false
         feedbackCapturePanel?.close(); feedbackCapturePanel = nil; feedbackCaptureIsPresented = false
         let pendingQuestion = question
         question = nil
