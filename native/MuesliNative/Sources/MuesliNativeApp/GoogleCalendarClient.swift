@@ -17,6 +17,7 @@ struct UnifiedCalendarEvent: Identifiable, Equatable, Sendable {
     var calendarOccurrence: CalendarOccurrenceReference? = nil
     var meetingURL: URL? = nil
     var attendees: [CalendarAttendee] = []
+    var documents: [CalendarInviteDocument] = []
 
     enum CalendarSource: String, Sendable {
         case eventKit
@@ -565,7 +566,9 @@ final class GoogleCalendarClient {
             source: .googleCalendar,
             calendarID: calendarID,
             calendarOccurrence: occurrence,
-            meetingURL: meetingURL
+            meetingURL: meetingURL,
+            documents: CalendarInviteDocument.extract(attachments: item["attachments"] as? [[String: Any]] ?? [],
+                                                       text: item["description"] as? String, meetingURL: meetingURL)
         )
     }
 
@@ -586,6 +589,7 @@ final class GoogleCalendarClient {
                 ekEvent.title.lowercased() == gEvent.title.lowercased()
                     && abs(ekEvent.startDate.timeIntervalSince(gEvent.startDate)) < 300
             }) {
+                merged[idx].documents = CalendarInviteDocument.merge(gEvent.documents + merged[idx].documents)
                 // Prefer Google Calendar's meetingURL when EventKit doesn't have one
                 if merged[idx].meetingURL == nil, gEvent.meetingURL != nil {
                     merged[idx].meetingURL = gEvent.meetingURL

@@ -184,7 +184,7 @@ Onboarding guides you through the macOS permissions needed for the features you 
 | Camera activity detection | Recognize webcam activation for optional meeting detection |
 | Calendar (optional) | Show upcoming meetings and reminders |
 
-For calendars, add Google, Exchange, or other accounts in **System Settings → Internet Accounts** with Calendars enabled. Grant Muesli Calendar access, then choose calendars under **Settings → Meetings → Calendars**. Muesli uses macOS Calendar through EventKit; direct Google Calendar sign-in is not available. Hiding a calendar in Muesli does not delete its events.
+For calendars, add Google, Exchange, or other accounts in **System Settings → Internet Accounts** with Calendars enabled. Grant Muesli Calendar access, then choose calendars under **Settings → Meetings → Calendars**. Muesli uses macOS Calendar through EventKit; direct Google Calendar sign-in is not available. Hiding a calendar in Muesli does not delete its events. See [calendar menu behaviour and invite documents](docs/calendar-menu.md).
 
 See [Help and troubleshooting](https://muesli.works/help) for setup and permission issues.
 
