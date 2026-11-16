@@ -200,7 +200,7 @@ final class NotchIndicatorController {
     private var title = "Ready"
     private var detail = ""
     private var recording = false
-    private(set) var cursorInsertionStopped = false
+    private(set) var insertionStopReason: BufferedDictationInsertionStopReason?
     private var paused = false
     private var meeting = false
     private(set) var meetingStatus: String?
@@ -392,7 +392,7 @@ final class NotchIndicatorController {
               accent: NSColor, instruction: String? = nil, instructionStatus: String = "",
               appName: String = "", appIcon: NSImage? = nil, question: ComputerUseQuestionSession? = nil,
               toolResults: [NotchToolResult] = [], status: NotchStatus? = nil,
-              meetingStatus: String? = nil, cursorInsertionStopped: Bool = false, renderImmediately: Bool = true) -> Bool {
+              meetingStatus: String? = nil, insertionStopReason: BufferedDictationInsertionStopReason? = nil, renderImmediately: Bool = true) -> Bool {
         guard let geometry = resolveGeometry(screen) else { hide(); return false }
         if !recording { cancelRecordingPanelCheck() }
         let continuesStatus = status != nil && self.status == status && isVisible
@@ -435,7 +435,7 @@ final class NotchIndicatorController {
         self.detail = detail
         self.meetingStatus = meetingStatus
         self.recording = recording
-        self.cursorInsertionStopped = cursorInsertionStopped && recording && !meeting
+        self.insertionStopReason = recording && !meeting ? insertionStopReason : nil
         self.paused = paused
         if !meeting || !recording {
             closeMeetingTranscript(renderImmediately: false)
@@ -538,7 +538,7 @@ final class NotchIndicatorController {
         onQuillDismiss = nil
         onQuillFollowUp = nil
         status = nil
-        cursorInsertionStopped = false
+        insertionStopReason = nil
         statusDismissAt = nil
         outcome = nil
         requiresReview = false
@@ -679,8 +679,7 @@ final class NotchIndicatorController {
             hasInstruction: instruction != nil || question != nil, expanded: expanded, requiresReview: requiresReview, outcome: outcome, isStatus: status != nil || quillAnswer != nil, isQuillAnswer: quillAnswer != nil,
             onToggleInstruction: { [weak self] in self?.toggleInstructionExpansion() },
             power: { [weak self] in self?.powerProvider?() ?? -160 },
-            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) },
-            cursorInsertionStopped: cursorInsertionStopped)
+            onHover: { [weak self] in self?.setMeetingTranscriptHovered($0) })
         if let hosting = panel.contentView as? NSHostingView<NotchIndicatorView> {
             hosting.rootView = view
         } else {
@@ -691,8 +690,9 @@ final class NotchIndicatorController {
 
     private func renderInstruction() {
         let showsTranscript = meeting && recording && meetingTranscriptEnabled && transcriptHovered
-        guard let geometry, visibility.active,
-              showsTranscript || (expanded && (question != nil || instruction?.isEmpty == false)) else {
+        let showsInstruction = expanded && (question != nil || instruction?.isEmpty == false)
+        let warning = showsInstruction ? nil : insertionStopReason
+        guard let geometry, visibility.active, showsTranscript || showsInstruction || warning != nil else {
             meetingTranscript.hide()
             instructionPanel?.orderOut(nil)
             instructionPanel?.contentView = nil
@@ -710,6 +710,7 @@ final class NotchIndicatorController {
             panel.collectionBehavior = [.canJoinAllApplications, .canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             instructionPanel = panel
         }
+        instructionPanel?.ignoresMouseEvents = warning != nil
         if showsTranscript, let instructionPanel {
             let size = FloatingMeetingTranscriptPlacement.panelSize
             let frame = CGRect(x: geometry.expandedOriginX(width: size.width, in: screenBounds),
@@ -728,6 +729,24 @@ final class NotchIndicatorController {
         }
         meetingTranscript.hide()
         (instructionPanel as? NotchIndicatorPanel)?.acceptsKeyboardInput = question != nil
+        if let warning, let instructionPanel {
+            if instructionPanel.isKeyWindow { instructionPanel.resignKey() }
+            let bar = geometry.frame()
+            let view = NotchInsertionWarning(reason: warning, width: bar.width)
+            let hosting: NSHostingView<NotchInsertionWarning>
+            if let current = instructionPanel.contentView as? NSHostingView<NotchInsertionWarning> {
+                hosting = current
+                hosting.rootView = view
+            } else {
+                hosting = NSHostingView(rootView: view)
+                instructionPanel.contentView = hosting
+            }
+            let height = ceil(hosting.fittingSize.height)
+            instructionPanel.setFrame(CGRect(x: bar.minX, y: bar.minY - height,
+                                             width: bar.width, height: height), display: true)
+            instructionPanel.orderFrontRegardless()
+            return
+        }
         if let quillAnswer {
             let width = min(geometry.frame().width, screenBounds.width)
             let naturalHeight = QuillAssistantLayout.contentHeight(answer: quillAnswer, question: quillQuestion, width: width)
@@ -792,6 +811,25 @@ final class NotchIndicatorController {
     private func cancelOrDismiss() {
         if quillAnswer != nil { dismissQuillAnswer() }
         else if outcome != nil || status != nil { hide() } else { onCancel?() }
+    }
+}
+
+private struct NotchInsertionWarning: View {
+    let reason: BufferedDictationInsertionStopReason
+    let width: CGFloat
+
+    var body: some View {
+        Text(reason.title)
+            .font(MuesliTheme.font(size: 12, weight: .medium))
+            .foregroundStyle(.yellow)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(width: width)
+            .background(.black)
+            .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12))
+            .accessibilityLabel(reason.detail)
     }
 }
 
@@ -913,7 +951,6 @@ private struct NotchIndicatorView: View {
     let onToggleInstruction: () -> Void
     let power: () -> Float
     var onHover: (Bool) -> Void = { _ in }
-    var cursorInsertionStopped = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var edgeIntensity = 0.18
@@ -1000,10 +1037,7 @@ private struct NotchIndicatorView: View {
                             }
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(title).font(MuesliTheme.font(size: 10, weight: .semibold))
-                                    .foregroundStyle(cursorInsertionStopped ? Color.yellow : Color.primary)
-                                if cursorInsertionStopped {
-                                    Text("Still recording").font(MuesliTheme.font(size: 9))
-                                } else if let meetingStatus {
+                                if let meetingStatus {
                                     Text(meetingStatus == "Meeting recording" ? "Meeting on" : meetingStatus)
                                         .font(MuesliTheme.font(size: 9)).foregroundStyle(.secondary)
                                 }
@@ -1012,8 +1046,8 @@ private struct NotchIndicatorView: View {
                         .frame(maxWidth: .infinity, minHeight: geometry.cutout.height)
                         .contentShape(Rectangle())
                     }
-                    .accessibilityLabel("\(cursorInsertionStopped ? detail : title). \(meetingStatus.map { $0 + ". " } ?? "")Open muesli home")
-                    .help(cursorInsertionStopped ? detail : "Open muesli home")
+                    .accessibilityLabel("\(title). \(meetingStatus.map { $0 + ". " } ?? "")Open muesli home")
+                    .help("Open muesli home")
                     if hasInstruction {
                         Button(action: onToggleInstruction) {
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")

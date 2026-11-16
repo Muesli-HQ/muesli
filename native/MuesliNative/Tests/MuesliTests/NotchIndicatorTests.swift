@@ -444,7 +444,13 @@ struct NotchIndicatorTests {
         }
         indicator.setState(.recording, config: config)
         #expect(indicator.cursorInsertionStopped)
-        #expect(notch.cursorInsertionStopped == useNotch)
+        #expect(notch.insertionStopReason == (useNotch ? indicator.insertionStopReason : nil))
+        if useNotch {
+            let bar = try #require(notch.screenFrame)
+            let warning = try #require(notch.expandedPanelFrame)
+            #expect(warning.minX == bar.minX && warning.width == bar.width)
+            #expect(warning.maxY == bar.minY && warning.height > 0)
+        }
         var stops = 0
         indicator.onStopToggleDictation = { stops += 1 }
         // The warning must not take ownership away from recording controls.
@@ -452,7 +458,8 @@ struct NotchIndicatorTests {
         #expect(stops == 1)
         indicator.setState(.transcribing, config: config)
         #expect(!indicator.cursorInsertionStopped)
-        #expect(!notch.cursorInsertionStopped)
+        #expect(notch.insertionStopReason == nil)
+        #expect(notch.expandedPanelFrame == nil)
         indicator.setState(.idle, config: config)
         indicator.setToggleDictation(true, config: config)
         #expect(!indicator.cursorInsertionStopped)
@@ -928,6 +935,16 @@ struct NotchIndicatorTests {
             }
         }
         #expect(markPixels > 50)
+
+        #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: handsFree, active: true, icon: NSImage(),
+            accent: .systemBlue, insertionStopReason: .transcriptionFailed))
+        let bar = try #require(notch.screenFrame)
+        let warning = try #require(notch.expandedPanelFrame)
+        #expect(warning.minX == bar.minX && warning.maxX == bar.maxX)
+        #expect(warning.maxY == bar.minY)
+        notch.hide()
+        #expect(notch.expandedPanelFrame == nil)
     }
 
     @Test("Stopping dictation retires a pending notch recovery")

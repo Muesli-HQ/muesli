@@ -294,7 +294,7 @@ When changing these patterns, update the corresponding specimen and token descri
 ## Current constraints
 
 - The native stats header still uses four columns at narrow widths. Its compact-window behavior is an open review finding, not resolved by the reference's scrollable desktop specimen.
-- The notch's 78pt right wing leaves 32pt more space than the previous usual 110pt wing. If a Control Centre status item overlaps the bar, only the crowded wing narrows. During recording the left wing displays the muesli icon beside a live waveform when space permits and opens the activity menu. The right carries the primary action.
+- The notch's 78pt right wing leaves 32pt more space than the previous usual 110pt wing. If a Control Centre status item overlaps the bar, only the crowded wing narrows. During recording the left wing displays the muesli icon beside a live waveform when space permits and opens the activity menu. The right carries the primary action. If live text stops during dictation, a yellow warning appears directly below the notch at the same width while recording continues.
 - The close mark is an image-only system xmark centered in a 22pt circular button. Its native rendering has already been verified at 1×/2×; browser text glyphs are not an equivalent implementation.
 - Real UI verification must include narrow windows, Light, Dark and Ultra Dark, keyboard focus, and selected/hover states. The HTML theme toggle changes only this reference, never app preferences.
 

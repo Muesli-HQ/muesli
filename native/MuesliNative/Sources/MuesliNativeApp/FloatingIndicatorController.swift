@@ -1095,7 +1095,7 @@ final class FloatingIndicatorController: NSObject {
             switch state {
             case .idle: title = "muesli"
             case .preparing: title = microphoneStartupPending ? "Connecting" : (hasDictationOverlap ? "Preparing dictation" : "Preparing")
-            case .recording: title = insertionStopReason?.compactTitle ?? (hasDictationOverlap ? "Dictating" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")))
+            case .recording: title = hasDictationOverlap ? "Dictating" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Quill" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
@@ -1112,7 +1112,7 @@ final class FloatingIndicatorController: NSObject {
                     ? "Listening…" : (instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle),
                 appName: instructionMode == .quill ? "Quill" : instructionAppName,
                 appIcon: instructionMode == .quill ? nil : instructionAppIcon, question: question,
-                toolResults: notchToolResults, meetingStatus: overlapMeetingStatus, cursorInsertionStopped: cursorInsertionStopped) {
+                toolResults: notchToolResults, meetingStatus: overlapMeetingStatus, insertionStopReason: insertionStopReason) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 else if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
