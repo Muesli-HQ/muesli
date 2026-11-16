@@ -550,7 +550,7 @@ final class NotchIndicatorController {
         }
     }
 
-    private func cancelRecordingPanelCheck() {
+    func cancelRecordingPanelCheck() {
         recordingPanelCheck?.cancel()
         recordingPanelCheck = nil
     }

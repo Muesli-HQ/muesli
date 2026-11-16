@@ -296,7 +296,11 @@ final class FloatingIndicatorController: NSObject {
     var cursorInsertionStopped: Bool { insertionStopReason != nil }
     var insertionStoppedDetail: String { (insertionStopReason ?? .cursorOwnershipLost).detail }
     private var isHovered = false
-    private var lastLoadedConfig: AppConfig?
+    private var lastLoadedConfig: AppConfig? {
+        didSet {
+            if oldValue?.indicatorAnchor != lastLoadedConfig?.indicatorAnchor { recordingUsesFloatingFallback = false }
+        }
+    }
     private let loadFeedbackConfiguration: () -> AppConfig
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
@@ -404,9 +408,10 @@ final class FloatingIndicatorController: NSObject {
             name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
     }
 
-    @objc private func activeSpaceChanged() {
+    @objc func activeSpaceChanged() {
         guard state == .recording, let config = lastLoadedConfig,
               config.indicatorAnchor == .notch || instructionMode == .quill else { return }
+        notchIndicator.cancelRecordingPanelCheck()
         recordingUsesFloatingFallback = false
         setState(state, config: config)
     }
@@ -417,6 +422,7 @@ final class FloatingIndicatorController: NSObject {
         // Moving it must not replay idle or restart its dismissal deadline.
         if refreshNotchFeedbackPlacement() { return }
         guard !isShowingLoading, !isComputerUseCursorMode else { return }
+        notchIndicator.cancelRecordingPanelCheck()
         recordingUsesFloatingFallback = false
         setState(state, config: config)
     }
@@ -1025,7 +1031,7 @@ final class FloatingIndicatorController: NSObject {
         }
         let state: DictationState = isMeetingRecording
             ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
-        if state != .recording || lastLoadedConfig?.indicatorAnchor != config.indicatorAnchor {
+        if state != .recording {
             recordingUsesFloatingFallback = false
         }
         if state != .recording || (isMeetingRecording && !hasDictationOverlap) { insertionStopReason = nil }

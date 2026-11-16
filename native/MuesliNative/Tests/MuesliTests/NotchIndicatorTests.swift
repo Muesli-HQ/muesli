@@ -852,7 +852,7 @@ struct NotchIndicatorTests {
                     y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 78)
             }, isPanelOnScreen: { panel in
                 #expect(panel.isVisible)
-                checks += 1
+                defer { checks += 1 }
                 if let missingPanel {
                     #expect(panel !== missingPanel)
                     #expect(!missingPanel.isVisible)
@@ -878,12 +878,49 @@ struct NotchIndicatorTests {
             config.indicatorAnchor = .notch
             config.showFloatingIndicator = false
             indicator.setToggleDictation(true, config: config)
-            for _ in 0..<100 where checks < 2 { try await Task.sleep(for: .milliseconds(20)) }
+            for _ in 0..<100 where checks < 2 || (!recovers && notch.isVisible) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
             #expect(checks == 2)
             #expect(notch.isVisible == recovers)
             #expect((fallback?.isVisible == true) == !recovers)
             #expect(indicator.state == .recording)
         }
+    }
+
+    @Test("Changing Spaces while a visibility query is pending checks the new desktop")
+    @MainActor
+    func recoveryAfterSpaceChange() async throws {
+        _ = try #require(NSScreen.main)
+        var previousQuery: CheckedContinuation<Bool, Never>?
+        var queries = 0
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 78)
+        }, isPanelOnScreen: { _ in
+            queries += 1
+            if queries == 1 { return await withCheckedContinuation { previousQuery = $0 } }
+            return false
+        })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer {
+            previousQuery?.resume(returning: true)
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        indicator.setToggleDictation(true, config: config)
+        for _ in 0..<100 where previousQuery == nil { try await Task.sleep(for: .milliseconds(20)) }
+        let stale = try #require(previousQuery)
+        indicator.activeSpaceChanged()
+        previousQuery = nil
+        stale.resume(returning: true)
+        for _ in 0..<100 where notch.isVisible { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(queries == 3)
+        #expect(!notch.isVisible)
+        #expect(indicator.state == .recording)
     }
 
     @Test("WindowServer lists the hands-free notch on the current desktop")
