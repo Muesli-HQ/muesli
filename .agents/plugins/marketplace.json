@@ -1,7 +1,7 @@
 {
   "name": "muesli",
   "interface": {
-    "displayName": "Muesli"
+    "displayName": "muesli"
   },
   "plugins": [
     {

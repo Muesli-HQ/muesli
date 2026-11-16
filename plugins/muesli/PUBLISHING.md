@@ -1,6 +1,6 @@
-# Publish Muesli as a skills-only plugin
+# Publish muesli as a skills-only plugin
 
-Muesli is local-first. This package contains a skill and official branding, with no hosted service or MCP server. OpenAI's public Plugin Directory accepts skills-only ZIPs. The skill can analyze a Muesli transcript supplied in chat; on a Mac with local shell access, it can also guide an agent through `muesli-cli`. Its listing states that a cloud ChatGPT conversation cannot directly browse the user's local Muesli data.
+muesli is local-first. This package contains a skill and official branding, with no hosted service or MCP server. Check the existing listing for current skills-only submission eligibility. The skill can analyze a muesli transcript supplied in chat; on a Mac with local shell access, it can also guide an agent through `muesli-cli`. Its listing states that a cloud ChatGPT conversation cannot directly browse the user's local muesli data.
 
 ## Package and listing
 
@@ -14,12 +14,12 @@ Muesli is local-first. This package contains a skill and official branding, with
 ## Submission steps
 
 1. Build a ZIP containing exactly one `muesli/` directory with the manifests, skill, and icon. Exclude secrets, symlinks, MCP declarations, app bindings, and UI screenshots.
-2. In the [OpenAI Plugins dashboard](https://platform.openai.com/plugins), open the existing Muesli plugin under its verified publisher and upload the ZIP as a new metadata and skills version.
+2. In the [OpenAI Plugins dashboard](https://platform.openai.com/plugins), open the existing muesli plugin under its verified publisher and upload the ZIP as a new metadata and skills version.
 3. Check the imported listing and skill. Wait for the required skill safety and security scans, resolve any findings, and review the chosen countries and release notes.
 4. Have an authorized developer complete the required policy attestations and submit the draft for review.
 5. After approval, select **Publish**. Uploading a draft, submitting for review, and publishing are separate actions.
 
-Skills-only submissions do not require an MCP endpoint, domain challenge, reviewer credentials, five positive and three negative MCP cases, or an MCP demo recording. If Muesli later decides to offer live remote access, OpenAI's current guidance says an MCP server cannot be added to an existing skills-only listing; plan that as a separate MCP-backed plugin submission.
+Skills-only submissions do not require an MCP endpoint, domain challenge, reviewer credentials, five positive and three negative MCP cases, or an MCP demo recording. If muesli later decides to offer live remote access, OpenAI's current guidance says an MCP server cannot be added to an existing skills-only listing; plan that as a separate MCP-backed plugin submission.
 
 Directory approval is subject to OpenAI's skill scans, listing review, and any additional eligibility requirements for skills-only plugins.
 

@@ -13,7 +13,8 @@ Resolve the binary in this order:
 1. `command -v muesli-cli`
 2. `command -v muesli` only when the resolved path is a Homebrew cask alias to `Muesli.app/Contents/MacOS/muesli-cli`; verify with `muesli info`
 3. `/Applications/Muesli.app/Contents/MacOS/muesli-cli`
-4. A local SwiftPM build path inside this repo
+
+For repository testing, use the helper at `scripts/resolve_muesli_cli.sh` in this skill directory. Pass `--lane A`, `--lane B`, or `--lane C` to select a specific development app.
 
 If discovery is uncertain, run the candidate binary with `info` first and reject unrelated `muesli` executables.
 
@@ -23,8 +24,8 @@ If discovery is uncertain, run the candidate binary with `info` first and reject
 2. To transcribe a local audio file, run `muesli-cli transcribe <file>` and read plain transcript text from stdout.
 3. Use `muesli-cli transcribe <file> --format json` when you need duration, word count, model, warnings, summary, or saved meeting ID.
 4. Add `--save-meeting` to persist an imported meeting with `source = audio_import`.
-5. List candidate meetings with `muesli-cli meetings list --limit 10`.
-6. Fetch a full record with `muesli-cli meetings get <id>`.
+5. List candidate meetings with `muesli-cli meetings list --limit 10 | jq 'if .ok then .data |= map({id, title, startTime}) else . end'` so older app versions expose only discovery metadata.
+6. Fetch only the chosen record with `muesli-cli meetings get <id>`.
 7. Use the coding agent's own model to analyze `rawTranscript` and `formattedNotes`.
 8. If you want to persist improved notes, write markdown back with:
    - `cat notes.md | muesli-cli meetings update-notes <id> --stdin`

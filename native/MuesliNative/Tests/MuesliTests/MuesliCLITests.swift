@@ -552,6 +552,22 @@ struct MuesliCLITests {
         #expect(detailPayload.selectedTemplatePrompt == "## Weekly Overview")
     }
 
+    @Test("meeting discovery omits private content while detail includes the selected notes")
+    func meetingListPrivacy() throws {
+        let record = MeetingRecord(
+            id: 42, title: "Weekly Sync", startTime: "2026-03-22T10:00:00Z",
+            durationSeconds: 60, rawTranscript: "Private transcript", formattedNotes: "Private summary",
+            wordCount: 2, folderID: nil, manualNotes: "Private handwritten notes"
+        )
+        let list = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(MeetingListRow(record))) as? [String: Any])
+        let detail = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(MeetingDetailPayload(record))) as? [String: Any])
+        #expect(list["id"] as? Int == 42)
+        #expect(list["manualNotes"] == nil)
+        #expect(list["rawTranscript"] == nil)
+        #expect(list["formattedNotes"] == nil)
+        #expect(detail["manualNotes"] as? String == record.manualNotes)
+    }
+
     @Test("dictation CLI payloads do not expose local target app metadata")
     func dictationPayloadExcludesTargetAppMetadata() throws {
         let record = DictationRecord(
