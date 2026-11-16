@@ -19,6 +19,10 @@ public enum AppIdentity {
     /// Nil for the release app, which has no MuesliBuildBadge key.
     static var buildBadge: String? { stringValue(for: "MuesliBuildBadge") }
 
+    /// The menu bar form of `buildBadge` (D, DA, PP, C), from the build
+    /// script's MuesliBuildBadgeShort key. Nil for the release app.
+    static var buildBadgeShort: String? { stringValue(for: "MuesliBuildBadgeShort") }
+
     static var marketingVersion: String {
         stringValue(for: "CFBundleShortVersionString") ?? "0.0.0"
     }

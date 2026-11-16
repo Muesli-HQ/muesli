@@ -11,14 +11,18 @@ struct BuildBadgeTests {
         #expect(AppIdentity.buildBadge == nil)
     }
 
-    @Test("menu bar icon is tinted only for builds with a badge")
-    func menuBarIconTint() throws {
-        let template = try #require(MenuBarIconRenderer.make(choice: "muesli"))
-        #expect(template.isTemplate)
-        #expect(MenuBarIconRenderer.tinted(template, with: nil) === template)
-        let tinted = try #require(MenuBarIconRenderer.tinted(template, with: BuildBadge.nsColor))
-        #expect(!tinted.isTemplate)
-        #expect(tinted.size == template.size)
-        #expect(tinted.cgImage(forProposedRect: nil, context: nil, hints: nil) != nil)
+    @Test("menu bar title leads with the short build label")
+    func menuBarBadge() {
+        #expect(AppIdentity.buildBadgeShort == nil)
+
+        let title = MenuBarIconRenderer.statusTitle(hotkey: .default, badge: "DA")
+        #expect(title.string.hasPrefix("\u{2009}DA\u{2009}"))
+        let font = title.attribute(.font, at: 1, effectiveRange: nil) as? NSFont
+        #expect(font?.pointSize == 10)
+
+        let release = MenuBarIconRenderer.statusTitle(hotkey: .default, showsHotkey: false)
+        #expect(release.string.isEmpty)
+        let emptyBadge = MenuBarIconRenderer.statusTitle(hotkey: .default, showsHotkey: false, badge: "")
+        #expect(emptyBadge.string.isEmpty)
     }
 }

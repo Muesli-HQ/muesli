@@ -25,22 +25,6 @@ enum MenuBarIconRenderer {
         ("doc.text", "Document"),
     ]
 
-    /// A solid-colour copy of a template icon, for marking builds other than the
-    /// release app in the menu bar without taking extra width. Nil colour
-    /// returns the template unchanged so it follows the menu bar appearance.
-    static func tinted(_ image: NSImage?, with color: NSColor?) -> NSImage? {
-        guard let image, let color else { return image }
-        let tinted = NSImage(size: image.size, flipped: false) { rect in
-            image.draw(in: rect)
-            color.set()
-            rect.fill(using: .sourceAtop)
-            return true
-        }
-        tinted.isTemplate = false
-        tinted.accessibilityDescription = image.accessibilityDescription
-        return tinted
-    }
-
     /// Returns the configured menu bar/floating indicator icon. The Muesli mark
     /// is drawn as a resolution-independent template so its narrow waveform
     /// gaps stay crisp at menu-bar scale.
@@ -73,12 +57,21 @@ enum MenuBarIconRenderer {
         }
     }
 
+    /// `badge` is the short build label (D, DA, PP...) that builds other than
+    /// the release app show beside the icon; see `AppIdentity.buildBadgeShort`.
     static func statusTitle(
         hotkey: HotkeyConfig,
         showsHotkey: Bool = true,
-        detail: String? = nil
+        detail: String? = nil,
+        badge: String? = nil
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        if let badge, !badge.isEmpty {
+            result.append(NSAttributedString(
+                string: "\u{2009}\(badge)",
+                attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold)]
+            ))
+        }
         if showsHotkey {
             result.append(NSAttributedString(
                 string: "\u{2009}\(hotkeyCueLabel(for: hotkey))",

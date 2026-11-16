@@ -428,11 +428,12 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-# Gemma's reference-tested FP32 encoder policy is process-wide in MLX. Bodhan
-# uses FP16 activations; retain its regression checks when updating this policy.
 if [[ -n "$BUILD_BADGE" ]]; then
   plutil -insert MuesliBuildBadge -string "$BUILD_BADGE" "$STAGED_APP_DIR/Contents/Info.plist"
+  plutil -insert MuesliBuildBadgeShort -string "$(muesli_build_badge_short "$BUILD_BADGE")" "$STAGED_APP_DIR/Contents/Info.plist"
 fi
+# Gemma's reference-tested FP32 encoder policy is process-wide in MLX. Bodhan
+# uses FP16 activations; retain its regression checks when updating this policy.
 /usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$STAGED_APP_DIR/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add :LSEnvironment:MLX_ENABLE_TF32 string 0' "$STAGED_APP_DIR/Contents/Info.plist"
 if [[ "$BUNDLE_ID" == com.muesli.dev* ]]; then

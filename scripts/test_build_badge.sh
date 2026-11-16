@@ -25,6 +25,22 @@ expect_label MuesliCanary "CANARY"
 expect_label MuesliPreprod "PREPROD"
 expect_label OtherApp ""
 
+expect_short() {
+  local label="$1" expected="$2" actual
+  actual="$(muesli_build_badge_short "$label")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "FAIL: short '$label' -> '$actual', expected '$expected'" >&2
+    exit 1
+  fi
+}
+
+expect_short "" ""
+expect_short "DEV" "D"
+expect_short "DEV A" "DA"
+expect_short "DEV C" "DC"
+expect_short "PREPROD" "PP"
+expect_short "CANARY" "C"
+
 # The badged icon keeps every size of the source icon and differs from it.
 muesli_badge_icns "$ROOT/assets/muesli.icns" "DEV A" "$TEST_ROOT/badged.icns"
 iconutil -c iconset "$ROOT/assets/muesli.icns" -o "$TEST_ROOT/source.iconset"

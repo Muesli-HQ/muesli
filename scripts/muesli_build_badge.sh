@@ -3,7 +3,8 @@
 # MuesliPreprod) get a short label baked into their icon and Info.plist
 # (MuesliBuildBadge), so they can't be mistaken for the installed muesli in the
 # Dock, Finder, notifications or System Settings. The app also shows the label
-# in its menu bar item and sidebar.
+# in its sidebar, and a one- or two-letter form (MuesliBuildBadgeShort) in its
+# menu bar item.
 #
 # MUESLI_BUILD_BADGE overrides the label; set it empty to build without one.
 
@@ -19,6 +20,18 @@ muesli_build_badge_label() {
   else
     printf '%s\n' "$channel" | tr '[:lower:]' '[:upper:]'
   fi
+}
+
+# Prints the menu bar form of a label: DEV -> D, DEV A -> DA, PREPROD -> PP,
+# CANARY -> C. Other labels keep their first letter.
+muesli_build_badge_short() {
+  local label="$1"
+  case "$label" in
+    "") return 0 ;;
+    PREPROD) printf 'PP\n' ;;
+    "DEV "?) printf 'D%s\n' "${label#DEV }" ;;
+    *) printf '%s\n' "${label:0:1}" ;;
+  esac
 }
 
 # Writes a copy of the source .icns with the label drawn on every size.
