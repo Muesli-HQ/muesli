@@ -953,6 +953,47 @@ struct VisualMemoryStoreTests {
         #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
     }
 
+    @Test func horizontalScrollMovesScrubLikeAFilmstrip() {
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 1000) == 0.6)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: 100, trackWidth: 1000) == 0.4)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.95, deltaX: -200, trackWidth: 1000) == 1)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.05, deltaX: 200, trackWidth: 1000) == 0)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 0) == 0.5)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: .nan, trackWidth: 1000) == 0.5)
+    }
+
+    @Test func scrubViewportZoomsAroundThePointerAndStaysInsideTheDay() {
+        let whole = VisualMemoryScrubViewport.whole
+        #expect(!whole.isZoomed)
+        #expect(whole.fraction(atPosition: 0.25) == 0.25)
+        let zoomed = whole.zoomed(by: 4, around: 0.5, maximumZoom: 10)
+        #expect(zoomed.zoom == 4)
+        #expect(abs(zoomed.fraction(atPosition: 0.5) - 0.5) < 0.000001)
+        #expect(abs(zoomed.position(of: 0.5) - 0.5) < 0.000001)
+        let leftEdge = whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(leftEdge.start == 0)
+        #expect(whole.zoomed(by: 50, around: 0.5, maximumZoom: 10).zoom == 10)
+        #expect(zoomed.zoomed(by: 0.01, around: 0.5, maximumZoom: 10) == .whole)
+        #expect(whole.zoomed(by: .nan, around: 0.5, maximumZoom: 10) == whole)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: 0.9).start == 0.75)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: -1).start == 0)
+    }
+
+    @Test func scrubViewportFollowsThePlayheadPastEitherEdge() {
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(view.revealing(0.35) == view)
+        let forward = view.revealing(0.6)
+        #expect(abs(forward.position(of: 0.6) - 0.9) < 0.000001)
+        let backward = view.revealing(0.1)
+        #expect(abs(backward.position(of: 0.1) - 0.1) < 0.000001)
+        #expect(view.revealing(1).start == 0.75)
+        let start = Date(timeIntervalSince1970: 0)
+        let scale = VisualMemoryScrubScale(dates: (0..<601).map { start.addingTimeInterval(Double($0)) })
+        #expect(scale.compressedDuration == 600)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: scale) == 10)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: VisualMemoryScrubScale(dates: [])) == 1)
+    }
+
     @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
         let start = Date(timeIntervalSince1970: 1000)
         let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }

@@ -833,6 +833,54 @@ public struct VisualMemoryScrubScale {
         let local = (position - positions[lower]) / (positions[upper] - positions[lower])
         return dates[lower].addingTimeInterval(local * dates[upper].timeIntervalSince(dates[lower]))
     }
+    /// Browse-axis length in seconds after gap compression.
+    public var compressedDuration: TimeInterval { positions.last ?? 0 }
+    /// Horizontal scrolling moves the day like a filmstrip: content moving left
+    /// (a negative delta) advances time. `trackWidth` is the width that spans the
+    /// whole day, so a zoomed track passes its width times the zoom.
+    public static func scrolledFraction(from fraction: Double, deltaX: Double, trackWidth: Double) -> Double {
+        let current = min(1, max(0, fraction))
+        guard trackWidth > 0, deltaX.isFinite else { return current }
+        return min(1, max(0, current - deltaX / trackWidth))
+    }
+}
+
+/// The visible part of a zoomable scrub track. Fractions are of the whole day's
+/// track; positions are of the visible track (0 = left edge, 1 = right edge).
+public struct VisualMemoryScrubViewport: Equatable, Sendable {
+    /// The narrowest window a zoom reaches, in compressed seconds.
+    public static let minimumSpan: TimeInterval = 60
+    public static let whole = VisualMemoryScrubViewport(zoom: 1, start: 0)
+    public let zoom: Double
+    public let start: Double
+    public init(zoom: Double, start: Double) {
+        let zoom = zoom.isFinite ? max(1, zoom) : 1
+        self.zoom = zoom
+        self.start = start.isFinite ? min(1 - 1 / zoom, max(0, start)) : 0
+    }
+    public var span: Double { 1 / zoom }
+    public var isZoomed: Bool { zoom > 1.0001 }
+    public static func maximumZoom(for scale: VisualMemoryScrubScale) -> Double {
+        max(1, scale.compressedDuration / minimumSpan)
+    }
+    public func position(of fraction: Double) -> Double { (fraction - start) * zoom }
+    public func fraction(atPosition position: Double) -> Double { min(1, max(0, start + position * span)) }
+    /// Zooms by `factor`, keeping the moment under `position` where it is.
+    public func zoomed(by factor: Double, around position: Double, maximumZoom: Double) -> VisualMemoryScrubViewport {
+        guard factor.isFinite, factor > 0 else { return self }
+        let anchor = min(1, max(0, position))
+        let pinned = fraction(atPosition: anchor)
+        let next = min(max(1, maximumZoom), max(1, zoom * factor))
+        return VisualMemoryScrubViewport(zoom: next, start: pinned - anchor / next)
+    }
+    /// Pans just enough to keep `fraction` inside the view, `margin` (a share of
+    /// the visible span) away from either edge.
+    public func revealing(_ fraction: Double, margin: Double = 0.1) -> VisualMemoryScrubViewport {
+        let pad = span * min(0.5, max(0, margin))
+        if fraction < start + pad { return VisualMemoryScrubViewport(zoom: zoom, start: fraction - pad) }
+        if fraction > start + span - pad { return VisualMemoryScrubViewport(zoom: zoom, start: fraction - span + pad) }
+        return self
+    }
 }
 
 /// Stable keyset position; does not depend on the referenced capture still existing.
