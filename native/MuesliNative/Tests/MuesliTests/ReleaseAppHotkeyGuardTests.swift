@@ -49,6 +49,14 @@ struct ReleaseAppHotkeyGuardTests {
         #expect(!policy.shouldYield(Self.rightOption, releaseIsRunning: true, releaseHotkeys: [Self.leftOption]))
     }
 
+    @Test("the collision notice names the shortcut and the dev app")
+    func collisionNoticeText() {
+        let notice = ReleaseHotkeyYieldPolicy.collisionNotice(shortcut: "Right ⌥", appName: "muesliDev")
+        #expect(notice.title == "Right ⌥ is also muesli's shortcut")
+        #expect(notice.subtitle.contains("muesliDev skips it"))
+        #expect(notice.subtitle.contains("Change muesliDev's shortcut"))
+    }
+
     @Test("guard reads the release config and notices when it changes")
     func guardReadsReleaseConfig() throws {
         let dir = FileManager.default.temporaryDirectory

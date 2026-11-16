@@ -35,6 +35,13 @@ enum ReleaseHotkeyYieldPolicy {
             && ShortcutHotkeyPolicy.hotkeysConflict(hotkey, other)
     }
 
+    static func collisionNotice(shortcut: String, appName: String) -> (title: String, subtitle: String) {
+        (
+            title: "\(shortcut) is also muesli's shortcut",
+            subtitle: "\(appName) skips it while muesli is running, so only muesli responds. Change \(appName)'s shortcut to use both."
+        )
+    }
+
     static func shouldYield(
         _ hotkey: HotkeyConfig,
         releaseIsRunning: Bool,

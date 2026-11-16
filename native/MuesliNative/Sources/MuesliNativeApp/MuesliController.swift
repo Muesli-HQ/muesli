@@ -537,6 +537,7 @@ public final class MuesliController: NSObject {
     private var scheduledRecapModel: TimeTurnerRecapModel?
     private var recapClockConfig = ""
     private let meetingNotification = MeetingNotificationController()
+    private var releaseShortcutCollisionsShown = Set<String>()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
     private let chatGPTAuth: ChatGPTAuthManager
@@ -1273,7 +1274,13 @@ public final class MuesliController: NSObject {
         // release app instead of both apps starting on one press.
         if let releaseAppHotkeyGuard = ReleaseAppHotkeyGuard.forCurrentBuild() {
             [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
-                .forEach { $0.shouldYieldNewPress = releaseAppHotkeyGuard.shouldYield }
+                .forEach { monitor in
+                    monitor.shouldYieldNewPress = { [weak self] hotkey in
+                        guard releaseAppHotkeyGuard.shouldYield(hotkey) else { return false }
+                        DispatchQueue.main.async { self?.showReleaseShortcutCollisionNotice(for: hotkey) }
+                        return true
+                    }
+                }
         }
 
         reconcilePendingPushToTalkEnableIfReady()
@@ -15698,6 +15705,24 @@ public final class MuesliController: NSObject {
                 self?.showMeetingEndNotification(title: title)
             }
         }
+    }
+
+    /// Explains a skipped press once per shortcut per launch, and offers the fix.
+    private func showReleaseShortcutCollisionNotice(for hotkey: HotkeyConfig) {
+        guard !meetingNotification.isVisible,
+              releaseShortcutCollisionsShown.insert(hotkey.displayLabel).inserted else { return }
+        let notice = ReleaseHotkeyYieldPolicy.collisionNotice(
+            shortcut: hotkey.displayLabel,
+            appName: AppIdentity.displayName
+        )
+        meetingNotification.show(
+            title: notice.title,
+            subtitle: notice.subtitle,
+            actionLabel: "Change Shortcut",
+            icon: NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
+            dismissAfter: 20,
+            onStartRecording: { [weak self] in self?.openHistoryWindow(tab: .shortcuts) }
+        )
     }
 
     private func showMeetingEndNotification(title: String) {
