@@ -412,7 +412,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     @objc private func displayConfigurationChanged() {
-        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch || notchIndicator.quillAnswer != nil else { return }
+        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch || (state == .recording && instructionMode == .quill) || notchIndicator.quillAnswer != nil else { return }
         // Status messages and terminal results belong to presentation, not the idle recorder.
         // Moving it must not replay idle or restart its dismissal deadline.
         if refreshNotchFeedbackPlacement() { return }
@@ -1250,7 +1250,7 @@ final class FloatingIndicatorController: NSObject {
             }
 
             // Apply glass state last so it can override iconLabel visibility set above.
-            applyGlassState(state, frameSize: targetFrame.size)
+            applyGlassState(state, frameSize: targetFrame.size, config: config)
             layoutDictationOverlap(in: targetFrame.size)
         }
 
@@ -2289,8 +2289,7 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
-        let config = configStore.loadForReading()
+    private func applyGlassState(_ state: DictationState, frameSize: NSSize, config: AppConfig) {
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
@@ -2575,7 +2574,7 @@ final class FloatingIndicatorController: NSObject {
         self.iconLabel = iconLabel
         self.textLabel = textLabel
 
-        setupGlassLayer(in: contentView, iconLabel: iconLabel)
+        setupGlassLayer(in: contentView, iconLabel: iconLabel, config: config)
     }
 
     private func exitComputerUseCursorMode(restoreFrame: Bool) {
@@ -2646,7 +2645,7 @@ final class FloatingIndicatorController: NSObject {
         )
     }
 
-    private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField) {
+    private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField, config: AppConfig) {
         // masksToBounds clips both the glass blur and the tint layer to the pill shape.
         // The panel's compositor-level shadow is unaffected.
         contentView.layer?.masksToBounds = true
@@ -2693,7 +2692,6 @@ final class FloatingIndicatorController: NSObject {
 
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
-        let config = configStore.loadForReading()
         let idleImage = Self.idleIndicatorIcon(config: config)
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white

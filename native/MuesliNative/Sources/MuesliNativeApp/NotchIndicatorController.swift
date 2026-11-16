@@ -147,6 +147,10 @@ struct NotchIndicatorGeometry: Equatable {
                       width: leftWingWidth + cutout.width + rightWingWidth, height: height)
     }
 
+    var hasRoomForRecordingControls: Bool {
+        min(leftWingWidth, rightWingWidth) >= 22
+    }
+
     func clearingMenuBar(_ items: [CGRect]) -> Self {
         guard cutout.width > 0 else { return self }
         var result = self
@@ -296,21 +300,31 @@ final class NotchIndicatorController {
     // from the current desktop. Query just our own window; no screen capture.
     private var recordingPanelCheck: Task<Void, Never>?
     var onRecordingPanelUnavailable: (() -> Void)?
-    private let isPanelOnScreen: @MainActor (NSPanel) -> Bool
+    private let isPanelOnScreen: @MainActor (NSPanel) async -> Bool
 
-    static func windowServerShows(_ panel: NSPanel) -> Bool {
-        let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(panel.windowNumber)) as? [[String: Any]]
-        return info?.first?[kCGWindowIsOnscreen as String] as? Bool == true
+    static func windowServerShows(_ panel: NSPanel) async -> Bool {
+        let id = CGWindowID(panel.windowNumber)
+        return await Task.detached {
+            let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]]
+            return info?.first?[kCGWindowIsOnscreen as String] as? Bool == true
+        }.value
     }
 
-    private let resolveGeometry: (NSScreen) -> NotchIndicatorGeometry?
+    private let baseGeometry: @MainActor (NSScreen) -> NotchIndicatorGeometry?
+    private let scansMenuBar: Bool
+    private var menuBarItems: [CGRect] = []
+    private var clearanceTask: Task<Void, Never>?
+
+    private func resolveGeometry(_ screen: NSScreen) -> NotchIndicatorGeometry? {
+        baseGeometry(screen)?.clearingMenuBar(menuBarItems)
+    }
 
     private let pointerLocation: () -> NSPoint
     private let makeFeedbackCapturePanel: @MainActor () -> NSPanel
     private let scheduleOutcomeDismissal: @MainActor (TimeInterval, DispatchWorkItem) -> Void
 
-    init(resolveGeometry: @escaping (NSScreen) -> NotchIndicatorGeometry? = NotchIndicatorController.geometry,
-         isPanelOnScreen: @escaping @MainActor (NSPanel) -> Bool = NotchIndicatorController.windowServerShows,
+    init(resolveGeometry: (@MainActor (NSScreen) -> NotchIndicatorGeometry?)? = nil,
+         isPanelOnScreen: @escaping @MainActor (NSPanel) async -> Bool = NotchIndicatorController.windowServerShows,
          pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation },
          scheduleOutcomeDismissal: @escaping @MainActor (TimeInterval, DispatchWorkItem) -> Void = { duration, work in
              DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
@@ -320,7 +334,8 @@ final class NotchIndicatorController {
          }) {
         self.isPanelOnScreen = isPanelOnScreen
         self.pointerLocation = pointerLocation
-        self.resolveGeometry = resolveGeometry
+        self.baseGeometry = resolveGeometry ?? NotchIndicatorController.geometry
+        self.scansMenuBar = resolveGeometry == nil
         self.scheduleOutcomeDismissal = scheduleOutcomeDismissal
         self.makeFeedbackCapturePanel = makeFeedbackCapturePanel
     }
@@ -336,20 +351,47 @@ final class NotchIndicatorController {
     var screenFrame: CGRect? { isVisible ? panel?.frame : nil }
 
     static func geometry(for screen: NSScreen) -> NotchIndicatorGeometry? {
-        let geometry = NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
+        NotchIndicatorGeometry.presentation(screen: screen.frame, visibleFrame: screen.visibleFrame,
             topInset: screen.safeAreaInsets.top,
             left: screen.auxiliaryTopLeftArea, right: screen.auxiliaryTopRightArea)
-        guard geometry.cutout.width > 0, let desktopTop = NSScreen.screens.first?.frame.maxY,
-              let owner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first,
-              let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, 0) as? [[String: Any]] else { return geometry }
-        let items = windows.compactMap { window -> CGRect? in
+    }
+
+    private nonisolated static func menuBarItemFrames(desktopTop: CGFloat, level: Int) -> [CGRect] {
+        guard let owner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first,
+              let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, 0) as? [[String: Any]] else { return [] }
+        return windows.compactMap { window -> CGRect? in
             guard window[kCGWindowOwnerPID as String] as? Int32 == owner.processIdentifier,
-                  window[kCGWindowLayer as String] as? Int == NSWindow.Level.statusBar.rawValue,
+                  window[kCGWindowLayer as String] as? Int == level,
                   let bounds = window[kCGWindowBounds as String] as? NSDictionary,
                   let rect = CGRect(dictionaryRepresentation: bounds) else { return nil }
             return CGRect(x: rect.minX, y: desktopTop - rect.maxY, width: rect.width, height: rect.height)
         }
-        return geometry.clearingMenuBar(items)
+    }
+
+    private func refreshMenuBarClearance(on screen: NSScreen) {
+        clearanceTask?.cancel()
+        guard let base = baseGeometry(screen), base.cutout.width > 0,
+              let desktopTop = NSScreen.screens.first?.frame.maxY else { return }
+        let scansMenuBar = self.scansMenuBar
+        let level = NSWindow.Level.statusBar.rawValue
+        clearanceTask = Task { [weak self] in
+            // Give Control Centre time to place its microphone item after capture starts.
+            if self?.recording == true {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            }
+            let items = scansMenuBar ? await Task.detached {
+                Self.menuBarItemFrames(desktopTop: desktopTop, level: level)
+            }.value : []
+            guard !Task.isCancelled, let self else { return }
+            self.menuBarItems = items
+            let updated = base.clearingMenuBar(items)
+            if self.recording && !updated.hasRoomForRecordingControls {
+                self.onRecordingPanelUnavailable?()
+            } else if self.geometry != updated {
+                self.geometry = updated
+                self.render()
+            }
+        }
     }
 
     /// Retire only feedback, retaining its host for a later style transition.
@@ -456,6 +498,7 @@ final class NotchIndicatorController {
                 verifyRecordingPanel(panel)
             }
         }
+        refreshMenuBarClearance(on: screen)
         logPresentation("show")
         scheduleDismissal()
         return true
@@ -481,11 +524,9 @@ final class NotchIndicatorController {
             for attempt in 0..<2 {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
                 guard let self, self.panel === candidate, self.recording else { return }
-                if let screen = candidate.screen, let geometry = self.resolveGeometry(screen), geometry != self.geometry {
-                    self.geometry = geometry
-                    self.render()
-                }
-                if self.isPanelOnScreen(candidate) {
+                let visible = await self.isPanelOnScreen(candidate)
+                guard !Task.isCancelled, self.panel === candidate, self.recording else { return }
+                if visible {
                     if attempt == 1 { self.logPresentation("replacement confirmed on screen") }
                     self.recordingPanelCheck = nil
                     return
@@ -530,7 +571,8 @@ final class NotchIndicatorController {
 
     func hide(reason: String = #function) {
         cancelRecordingPanelCheck()
-        closeMeetingTranscript()
+        clearanceTask?.cancel()
+        closeMeetingTranscript(renderImmediately: false)
         transcriptDismissed = false
         logPresentation("hide from \(reason)")
         quillAnswer = nil
@@ -570,6 +612,7 @@ final class NotchIndicatorController {
                            width: 0, height: 32), wingWidth: 110)
         render()
         panel?.orderFrontRegardless()
+        refreshMenuBarClearance(on: screen)
         return true
     }
 

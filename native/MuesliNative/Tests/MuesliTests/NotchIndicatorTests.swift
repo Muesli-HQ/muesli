@@ -857,7 +857,8 @@ struct NotchIndicatorTests {
                     #expect(panel !== missingPanel)
                     #expect(!missingPanel.isVisible)
                     #expect(panel.frame == missingPanel.frame)
-                    return recovers && panel !== missingPanel && NotchIndicatorController.windowServerShows(panel)
+                    let onScreen = await NotchIndicatorController.windowServerShows(panel)
+                    return recovers && panel !== missingPanel && onScreen
                 }
                 missingPanel = panel
                 return false
@@ -891,7 +892,7 @@ struct NotchIndicatorTests {
         let screen = try #require(NSScreen.main)
         var observedOnScreen = false
         let notch = NotchIndicatorController(isPanelOnScreen: { panel in
-            let visible = NotchIndicatorController.windowServerShows(panel)
+            let visible = await NotchIndicatorController.windowServerShows(panel)
             observedOnScreen = visible
             return visible
         })
@@ -1432,6 +1433,8 @@ struct NotchIndicatorTests {
         #expect(compact.minX == geometry.frame().minX)
         #expect(compact.maxY == screen.maxY)
         #expect(compact.minY == geometry.cutout.minY)
+        #expect(geometry.clearingMenuBar([mic]).hasRoomForRecordingControls)
+        #expect(!geometry.clearingMenuBar([mic.offsetBy(dx: -33, dy: 0)]).hasRoomForRecordingControls)
         #expect(compact.maxX == mic.minX)
         #expect(!compact.intersects(mic))
         #expect(geometry.clearingMenuBar([mic]).cutout == geometry.cutout)
