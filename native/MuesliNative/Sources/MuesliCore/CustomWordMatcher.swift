@@ -51,22 +51,33 @@ public struct CustomWord: Codable, Equatable, Identifiable, Sendable {
 ///
 /// Matching stages (first match wins):
 /// 1. Exact case-insensitive match
-/// 2. Jaro-Winkler similarity >= the entry's configured threshold
+/// 2. Jaro-Winkler similarity >= the entry's configured threshold, for words
+///    of plausibly similar length (see `isPlausibleMisrecognition`)
+///
+/// A trailing possessive ("'s") on the matched text is kept, and a multi-word
+/// replacement is not duplicated when the surrounding words already spell it.
 public struct CustomWordMatcher {
 
     struct Entry {
         let replacement: String
         let matchingThreshold: Double
         let tokens: [String]
-        let normalizedPhrase: String
+        /// Words of `replacement`, and their normalized forms, used to avoid
+        /// re-inserting words of a multi-word replacement that are already present.
+        let replacementWords: [String]
+        let replacementTokens: [String]
+        let endsWithPossessive: Bool
 
         init?(word: String, replacement: String, matchingThreshold: Double) {
             let tokens = Self.normalizedTokens(in: word)
-            guard !tokens.isEmpty else { return nil }
+            guard let lastToken = tokens.last else { return nil }
             self.replacement = replacement
             self.matchingThreshold = matchingThreshold
             self.tokens = tokens
-            normalizedPhrase = tokens.joined(separator: " ")
+            replacementWords = replacement.components(separatedBy: " ")
+                .filter { CustomWordMatcher.tokenParts(for: $0) != nil }
+            replacementTokens = Self.normalizedTokens(in: replacement)
+            endsWithPossessive = !CustomWordMatcher.possessiveSuffix(of: lastToken).isEmpty
         }
 
         private static func normalizedTokens(in text: String) -> [String] {
@@ -116,6 +127,14 @@ public struct CustomWordMatcher {
     }
 
     private static let boundaryPunctuation = CharacterSet(charactersIn: ".,!?;:\"'()[]{}")
+    private static let possessiveMarkers = ["'s", "\u{2019}s"]
+
+    /// A shorter word below this fraction of the longer word's length is a
+    /// different word, not a misrecognition ("yes" vs "Yonesh" scores 0.85).
+    private static let minimumLengthRatio = 0.6
+    /// A shorter word that is the start of the longer one, missing at least this
+    /// many characters, is a different word ("north" vs "Northcap" scores 0.93).
+    private static let minimumTruncatedCharacters = 3
 
     private static func bestMatch(
         in words: [String],
@@ -130,19 +149,33 @@ public struct CustomWordMatcher {
             guard parts.count == count else { continue }
             guard preservesPhraseBoundaryPunctuation(parts) else { continue }
 
+            // A trailing possessive is compared without its "'s" and put back
+            // after the replacement, unless the entry itself ends in one.
             let candidateTokens = parts.map { $0.core.lowercased() }
-            let candidate = candidateTokens.joined(separator: " ")
-            if let exact = entries.first(where: { $0.normalizedPhrase == candidate }) {
+            let possessive = possessiveSuffix(of: parts[count - 1].core)
+            var strippedTokens = candidateTokens
+            if !possessive.isEmpty {
+                strippedTokens[count - 1] = String(strippedTokens[count - 1].dropLast(possessive.count))
+            }
+            func candidate(for entry: Entry) -> (tokens: [String], possessive: String) {
+                possessive.isEmpty || entry.endsWithPossessive ? (candidateTokens, "") : (strippedTokens, possessive)
+            }
+            func match(_ entry: Entry, possessive: String) -> Match {
+                let replacement = replacementText(for: entry, in: words, at: index, count: count)
                 return Match(
-                    text: parts[0].prefix + exact.replacement + parts[count - 1].suffix,
+                    text: parts[0].prefix + replacement + possessive + parts[count - 1].suffix,
                     consumed: count
                 )
+            }
+
+            if let exact = entries.first(where: { candidate(for: $0).tokens == $0.tokens }) {
+                return match(exact, possessive: candidate(for: exact).possessive)
             }
 
             var bestEntry: Entry?
             var bestScore = 0.0
             for entry in entries {
-                guard let score = similarity(candidateTokens: candidateTokens, entry: entry) else { continue }
+                guard let score = similarity(candidateTokens: candidate(for: entry).tokens, entry: entry) else { continue }
                 if score > bestScore {
                     bestScore = score
                     bestEntry = entry
@@ -150,14 +183,54 @@ public struct CustomWordMatcher {
             }
 
             if let bestEntry {
-                return Match(
-                    text: parts[0].prefix + bestEntry.replacement + parts[count - 1].suffix,
-                    consumed: count
-                )
+                return match(bestEntry, possessive: candidate(for: bestEntry).possessive)
             }
         }
 
         return nil
+    }
+
+    /// The text to insert for a matched window. When the replacement has more
+    /// words than the window and the neighboring words already spell the rest
+    /// of it, only the missing words are inserted, so "XY Widget" stays
+    /// "XY Widget" rather than becoming "XY XY Widget".
+    private static func replacementText(for entry: Entry, in words: [String], at index: Int, count: Int) -> String {
+        let extra = entry.replacementTokens.count - count
+        guard extra > 0, entry.replacementWords.count == entry.replacementTokens.count else {
+            return entry.replacement
+        }
+        func normalized(_ range: Range<Int>) -> [String] {
+            words[range].map { tokenParts(for: $0)?.core.lowercased() ?? "" }
+        }
+
+        if index >= extra, normalized((index - extra)..<index) == Array(entry.replacementTokens[..<extra]) {
+            return entry.replacementWords[extra...].joined(separator: " ")
+        }
+        let end = index + count
+        if end + extra <= words.count, normalized(end..<(end + extra)) == Array(entry.replacementTokens[count...]) {
+            return entry.replacementWords[..<count].joined(separator: " ")
+        }
+        return entry.replacement
+    }
+
+    /// The trailing "'s" (straight or curly apostrophe) of a word, in its
+    /// original case, or "" when it has none.
+    private static func possessiveSuffix(of word: String) -> String {
+        for marker in possessiveMarkers where word.count > marker.count && word.lowercased().hasSuffix(marker) {
+            return String(word.suffix(marker.count))
+        }
+        return ""
+    }
+
+    /// Jaro-Winkler rewards a shared prefix, so on its own it scores ordinary
+    /// short words highly against longer entries that start the same way. A
+    /// recognizer misspells a word; it rarely drops a large part of it.
+    private static func isPlausibleMisrecognition(_ candidate: String, _ entry: String) -> Bool {
+        let (short, long) = candidate.count <= entry.count ? (candidate, entry) : (entry, candidate)
+        guard long.count > 0 else { return true }
+        if Double(short.count) / Double(long.count) < minimumLengthRatio { return false }
+        if long.hasPrefix(short), long.count - short.count >= minimumTruncatedCharacters { return false }
+        return true
     }
 
     private static func preservesPhraseBoundaryPunctuation(_ parts: [TokenParts]) -> Bool {
@@ -173,6 +246,7 @@ public struct CustomWordMatcher {
 
     private static func similarity(candidateTokens: [String], entry: Entry) -> Double? {
         guard candidateTokens.count == entry.tokens.count else { return nil }
+        guard zip(candidateTokens, entry.tokens).allSatisfy(isPlausibleMisrecognition) else { return nil }
 
         if entry.tokens.count == 1 {
             let score = jaroWinklerSimilarity(candidateTokens[0], entry.tokens[0])

@@ -183,4 +183,89 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "try open, telemetry now", customWords: words)
         #expect(result == "try open, telemetry now")
     }
+
+    // MARK: Possessives
+
+    @Test("possessive survives an exact match")
+    func possessiveSurvivesExactMatch() {
+        let words = [CustomWord(word: "Caivex", replacement: nil)]
+        let result = CustomWordMatcher.apply(text: "open Caivex's settings", customWords: words)
+        #expect(result == "open Caivex's settings")
+    }
+
+    @Test("possessive survives a fuzzy correction")
+    func possessiveSurvivesFuzzyCorrection() {
+        let words = [CustomWord(word: "Caivex", replacement: "Caivex", matchingThreshold: 0.70)]
+        let result = CustomWordMatcher.apply(text: "ask Kvex's team", customWords: words)
+        #expect(result == "ask Caivex's team")
+    }
+
+    @Test("curly-apostrophe possessive survives a match")
+    func curlyPossessiveSurvivesMatch() {
+        let words = [CustomWord(word: "Caivex", replacement: nil)]
+        let result = CustomWordMatcher.apply(text: "open Caivex\u{2019}s settings", customWords: words)
+        #expect(result == "open Caivex\u{2019}s settings")
+    }
+
+    @Test("possessive survives a multi-word phrase match")
+    func possessiveSurvivesPhraseMatch() {
+        let words = [CustomWord(word: "open telemetry", replacement: "OpenTelemetry")]
+        let result = CustomWordMatcher.apply(text: "check open telemetry's exporter", customWords: words)
+        #expect(result == "check OpenTelemetry's exporter")
+    }
+
+    @Test("entry that is itself possessive is not doubled")
+    func possessiveEntryIsNotDoubled() {
+        let words = [CustomWord(word: "McDonald's", replacement: nil)]
+        let result = CustomWordMatcher.apply(text: "lunch at mcdonald's today", customWords: words)
+        #expect(result == "lunch at McDonald's today")
+    }
+
+    // MARK: Words much shorter than the entry
+
+    @Test("word that is the start of a longer entry is not rewritten")
+    func truncatedPrefixIsNotRewritten() {
+        // "north" vs "northcap" scores ~0.93 only because of the shared prefix.
+        let words = [CustomWord(word: "Northcap", replacement: nil)]
+        let result = CustomWordMatcher.apply(text: "head north after lunch", customWords: words)
+        #expect(result == "head north after lunch")
+    }
+
+    @Test("much shorter word is not rewritten")
+    func muchShorterWordIsNotRewritten() {
+        // "yes" vs "yonesh" scores 0.85 at the default threshold.
+        let words = [CustomWord(word: "Yonesh", replacement: nil)]
+        let result = CustomWordMatcher.apply(text: "Yes. Send it over.", customWords: words)
+        #expect(result == "Yes. Send it over.")
+    }
+
+    // MARK: Replacement already present in the text
+
+    @Test("one-word entry with a multi-word replacement keeps a correct spelling")
+    func multiWordReplacementIsNotDuplicated() {
+        let words = [CustomWord(word: "XYWidget", replacement: "XY Widget")]
+        let result = CustomWordMatcher.apply(text: "order the XY Widget now", customWords: words)
+        #expect(result == "order the XY Widget now")
+    }
+
+    @Test("misspelled tail of a multi-word replacement is fixed without duplicating")
+    func multiWordReplacementTailIsFixedInPlace() {
+        let words = [CustomWord(word: "XYWidget", replacement: "XY Widget")]
+        let result = CustomWordMatcher.apply(text: "order the XY Widgett now", customWords: words)
+        #expect(result == "order the XY Widget now")
+    }
+
+    @Test("abbreviation expanding to a phrase is not applied inside that phrase")
+    func expansionIsNotAppliedInsideReplacement() {
+        let words = [CustomWord(word: "xy", replacement: "XY Widget")]
+        let result = CustomWordMatcher.apply(text: "order the XY Widget now", customWords: words)
+        #expect(result == "order the XY Widget now")
+    }
+
+    @Test("one-word entry still expands to its multi-word replacement")
+    func multiWordReplacementStillExpands() {
+        let words = [CustomWord(word: "XYWidget", replacement: "XY Widget")]
+        let result = CustomWordMatcher.apply(text: "order the xywidget now", customWords: words)
+        #expect(result == "order the XY Widget now")
+    }
 }
