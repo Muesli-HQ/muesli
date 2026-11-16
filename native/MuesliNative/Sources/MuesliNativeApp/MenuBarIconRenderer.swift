@@ -69,7 +69,8 @@ enum MenuBarIconRenderer {
         if let badge, !badge.isEmpty {
             result.append(NSAttributedString(
                 string: "\u{2009}\(badge)",
-                attributes: [.font: AppFonts.bold(10)]
+                // Same orange as the icon pill in scripts/badge_app_icon.swift.
+                attributes: [.font: AppFonts.bold(10), .foregroundColor: NSColor.systemOrange]
             ))
         }
         if showsHotkey {

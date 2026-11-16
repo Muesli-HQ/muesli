@@ -19,6 +19,7 @@ struct BuildBadgeTests {
         #expect(title.string.hasPrefix("\u{2009}DA\u{2009}"))
         let font = title.attribute(.font, at: 1, effectiveRange: nil) as? NSFont
         #expect(font?.pointSize == 10)
+        #expect(title.attribute(.foregroundColor, at: 1, effectiveRange: nil) as? NSColor == .systemOrange)
 
         let release = MenuBarIconRenderer.statusTitle(hotkey: .default, showsHotkey: false)
         #expect(release.string.isEmpty)
