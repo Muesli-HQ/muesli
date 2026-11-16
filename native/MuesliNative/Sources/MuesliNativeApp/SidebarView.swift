@@ -313,6 +313,16 @@ struct SidebarView: View {
                     Text("muesli")
                         .font(MuesliTheme.title2())
                         .foregroundStyle(MuesliTheme.textPrimary)
+                    if let badge = AppIdentity.buildBadge {
+                        Text(badge)
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(BuildBadge.color, in: Capsule())
+                            .padding(.leading, -MuesliTheme.spacing4)
+                            .help("A \(AppIdentity.displayName) build, separate from the installed muesli app and its data")
+                            .accessibilityLabel("\(badge.capitalized) build")
+                    }
                 }
                 if !userName.isEmpty {
                     Text("Hi, \(userName)")

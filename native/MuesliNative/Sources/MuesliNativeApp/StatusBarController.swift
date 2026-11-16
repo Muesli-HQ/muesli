@@ -88,8 +88,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         updateMenuBarTitle()
     }
 
+    /// Builds other than the release app show an orange icon, so they stand out
+    /// in a crowded menu bar without taking extra width.
+    private var statusIcon: NSImage? {
+        MenuBarIconRenderer.tinted(MenuBarIconRenderer.make(choice: controller.config.menuBarIcon),
+                                   with: AppIdentity.buildBadge == nil ? nil : BuildBadge.nsColor)
+    }
+
     func refreshIcon() {
-        statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+        statusItem.button?.image = statusIcon
         updateMenuBarTitle()
     }
 
@@ -128,7 +135,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func build() {
         if let button = statusItem.button {
-            button.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+            button.image = statusIcon
             button.imageScaling = .scaleProportionallyDown
             button.toolTip = AppIdentity.displayName
         }

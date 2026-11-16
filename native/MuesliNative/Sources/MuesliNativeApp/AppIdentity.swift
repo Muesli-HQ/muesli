@@ -13,6 +13,12 @@ public enum AppIdentity {
             ? "muesli" + bundleName.dropFirst(6) : bundleName)
     }
 
+    /// A short label for builds other than the release app ("DEV", "DEV A",
+    /// "CANARY", "PREPROD"), shown in the menu bar and the sidebar. The build
+    /// script also bakes it into the app icon; see scripts/muesli_build_badge.sh.
+    /// Nil for the release app, which has no MuesliBuildBadge key.
+    static var buildBadge: String? { stringValue(for: "MuesliBuildBadge") }
+
     static var marketingVersion: String {
         stringValue(for: "CFBundleShortVersionString") ?? "0.0.0"
     }
