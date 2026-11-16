@@ -127,6 +127,9 @@ final class HotkeyMonitor {
     /// Dictation must work in our own editors, just as it does in other apps.
     /// Other command monitors retain their text-editing shortcut protection.
     var allowsStartsWhileEditingText = false
+    /// Non-release builds set this to skip a new press that the running release
+    /// app also handles. Presses that continue a session always pass through.
+    var shouldYieldNewPress: ((HotkeyConfig) -> Bool)?
 
     // Combination mode (e.g. Cmd+Shift+R)
     var combinationModifiers: NSEvent.ModifierFlags?
@@ -418,6 +421,22 @@ final class HotkeyMonitor {
         toggleActive
     }
 
+    private var configuredHotkey: HotkeyConfig {
+        if let combinationModifiers, let combinationKeyCode {
+            return .combination(modifiers: combinationModifiers, keyCode: combinationKeyCode)
+        }
+        return HotkeyConfig(keyCode: targetKeyCode)
+    }
+
+    private func yieldsNewPress() -> Bool {
+        guard let shouldYieldNewPress,
+              !hasPendingOrActiveSession,
+              armCancelWorkItem == nil,
+              shouldYieldNewPress(configuredHotkey) else { return false }
+        fputs("[hotkey] press skipped: the running release muesli app handles this shortcut too\n", stderr)
+        return true
+    }
+
     @discardableResult
     private func handle(_ event: NSEvent) -> Bool {
         // Clipboard copy/paste and direct typing generate their own keyboard
@@ -456,6 +475,9 @@ final class HotkeyMonitor {
         flags: NSEvent.ModifierFlags,
         isRepeat: Bool
     ) -> Bool {
+        if type == .keyDown, !isRepeat, keyCode == combinationKeyCode, yieldsNewPress() {
+            return false
+        }
         if feedbackReleaseToggle {
             return handleFeedbackToggle(type: type, keyCode: keyCode, flags: flags, isRepeat: isRepeat)
         }
@@ -678,6 +700,10 @@ final class HotkeyMonitor {
     }
 
     fileprivate func handleRegisteredHotKey(kind: UInt32) {
+        // The matching release is a no-op: nothing was latched for this press.
+        if kind == UInt32(kEventHotKeyPressed), !registeredHotKeyIsDown, yieldsNewPress() {
+            return
+        }
         if feedbackReleaseToggle {
             let key = combinationKeyCode ?? targetKeyCode
             if kind == UInt32(kEventHotKeyPressed) {
@@ -751,6 +777,8 @@ final class HotkeyMonitor {
             let isDown = isModifierDown(keyCode: targetKeyCode, flags: flags)
             if isDown {
                 if !targetKeyDown {
+                    // Key-up then finds targetKeyDown false and stays a no-op.
+                    if yieldsNewPress() { return }
                     let owesCancellation = armCancelWorkItem != nil
                     armCancelWorkItem?.cancel()
                     armCancelWorkItem = nil

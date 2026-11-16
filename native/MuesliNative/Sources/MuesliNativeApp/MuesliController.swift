@@ -1269,6 +1269,13 @@ public final class MuesliController: NSObject {
         // shortcut, the menu bar, the indicator, or the signal-loss warning.
         meetingRecordingHotkeyMonitor.escapeCancelsToggleSession = false
 
+        // Dev, lane, canary, and preprod builds leave shared shortcuts to a running
+        // release app instead of both apps starting on one press.
+        if let releaseAppHotkeyGuard = ReleaseAppHotkeyGuard.forCurrentBuild() {
+            [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
+                .forEach { $0.shouldYieldNewPress = releaseAppHotkeyGuard.shouldYield }
+        }
+
         reconcilePendingPushToTalkEnableIfReady()
 
         let canRunMainApp = config.hasCompletedOnboarding
