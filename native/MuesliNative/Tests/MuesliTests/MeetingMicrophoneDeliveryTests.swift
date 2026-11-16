@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import AudioToolbox
 import Foundation
@@ -14,6 +15,57 @@ struct MeetingMicrophoneDeliveryTests {
         config.analyticsDisabled = true
         TelemetryDeck.initialize(config: config)
     }()
+
+    @Test("An open menu's Stop cannot start a meeting or stop a replacement session")
+    @MainActor
+    func staleStatusMenuStop() async throws {
+        _ = NSApplication.shared
+        _ = Self.disabledTelemetry
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runtime = RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        let controller = MuesliController(runtime: runtime, dictationStore: store,
+                                         configStore: makeTestConfigStore(supportDirectory: directory))
+        func startSession() async throws -> MeetingSession {
+            let mic = StreamingMeetingMicRecorderAdapter(recorder: ContractProducer(useQueue: true), kind: .systemDefaultStreaming)
+            let session = MeetingSession(title: "Synthetic meeting", calendarEventID: nil, backend: .parakeetEnglish,
+                runtime: runtime, config: controller.config, templateSnapshot: .init(id: "test", name: "test", kind: .custom, prompt: ""),
+                transcriptionCoordinator: controller.transcriptionCoordinator,
+                meetingMicRecorder: RouteAwareMeetingMicRecorder(systemDefaultRecorder: mic),
+                systemAudioCapture: ContractSystemAudio(), aec: MeetingNeuralAec(preloadedProcessor: ContractAecProcessor()))
+            try await session.testingStartCapture()
+            controller.testingInstallMeetingCapture(session)
+            return session
+        }
+        let original = try await startSession()
+        defer { original.discard() }
+        let menu = NSMenu()
+        let status = StatusBarController(controller: controller, runtime: runtime, menu: menu)
+        status.menuNeedsUpdate(menu)
+        status.menuWillOpen(menu)
+        defer { status.menuDidClose(menu) }
+        let stop = try #require(menu.item(withTitle: "Stop Meeting Recording"))
+        let action = try #require(stop.action)
+        try #require(action == #selector(MuesliController.stopMeetingRecordingFromMenuBar(_:)))
+        #expect(stop.representedObject as? UUID == original.screenRecordingSessionID)
+
+        original.discard()
+        await original.testingWaitForDiscard()
+        controller.testingInstallMeetingCapture(nil)
+        status.refresh()
+        #expect(NSApp.sendAction(action, to: stop.target, from: stop))
+        #expect(!controller.isMeetingRecording())
+        #expect(!controller.appState.isMeetingStarting)
+
+        // Even resuming the same database meeting creates a new recording session.
+        let replacement = try await startSession()
+        #expect(NSApp.sendAction(action, to: stop.target, from: stop))
+        #expect(replacement.isRecording)
+        replacement.discard()
+        await replacement.testingWaitForDiscard()
+    }
 
     @Test("ordinary dictation output and capture boundaries preserve meeting PCM",
           arguments: [false, true], ["hold", "toggle", "cancel", "failure", "paused", "meeting-stop", "tap", "shortcut", "delayed-stop", "delayed-cancel", "finish-release", "finish-cancel", "nemotron-hold", "nemotron-preparing-cancel", "nemotron-preparing-finish", "nemotron-preparing-restart", "warmup-failure", "meeting-discard", "pending-release", "pending-shortcut", "ready", "optional-failure", "preparation-failure", "stale-ready", "activity-ready"])
