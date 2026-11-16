@@ -69,7 +69,7 @@ enum MenuBarIconRenderer {
         if let badge, !badge.isEmpty {
             result.append(NSAttributedString(
                 string: "\u{2009}\(badge)",
-                attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .bold)]
+                attributes: [.font: AppFonts.bold(10)]
             ))
         }
         if showsHotkey {

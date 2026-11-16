@@ -315,12 +315,12 @@ struct SidebarView: View {
                         .foregroundStyle(MuesliTheme.textPrimary)
                     if let badge = AppIdentity.buildBadge {
                         Text(badge)
-                            .font(.system(size: 10, weight: .heavy))
+                            .font(MuesliTheme.font(size: 10, weight: .heavy))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Color.orange, in: Capsule()) // same orange as the pill in scripts/badge_app_icon.swift
                             .padding(.leading, -MuesliTheme.spacing4)
-                            .help("A \(AppIdentity.displayName) build, separate from the installed muesli app and its data")
+                            .help("\(AppIdentity.displayName) build labelled \(badge)")
                             .accessibilityLabel("\(badge.capitalized) build")
                     }
                 }
