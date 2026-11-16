@@ -845,6 +845,23 @@ public struct VisualMemoryScrubScale {
     }
 }
 
+/// Where scrolling left the scrub position. Several captures can share a
+/// timestamp (one per display), and the scale gives each a short span that
+/// maps to that one time; restarting every scroll event from the playhead would
+/// stall there, so small deltas accumulate here instead.
+public struct VisualMemoryScrollCursor: Equatable, Sendable {
+    public let fraction: Double
+    public let date: Date
+    public init(fraction: Double, date: Date) { self.fraction = fraction; self.date = date }
+    /// Continues from `cursor` while the playhead is still where it left it;
+    /// otherwise starts from the playhead.
+    public static func advance(_ cursor: VisualMemoryScrollCursor?, playhead: Date, deltaX: Double, trackWidth: Double, scale: VisualMemoryScrubScale) -> VisualMemoryScrollCursor? {
+        let from = cursor.flatMap { $0.date == playhead ? $0.fraction : nil } ?? scale.fraction(for: playhead)
+        let fraction = VisualMemoryScrubScale.scrolledFraction(from: from, deltaX: deltaX, trackWidth: trackWidth)
+        return scale.date(at: fraction).map { VisualMemoryScrollCursor(fraction: fraction, date: $0) }
+    }
+}
+
 /// The visible part of a zoomable scrub track. Fractions are of the whole day's
 /// track; positions are of the visible track (0 = left edge, 1 = right edge).
 public struct VisualMemoryScrubViewport: Equatable, Sendable {
@@ -872,6 +889,14 @@ public struct VisualMemoryScrubViewport: Equatable, Sendable {
         let pinned = fraction(atPosition: anchor)
         let next = min(max(1, maximumZoom), max(1, zoom * factor))
         return VisualMemoryScrubViewport(zoom: next, start: pinned - anchor / next)
+    }
+    /// Keeps a zoomed view on the same moments after the scale is rebuilt (new
+    /// captures change every fraction). An unzoomed view stays whole.
+    public func rebased(from old: VisualMemoryScrubScale, to new: VisualMemoryScrubScale) -> VisualMemoryScrubViewport {
+        guard isZoomed, let from = old.date(at: start), let to = old.date(at: start + span) else { return .whole }
+        let lower = new.fraction(for: from), upper = new.fraction(for: to)
+        guard upper > lower else { return .whole }
+        return VisualMemoryScrubViewport(zoom: min(Self.maximumZoom(for: new), 1 / (upper - lower)), start: lower)
     }
     /// Pans just enough to keep `fraction` inside the view, `margin` (a share of
     /// the visible span) away from either edge.

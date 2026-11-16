@@ -247,7 +247,8 @@ private struct HorizontalScrollScrubber: NSViewRepresentable {
                 guard dx != 0 || dy != 0 else { return false }
                 // visibleRect excludes parts of the card scrolled out of the page.
                 let inside = visibleRect.contains(convert(event.locationInWindow, from: nil))
-                axis = inside && abs(dx) > abs(dy) ? .horizontal : .vertical
+                // Command-scroll is zoom: leave it for the timeline bar, even when diagonal.
+                axis = inside && !event.command && abs(dx) > abs(dy) ? .horizontal : .vertical
             }
             guard axis == .horizontal else { return false }
             if dx != 0 { onScroll?(dx, event.precise) }
@@ -259,11 +260,12 @@ private struct HorizontalScrollScrubber: NSViewRepresentable {
     struct ScrollSample: Sendable {
         let deltaX: CGFloat, deltaY: CGFloat, precise: Bool
         let phase: NSEvent.Phase, momentumPhase: NSEvent.Phase
-        let locationInWindow: CGPoint, windowNumber: Int
+        let locationInWindow: CGPoint, windowNumber: Int, command: Bool
         init(_ event: NSEvent) {
             deltaX = event.scrollingDeltaX; deltaY = event.scrollingDeltaY; precise = event.hasPreciseScrollingDeltas
             phase = event.phase; momentumPhase = event.momentumPhase
             locationInWindow = event.locationInWindow; windowNumber = event.windowNumber
+            command = event.modifierFlags.contains(.command)
         }
     }
 }
@@ -405,9 +407,19 @@ struct MemoryExplorerView: View {
         return markers
     }
     @State private var scrubViewport = VisualMemoryScrubViewport.whole
+    @State private var scrollCursor: VisualMemoryScrollCursor?
+    /// A new day or display starts unzoomed.
     private func resetScrubScale() {
         scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
         scrubViewport = .whole
+        scrollCursor = nil
+    }
+    /// Refreshed captures for the same day keep the zoom on the same moments.
+    private func rebuildScrubScale() {
+        let old = scrubScale
+        scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
+        scrubViewport = scrubViewport.rebased(from: old, to: scrubScale)
+        scrollCursor = nil
     }
     private func zoomScrubber(by factor: Double, around position: Double) {
         guard !ordered.isEmpty else { return }
@@ -432,7 +444,10 @@ struct MemoryExplorerView: View {
     private func scrollScrub(deltaX: CGFloat, precise: Bool) {
         guard !ordered.isEmpty else { return }
         if precise {
-            scrub(to: VisualMemoryScrubScale.scrolledFraction(from: scrubScale.fraction(for: playhead), deltaX: Double(deltaX), trackWidth: Double(trackWidth) * scrubViewport.zoom))
+            guard let next = VisualMemoryScrollCursor.advance(scrollCursor, playhead: playhead, deltaX: Double(deltaX),
+                                                              trackWidth: Double(trackWidth) * scrubViewport.zoom, scale: scrubScale) else { return }
+            scrub(to: next.fraction)
+            scrollCursor = next
             revealPlayhead()
         } else {
             select(deltaX < 0 ? min(ordered.count - 1, index + 1) : max(0, index - 1))
@@ -631,8 +646,12 @@ struct MemoryExplorerView: View {
             let moments = (try? await memory.moments(on: requestedDay)) ?? []
             guard !Task.isCancelled, requestedDay == day else { return }
             daySnapshot.load(moments, on: requestedDay)
-            if let displayFilter, displayChoices[displayFilter] == nil { self.displayFilter = nil }
-            resetScrubScale()
+            if let displayFilter, displayChoices[displayFilter] == nil {
+                self.displayFilter = nil
+                resetScrubScale()
+            } else {
+                rebuildScrubScale()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             connectedDisplays = TimeTurnerDisplayIdentity.connected

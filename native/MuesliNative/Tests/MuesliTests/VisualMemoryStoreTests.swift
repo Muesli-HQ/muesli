@@ -994,6 +994,39 @@ struct VisualMemoryStoreTests {
         #expect(VisualMemoryScrubViewport.maximumZoom(for: VisualMemoryScrubScale(dates: [])) == 1)
     }
 
+    @Test func scrollCursorAdvancesPastCapturesSharingATimestamp() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let duplicate = start.addingTimeInterval(10)
+        let scale = VisualMemoryScrubScale(dates: [start, start, duplicate, duplicate, start.addingTimeInterval(20)])
+        // Restarting each event from the playhead stalls on the shared timestamp.
+        var stalled = duplicate
+        for _ in 0..<10 {
+            stalled = VisualMemoryScrollCursor.advance(nil, playhead: stalled, deltaX: -10, trackWidth: 880, scale: scale)!.date
+        }
+        #expect(stalled == duplicate)
+        var cursor: VisualMemoryScrollCursor?
+        var playhead = duplicate
+        for _ in 0..<10 {
+            cursor = VisualMemoryScrollCursor.advance(cursor, playhead: playhead, deltaX: -10, trackWidth: 880, scale: scale)
+            playhead = cursor!.date
+        }
+        #expect(playhead > duplicate)
+        // A playhead moved by something else restarts from the playhead.
+        let restarted = VisualMemoryScrollCursor.advance(cursor, playhead: start, deltaX: 0, trackWidth: 880, scale: scale)
+        #expect(restarted?.date == start)
+    }
+
+    @Test func scrubViewportKeepsItsMomentsWhenCapturesArrive() {
+        let start = Date(timeIntervalSince1970: 0)
+        let old = VisualMemoryScrubScale(dates: (0...600).map { start.addingTimeInterval(Double($0)) })
+        let new = VisualMemoryScrubScale(dates: (0...1200).map { start.addingTimeInterval(Double($0)) })
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        let rebased = view.rebased(from: old, to: new)
+        #expect(abs(new.date(at: rebased.start)!.timeIntervalSince(old.date(at: view.start)!)) < 0.001)
+        #expect(abs(new.date(at: rebased.start + rebased.span)!.timeIntervalSince(old.date(at: view.start + view.span)!)) < 0.001)
+        #expect(VisualMemoryScrubViewport.whole.rebased(from: old, to: new) == .whole)
+    }
+
     @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
         let start = Date(timeIntervalSince1970: 1000)
         let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }
