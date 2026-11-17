@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "releases": [
+    {
+      "slot": "qwen35-postproc-v4",
+      "version": "v14",
+      "sequence": 14,
+      "runtime": "mlx-qwen3.5",
+      "repo": "Muesli-HQ/qwen35-0.8b-muesli-cleanup-v14-mlx-8bit",
+      "revision": "11ad4d97beedb3b25cbbcc357185b7cc07945376",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "size": 799973748,
+          "sha256": "1ee6bf6cd9bfe657c339bd49fa882309cd89e44ba9f5789a2b5aed8959b808c4"
+        },
+        {
+          "path": "chat_template.jinja",
+          "size": 7755,
+          "sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
+        },
+        {
+          "path": "config.json",
+          "size": 2733,
+          "sha256": "84c103783b0a7401ea32ee11318677b4186eda9dd9b1b0aeca8e1989d42063a2"
+        },
+        {
+          "path": "generation_config.json",
+          "size": 116,
+          "sha256": "e1b6129cc934dbc0a6e8f5fbc279e69cbc50d116a92ceb843db9caa68d40ffd0"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "size": 60784,
+          "sha256": "6d0e74ad17103021d9748ca2279ff13a5cae9a3b3e1f9e6422d18cb39dac3150"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 19989339,
+          "sha256": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 1253,
+          "sha256": "62c19988f1acd7a4444246d3efac4092dd5d1f23b492fcefceed74d9d2f5cd27"
+        }
+      ],
+      "notes": "Formats spoken lists, lead-ins and numbers more consistently."
+    },
+    {
+      "slot": "qwen35-2b-cleanup-v12",
+      "version": "v14",
+      "sequence": 14,
+      "runtime": "mlx-qwen3.5",
+      "repo": "Muesli-HQ/qwen35-2b-muesli-cleanup-v14-mlx-8bit",
+      "revision": "d627bb292c62c89a1e28bb25788e97f094c01064",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "size": 2000043057,
+          "sha256": "286394c25ce248eed049bc5f55d1bc2aa5f52496a09a1a037c159d78984e3a3f"
+        },
+        {
+          "path": "chat_template.jinja",
+          "size": 7755,
+          "sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
+        },
+        {
+          "path": "config.json",
+          "size": 2733,
+          "sha256": "cc0f503cbdbc753495dcdcc755a4b5f91fc1948020f5e902878658b1fb392aef"
+        },
+        {
+          "path": "generation_config.json",
+          "size": 116,
+          "sha256": "e1b6129cc934dbc0a6e8f5fbc279e69cbc50d116a92ceb843db9caa68d40ffd0"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "size": 60786,
+          "sha256": "54d94d008c07e39846c0b454f68055622bb635a0623b51bce86d724e18733aab"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 19989339,
+          "sha256": "a5cd9732badce41de57e6efce8302930ded1c1188c5f81feb2bd6c24c4a1941f"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 1253,
+          "sha256": "62c19988f1acd7a4444246d3efac4092dd5d1f23b492fcefceed74d9d2f5cd27"
+        }
+      ],
+      "notes": "Better list and number formatting, and more accurate use of screen context."
+    }
+  ]
+}

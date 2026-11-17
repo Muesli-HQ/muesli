@@ -14,7 +14,7 @@ struct HotkeyShortcutCaptureState {
 
     init(target: ShortcutAssignment, requiresCombination: Bool = false) {
         self.target = target
-        self.requiresCombination = requiresCombination
+        self.requiresCombination = requiresCombination || target == .feedbackCapture
     }
 
     private static let heldModifierFlags: NSEvent.ModifierFlags = [.command, .control, .option, .shift, .function]
@@ -104,7 +104,7 @@ final class HotkeyShortcutRecorder {
     private var release: (() -> Void)?
     private let addMonitor: (@escaping (NSEvent) -> NSEvent?) -> Any?
     private let removeMonitor: (Any) -> Void
-    private let keyWindow: () -> NSWindow?
+    private let keyWindow: @MainActor () -> NSWindow?
     private let timeout: Duration
 
     init(
@@ -112,7 +112,7 @@ final class HotkeyShortcutRecorder {
             NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged], handler: $0)
         },
         removeMonitor: @escaping (Any) -> Void = { NSEvent.removeMonitor($0) },
-        keyWindow: @escaping () -> NSWindow? = { NSApp.keyWindow },
+        keyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow },
         timeout: Duration = .seconds(30)
     ) {
         self.addMonitor = addMonitor
@@ -133,9 +133,10 @@ final class HotkeyShortcutRecorder {
         guard acquire() else { return Self.busyMessage }
         self.release = release
         self.target = target
-        self.requiresCombination = requiresCombination
+        let capture = HotkeyShortcutCaptureState(target: target, requiresCombination: requiresCombination)
+        self.requiresCombination = capture.requiresCombination
         window = keyWindow()
-        state = HotkeyShortcutCaptureState(target: target, requiresCombination: requiresCombination)
+        state = capture
         monitor = addMonitor { [weak self] event in
             guard let self else { return event }
             return self.handle(event, commit: commit) ? nil : event

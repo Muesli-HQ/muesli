@@ -40,9 +40,9 @@ public struct AIThinkingSlider: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text(title).font(.system(size: 13))
+                Text(title).font(theme.font(size: 13))
                 Spacer()
-                Text(valueLabel).font(.system(size: 12, weight: .medium)).foregroundStyle(theme.muted)
+                Text(valueLabel).font(theme.font(size: 12, weight: .medium)).foregroundStyle(theme.muted)
             }
             Slider(value: Binding(get: { drag.position ?? Double(selectedIndex ?? 0) }, set: { value in
                 guard selectedIndex != nil else { return }
@@ -60,10 +60,10 @@ public struct AIThinkingSlider: View {
                     Text(available.first?.title ?? "")
                     Spacer()
                     Text(available.last?.title ?? "")
-                }.font(.system(size: 10)).foregroundStyle(theme.muted).accessibilityHidden(true)
+                }.font(theme.font(size: 10)).foregroundStyle(theme.muted).accessibilityHidden(true)
             }
             if let reason = choices.first(where: { $0.id == selectedID })?.disabledReason {
-                Text(reason).font(.system(size: 11)).foregroundStyle(theme.muted)
+                Text(reason).font(theme.font(size: 11)).foregroundStyle(theme.muted)
             }
         }
         .onChange(of: choices) { _, _ in drag.cancel() }

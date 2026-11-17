@@ -39,6 +39,15 @@ public enum InsightsWordAnalyzer {
         )
     }
 
+    private static let englishFillers: Set<String> = ["actually", "basically", "even", "gonna", "hmm", "just", "kind", "like", "literally", "okay", "really", "right", "so", "sort", "still", "uh", "um", "well", "yeah"]
+    private static let englishContractions: Set<String> = ["i'm", "i've", "i'll", "i'd", "it's", "that's", "there's", "we're", "we've", "we'll", "you're", "you've", "they're", "don't", "doesn't", "didn't", "can't", "couldn't", "isn't", "wasn't", "aren't", "won't", "wouldn't", "shouldn't"]
+
+    package static var queryStopWords: [String:Set<String>] {
+        var result = Dictionary(uniqueKeysWithValues: stopWords.map { ($0.key.rawValue,$0.value) })
+        result["en"] = (result["en"] ?? []).subtracting(englishFillers).union(englishContractions)
+        return result
+    }
+
     static func accumulate(_ text: String, into counts: inout [String: Int]) {
         guard !text.isEmpty else { return }
         let recognizer = NLLanguageRecognizer()

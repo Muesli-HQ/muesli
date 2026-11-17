@@ -359,6 +359,37 @@ struct ICloudBridgeAppStateTests {
         state.iCloudBridgeRemoteDevicePlatform = " iPadOS "
         #expect(state.iCloudBridgeCompanionDeviceName == "iPad")
     }
+    @MainActor
+    @Test("origin filters require a companion or existing mobile history")
+    func originFilterVisibilityAndReset() {
+        let state = AppState()
+        #expect(!state.showsDeviceOriginFilter)
+        state.config.iCloudSyncEnabled = true
+        #expect(!state.showsDeviceOriginFilter)
+        state.iCloudBridgeRemoteDeviceName = "Other Mac"
+        state.iCloudBridgeRemoteDevicePlatform = "macOS"
+        #expect(!state.showsDeviceOriginFilter)
+        state.iCloudBridgeRemoteDeviceName = "Phone"
+        state.iCloudBridgeRemoteDevicePlatform = "iOS"
+        #expect(state.showsDeviceOriginFilter)
+        state.timelineOriginFilter = .fromIPhone
+        state.dictationOriginFilter = .thisMac
+        state.meetingOriginFilter = .fromIPhone
+        state.clearUnavailableDeviceOriginFilters()
+        #expect(state.meetingOriginFilter == .fromIPhone)
+        state.iCloudBridgeRemoteDeviceName = nil
+        state.hasMobileOriginHistory = true
+        #expect(state.showsDeviceOriginFilter)
+        state.clearUnavailableDeviceOriginFilters()
+        #expect(state.timelineOriginFilter == .fromIPhone)
+        state.hasMobileOriginHistory = false
+        #expect(!state.showsDeviceOriginFilter)
+        state.clearUnavailableDeviceOriginFilters()
+        #expect(state.timelineOriginFilter == .all)
+        #expect(state.dictationOriginFilter == .all)
+        #expect(state.meetingOriginFilter == .all)
+    }
+
 }
 
 @Suite("MuesliBridgeDeviceRefreshPolicy")

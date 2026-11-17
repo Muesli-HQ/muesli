@@ -348,7 +348,7 @@ struct MeetingChatRetrievalTests {
         _ = try insert(store, text: "First launch discussion.")
         _ = try insert(store, text: "Second launch discussion.")
         let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
-            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+            generator: CoverageToolProbe(tool: #"{"tool":"search_history","kind":"meeting"}"#))
         await coordinator.waitForIdle()
         await coordinator.createChat(scope: .init())
         await coordinator.send(question: "Review context", config: AppConfig())
@@ -364,7 +364,7 @@ struct MeetingChatRetrievalTests {
         _ = try insert(store, text: "Sunflower launch discussion.")
         _ = try insert(store, text: "Unrelated budget review.")
         let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
-            generator: CoverageToolProbe(tool: #"{"tool":"search_meeting_sources","query":"sunflower"}"#))
+            generator: CoverageToolProbe(tool: #"{"tool":"search_history","kind":"meeting","query":"sunflower"}"#))
         await coordinator.waitForIdle()
         await coordinator.createChat(scope: .init())
         await coordinator.send(question: "Sunflower", config: AppConfig())
@@ -380,7 +380,7 @@ struct MeetingChatRetrievalTests {
         let store = try database()
         _ = try insert(store, text: (0..<600).map { "[00:00:01] You: Item \($0)." }.joined(separator: "\n"))
         let coordinator = MeetingChatCoordinator(databaseURL: store.resolvedDatabaseURL,
-            generator: CoverageToolProbe(tool: #"{"tool":"browse_meeting_sources"}"#))
+            generator: CoverageToolProbe(tool: #"{"tool":"search_history","kind":"meeting"}"#))
         await coordinator.waitForIdle()
         await coordinator.createChat(scope: .init())
         await coordinator.send(question: "Review context", config: AppConfig())

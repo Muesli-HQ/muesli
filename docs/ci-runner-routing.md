@@ -129,3 +129,40 @@ Workflow expressions are policy, not a provider-side billing boundary against
 edited YAML. Review workflow changes before authorizing contributor runs.
 Organization-managed security checks and external reviews are configured
 separately and are not accelerated by the PR label.
+
+### Private Mac test runner
+
+A maintainer can add `self-host` to their own same-repository PR to run the
+core, dictation-transcription and meetings shards, release compilation, AI Elements
+tests/icon validation, and packaged CLI smoke checks on the private M5 Pro.
+One runner accepts one job at a time. Checks use persistent, runner-specific
+test-debug, CLI-debug, release, AI Elements and LocalVQE caches. Each invocation still builds
+and executes its checks. Linux checks and external reviews use ordinary routing. Pushes and merges use GitHub. Blacksmith takes precedence if both
+labels are present. Remove self-host to start replacement hosted CI.
+
+Deployment: install the PR tests workflow in Muesli-HQ/muesli-private-ci on
+main. Create a public-repo environment named m5-dispatch restricted to the
+main branch; store M5_DISPATCH_TOKEN there (a fine-grained token restricted
+to the private repository, Actions read/write). Never put this credential
+in public repository secrets or a PR job. Start the runner as githubci via
+SSH with `cd ~/actions-runner && ./run.sh` for the desired work period.
+Only after configuration, enable the repository variable M5_CI_ENABLED=true.
+An offline runner can queue work; removal of the label replaces the public
+check, and already-running private tests can be cancelled in private Actions.
+The gate requires success for the current attempt and merge SHA. Use the
+ordinary hosted run if a self-hosted test fails; investigate the discrepancy.
+
+The all-macOS protocol uses the private `pr-macos.yml` workflow and a
+`m5-macos/<run>/<attempt>/<merge>` status. Deploy that private workflow before
+merging public routing changes. Earlier PR revisions continue to use
+`pr-tests.yml` and their original status, so a tests-only result cannot satisfy
+the expanded macOS gate. Draft PRs skip release compilation in both routes.
+Cache roots live under the runner account's Library/Caches directory and remain
+on the Mac. Architecture/toolchain changes select a new root. LocalVQE uses a
+build-script fingerprint and validates the complete runtime before reuse.
+
+The private all-macOS job has a 75-minute execution limit. Its dispatcher
+allows 90 minutes for queueing and completion, and the public check polls
+for up to 100 minutes. These are failure bounds, not intentional delays.
+LocalVQE retains the current fingerprint plus two older entries under an
+exclusive kernel cache lock that releases when its process exits.

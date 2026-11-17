@@ -2,6 +2,7 @@ import AppKit
 import EventKit
 import Foundation
 import MuesliCore
+import ObjectiveC.runtime
 
 /// A local attendee snapshot sourced exclusively from EventKit. Direct Google
 /// API events retain the default empty attendee list.
@@ -396,17 +397,48 @@ final class CalendarMonitor {
             return url
         }
 
-        // 2. Search location field
+        // 2. Calendar's separate video-call field, when available.
+        if let url = meetingURLFromCalendarVideoCall(event) {
+            return url
+        }
+
+        // 3. Search location field
         if let location = event.location, let url = findMeetingURL(in: location) {
             return url
         }
 
-        // 3. Search notes/description
+        // 4. Search notes/description
         if let notes = event.notes, let url = findMeetingURL(in: notes) {
             return url
         }
 
         return nil
+    }
+
+    /// EventKit does not publicly expose an event's separate Calendar video-call
+    /// field. This undocumented accessor is best effort: verify its signature
+    /// and return nil when it disappears or returns an unsupported value.
+    static func meetingURLFromCalendarVideoCall(_ object: NSObject) -> URL? {
+        if let url = calendarObjectValue(object, selectorName: "conferenceURL") as? URL, isMeetingURL(url) {
+            return url
+        }
+        guard let conference = calendarObjectValue(object, selectorName: "virtualConference") as? NSObject,
+              let methods = calendarObjectValue(conference, selectorName: "joinMethods") as? [NSObject] else { return nil }
+        for method in methods {
+            if let url = calendarObjectValue(method, selectorName: "URL") as? URL, isMeetingURL(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func calendarObjectValue(_ object: NSObject, selectorName: String) -> AnyObject? {
+        let selector = NSSelectorFromString(selectorName)
+        guard let cls = object_getClass(object),
+              let method = class_getInstanceMethod(cls, selector),
+              method_getNumberOfArguments(method) == 2,
+              let signature = method_getTypeEncoding(method), signature.pointee == 64 else { return nil }
+        return object.perform(selector)?.takeUnretainedValue()
     }
 
     private static func isMeetingURL(_ url: URL) -> Bool {

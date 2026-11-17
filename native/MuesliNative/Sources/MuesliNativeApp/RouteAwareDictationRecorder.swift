@@ -118,6 +118,9 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
     func start() throws -> UUID {
         try lifecycleQueue.sync {
             let recorder = selectRecorder(preferredInputDeviceID: currentPreferredInputDeviceID())
+            wireCallbacks(for: recorder,
+                kind: currentPreferredInputDeviceID() == nil ? .systemDefault : .appScoped,
+                snapshot: true)
             return try recorder.start()
         }
     }
@@ -151,18 +154,22 @@ final class RouteAwareDictationRecorder: DictationAudioRecording {
         wireCallbacks(for: appScopedRecorder, kind: .appScoped)
     }
 
-    private func wireCallbacks(for recorder: DictationAudioRecording, kind: ActiveRecorderKind) {
+    private func wireCallbacks(for recorder: DictationAudioRecording, kind: ActiveRecorderKind, snapshot: Bool = false) {
+        let firstBuffer = onFirstCapturedAudioBuffer
+        let firstSpeech = onFirstSpeechDetected
+        let noAudio = onNoAudioTimeout
+        let failed = onRecordingFailed
         recorder.onFirstCapturedAudioBuffer = { [weak self] date in
-            self?.forwardIfActive(kind) { $0.onFirstCapturedAudioBuffer?(date) }
+            self?.forwardIfActive(kind) { (snapshot ? firstBuffer : $0.onFirstCapturedAudioBuffer)?(date) }
         }
         recorder.onFirstSpeechDetected = { [weak self] date in
-            self?.forwardIfActive(kind) { $0.onFirstSpeechDetected?(date) }
+            self?.forwardIfActive(kind) { (snapshot ? firstSpeech : $0.onFirstSpeechDetected)?(date) }
         }
         recorder.onNoAudioTimeout = { [weak self] date in
-            self?.forwardIfActive(kind) { $0.onNoAudioTimeout?(date) }
+            self?.forwardIfActive(kind) { (snapshot ? noAudio : $0.onNoAudioTimeout)?(date) }
         }
         recorder.onRecordingFailed = { [weak self] error, id in
-            self?.forwardIfActive(kind) { $0.onRecordingFailed?(error, id) }
+            self?.forwardIfActive(kind) { (snapshot ? failed : $0.onRecordingFailed)?(error, id) }
         }
         recorder.onLatencyEvent = { [weak self] event, date in
             self?.forwardIfActive(kind) { $0.onLatencyEvent?(event, date) }

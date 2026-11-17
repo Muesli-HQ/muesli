@@ -4,7 +4,7 @@ import Foundation
 @available(macOS 13.0, *)
 struct GetLastMeetingIntent: AppIntent {
     static var title: LocalizedStringResource = "Get Last Meeting Notes"
-    static var description = IntentDescription("Returns the formatted notes from your most recent Muesli meeting.")
+    static var description = IntentDescription("Returns the formatted notes from your most recent muesli meeting.")
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let store = try MuesliShortcutsStore.open()

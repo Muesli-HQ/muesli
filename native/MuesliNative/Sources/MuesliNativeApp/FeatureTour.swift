@@ -35,6 +35,14 @@ struct MarketingVersion: Comparable, Equatable {
 }
 
 enum FeatureTourTarget: String, Hashable {
+    case chatSidebar
+    case timeTurnerSidebar
+    case vidshotsSidebar
+    case searchSidebar
+    case liveDictation
+    case cotypistSettings
+    case appFormatting
+    case cleanupModels
     case recordingIndicatorStyle
     case computerUseShortcut
     case meetingSummaryProvider
@@ -53,6 +61,7 @@ enum FeatureTourTarget: String, Hashable {
     case insightsEntry
     case dictionarySuggestions
     case meetingsSidebar
+    case granolaImport
     case liveCaptionsSetting
     case cloudCleanupSetting
     case streamingModels
@@ -60,8 +69,20 @@ enum FeatureTourTarget: String, Hashable {
 
     var navigationRoute: FeatureTourNavigationRoute {
         switch self {
-        case .quillSettings, .dictationProviderSetting, .cloudCleanupSetting:
+        case .quillSettings, .cotypistSettings:
+            return .settings(.experimental)
+        case .dictationProviderSetting, .cloudCleanupSetting, .liveDictation, .appFormatting:
             return .settings(.dictation)
+        case .chatSidebar:
+            return .tab(.meetingChat)
+        case .timeTurnerSidebar:
+            return .tab(.timeTurner)
+        case .vidshotsSidebar:
+            return .tab(.vidshots)
+        case .searchSidebar:
+            return .tab(.timeline)
+        case .cleanupModels:
+            return .models(.postProcessing)
         case .recordingIndicatorStyle:
             return .settings(.appearance)
         case .computerUseShortcut, .dictationRecordingMode:
@@ -76,7 +97,7 @@ enum FeatureTourTarget: String, Hashable {
             return .timelineApplications
         case .dictionarySuggestions:
             return .tab(.dictionary)
-        case .meetingsSidebar:
+        case .meetingsSidebar, .granolaImport:
             return .meetingsBrowser
         case .meetingPeople:
             return .meetingPeople
@@ -103,12 +124,19 @@ enum FeatureTourNavigationRoute: Equatable {
     case meetingRetranscription
 }
 
+enum FeatureTourIcon: Equatable {
+    case symbol(String)
+    case quill
+    case timeTurner
+    case vidshot
+}
+
 struct FeatureTourStep: Identifiable, Equatable {
     let id: String
     let eyebrow: String
     let title: String
     let message: String
-    let systemImage: String
+    let icon: FeatureTourIcon
     let target: FeatureTourTarget?
 }
 
@@ -136,54 +164,102 @@ extension AppState {
 
 enum FeatureTourCatalog {
     static var latest: FeatureTour {
-        FeatureTour(version: "0.8.5", steps: [
+        FeatureTour(version: "0.8.6", steps: [
             FeatureTourStep(
-                id: "notch",
-                eyebrow: "A NEW LOOK",
-                title: "Meet Muesli at the notch",
-                message: "Choose Notch under Settings → Appearance → Recording indicator. Follow recording and processing at the top of your screen. Displays without a notch use a temporary Classic indicator.",
-                systemImage: "menubar.rectangle",
-                target: .recordingIndicatorStyle
+                id: "granola-import",
+                eyebrow: "GRANOLA IMPORT",
+                title: "Import your Granola conversations",
+                message: "Bring meeting notes, summaries and transcripts from a Granola ZIP or CSV export into muesli. Open Meetings → Import → Granola… to preview your meetings before importing.",
+                icon: .symbol("square.and.arrow.down"),
+                target: .granolaImport
             ),
             FeatureTourStep(
-                id: "voice-settings",
-                eyebrow: "COMPUTER USE COMMAND",
-                title: "Change settings with your voice",
-                message: "Enable Computer Use Command in Shortcuts, then hold your shortcut and ask Muesli to change a setting. Use experimental local Gemma or your connected ChatGPT account for hosted processing.",
-                systemImage: "slider.horizontal.3",
-                target: .computerUseShortcut
+                id: "vidshots",
+                eyebrow: "VIDSHOTS",
+                title: "Show it with a Vidshot",
+                message: "Record a window or screen region with spoken narration. Revisit the recording and transcript in Vidshots. Enable Vidshot in Settings → Experimental to get started.",
+                icon: .vidshot,
+                target: .vidshotsSidebar
             ),
             FeatureTourStep(
-                id: "claude-summaries",
-                eyebrow: "MEETING NOTES",
-                title: "Claude, now for meeting notes",
-                message: "Open the highlighted Summary backend menu and choose Anthropic or, when installed, Claude Code. Use a signed-in Claude Code installation or your Anthropic API key. Meeting content is sent to Claude for summaries.",
-                systemImage: "text.bubble",
-                target: .meetingSummaryProvider
+                id: "ask-meetings",
+                eyebrow: "CHAT",
+                title: "Ask your meetings",
+                message: "Chat with saved meetings and referenced documents. Use on-device Gemma 4 or your preferred AI provider, attach meetings with @, and follow meeting citations to their source.",
+                icon: .symbol("bubble.left.and.bubble.right"),
+                target: .chatSidebar
             ),
             FeatureTourStep(
-                id: "retranscribe",
-                eyebrow: "SAVED RECORDINGS",
-                title: "Re-transcribe an existing meeting",
-                message: "Open a meeting with saved audio, then choose Re-transcribe above the transcript (also available in More actions). Pick a downloaded meeting model to give the recording another pass without recording it again.",
-                systemImage: "waveform",
-                target: .meetingRetranscription
+                id: "time-turner",
+                eyebrow: "EXPERIMENTAL",
+                title: "Revisit your day with Time Turner",
+                message: "Browse and search captured screen text and screenshots in Time Turner. Capture is off by default; enable it in Settings → Experimental. Screen history stays on this Mac. Generating a recap sends sampled text to your selected Meetings provider.",
+                icon: .timeTurner,
+                target: .timeTurnerSidebar
             ),
             FeatureTourStep(
-                id: "toggle-dictation",
-                eyebrow: "PRESS TO TOGGLE",
-                title: "No need to hold all the time",
-                message: "In Shortcuts → Dictation, set Recording mode to Press to toggle and choose a modifier + key shortcut. Press once to start dictation, then press again to stop.",
-                systemImage: "keyboard",
-                target: .dictationRecordingMode
+                id: "live-dictation",
+                eyebrow: "HANDS-FREE DICTATION",
+                title: "Words as you speak",
+                message: "With a supported local model, turn on “Watch text appear during hands-free mode” in Settings → Dictations. See words appear as you speak; enabled cleanup runs when you stop.",
+                icon: .symbol("waveform"),
+                target: .liveDictation
             ),
             FeatureTourStep(
-                id: "bodhan-script",
-                eyebrow: "BODHAN FLEX",
-                title: "Your language. Your script.",
-                message: "Choose Native, Mixed, or Romanized output in Models → Dictation → Bodhan Flex. Write Indic speech in Latin letters with Romanized output, using the same downloaded model.",
-                systemImage: "character.book.closed",
-                target: .bodhanFlexCard
+                id: "quill-assistant",
+                eyebrow: "QUILL",
+                title: "Your spoken assistant",
+                message: "Ask a question, follow up, or ask Quill to rewrite selected text. Answers appear in the notch; explicit editing requests can update your text. Configure Quill in Settings → Experimental. Hosted models receive the context needed for your request.",
+                icon: .quill,
+                target: .quillSettings
+            ),
+            FeatureTourStep(
+                id: "cotypist",
+                eyebrow: "EXPERIMENTAL",
+                title: "A little help with your next words",
+                message: "Cotypist suggests text as you type, using an on-device model. Set it up in Settings → Experimental, then use Tab to accept a suggestion or Option + Right Arrow to accept one word.",
+                icon: .symbol("text.cursor"),
+                target: .cotypistSettings
+            ),
+            FeatureTourStep(
+                id: "app-formatting",
+                eyebrow: "APP FORMATTING",
+                title: "Dictation that fits each app",
+                message: "Choose a writing style for each app in Settings → Dictations → App Formatting. Customize capitalization and the final period, or reuse a saved template. Your rules apply when you dictate into that app.",
+                icon: .symbol("textformat"),
+                target: .appFormatting
+            ),
+            FeatureTourStep(
+                id: "meeting-screen-recording",
+                eyebrow: "MEETINGS",
+                title: "Keep the screen with your meeting",
+                message: "During a meeting, open the recording controls and choose Record Screen… Select a window or display and confirm. The video is saved locally with the meeting; recording starts only when you choose it.",
+                icon: .symbol("record.circle"),
+                target: .meetingsSidebar
+            ),
+            FeatureTourStep(
+                id: "global-search",
+                eyebrow: "SEARCH",
+                title: "One search across muesli",
+                message: "Use Search in the sidebar or press ⌘F to find saved dictations, meetings, chats, writing history and Time Turner screen text. Filter by type, date or app, then open a result at its source.",
+                icon: .symbol("magnifyingglass"),
+                target: .searchSidebar
+            ),
+            FeatureTourStep(
+                id: "asr-models",
+                eyebrow: "LOCAL TRANSCRIPTION",
+                title: "More models to try",
+                message: "Explore Parakeet Redux and Phonon-2.5 for multilingual transcription, or try MedASR for English medical dictation. Download and compare them in Models → Dictation. MedASR requires acceptance of Google’s model terms.",
+                icon: .symbol("cpu"),
+                target: .modelLibrary
+            ),
+            FeatureTourStep(
+                id: "cleanup-updates",
+                eyebrow: "CLEANUP MODELS",
+                title: "Better cleanup, easier updates",
+                message: "Try the updated muesli Cleanup Lite and Pro Cleanup — Qwen 3.5 models. In Models → Cleanup, an Update button appears when an installed model has a newer release. Choose when to download it; your current model stays available until the update finishes.",
+                icon: .symbol("sparkles"),
+                target: .cleanupModels
             )
         ])
     }
@@ -266,5 +342,43 @@ final class FeatureTourStore {
 
     func markOffered(_ tour: FeatureTour) {
         defaults.set(tour.version, forKey: Key.lastPresentedVersion)
+    }
+}
+
+/// A scroll belongs to one tour target and its destination pane, never an old onAppear.
+struct SettingsTourScrollRequest: Equatable {
+    let target: FeatureTourTarget?
+    let pane: SettingsPane
+
+    var scrollTarget: FeatureTourTarget? {
+        guard let target, case .settings(let destination) = target.navigationRoute,
+              destination == pane else { return nil }
+        return target
+    }
+}
+
+
+/// Category changes cancel old model-card scrolls, including rapid Next/Back.
+struct ModelsTourScrollRequest: Equatable {
+    let target: FeatureTourTarget?
+    let category: ModelsCategory
+
+    var scrollTarget: FeatureTourTarget? {
+        guard let target, target.modelsCategory == category else { return nil }
+        return target
+    }
+}
+
+
+extension DashboardTab {
+    var sidebarFeatureTourTarget: FeatureTourTarget? {
+        switch self {
+        case .timeline: .timelineSidebar
+        case .meetings: .meetingsSidebar
+        case .meetingChat: .chatSidebar
+        case .vidshots: .vidshotsSidebar
+        case .timeTurner: .timeTurnerSidebar
+        default: nil
+        }
     }
 }

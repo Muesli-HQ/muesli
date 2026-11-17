@@ -750,7 +750,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
 
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
-        while clock.now < deadline {
+        while clock.now < deadline, !Task.isCancelled {
             if checkSystemAudioPermission() {
                 _ = recorder.stop()
                 return true
@@ -759,7 +759,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing, SystemAudioDiagnostic
         }
 
         _ = recorder.stop()
-        return checkSystemAudioPermission()
+        return !Task.isCancelled && checkSystemAudioPermission()
     }
 
     /// Open System Settings to the Screen & System Audio pane where the user
