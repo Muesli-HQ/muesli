@@ -16,9 +16,11 @@ enum ReleaseHotkeyYieldPolicy {
         return bundleIdentifier.hasPrefix("com.muesli.")
     }
 
-    /// Shortcuts the release app listens for with these saved settings.
+    /// Shortcuts the release app listens for with these saved settings. Before
+    /// onboarding finishes, release has not started its shortcut monitors.
     static func handledHotkeys(in config: AppConfig) -> [HotkeyConfig] {
-        [
+        guard config.hasCompletedOnboarding else { return [] }
+        return [
             (config.enablePushToTalk, config.dictationHotkey),
             (config.enableQuilMode, config.quilHotkey),
             (config.enableComputerUseHotkey, config.computerUseHotkey),
@@ -29,10 +31,13 @@ enum ReleaseHotkeyYieldPolicy {
 
     /// True when one physical press triggers both shortcuts. A bare modifier and a
     /// chord containing it do not clash: the bare-key monitor cancels its press as
-    /// soon as the chord's other key goes down.
+    /// soon as the chord's other key goes down. Chords fire only on an exact
+    /// modifier match, so ⌥R and ⌥⇧R never fire together.
     static func samePressTriggersBoth(_ hotkey: HotkeyConfig, _ other: HotkeyConfig) -> Bool {
-        hotkey.isCombination == other.isCombination
-            && ShortcutHotkeyPolicy.hotkeysConflict(hotkey, other)
+        guard hotkey.isCombination == other.isCombination else { return false }
+        guard hotkey.isCombination else { return ShortcutHotkeyPolicy.hotkeysConflict(hotkey, other) }
+        return hotkey.combinationKeyCode == other.combinationKeyCode
+            && hotkey.resolvedCombinationModifiers == other.resolvedCombinationModifiers
     }
 
     static func collisionNotice(shortcut: String, appName: String) -> (title: String, subtitle: String) {
@@ -51,9 +56,36 @@ enum ReleaseHotkeyYieldPolicy {
     }
 }
 
-/// Checks the running release app only when a shortcut press begins, so there is
-/// no observer to keep alive. Reads the release `config.json` read-only and caches
-/// it until the file changes.
+/// Tracks whether the release app is running from workspace launch and quit
+/// notifications, so a shortcut press reads a stored flag instead of asking
+/// the system.
+final class ReleaseAppPresence {
+    private(set) var isRunning: Bool
+    private let center: NotificationCenter
+    private var observers: [NSObjectProtocol] = []
+
+    init(center: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+        let releaseID = ReleaseHotkeyYieldPolicy.releaseBundleIdentifier
+        self.center = center
+        isRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: releaseID).isEmpty
+        for (name, running) in [
+            (NSWorkspace.didLaunchApplicationNotification, true),
+            (NSWorkspace.didTerminateApplicationNotification, false),
+        ] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == releaseID else { return }
+                self?.isRunning = running
+            })
+        }
+    }
+
+    deinit { observers.forEach(center.removeObserver) }
+}
+
+/// Reads the release `config.json` read-only and caches its shortcuts until the
+/// file changes. A shortcut press costs one stored flag and one file-date check;
+/// the file itself is read only after release saves new settings.
 final class ReleaseAppHotkeyGuard {
     private let releaseConfigURL: URL
     private let releaseIsRunning: () -> Bool
@@ -62,11 +94,7 @@ final class ReleaseAppHotkeyGuard {
     init(
         releaseConfigURL: URL = MuesliPaths.defaultSupportDirectoryURL(appName: "Muesli")
             .appendingPathComponent("config.json"),
-        releaseIsRunning: @escaping () -> Bool = {
-            !NSRunningApplication.runningApplications(
-                withBundleIdentifier: ReleaseHotkeyYieldPolicy.releaseBundleIdentifier
-            ).isEmpty
-        }
+        releaseIsRunning: @escaping () -> Bool
     ) {
         self.releaseConfigURL = releaseConfigURL
         self.releaseIsRunning = releaseIsRunning
@@ -74,7 +102,9 @@ final class ReleaseAppHotkeyGuard {
 
     /// Nil for the release build, so its key handling is unchanged.
     static func forCurrentBuild(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> ReleaseAppHotkeyGuard? {
-        ReleaseHotkeyYieldPolicy.appliesTo(bundleIdentifier: bundleIdentifier) ? ReleaseAppHotkeyGuard() : nil
+        guard ReleaseHotkeyYieldPolicy.appliesTo(bundleIdentifier: bundleIdentifier) else { return nil }
+        let presence = ReleaseAppPresence()
+        return ReleaseAppHotkeyGuard(releaseIsRunning: { presence.isRunning })
     }
 
     func shouldYield(_ hotkey: HotkeyConfig) -> Bool {
@@ -85,9 +115,18 @@ final class ReleaseAppHotkeyGuard {
     private func releaseHotkeys() -> [HotkeyConfig] {
         let modified = (try? FileManager.default.attributesOfItem(atPath: releaseConfigURL.path))?[.modificationDate] as? Date
         if let cache, cache.modified == modified { return cache.hotkeys }
-        // Same fallback as ConfigStore: a missing or unreadable file means defaults.
-        let config = (try? Data(contentsOf: releaseConfigURL))
-            .flatMap { try? JSONDecoder().decode(AppConfig.self, from: $0) } ?? AppConfig()
+        let config: AppConfig
+        if modified == nil {
+            // No file: the release app has never saved settings, so it uses defaults.
+            config = AppConfig()
+        } else if let data = try? Data(contentsOf: releaseConfigURL),
+                  let decoded = try? JSONDecoder().decode(AppConfig.self, from: data) {
+            config = decoded
+        } else {
+            // A read that failed mid-save is retried on the next press; until then
+            // keep the last settings that were read successfully.
+            return cache?.hotkeys ?? []
+        }
         let hotkeys = ReleaseHotkeyYieldPolicy.handledHotkeys(in: config)
         cache = (modified, hotkeys)
         return hotkeys

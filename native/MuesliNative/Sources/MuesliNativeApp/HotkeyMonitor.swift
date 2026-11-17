@@ -475,7 +475,10 @@ final class HotkeyMonitor {
         flags: NSEvent.ModifierFlags,
         isRepeat: Bool
     ) -> Bool {
-        if type == .keyDown, !isRepeat, keyCode == combinationKeyCode, yieldsNewPress() {
+        if type == .keyDown, !isRepeat, keyCode == combinationKeyCode,
+           let combinationModifiers,
+           HotkeyConfig.supportedCombinationModifiers(from: flags) == combinationModifiers,
+           yieldsNewPress() {
             return false
         }
         if feedbackReleaseToggle {
@@ -777,8 +780,11 @@ final class HotkeyMonitor {
             let isDown = isModifierDown(keyCode: targetKeyCode, flags: flags)
             if isDown {
                 if !targetKeyDown {
-                    // Key-up then finds targetKeyDown false and stays a no-op.
-                    if yieldsNewPress() { return }
+                    let hasOtherModifier = [NSEvent.ModifierFlags.command, .control, .option, .shift, .function]
+                        .contains { flags.contains($0) && !isModifierDown(keyCode: targetKeyCode, flags: $0) }
+                    // Key-up then finds targetKeyDown false and stays a no-op. A press
+                    // with another modifier held starts nothing in either app.
+                    if !hasOtherModifier, yieldsNewPress() { return }
                     let owesCancellation = armCancelWorkItem != nil
                     armCancelWorkItem?.cancel()
                     armCancelWorkItem = nil
@@ -795,8 +801,6 @@ final class HotkeyMonitor {
                         return
                     }
 
-                    let hasOtherModifier = [NSEvent.ModifierFlags.command, .control, .option, .shift, .function]
-                        .contains { flags.contains($0) && !isModifierDown(keyCode: targetKeyCode, flags: $0) }
                     if hasOtherModifier {
                         otherKeyPressed = true
                         armed = false

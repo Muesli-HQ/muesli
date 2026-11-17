@@ -1275,7 +1275,11 @@ public final class MuesliController: NSObject {
         if let releaseAppHotkeyGuard = ReleaseAppHotkeyGuard.forCurrentBuild() {
             [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
                 .forEach { monitor in
+                    let isMeetingMonitor = monitor === meetingRecordingHotkeyMonitor
                     monitor.shouldYieldNewPress = { [weak self] hotkey in
+                        // A meeting started from the menu bar is not latched in the
+                        // monitor, so its stop press looks new. Never yield that one.
+                        if isMeetingMonitor, self?.isMeetingRecording() == true { return false }
                         guard releaseAppHotkeyGuard.shouldYield(hotkey) else { return false }
                         DispatchQueue.main.async { self?.showReleaseShortcutCollisionNotice(for: hotkey) }
                         return true
@@ -15721,7 +15725,8 @@ public final class MuesliController: NSObject {
             actionLabel: "Change Shortcut",
             icon: NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
             dismissAfter: 20,
-            onStartRecording: { [weak self] in self?.openHistoryWindow(tab: .shortcuts) }
+            onStartRecording: { [weak self] in self?.openHistoryWindow(tab: .shortcuts) },
+            onClose: { [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() }
         )
     }
 

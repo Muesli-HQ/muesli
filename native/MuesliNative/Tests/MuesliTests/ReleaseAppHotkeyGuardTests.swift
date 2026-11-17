@@ -24,6 +24,7 @@ struct ReleaseAppHotkeyGuardTests {
     @Test("release shortcuts count only when their feature is enabled")
     func handledHotkeysFollowEnablement() {
         var config = AppConfig()
+        config.hasCompletedOnboarding = true
         config.enablePushToTalk = true
         config.enableQuilMode = false
         config.enableComputerUseHotkey = false
@@ -33,6 +34,9 @@ struct ReleaseAppHotkeyGuardTests {
 
         config.enablePushToTalk = false
         #expect(ReleaseHotkeyYieldPolicy.handledHotkeys(in: config) == [config.meetingRecordingHotkey])
+
+        config.hasCompletedOnboarding = false
+        #expect(ReleaseHotkeyYieldPolicy.handledHotkeys(in: config).isEmpty, "Release starts no shortcut monitors during onboarding")
     }
 
     @Test("yields only when one press would trigger both apps")
@@ -41,7 +45,8 @@ struct ReleaseAppHotkeyGuardTests {
         #expect(policy.samePressTriggersBoth(Self.rightOption, Self.rightOption))
         #expect(!policy.samePressTriggersBoth(Self.rightOption, Self.leftOption))
         #expect(policy.samePressTriggersBoth(Self.optionR, Self.optionR))
-        #expect(policy.samePressTriggersBoth(Self.optionR, .combination(modifiers: [.option, .shift], keyCode: 15)))
+        #expect(!policy.samePressTriggersBoth(Self.optionR, .combination(modifiers: [.option, .shift], keyCode: 15)), "Chords need an exact modifier match")
+        #expect(!policy.samePressTriggersBoth(Self.optionR, .combination(modifiers: .option, keyCode: 17)))
         #expect(!policy.samePressTriggersBoth(Self.rightOption, Self.optionR), "A bare key cancels once the chord's letter goes down")
 
         #expect(policy.shouldYield(Self.rightOption, releaseIsRunning: true, releaseHotkeys: [Self.rightOption]))
@@ -67,12 +72,12 @@ struct ReleaseAppHotkeyGuardTests {
         var releaseRunning = false
         let guardUnderTest = ReleaseAppHotkeyGuard(releaseConfigURL: url, releaseIsRunning: { releaseRunning })
 
-        // Missing file: the release app uses defaults, which include Right Option dictation.
-        #expect(!guardUnderTest.shouldYield(AppConfig().dictationHotkey))
+        // Missing file: release has not finished onboarding, so it handles no shortcut.
         releaseRunning = true
-        #expect(guardUnderTest.shouldYield(AppConfig().dictationHotkey))
+        #expect(!guardUnderTest.shouldYield(AppConfig().dictationHotkey))
 
         var config = AppConfig()
+        config.hasCompletedOnboarding = true
         config.dictationHotkey = Self.leftOption
         try JSONEncoder().encode(config).write(to: url)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: url.path)
@@ -83,6 +88,65 @@ struct ReleaseAppHotkeyGuardTests {
         try JSONEncoder().encode(config).write(to: url)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: url.path)
         #expect(guardUnderTest.shouldYield(Self.rightOption), "An edited release config is re-read")
+        releaseRunning = false
+        #expect(!guardUnderTest.shouldYield(Self.rightOption))
+        releaseRunning = true
+
+        // A read that fails mid-save keeps the last good settings and is retried.
+        try Data("{".utf8).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: url.path)
+        #expect(guardUnderTest.shouldYield(Self.rightOption))
+        #expect(!guardUnderTest.shouldYield(Self.leftOption))
+        config.dictationHotkey = Self.leftOption
+        try JSONEncoder().encode(config).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: url.path)
+        #expect(guardUnderTest.shouldYield(Self.leftOption), "The same file date is read again after a failed read")
+    }
+
+    @Test("release presence follows launch and quit notifications")
+    func presenceFollowsWorkspaceNotifications() {
+        let center = NotificationCenter()
+        let presence = ReleaseAppPresence(center: center)
+        let release = NSRunningApplication.runningApplications(withBundleIdentifier: "com.muesli.app").first
+        // Other apps never change the flag.
+        let other = NSRunningApplication.current
+        let before = presence.isRunning
+        center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                    userInfo: [NSWorkspace.applicationUserInfoKey: other])
+        #expect(presence.isRunning == before)
+        // Without a running release app there is no NSRunningApplication to post.
+        guard let release else { return }
+        center.post(name: NSWorkspace.didTerminateApplicationNotification, object: nil,
+                    userInfo: [NSWorkspace.applicationUserInfoKey: release])
+        #expect(!presence.isRunning)
+        center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                    userInfo: [NSWorkspace.applicationUserInfoKey: release])
+        #expect(presence.isRunning)
+    }
+
+    @Test("presses that start nothing in either app never ask to yield")
+    func unmatchedPressesDoNotAskToYield() {
+        var asked = 0
+        let chord = HotkeyMonitor(scheduleAfter: { _, _ in })
+        chord.combinationToggleRequiresHold = false
+        chord.configure(Self.optionR)
+        chord.shouldYieldNewPress = { _ in asked += 1; return true }
+        chord.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [])
+        chord.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [])
+        chord.handleCombinationForTests(type: .keyDown, keyCode: 15, flags: [.option, .shift])
+        chord.handleCombinationForTests(type: .keyUp, keyCode: 15, flags: [.option, .shift])
+        #expect(asked == 0, "Typing r, or ⌥⇧R, is not the ⌥R shortcut")
+
+        let bare = HotkeyMonitor(scheduleAfter: { _, _ in })
+        bare.configure(keyCode: 61)
+        bare.shouldYieldNewPress = { _ in asked += 1; return true }
+        bare.handleFlagsChanged(keyCode: 61, flags: [.option, .command])
+        bare.handleFlagsChanged(keyCode: 61, flags: .command)
+        #expect(asked == 0, "Right Option with ⌘ held starts nothing")
+
+        bare.handleFlagsChanged(keyCode: 61, flags: [])
+        bare.handleFlagsChanged(keyCode: 61, flags: .option)
+        #expect(asked == 1)
     }
 
     @Test("a yielded modifier press starts nothing in the dev build")
