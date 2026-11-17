@@ -15715,17 +15715,27 @@ public final class MuesliController: NSObject {
     private func showReleaseShortcutCollisionNotice(for hotkey: HotkeyConfig) {
         guard !meetingNotification.isVisible,
               releaseShortcutCollisionsShown.insert(hotkey.displayLabel).inserted else { return }
+        let duringSetup = !config.hasCompletedOnboarding
         let notice = ReleaseHotkeyYieldPolicy.collisionNotice(
             shortcut: hotkey.displayLabel,
-            appName: AppIdentity.displayName
+            duringSetup: duringSetup
         )
         meetingNotification.show(
             title: notice.title,
             subtitle: notice.subtitle,
-            actionLabel: "Change Shortcut",
+            actionLabel: notice.actionLabel,
             icon: NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
             dismissAfter: 20,
-            onStartRecording: { [weak self] in self?.openHistoryWindow(tab: .shortcuts) },
+            onStartRecording: { [weak self] in
+                guard let self else { return }
+                // The dashboard stays closed until onboarding finishes; its
+                // shortcut step is one Back press away in the setup window.
+                if duringSetup, self.onboardingWindowController != nil {
+                    self.bringOnboardingToFront()
+                } else {
+                    self.openHistoryWindow(tab: .shortcuts)
+                }
+            },
             onClose: { [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() }
         )
     }

@@ -40,10 +40,17 @@ enum ReleaseHotkeyYieldPolicy {
             && hotkey.resolvedCombinationModifiers == other.resolvedCombinationModifiers
     }
 
-    static func collisionNotice(shortcut: String, appName: String) -> (title: String, subtitle: String) {
+    /// Copy for the card a skipped press shows. It must fit one line each beside
+    /// the icon and button of `MeetingNotificationController`'s widest card. During
+    /// setup the dashboard is closed, so the card points back to onboarding.
+    static func collisionNotice(
+        shortcut: String,
+        duringSetup: Bool
+    ) -> (title: String, subtitle: String, actionLabel: String) {
         (
-            title: "\(shortcut) is also muesli's shortcut",
-            subtitle: "\(appName) skips it while muesli is running, so only muesli responds. Change \(appName)'s shortcut to use both."
+            title: "\(shortcut) also starts muesli",
+            subtitle: duringSetup ? "Go Back to choose another one" : "Skipped here while muesli runs",
+            actionLabel: duringSetup ? "Show Setup" : "Change Shortcut"
         )
     }
 

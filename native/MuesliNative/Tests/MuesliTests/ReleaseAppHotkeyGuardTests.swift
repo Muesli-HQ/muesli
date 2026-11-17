@@ -54,12 +54,30 @@ struct ReleaseAppHotkeyGuardTests {
         #expect(!policy.shouldYield(Self.rightOption, releaseIsRunning: true, releaseHotkeys: [Self.leftOption]))
     }
 
-    @Test("the collision notice names the shortcut and the dev app")
-    func collisionNoticeText() {
-        let notice = ReleaseHotkeyYieldPolicy.collisionNotice(shortcut: "Right ⌥", appName: "muesliDev")
-        #expect(notice.title == "Right ⌥ is also muesli's shortcut")
-        #expect(notice.subtitle.contains("muesliDev skips it"))
-        #expect(notice.subtitle.contains("Change muesliDev's shortcut"))
+    @Test("the collision notice fits the card on one line for every shortcut")
+    @MainActor
+    func collisionNoticeFitsCard() {
+        let notice = ReleaseHotkeyYieldPolicy.collisionNotice(shortcut: "Right ⌥", duringSetup: false)
+        #expect(notice.title == "Right ⌥ also starts muesli")
+        #expect(notice.actionLabel == "Change Shortcut")
+        #expect(ReleaseHotkeyYieldPolicy.collisionNotice(shortcut: "Right ⌥", duringSetup: true).actionLabel == "Show Setup")
+
+        // Same fonts and widest text column as MeetingNotificationController's
+        // single-button card with an icon.
+        let textWidth = MeetingNotificationController.singleActionTextWidth(cardWidth: 420, textX: 14 + 26 + 9)
+        let titleFont = AppFonts.font(size: 13, weight: .semibold)
+        let subtitleFont = AppFonts.font(size: 11)
+        let shortcuts = [55, 54, 63, 59, 62, 58, 61, 56, 60].map { HotkeyConfig(keyCode: UInt16($0)).displayLabel }
+            + [HotkeyConfig.combination(modifiers: [.control, .option, .shift, .command], keyCode: 15).displayLabel]
+        for shortcut in shortcuts {
+            for duringSetup in [false, true] {
+                let notice = ReleaseHotkeyYieldPolicy.collisionNotice(shortcut: shortcut, duringSetup: duringSetup)
+                let title = (notice.title as NSString).size(withAttributes: [.font: titleFont]).width
+                let subtitle = (notice.subtitle as NSString).size(withAttributes: [.font: subtitleFont]).width
+                #expect(title <= textWidth, "\(notice.title): \(title) > \(textWidth)")
+                #expect(subtitle <= textWidth, "\(notice.subtitle): \(subtitle) > \(textWidth)")
+            }
+        }
     }
 
     @Test("guard reads the release config and notices when it changes")
