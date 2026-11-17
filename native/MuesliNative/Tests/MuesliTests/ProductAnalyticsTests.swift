@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("Product analytics")
@@ -50,6 +51,45 @@ struct ProductAnalyticsTests {
         // One already-entered sink may finish; queued work is dropped after opt-out.
         #expect(recorder.events.count == 1)
     }
+    @Test func submittingWithCapturedConsentChecksConsentOffTheCallingQueue() {
+        let caller = DispatchQueue(label: "test.analytics.caller")
+        let callerKey = DispatchSpecificKey<Bool>()
+        caller.setSpecific(key: callerKey, value: true)
+        let recorder = Recorder()
+        let emitter = ProductAnalyticsEmitter(consent: {
+            #expect(DispatchQueue.getSpecific(key: callerKey) == nil)
+            return "initial"
+        }) { event, _ in recorder.record(event) }
+        caller.sync { emitter.emit(.init(feature: .vidshot, kind: .started), token: "initial") }
+        emitter.drain()
+        #expect(recorder.events.map(\.name) == ["vidshot.started"])
+    }
+
+    @Test func chatCountsEachSourceOnceWithinTheOriginalConsentGeneration() {
+        let recorder = Recorder()
+        let emitter = ProductAnalyticsEmitter(consent: { recorder.token() }) { event, _ in recorder.record(event) }
+        let attempt = AnalyticsAttempt(.chat, emitter: emitter)
+        DispatchQueue.concurrentPerform(iterations: 64) { _ in attempt.usedChatSource(.pdf) }
+        attempt.usedChatSource(.screen_history)
+        emitter.drain()
+        recorder.setConsent("new")
+        attempt.usedChatSource(.dictation)
+        attempt.finish(.success)
+        attempt.usedChatSource(.image)
+        emitter.drain()
+        let sources = recorder.events.filter { $0.name == "chat.source_used" }
+        #expect(sources.map(\.parameters) == [
+            ["product.schema": "1", "source": "pdf"],
+            ["product.schema": "1", "source": "screen_history"],
+        ])
+    }
+
+    @Test func chatSQLSourcesCoverOnlyThePermittedTables() {
+        #expect(Set(ChatAnalyticsSource.sqlTables.keys) == Set(ChatHistorySQL.tables))
+        #expect(Set(ChatAnalyticsSource.sqlTables.values) == Set(GlobalSearchKind.allCases.map(ChatAnalyticsSource.init)))
+        #expect(ChatAnalyticsSource.sqlTables["private_name"] == nil)
+    }
+
     @Test func abandonedAttemptAndNewAttemptStaySeparate() {
         let recorder = Recorder()
         let emitter = ProductAnalyticsEmitter(consent: { recorder.token() }) { event, _ in recorder.record(event) }

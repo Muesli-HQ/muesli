@@ -128,7 +128,7 @@ public actor MuesliQwen3AsrManager {
         let generateTime = CFAbsoluteTimeGetCurrent() - t4
 
         // Step 5: Decode tokens to text
-        let text = decodeTokens(generatedTokenIds, vocabulary: models.vocabulary)
+        let text = Self.decodeTokens(generatedTokenIds, vocabulary: models.vocabulary)
 
         let elapsed = CFAbsoluteTimeGetCurrent() - start
         logger.debug(
@@ -490,7 +490,7 @@ public actor MuesliQwen3AsrManager {
         return mapping
     }()
 
-    private func decodeTokens(_ tokenIds: [Int], vocabulary: [Int: String]) -> String {
+    static func decodeTokens(_ tokenIds: [Int], vocabulary: [Int: String]) -> String {
         var startIdx = 0
         if let asrIdx = tokenIds.firstIndex(of: MuesliQwen3AsrConfig.asrTextTokenId) {
             startIdx = asrIdx + 1
@@ -498,7 +498,7 @@ public actor MuesliQwen3AsrManager {
         let transcriptionTokens = Array(tokenIds[startIdx...])
 
         var pieces: [String] = []
-        for id in transcriptionTokens {
+        for id in transcriptionTokens where !MuesliQwen3AsrConfig.controlTokenIds.contains(id) {
             if let piece = vocabulary[id] {
                 pieces.append(piece)
             }

@@ -40,14 +40,7 @@ struct DictationRecoveryStore: Sendable {
         try ContentPrivacy.shared.beginWrite()
         defer { ContentPrivacy.shared.endWrite() }
         let files = FileManager.default
-        let attributes = try files.attributesOfItem(atPath: wavURL.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular else {
-            throw Failure.invalidRecording
-        }
-        // Our recorders write a 44-byte PCM WAV header even when no samples arrive.
-        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 44 else {
-            throw Failure.noCapturedAudio
-        }
+        try Self.validateCapturedAudio(wavURL)
         let record = FailedDictation(id: UUID(), startedAt: startedAt,
                                     durationSeconds: durationSeconds, modelName: modelName,
                                     failureMessage: failureMessage, partialTranscript: partialTranscript)
@@ -72,6 +65,18 @@ struct DictationRecoveryStore: Sendable {
         } catch {
             try? files.removeItem(at: session)
             throw error
+        }
+    }
+
+    static func validateCapturedAudio(_ wavURL: URL) throws {
+        let files = FileManager.default
+        let attributes = try files.attributesOfItem(atPath: wavURL.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw Failure.invalidRecording
+        }
+        // Our recorders write a 44-byte PCM WAV header even when no samples arrive.
+        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 44 else {
+            throw Failure.noCapturedAudio
         }
     }
 

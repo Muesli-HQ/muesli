@@ -27,11 +27,12 @@ enum ChatFileError: Error, LocalizedError, Equatable {
 struct ChatImageInput: Sendable {
     let name: String
     let data: Data
-    var dataURL: String { "data:image/jpeg;base64," + data.base64EncodedString() }
+    var mediaType: String = "image/jpeg"
+    var dataURL: String { "data:\(mediaType);base64," + data.base64EncodedString() }
     var responsesContent: [String: Any] { ["type": "input_image", "image_url": dataURL, "detail": "auto"] }
     var chatContent: [String: Any] { ["type": "image_url", "image_url": ["url": dataURL]] }
     var anthropicContent: [String: Any] {
-        ["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": data.base64EncodedString()]]
+        ["type": "image", "source": ["type": "base64", "media_type": mediaType, "data": data.base64EncodedString()]]
     }
 }
 

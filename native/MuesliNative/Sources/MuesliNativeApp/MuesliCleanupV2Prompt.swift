@@ -64,10 +64,35 @@ enum MuesliCleanupV2Prompt {
     }
 
     static func guardResult(_ output: String, input: String, generationCompleted: Bool = true) -> GuardedOutput {
+        // Inspect raw generation before cosmetic cleanup can hide the delimiters.
+        // A leaked context block can contain screen text, and an unmatched tag can
+        // swallow real speech. Preserve the entire ASR transcript in either case.
+        // Check the input too: even if generation drops a dictated marker, return
+        // the original verbatim. Literal think tags must not reach the existing
+        // reasoning-block stripper; generated think blocks retain that handling.
+        if containsTrainingArtifacts(output) || containsTrainingArtifacts(input)
+            || input.contains("<think>") || input.contains("</think>") {
+            return GuardedOutput(text: input, didFallback: true)
+        }
         let cleaned = TranscriptCleanupClient.cleanOutput(cleanOutput(output, input: input))
         let rejected = !generationCompleted || cleaned.isEmpty || cleaned.count > input.count * 3
             || Qwen3PostProcessorOutputCleaner.shouldFallbackToInput(cleaned: cleaned, input: input)
         return GuardedOutput(text: rejected ? input : cleaned, didFallback: rejected)
+    }
+
+    private static func containsTrainingArtifacts(_ output: String) -> Bool {
+        // Confirmed by asr-finetune/common/data/build_gemma_manifest.py and
+        // common/hf/make_cards.py / make_cards_v14.py (PROMPTS and STOP).
+        // Match exact syntax only: no other model families or guessed wrappers.
+        let markers = [
+            "<APP-CONTEXT>", "</APP-CONTEXT>",
+            "<|im_start|>", "<|im_end|>", "<|startoftext|>",
+            "<bos>", "<|turn>", "<turn|>",
+        ]
+        if markers.contains(where: { output.contains($0) }) { return true }
+        return systemPrompt.components(separatedBy: "\n\n")
+            .filter { $0.count >= 30 }
+            .contains { output.contains($0) }
     }
 
     static func cleanOutput(_ output: String, input: String = "") -> String {

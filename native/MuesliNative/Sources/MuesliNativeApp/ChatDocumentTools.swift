@@ -78,9 +78,11 @@ actor ChatDocumentTools {
     let maximumTextBytes: Int
     private let maximumImageBytes: Int
     private var renderedPages = 0
+    private let analytics: AnalyticsAttempt?
 
     init(files: [ChatFileReference], supportsVision: Bool, maximumTextBytes: Int = 16_000,
-         maximumImageBytes: Int = 1_024 * 1_024) {
+         maximumImageBytes: Int = 1_024 * 1_024, analytics: AnalyticsAttempt? = nil) {
+        self.analytics = analytics
         self.files = files; self.supportsVision = supportsVision
         self.maximumTextBytes = max(256, min(256_000, maximumTextBytes))
         self.maximumImageBytes = max(1, min(1_024 * 1_024, maximumImageBytes))
@@ -96,6 +98,7 @@ actor ChatDocumentTools {
         guard let file = files.first(where: { $0.id == request.fileID }), file.kind != .image else {
             return try result(["error": "unknown_document", "note": "Use a document_id from the current attachment manifest."])
         }
+        analytics?.usedChatSource(.init(file.kind))
         return try ChatFileReader.withOriginal(file) { url in
             let pdf: PDFDocument?
             let plain: String?

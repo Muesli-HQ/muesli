@@ -411,6 +411,7 @@ final class FeedbackCaptureController {
         let capture = FeedbackCaptureAttempt(target: target, store: store, now: now(), drawModifier: drawModifier)
         errorMessage = nil
         attempt = capture; ownsMicrophone = true; present(.preparing)
+        ProductAnalytics.event(.vidshot, .started)
         capture.onFailure = { [weak self, weak capture] message in
             Task { @MainActor in
                 guard let self, let capture, self.attempt === capture, capture.isCurrent else { return }

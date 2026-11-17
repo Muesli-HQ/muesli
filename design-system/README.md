@@ -519,3 +519,21 @@ the compact header sync control and Settings → General sync setup, status and
 recovery actions available. Background sync behavior and saved preferences are
 unchanged. Accent labels and tinted actions use the shared 6:1 `accentText` role;
 never use the raw saved accent as a label color on a neutral surface.
+
+New completed meetings show a segmented Summary / Your notes / Transcript control.
+Your notes reuses the live note editor and its inline save status; generated
+summaries never replace that document. Legacy meetings keep Notes / Transcript until a replacement summary is saved.
+After that, Saved notes holds the current source, and a collapsed Previous notes
+disclosure in Summary exposes the other pre-upgrade document when present.
+
+Time Turner Capture settings use the canonical Capture menu: Focused window,
+All displays, or Selected displays. After permissions, setup shows a single checklist of
+connected monitors using the meeting screen picker's thumbnails. Continuing without edits
+preserves the current scope, including the focused-window default. Checking individual
+monitors saves only those displays, even when every connected monitor is checked. Finish saves the draft. Settings
+“Choose displays…” edits the same persistent selection with Save/Cancel. Disconnected
+monitors retain their selection; newly connected ones require selection. Preview
+cards use semantic borders, checkmarks and accessible selection traits. History shows icons for the apps included in a capture alongside its monitor name.
+The display filter includes monitors with saved history and today’s connected, configured
+monitors, even before their first capture. In display capture mode, the menu bar’s Pause Capture or Resume Capture submenu
+groups the global action and individual monitor controls.

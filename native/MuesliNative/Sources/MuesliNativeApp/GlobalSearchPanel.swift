@@ -232,6 +232,7 @@ struct GlobalSearchPanel: View {
     let appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var analyticsOpenedResult = false
+    @State private var analyticsViewedPeople = false
     @State private var analyticsReported = false
     @State private var analyticsConsent: String?
     @State private var request = GlobalSearchRequest()
@@ -349,7 +350,8 @@ struct GlobalSearchPanel: View {
             guard !analyticsReported else { return }
             analyticsReported = true
             ProductAnalytics.emitter.emit(.init(feature: .search, kind: .session_finished,
-                fields: [.results: ProductAnalytics.bucket(model.results.count), .opened: analyticsOpenedResult ? .yes : .no]), token: analyticsConsent)
+                fields: [.results: ProductAnalytics.bucket(model.results.count), .opened: analyticsOpenedResult ? .yes : .no,
+                         .people_viewed: analyticsViewedPeople ? .yes : .no]), token: analyticsConsent)
         }
         .task(id: request) {
             openTask?.cancel(); opening = false; preview.clear(); navigationError = nil
@@ -386,7 +388,10 @@ struct GlobalSearchPanel: View {
     }
 
     private var peopleChip: some View {
-        Button { request.showsPeople = true; request.person = nil; request.kind = .meeting; request.app = "" } label: {
+        Button {
+            analyticsViewedPeople = true
+            request.showsPeople = true; request.person = nil; request.kind = .meeting; request.app = ""
+        } label: {
             Text("People").font(MuesliTheme.callout()).padding(.horizontal, 10).padding(.vertical, 6)
                 .background(request.showsPeople ? MuesliTheme.accentSubtle : MuesliTheme.backgroundRaised)
                 .clipShape(Capsule()).contentShape(Capsule())
