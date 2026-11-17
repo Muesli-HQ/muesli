@@ -581,7 +581,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard !accountBoundaryBlocked else { return nil }
+        guard syncEngine === engine, !accountBoundaryBlocked else { return nil }
         let pending = Array(syncEngine.state.pendingRecordZoneChanges.lazy.filter {
             context.options.scope.contains($0)
         }.prefix(Self.uploadBatchSize))
@@ -656,6 +656,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     }
 
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        guard syncEngine === engine else { return }
         do {
             switch event {
             case .stateUpdate(let update):

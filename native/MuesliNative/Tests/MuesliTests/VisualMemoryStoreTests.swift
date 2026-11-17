@@ -1,11 +1,824 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import Testing
 import SQLite3
+import ImageIO
+@testable import MuesliNativeApp
 @testable import MuesliCore
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+
+    @Test func displayPrivacyChecksSecureFieldsInTheSecondWindow() {
+        let focused = CGRect(x: 10, y: 10, width: 400, height: 240)
+        let other = focused.offsetBy(dx: 420, dy: 0)
+        let bounds = [0: focused, 1: other]
+        // Both AX roots belong to one app. Only the second has a nested password field.
+        let children = [0: [2], 1: [3], 3: [4]]
+        var secureNode: Int?
+        var unreadableNode: Int?
+        func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
+            var inspected = 0
+            return TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 1], omitUnmatched: false, frame: { bounds[$0] },
+                inspect: { node in
+                    inspected += 1
+                    guard node != unreadableNode else { return nil }
+                    return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
+                },
+                withinBudget: { inspected < budget }) != nil
+        }
+        #expect(permits([focused, other]))
+        secureNode = 4 // Secure control appears between capture and the second check.
+        #expect(permits([focused]))
+        #expect(!permits([focused, other]))
+        #expect(!permits([other]))
+        secureNode = nil
+        unreadableNode = 3
+        #expect(!permits([focused, other]))
+        unreadableNode = nil
+        #expect(!permits([focused, other], budget: 3))
+        #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
+        #expect(TimeTurnerWindowPrivacy.inspectedIndices(frames: [focused], windows: [0, 1], omitUnmatched: false,
+            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }) == nil)
+    }
+
+    @Test @MainActor func screenCaptureDoesNotImplicitlyAddUninspectedChildWindows() {
+        let config = VisualMemoryController.screenshotConfiguration(size: CGSize(width: 1920, height: 1080), pixelScale: 1)
+        #expect(!config.includeChildWindows)
+    }
+
+    @Test func externalDisplayOnlyIncludesExactVerifiedWindows() {
+        let main = CGRect(x: -1037, y: -1050, width: 1920, height: 1050)
+        let overlay = CGRect(x: main.minX, y: main.minY, width: main.width, height: 149)
+        func inspect(_ frames: [CGRect], roots: [CGRect], secure: Int? = nil, omit: Bool = true) -> IndexSet? {
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: Array(roots.indices),
+                omitUnmatched: omit, frame: { roots[$0] }, inspect: { node in
+                    (node == secure ? kAXSecureTextFieldSubrole : nil, [])
+                }, withinBudget: { true })
+        }
+        #expect(inspect([overlay, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([main, overlay], roots: [main]) == IndexSet(integer: 0))
+        #expect(inspect([overlay, main], roots: [main], omit: false) == nil)
+        #expect(inspect([overlay], roots: [main]) == nil)
+        #expect(inspect([overlay, main], roots: [main], secure: 0) == nil)
+        #expect(inspect([overlay, main], roots: [main, overlay], secure: 1) == nil)
+        #expect(inspect([overlay, main], roots: [main, main]) == nil)
+        let overhang = overlay.offsetBy(dx: -1, dy: 0)
+        #expect(inspect([overhang, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([overhang, main], roots: [main, overlay], secure: 1) == nil)
+    }
+
+    @Test func largeWindowsRequireACompletePrivacyInspection() {
+        let first = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let second = first.offsetBy(dx: 800, dy: 0)
+        // One wide window and one deep tree, with a shared child and a cycle.
+        func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 2000], omitUnmatched: false,
+                frame: { $0 == 0 ? first : second }, inspect: { node in
+                    guard node != unreadable else { return nil }
+                    let children: [Int]
+                    switch node {
+                    case 0: children = Array(1...1500)
+                    case 2000..<3500: children = [node + 1]
+                    case 3500: children = [2000, 1500]
+                    default: children = []
+                    }
+                    return (node == secure ? kAXSecureTextFieldSubrole : nil, children)
+                }, withinBudget: { true }) != nil
+        }
+        #expect(permits([first]))
+        #expect(permits([first, second]))
+        #expect(!permits([first], secure: 1)) // Last child visited in the wide window.
+        #expect(!permits([first, second], secure: 3500))
+        #expect(!permits([second], unreadable: 3499))
+    }
+
+    @Test func batchedPrivacyReadRejectsPartialOrMalformedAXResults() throws {
+        func error(_ code: AXError) throws -> AXValue {
+            var code = code
+            return try #require(AXValueCreate(.axError, &code))
+        }
+        func decode(_ values: NSArray) -> (subrole: String?, children: [AXUIElement])? {
+            TimeTurnerWindowPrivacy.decodeNode(values, withinBudget: { true })
+        }
+        let unsupported = try error(.attributeUnsupported)
+        let timedOut = try error(.cannotComplete)
+        let node = AXUIElementCreateSystemWide()
+        #expect(decode([unsupported, [node], kAXWindowRole])?.children.count == 1)
+        #expect(decode([kAXSecureTextFieldSubrole, [], kAXTextFieldRole])?.subrole == kAXSecureTextFieldSubrole)
+        #expect(decode([NSNull(), unsupported, kAXStaticTextRole]) != nil)
+        #expect(decode([timedOut, [], kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, timedOut, kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, NSNull(), kAXWindowRole]) == nil)
+        #expect(decode([unsupported, ["invalid"], kAXWindowRole]) == nil)
+        #expect(decode([unsupported]) == nil)
+        #expect(TimeTurnerWindowPrivacy.decodeNode([unsupported, [node], kAXWindowRole], withinBudget: { false }) == nil)
+    }
+
+    @Test func missingAXChildrenRequireAKnownLeaf() {
+        for error in [AXError.attributeUnsupported, .noValue] {
+            for role in ["AXWindow", "AXGroup", "AXWebArea", "AXTextField", "AXUnknown", ""] {
+                #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: role))
+            }
+            #expect(TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: kAXStaticTextRole))
+            #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXWindowsAttribute, role: kAXStaticTextRole))
+        }
+        #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: .cannotComplete, attribute: kAXChildrenAttribute, role: kAXButtonRole))
+    }
+
+    @Test func privacyToggleDuringCaptureRejectsOriginalImageBeforeRecognition() throws {
+        let policy = ContentPrivacy(enabled: false)
+        let session = policy.capture()
+        let bitmap = try #require(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8,
+            bytesPerRow: 512, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let snapshot = try #require(bitmap.makeImage())
+        policy.setEnabled(true)
+        policy.setEnabled(false)
+        #expect(throws: CancellationError.self) {
+            _ = try VisualMemoryEncoding.encode(.init(image: snapshot), privacy: session, policy: policy)
+        }
+    }
+
+    @Test @MainActor func displayPrivacyBudgetSpansAppsAndRevalidation() async {
+        var now: TimeInterval = 0
+        var budget = TimeTurnerAXBudget(interval: 2, uptime: { now })
+        let firstApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.5
+            return true
+        }
+        #expect(firstApp)
+        let secondApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.25
+            return true
+        }
+        #expect(secondApp)
+        now += 20 // Image acquisition and OCR happen between the two AX passes.
+        let revalidated = await budget.permits { deadline in
+            #expect(deadline == 21)
+            now += 0.5 // Good AX data arriving too late must be discarded.
+            return true
+        }
+        #expect(!revalidated)
+        let anotherDisplay = await budget.permits { _ in
+            Issue.record("An exhausted cycle started another AX call")
+            return true
+        }
+        #expect(!anotherDisplay)
+        var nextCycle = TimeTurnerAXBudget(interval: 60, uptime: { now })
+        #expect(nextCycle.remaining == 2)
+        let slowApp = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { deadline in
+            now = deadline
+            return true
+        }
+        #expect(!slowApp)
+        let unchecked = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { _ in
+            Issue.record("Preflight used the time reserved for revalidation")
+            return true
+        }
+        #expect(!unchecked)
+        let eligible = await nextCycle.permits { deadline in deadline == now + 1 }
+        #expect(eligible)
+    }
+
+    @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
+        let selected: Set<String> = ["external-a", "external-b"]
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))
+        // A newly connected display, even with a reused numeric display ID, is not selected.
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "built-in", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: []))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "focused", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "unknown", selected: selected))
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "all_displays", selected: []))
+        // Reconnection uses the saved UUID, independent of enumeration order or numeric ID.
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-b", scope: "selected_displays", selected: selected))
+    }
+    private func removeDisplaySchema(_ db: OpaquePointer?) throws {
+        #expect(sqlite3_exec(db, """
+            DROP TRIGGER capture_display_insert;
+            DROP TRIGGER capture_apps_delete;
+            DROP TABLE time_turner_capture_apps;
+            ALTER TABLE time_turner_captures DROP COLUMN display_uuid;
+            ALTER TABLE time_turner_captures DROP COLUMN display_name;
+            ALTER TABLE time_turner_captures DROP COLUMN display_id;
+            PRAGMA user_version=3;
+            """, nil, nil, nil) == SQLITE_OK)
+    }
+
+    @Test func displayPolicyHandlesExternalCoordinatesAndExclusions() {
+        let left = CGRect(x: -1920, y: -200, width: 1920, height: 1080)
+        let laptop = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let spanning = CGRect(x: -300, y: 100, width: 600, height: 500)
+        for display in [left, laptop] {
+            #expect(VisualMemoryDisplayPolicy.includes(window: spanning, layer: 0, display: display,
+                bundleID: "editor", title: "Work", excluded: []))
+        }
+        #expect(!VisualMemoryDisplayPolicy.includes(window: CGRect(x: 300, y: 0, width: 600, height: 500),
+            layer: 0, display: left, bundleID: "editor", title: "Work", excluded: []))
+        for (bundle, title, layer) in [("private", "Work", 0), ("editor", "Incognito", 0), ("editor", "Work", 25)] {
+            #expect(!VisualMemoryDisplayPolicy.includes(window: spanning, layer: layer, display: left,
+                bundleID: bundle, title: title, excluded: ["private"]))
+        }
+    }
+
+    @Test func displaysDeduplicateIndependentlyAndReconnectFresh() {
+        var changes = VisualMemoryDisplayChanges()
+        let fingerprint = Data([1, 2])
+        changes.record(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(changes.isUnchanged(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor"))
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+        changes.record(display: "external", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(!changes.isUnchanged(display: "external", fingerprint: Data([3]), text: "same", source: "Editor"))
+        changes.retain(displays: ["laptop"])
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+    }
+
+    @Test func displayMetadataAndAppSearchSurviveRetentionAndReopening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date()
+        var item = VisualMemoryItem(kind: .moment, capturedAt: now, source: "External · Browser · Editor", text: "planning", path: "a.heic",
+            display: .init(id: 2, uuid: "external-uuid", name: "External"),
+            includedApps: [.init(bundleID: "browser", name: "Browser"), .init(bundleID: "editor", name: "Editor")])
+        try store.save([item])
+        #expect(try store.searchMoments(app: "EDITOR").map(\.id) == [item.id])
+        #expect(try store.searchMoments(app: "Browser").map(\.id) == [item.id])
+        #expect(try store.summary().apps["editor"] == "Editor")
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.moment(id: item.id)?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").count == 1)
+        // Archive updates must preserve display attribution and remove obsolete app rows.
+        item.path = "archive.mp4"; item.frameIndex = 0
+        item.includedApps = [.init(bundleID: "editor", name: "Editor")]
+        try store.save([item])
+        #expect(try store.searchMoments(app: "browser").isEmpty)
+        try store.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try reader.searchMoments(app: "editor").first?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").first?.mediaDeletedAt != nil)
+        try store.delete(ids: [item.id])
+        #expect(try store.summary().apps.isEmpty)
+        #expect(try reader.searchMoments(app: "editor").isEmpty)
+    }
+
+    @Test func rejectedCaptureStaysUnsearchableWhenCleanupFailsAndRetriesAfterReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(kind: .moment, source: "Monitor", text: "private excerpt", path: "candidate.heic",
+            display: .init(id: 2, uuid: "external", name: "External"), includedApps: [.init(bundleID: "editor", name: "Editor")])
+        let media = Data([1, 2, 3])
+        let file = root.appendingPathComponent(item.path)
+        do {
+            let store = try VisualMemoryStore(root: root)
+            let reader = try VisualMemoryStore(root: root, readOnly: true)
+            let privacy = ContentPrivacy()
+            let session = privacy.capture()
+            #expect(throws: (any Error).self) {
+                try store.saveCapture(item, media: media) {
+                    if FileManager.default.fileExists(atPath: file.path) {
+                        // Revoke after the file and index rows were written but before COMMIT.
+                        #expect(try reader.searchMoments(text: "private").isEmpty)
+                        privacy.setEnabled(true)
+                        // Force the immediate unlink to fail the store's path-safety check.
+                        try FileManager.default.removeItem(at: file)
+                        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: root.deletingLastPathComponent())
+                    }
+                    guard privacy.permits(session) else { throw CancellationError() }
+                }
+            }
+            #expect(try reader.moment(id: item.id) == nil)
+            #expect(try reader.searchMoments(app: "editor").isEmpty)
+            #expect(try reader.searchMoments(text: "private").isEmpty)
+            #expect(try reader.captureReadyAt() == nil)
+            try FileManager.default.removeItem(at: file)
+            try media.write(to: file)
+        }
+        let reopened = try VisualMemoryStore(root: root)
+        try reopened.finishMediaDeletions()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        try reopened.saveCapture(item, media: media) {}
+        try reopened.finishMediaDeletions()
+        #expect(try Data(contentsOf: file) == media)
+        #expect(try reopened.searchMoments(text: "private").map(\.id) == [item.id])
+    }
+
+    @Test func versionThreeMigrationBackfillsFocusedAndDisplayApps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "old", kind: .moment, source: "Editor", bundleID: "editor", path: "old.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", path: "display.heic",
+            display: .init(id: 42, uuid: "monitor", name: "External"), includedApps: [.init(bundleID: "browser", name: "Browser")])
+        do { let store = try VisualMemoryStore(root: root); try store.save([item, display]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        let legacyReader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try legacyReader.searchMoments(app: "editor").count == 1)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(app: "editor").count == 1)
+        #expect(try upgraded.moment(id: "old")?.display == nil)
+        #expect(try upgraded.summary().apps["editor"] == "Editor")
+        #expect(try upgraded.searchMoments(app: "browser").map(\.id) == [display.id])
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT display_uuid,display_id,app_name FROM time_turner_captures WHERE id='display'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(statement, 0)) == "monitor")
+        #expect(sqlite3_column_int(statement, 1) == 42)
+        #expect(String(cString: sqlite3_column_text(statement, 2)) == "")
+    }
+
+    @Test func migrationKeepsOCRAndValidAppsWhenIncludedAppsIsMalformed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let focused = VisualMemoryItem(id: "focused", kind: .moment, source: "Editor", bundleID: "editor",
+                                      text: "focused evidence", path: "focused.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", text: "display evidence",
+                                      path: "display.heic", display: .init(id: 2, uuid: "external", name: "External"))
+        do { let store = try VisualMemoryStore(root: root); try store.save([focused, display]) }
+        var db: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        try #require(sqlite3_exec(db, """
+            UPDATE evidence SET body=json_set(body,'$.includedApps','invalid') WHERE id='focused';
+            UPDATE evidence SET body=json_set(body,'$.includedApps',json_array(
+                'broken',null,7,json_object('name','missing ID'),json_object('bundleID',3,'name','wrong type'),
+                json_object('bundleID','browser','name','Browser'))) WHERE id='display';
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "focused", app: "editor") == [focused])
+        let apps = [VisualMemoryApp(bundleID: "browser", name: "Browser")]
+        var recovered = try #require(store.searchMoments(text: "display", app: "Browser").first)
+        #expect(recovered.includedApps == apps)
+        #expect(recovered.display == display.display)
+        recovered.text = "updated evidence"
+        try store.save([recovered])
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "updated", app: "browser") == [recovered])
+    }
+
+    @Test func displayCaptureRotatesAcrossConnectedMonitors() {
+        let screens: [UInt32] = [12, 3, 8]
+        let first = VisualMemoryDisplayPolicy.captureOrder(screens, after: nil, id: \.self)
+        #expect(first == [3, 8, 12])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: first.first, id: \.self) == [8, 12, 3])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: 12, id: \.self) == first)
+        #expect(VisualMemoryDisplayPolicy.captureOrder([3, 12], after: 8, id: \.self) == [12, 3])
+    }
+
+    @Test func displayFilterKeepsLegacyCapturesAndIndependentDisplaySamples() {
+        let now = Date()
+        let legacy = VisualMemoryItem(kind: .moment, capturedAt: now, source: "Editor", path: "1.heic")
+        var internalScreen = legacy
+        internalScreen.id = "internal"
+        internalScreen.display = .init(id: 1, uuid: "laptop", name: "Retina")
+        var external = internalScreen
+        external.id = "external"
+        external.display = .init(id: 2, uuid: "monitor", name: "HA240Y")
+        var day = TimeTurnerDaySnapshot()
+        day.load([legacy, internalScreen, external], on: now)
+        #expect(day.moments(for: nil).count == 3)
+        #expect(day.moments(for: "monitor") == [external])
+        #expect(day.displays["monitor"] == "HA240Y")
+        #expect(day.moments(for: "new").isEmpty)
+        day.load([], on: now)
+        #expect(day.displays.isEmpty)
+        #expect(day.moments(for: "monitor").isEmpty)
+    }
+
+    @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_700_000_000))
+        let rows = (0..<3).map { index in
+            VisualMemoryItem(id: "hit-\(index)", kind: .moment,
+                capturedAt: start.addingTimeInterval(Double(index + 1) * 60),
+                source: "Editor", text: "Work", path: "\(index).heic")
+        }
+        var snapshot = TimeTurnerDaySnapshot()
+        snapshot.load(rows, on: rows[1].capturedAt)
+        // Reopening the exact selected search hit must not reduce the scrubber to 1/1.
+        snapshot.prepare(for: rows[1].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        snapshot.prepare(for: rows[2].capturedAt, calendar: calendar)
+        #expect(snapshot.moments.map(\.id) == rows.map(\.id))
+        let nextDay = start.addingTimeInterval(86400)
+        snapshot.prepare(for: nextDay, calendar: calendar)
+        #expect(snapshot.moments.isEmpty)
+        #expect(snapshot.day == nextDay)
+    }
+
+    @Test func compactionSkipsMissingAndCorruptOldestGroupsWithoutDeletingHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let bitmap = try #require(CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8, bytesPerRow: 400,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try #require(bitmap.makeImage())
+        let imageURL = try store.url(for: "valid.png")
+        let destination = try #require(CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        try Data("broken".utf8).write(to: store.url(for: "broken.png"))
+        let rows: [VisualMemoryItem] = (0..<75).map { index -> VisualMemoryItem in
+            let capturedAt = now.addingTimeInterval(Double(index) - 2000)
+            let source = index < 50 ? "Old" : "Healthy"
+            let path: String
+            if index < 25 {
+                path = "missing.png"
+            } else if index < 50 {
+                path = "broken.png"
+            } else {
+                path = "valid.png"
+            }
+            return VisualMemoryItem(id: "candidate-\(index)", kind: .moment,
+                capturedAt: capturedAt, source: source, text: "retained text", path: path,
+                pixelWidth: 100, pixelHeight: 100)
+        }
+        try store.save(rows)
+        var excluded = Set<String>()
+        let batch = try VisualMemoryEncoding.compactionBatch(store: store, now: now, excluding: &excluded)
+        #expect(batch.count == 25)
+        #expect(batch.allSatisfy { $0.source == "Healthy" })
+        #expect(excluded.count == 50)
+        #expect(try store.items().count == 75)
+        #expect(try store.searchMoments(text: "retained text").count == 75)
+        #expect(FileManager.default.fileExists(atPath: imageURL.path))
+    }
+
+    @Test func emptyDeletionQueueDoesNotReadEvidenceBodies() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        try store.save([.init(id: "legacy-video", kind: .meetingVideo, source: "Screen", path: "video.mp4")])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE evidence SET body='invalid JSON' WHERE id='legacy-video'", nil, nil, nil) == SQLITE_OK)
+        // No queued deletion means no reason to inspect any active media/body.
+        try store.finishMediaDeletions()
+    }
+
+    @Test func selectedDayDoesNotDecodeUnrelatedHistoryAndHasNoSearchPageLimit() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let rows = (0..<1005).map { index in
+            VisualMemoryItem(id: "day-\(index)", kind: .moment, capturedAt: start.addingTimeInterval(Double(index)),
+                source: "Editor", text: "text \(index)", path: "\(index).heic")
+        }
+        try store.save(rows + [.init(id: "other", kind: .moment, capturedAt: start.addingTimeInterval(-1), source: "Other", path: "other.heic")])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE evidence SET body=json_set(body,'$.kind','unknown') WHERE id='other'", nil, nil, nil) == SQLITE_OK)
+        let selected = try store.moments(from: start, until: start.addingTimeInterval(1005))
+        #expect(selected.count == 1005)
+        #expect(selected.first?.id == "day-0")
+        #expect(selected.last?.id == "day-1004")
+        #expect(try store.moments(from: start.addingTimeInterval(1004), until: start.addingTimeInterval(1005)).count == 1)
+    }
+
+    @Test func summaryDeduplicatesArchiveBytesAndDetectsExternalChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let archive = (0..<2).map { index in VisualMemoryItem(id: "a\(index)", kind: .moment, capturedAt: now,
+            source: "Editor", bundleID: "editor", path: "archive.mp4", frameIndex: index, bytes: 5_000_000_000, appName: "Editor") }
+        try store.save(archive)
+        let first = try store.summary()
+        #expect(first.mediaBytes == 5_000_000_000)
+        #expect(first.averageImageBytes == nil)
+        #expect(first.apps["editor"] == "Editor")
+        #expect(try store.summary().revision == first.revision)
+        let writer = try VisualMemoryStore(root: root)
+        try writer.save([.init(id: "image", kind: .moment, capturedAt: now, source: "Browser", bundleID: "browser", path: "image.heic", bytes: 100)])
+        let second = try store.summary()
+        #expect(second.revision != first.revision)
+        #expect(second.mediaBytes == 5_000_000_100)
+        #expect(second.averageImageBytes == 100)
+        try writer.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try store.summary().mediaBytes == 0)
+        #expect(try store.moments(from: now, until: now.addingTimeInterval(1)).count == 3)
+        #expect(try store.moment(id: "image")?.mediaDeletedAt != nil)
+        try writer.delete(ids: ["image"])
+        #expect(try store.moment(id: "image") == nil)
+    }
+
+    @Test func storeCompactionBatchSkipsUndersizedGroupsAndPreservesOrdering() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let rows = (0..<130).map { index in VisualMemoryItem(id: "c\(index)", kind: .moment,
+            capturedAt: now.addingTimeInterval(Double(index) - 2000), source: index < 5 ? "Small" : "Editor",
+            path: "\(index).heic", pixelWidth: 1000, pixelHeight: 700) }
+        try store.save(rows)
+        let batch = try store.compactionBatch(now: now)
+        #expect(batch.count == 100)
+        #expect(batch.first?.id == "c5")
+        #expect(batch.last?.id == "c104")
+        #expect(batch == VisualMemoryCompaction.batch(from: rows, now: now))
+    }
+
+    @Test func versionTwoFTSRebuildPreservesUpdatesAndDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var item = VisualMemoryItem(id: "a", kind: .moment, source: "Editor", text: "before", path: "a.heic")
+        do { let writer = try VisualMemoryStore(root: root); try writer.save([item]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        #expect(sqlite3_exec(db, "UPDATE evidence_search SET rowid=99; PRAGMA user_version=2", nil, nil, nil) == SQLITE_OK)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(text: "before").count == 1)
+        item.text = "after"; try upgraded.save([item])
+        #expect(try upgraded.searchMoments(text: "before").isEmpty)
+        #expect(try upgraded.searchMoments(text: "after").count == 1)
+        try upgraded.delete(ids: [item.id])
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM evidence_search", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+    }
+
+    @Test func unlimitedScreenshotsStillRespectBudgetAndHistoryDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = VisualMemoryItem(id: "old", kind: .moment, capturedAt: now.addingTimeInterval(-400 * 86400),
+            source: "Editor", text: "roadmap", path: "old.heic", bytes: 10)
+        try store.save([old])
+        try Data([1]).write(to: store.url(for: old.path))
+        try store.applyRetention(.init(screenshotDays: nil, historyDays: nil, mediaBudgetBytes: 10), now: now)
+        #expect(try store.moment(id: old.id)?.mediaDeletedAt == nil)
+        #expect(FileManager.default.fileExists(atPath: try store.url(for: old.path).path))
+        try store.applyRetention(.init(screenshotDays: nil, historyDays: nil, mediaBudgetBytes: 9), now: now)
+        #expect(try store.moment(id: old.id)?.mediaDeletedAt == now)
+        #expect(try store.searchMoments(text: "roadmap").count == 1)
+        #expect(!FileManager.default.fileExists(atPath: try store.url(for: old.path).path))
+        try store.applyRetention(.init(screenshotDays: nil, historyDays: 30), now: now)
+        #expect(try store.items().isEmpty)
+        #expect(try store.pendingCaptureDeletions() == [old.id])
+    }
+
+    @Test func historyExpiryRetiresSharedArchiveBeforeRemovingOldObservation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = VisualMemoryItem(id: "old", kind: .moment, capturedAt: now.addingTimeInterval(-7 * 86400),
+            source: "Editor", text: "expired", path: "archive.mp4", frameIndex: 0, bytes: 10)
+        var fresh = old; fresh.id = "fresh"; fresh.text = "retained"; fresh.capturedAt = now; fresh.frameIndex = 1
+        try store.save([old, fresh])
+        try Data([1]).write(to: store.url(for: old.path))
+        try store.applyRetention(.init(screenshotDays: nil, historyDays: 7), now: now)
+        #expect(try store.moment(id: old.id) == nil)
+        #expect(try store.moment(id: fresh.id)?.mediaDeletedAt == now)
+        #expect(try store.searchMoments(text: "retained").count == 1)
+        #expect(!FileManager.default.fileExists(atPath: try store.url(for: old.path).path))
+        #expect(try store.pendingCaptureDeletions() == [old.id])
+    }
+
+    @Test func compactionSkipsShortGroupsAndPartitionsDimensions() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        func frame(_ n: Int, source: String, width: Int) -> VisualMemoryItem {
+            VisualMemoryItem(id: String(n), kind: .moment, capturedAt: now.addingTimeInterval(Double(n) - 3600),
+                source: source, path: "\(n).heic", pixelWidth: width, pixelHeight: 900)
+        }
+        let short = [frame(0, source: "Closed tab", width: 1200)]
+        let resized = (1...24).map { frame($0, source: "Editor", width: 1200) }
+        let eligible = (25...49).map { frame($0, source: "Editor", width: 1600) }
+        #expect(VisualMemoryCompaction.batch(from: short + resized + eligible, now: now).map(\.id) == eligible.map(\.id))
+        #expect(VisualMemoryCompaction.batch(from: short + resized, now: now).isEmpty)
+    }
+
+    @Test func legacyReadOnlySearchBuildsOnlyTemporaryIndex() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        do {
+            let writer = try VisualMemoryStore(root: root)
+            try writer.save([VisualMemoryItem(id: "legacy", kind: .moment, source: "Editor", text: "release roadmap", path: "old.heic")])
+        }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "DROP TABLE evidence_search", nil, nil, nil) == SQLITE_OK)
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.searchMoments(text: "release roadmap", app: "editor").map(\.id) == ["legacy"])
+        #expect(try reader.searchMoments(text: "\" OR *").isEmpty)
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master WHERE name='evidence_search'", -1, &stmt, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+    }
+
+    @Test func upgradesVersionOneRetentionWithoutLosingSearch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "legacy-v1", kind: .moment, capturedAt: Date(timeIntervalSince1970: 1000), source: "Editor", text: "roadmap", path: "old.heic")
+        do { let store = try VisualMemoryStore(root: root); try store.save([item]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        // Reproduce the exact v1 trigger shape and remove v2 additions.
+        var query: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT name,sql FROM sqlite_master WHERE name IN ('captures_after_insert','captures_after_update')", -1, &query, nil) == SQLITE_OK)
+        var triggers: [(String, String)] = []
+        while sqlite3_step(query) == SQLITE_ROW {
+            triggers.append((String(cString: sqlite3_column_text(query, 0)), String(cString: sqlite3_column_text(query, 1))))
+        }
+        sqlite3_finalize(query)
+        let columns = " (id,captured_at_unix,captured_at_utc,capture_completed_at_unix,source,bundle_id,app_name,window_title,ocr_text,media_relative_path,archive_frame_index,pixel_width,pixel_height,media_bytes)"
+        for (name, sql) in triggers {
+            #expect(sqlite3_exec(db, "DROP TRIGGER " + name, nil, nil, nil) == SQLITE_OK)
+            #expect(sqlite3_exec(db, sql.replacingOccurrences(of: columns, with: ""), nil, nil, nil) == SQLITE_OK)
+        }
+        try removeDisplaySchema(db)
+        #expect(sqlite3_exec(db, "DROP TRIGGER capture_retention_insert; ALTER TABLE time_turner_captures DROP COLUMN media_deleted_at_unix; DROP TABLE pending_capture_deletions; DROP TABLE pending_media_deletions; PRAGMA user_version=1;", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(text: "roadmap").map(\.id) == [item.id])
+        try upgraded.applyRetention(.init(historyDays: nil), now: item.capturedAt.addingTimeInterval(7 * 86400))
+        #expect(try upgraded.moment(id: item.id)?.mediaDeletedAt != nil)
+        #expect(try upgraded.searchMoments(text: "roadmap").count == 1)
+        #expect(try !upgraded.replaceMedia([item], ifUnchanged: [item]))
+        try upgraded.delete(ids: [item.id])
+        #expect(try !upgraded.replaceMedia([item], ifUnchanged: [item]))
+    }
+
+    @Test func independentRetentionPreservesChronologicalOCR() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var old = VisualMemoryItem(id: "old", kind: .moment, capturedAt: now.addingTimeInterval(-7 * 86400),
+            source: "Editor · Plan", bundleID: "test.editor", text: "searchable roadmap", path: "old.heic", bytes: 10)
+        var fresh = old; fresh.id = "fresh"; fresh.path = "fresh.heic"; fresh.capturedAt = old.capturedAt.addingTimeInterval(1)
+        try Data([1]).write(to: root.appendingPathComponent(old.path))
+        try Data([2]).write(to: root.appendingPathComponent(fresh.path))
+        try store.save([old, fresh])
+        try store.applyRetention(.init(), now: now)
+        let retiredItem = try store.moment(id: "old")
+        let expired = try #require(retiredItem)
+        #expect(expired.mediaDeletedAt == now)
+        #expect(expired.bytes == 0 && expired.text == old.text)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(old.path).path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(fresh.path).path))
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "roadmap", app: "test.editor", chronological: true).map(\.id) == ["old", "fresh"])
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT media_deleted_at_unix,media_bytes FROM time_turner_captures WHERE id='old'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(sqlite3_column_double(statement, 0) == now.timeIntervalSince1970)
+        #expect(sqlite3_column_int64(statement, 1) == 0)
+        try store.applyRetention(.init(), now: old.capturedAt.addingTimeInterval(30 * 86400))
+        #expect(try store.moment(id: "old") == nil)
+        #expect(try store.moment(id: "fresh") != nil)
+        #expect(try store.pendingCaptureDeletions() == ["old"])
+        old.mediaDeletedAt = nil // An older serialized record decodes without the optional field.
+        let data = try JSONEncoder().encode(old)
+        #expect(try JSONDecoder().decode(VisualMemoryItem.self, from: data).mediaDeletedAt == nil)
+    }
+
+    @Test func budgetEvictsSharedMediaWithoutDeletingHistoryOrMeetingVideos() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let first = VisualMemoryItem(id: "a", kind: .moment, capturedAt: now, source: "Editor", text: "alpha", path: "archive.mp4", frameIndex: 0, bytes: 100)
+        var second = first; second.id = "b"; second.frameIndex = 1
+        let video = VisualMemoryItem(id: "meeting", kind: .meetingVideo, capturedAt: .distantPast, source: "Call", path: "meeting.mp4", bytes: 100)
+        try store.save([first, second, video])
+        try Data([1]).write(to: root.appendingPathComponent(first.path))
+        try Data([2]).write(to: root.appendingPathComponent(video.path))
+        try store.applyRetention(.init(historyDays: nil, mediaBudgetBytes: 0), now: now)
+        #expect(try store.searchMoments(text: "alpha").count == 2)
+        #expect(try store.moment(id: "a")?.mediaDeletedAt == now)
+        #expect(try store.moment(id: "b")?.mediaDeletedAt == now)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(video.path).path))
+        try store.applyRetention(.init(historyDays: nil), now: now.addingTimeInterval(1000 * 86400))
+        #expect(try store.searchMoments().count == 2)
+        try store.delete(ids: ["a", "b"])
+        #expect(try store.searchMoments(text: "alpha").isEmpty)
+        #expect(try store.pendingCaptureDeletions() == ["a", "b"])
+        try store.acknowledgeCaptureDeletions(["a"])
+        #expect(try VisualMemoryStore(root: root).pendingCaptureDeletions() == ["b"])
+    }
+
+    @Test func migratesLegacyViewAndRepairsSearchWithoutLosingEvidence() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let item = VisualMemoryItem(id: "legacy", kind: .moment, capturedAt: Date(timeIntervalSince1970: 1000.125),
+            source: "Editor · Old title", bundleID: "com.example.editor", text: "legacy roadmap", path: "still.heic")
+        let body = String(decoding: try JSONEncoder().encode(item), as: UTF8.self).replacingOccurrences(of: "'", with: "''")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, """
+            CREATE TABLE evidence(id TEXT PRIMARY KEY,kind TEXT,meeting_id INTEGER,captured REAL,body TEXT);
+            CREATE VIRTUAL TABLE evidence_search USING fts5(id UNINDEXED,text);
+            CREATE VIEW time_turner_captures AS SELECT id FROM evidence;
+            INSERT INTO evidence VALUES('legacy','moment',NULL,1000.125,'\(body)');
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "roadmap", app: "EDITOR").map(\.id) == ["legacy"])
+        #expect(try store.moment(id: "legacy") == item)
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT app_name,window_title,captured_at_unix FROM time_turner_captures", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "Editor")
+        #expect(sqlite3_column_type(stmt, 1) == SQLITE_NULL)
+        #expect(sqlite3_column_double(stmt, 2) == 1000.125)
+        sqlite3_finalize(stmt)
+        var updated = item
+        updated.appName = "Renamed · App"; updated.windowTitle = "Exact title"
+        updated.path = "archive.mp4"; updated.frameIndex = 7
+        try store.save([updated])
+        #expect(try store.searchMoments(app: "Renamed · App").map(\.id) == ["legacy"])
+        #expect(try store.searchMoments(app: "Editor").isEmpty)
+        let reopened = try VisualMemoryStore(root: root)
+        #expect(try reopened.moment(id: "legacy") == updated)
+        updated.kind = .meetingVideo
+        try store.save([updated])
+        #expect(sqlite3_prepare_v2(db, "SELECT count(*) FROM time_turner_captures", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+        sqlite3_finalize(stmt)
+    }
+
+    @Test func failedMigrationRollsBackTheLegacyView() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, """
+            CREATE TABLE evidence(id TEXT PRIMARY KEY,kind TEXT,meeting_id INTEGER,captured REAL,body TEXT);
+            CREATE VIRTUAL TABLE evidence_search USING fts5(id UNINDEXED,text);
+            CREATE VIEW time_turner_captures AS SELECT id FROM evidence;
+            INSERT INTO evidence VALUES('broken','moment',NULL,1000,'invalid json');
+            """, nil, nil, nil) == SQLITE_OK)
+        #expect(throws: (any Error).self) { _ = try VisualMemoryStore(root: root) }
+        var stmt: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT type FROM sqlite_master WHERE name='time_turner_captures'", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(stmt, 0)) == "view")
+        sqlite3_finalize(stmt)
+        #expect(sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK)
+        #expect(sqlite3_step(stmt) == SQLITE_ROW)
+        #expect(sqlite3_column_int(stmt, 0) == 0)
+        sqlite3_finalize(stmt)
+    }
+
+    @Test func paginationKeepsEqualTimestampsAndSurvivesCursorDeletion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let time = Date(timeIntervalSince1970: 1000.125)
+        let captures = ["a", "b", "c"].map {
+            VisualMemoryItem(id: $0, kind: .moment, capturedAt: time, source: "Editor", text: "roadmap", path: $0 + ".heic")
+        }
+        try store.save(captures)
+        let first = try #require(store.searchMoments(text: "roadmap", limit: 1).first)
+        #expect(first.id == "a")
+        let cursor = VisualMemoryCursor(capturedAtUnix: first.capturedAt.timeIntervalSince1970, id: first.id)
+        try store.delete(ids: [first.id])
+        #expect(try store.searchMoments(text: "roadmap", after: cursor).map(\.id) == ["b", "c"])
+        try store.save([VisualMemoryItem(id: "new", kind: .moment, capturedAt: time.addingTimeInterval(1), source: "Editor", text: "roadmap", path: "new.heic")])
+        #expect(try store.searchMoments(after: cursor).map(\.id) == ["b", "c"])
+    }
+
+    @Test func chronologicalHistoryPreservesTiesBoundsAndTextWithoutMedia() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let start = Date(timeIntervalSince1970: 1000)
+        func item(_ id: String, _ offset: Double, app: String = "Editor") -> VisualMemoryItem {
+            VisualMemoryItem(id: id, kind: .moment, capturedAt: start.addingTimeInterval(offset),
+                source: app, bundleID: app, text: "Observed text", path: "missing-" + id + ".heic", appName: app)
+        }
+        try store.save([item("before", -1), item("a", 0), item("b", 0), item("c", 1), item("other", 1, app: "Browser"), item("end", 2)])
+        let first = try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor", limit: 1, chronological: true)
+        #expect(first.map(\.id) == ["a"])
+        let cursor = VisualMemoryCursor(capturedAtUnix: start.timeIntervalSince1970, id: "a")
+        try store.delete(ids: ["a"])
+        let rest = try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor", after: cursor, chronological: true)
+        #expect(rest.map(\.id) == ["b", "c"])
+        #expect(rest.allSatisfy { $0.text == "Observed text" })
+        #expect(try store.searchMoments(from: start, until: start.addingTimeInterval(2), app: "editor").map(\.id) == ["c", "b"])
+    }
+
     @Test func roundTripAndSharedChunkDeletion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -37,6 +850,123 @@ struct VisualMemoryStoreTests {
         #expect(try store.items().count == 1)
         let reopened = try VisualMemoryStore(root: root)
         #expect(try reopened.items().first?.meetingOffset == 12)
+    }
+
+    @Test func rejectsSameWidthToolbar() {
+        let full = CGRect(x: 0, y: 30, width: 1512, height: 900)
+        #expect(VisualMemoryWindowMatch.matches(candidate: full, focused: full, layer: 0))
+        #expect(!VisualMemoryWindowMatch.matches(candidate: CGRect(x: 0, y: 30, width: 1512, height: 32), focused: full, layer: 0))
+        #expect(!VisualMemoryWindowMatch.matches(candidate: full, focused: full, layer: 1))
+    }
+
+    @Test func indexedSearchUsesCaptureTimeAndSurvivesCompaction() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let time = Date(timeIntervalSince1970: 1_792_691_605.921857)
+        var item = VisualMemoryItem(kind: .moment, capturedAt: time, source: "Editor", text: "release checklist", path: "still.heic",
+                                   captureCompletedAt: time.addingTimeInterval(0.2), pixelWidth: 3024, pixelHeight: 1800)
+        try store.save([item])
+        #expect(try store.searchMoments(text: "release", from: time, until: time.addingTimeInterval(1)).map(\.id) == [item.id])
+        #expect(try store.searchMoments(until: time).isEmpty)
+        #expect(try store.searchMoments(text: "\" OR *").isEmpty)
+        item.path = "archive.mp4"; item.frameIndex = 12
+        try store.save([item])
+        let result = try store.searchMoments(text: "release").first
+        #expect(result?.capturedAt == time)
+        #expect(result?.frameIndex == 12)
+        #expect(result?.captureCompletedAt == time.addingTimeInterval(0.2))
+        var db: OpaquePointer?
+        #expect(sqlite3_open_v2(root.appendingPathComponent("catalog.sqlite").path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT captured_at_unix,capture_completed_at_unix,archive_frame_index FROM time_turner_captures", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(abs(sqlite3_column_double(statement, 0) - time.timeIntervalSince1970) < 0.000001)
+        #expect(abs(sqlite3_column_double(statement, 1) - time.addingTimeInterval(0.2).timeIntervalSince1970) < 0.000001)
+        #expect(sqlite3_column_int(statement, 2) == 12)
+        sqlite3_reset(statement)
+
+        try store.delete(ids: [item.id])
+        #expect(try store.searchMoments(text: "release").isEmpty)
+    }
+
+    @Test func readOnlySearchFiltersAppBeforeLimit() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try VisualMemoryStore(root: root)
+        let time = Date(timeIntervalSince1970: 1000)
+        let wanted = VisualMemoryItem(kind: .moment, capturedAt: time, source: "ChatGPT · Plan", bundleID: "com.openai.chat", text: "roadmap", path: "a.heic")
+        let newer = VisualMemoryItem(kind: .moment, capturedAt: time.addingTimeInterval(1), source: "Editor", bundleID: "editor", text: "roadmap", path: "b.heic")
+        try writer.save([wanted, newer])
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.searchMoments(text: "roadmap", from: time, until: time.addingTimeInterval(2), app: "chatgpt", limit: 1).map(\.id) == [wanted.id])
+        #expect(try reader.searchMoments(app: "COM.OPENAI.CHAT").map(\.id) == [wanted.id])
+        #expect(try reader.searchMoments(app: "Chat").isEmpty)
+        #expect(try reader.searchMoments(app: "' OR 1=1 --").isEmpty)
+        #expect(try reader.moment(id: wanted.id) == wanted)
+        #expect(try reader.moment(id: "missing") == nil)
+        #expect(throws: (any Error).self) { try reader.save([newer]) }
+        #expect(throws: (any Error).self) { _ = try VisualMemoryStore(root: root.appendingPathComponent("absent"), readOnly: true) }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("absent").path))
+    }
+
+    @Test func dayNavigationCrossesAppsButNotMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 3, day: 8))!
+        let end = calendar.date(byAdding: .day, value: 1, to: start)!
+        #expect(end.timeIntervalSince(start) == 23 * 3600)
+        let a = VisualMemoryItem(kind: .moment, capturedAt: start.addingTimeInterval(60), source: "Safari", bundleID: "safari", path: "a.heic")
+        let b = VisualMemoryItem(kind: .moment, capturedAt: start.addingTimeInterval(180), source: "Editor", bundleID: "editor", path: "b.heic")
+        let tomorrow = VisualMemoryItem(kind: .moment, capturedAt: end, source: "Tomorrow", path: "c.heic")
+        let ordered = VisualMemoryDayTimeline.moments([tomorrow, b, a], on: start, calendar: calendar)
+        #expect(ordered.map(\.id) == [a.id, b.id])
+        let range = VisualMemoryDayTimeline.captureInterval(in: ordered)
+        #expect(range?.start == a.capturedAt)
+        #expect(range?.end == b.capturedAt)
+        #expect(range?.duration == 120)
+        #expect(VisualMemoryDayTimeline.captureInterval(in: [a])?.duration == 1)
+        #expect(VisualMemoryDayTimeline.captureInterval(in: [a])?.end == a.capturedAt)
+        #expect(VisualMemoryDayTimeline.captureInterval(in: []) == nil)
+        #expect(VisualMemoryDayTimeline.nearestIndex(in: ordered, to: start.addingTimeInterval(120)) == 0)
+        #expect(VisualMemoryDayTimeline.nearestIndex(in: ordered, to: start.addingTimeInterval(150)) == 1)
+        #expect(VisualMemoryDayTimeline.nearestIndex(in: [], to: start) == nil)
+    }
+
+    @Test func scrubScaleCompressesOvernightGapsAndPreservesTimes() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let dates = [0.0, 30, 60, 36_000, 36_030].map { start.addingTimeInterval($0) }
+        let scale = VisualMemoryScrubScale(dates: dates)
+        #expect(scale.compressesGaps)
+        #expect(scale.fraction(for: dates[2]) > 0.25)
+        for date in dates {
+            #expect(abs(scale.date(at: scale.fraction(for: date))!.timeIntervalSince(date)) < 0.001)
+        }
+        let insideGap = start.addingTimeInterval(18_000)
+        #expect(abs(scale.date(at: scale.fraction(for: insideGap))!.timeIntervalSince(insideGap)) < 0.001)
+        #expect(scale.date(at: -1) == dates.first)
+        #expect(scale.date(at: 2) == dates.last)
+        #expect(VisualMemoryScrubScale(dates: []).date(at: 0.5) == nil)
+        #expect(VisualMemoryScrubScale(dates: [start]).date(at: 0.5) == start)
+        #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
+    }
+
+    @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }
+        let scale = VisualMemoryScrubScale(dates: dates)
+        for index in stride(from: 0, to: dates.count, by: 37) {
+            let expected = Double(index) / Double(dates.count - 1)
+            #expect(abs(scale.fraction(for: dates[index]) - expected) < 0.000001)
+            #expect(abs(scale.date(at: expected)!.timeIntervalSince(dates[index])) < 0.000001)
+        }
+        #expect(scale.fraction(for: start.addingTimeInterval(-1)) == 0)
+        #expect(scale.fraction(for: dates.last!.addingTimeInterval(1)) == 1)
+        let duplicates = VisualMemoryScrubScale(dates: [start, start, start.addingTimeInterval(10), start.addingTimeInterval(10), start.addingTimeInterval(20)])
+        #expect(duplicates.fraction(for: start.addingTimeInterval(10)) == 0.5)
+        #expect(duplicates.date(at: 0.5) == start.addingTimeInterval(10))
     }
 
     @Test func meetingResumeDoesNotOverrideExplicitVideoPause() {

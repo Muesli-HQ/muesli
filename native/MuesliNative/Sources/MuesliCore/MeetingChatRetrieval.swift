@@ -7,9 +7,19 @@ public struct MeetingChatRetrieval: Sendable {
     private let useFTS: Bool
     public init(databaseURL: URL, useFTS: Bool = true) { self.databaseURL = databaseURL; self.useFTS = useFTS }
 
+    private let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
+    private func connection<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
+        do {
+            try ContentPrivacy.shared.beginWrite(privacy)
+        } catch ContentPrivacy.Failure.ephemeralContent {
+            return try EphemeralChatDatabase.withConnection(url: databaseURL, session: privacy, operation: operation)
+        }
+        defer { ContentPrivacy.shared.endWrite() }
+        return try DictationStore(databaseURL: databaseURL).withChatDatabase(operation)
+    }
     public func retrieve(question: String, scope: MeetingChatScope, priorQuestions: [String] = [], broadRecap: Bool = false, includeScopeContext: Bool = false) throws -> MeetingChatEvidence {
-        try DictationStore(databaseURL: databaseURL).withChatDatabase { db in
-            let ftsAvailable = useFTS && prepareFTS(db: db)
+        try connection { db in
+            let ftsAvailable = useFTS && ContentPrivacy.shared.permits(privacy) && prepareFTS(db: db)
             var metrics = try reconcileIndex(db: db)
             // Warm searches use a read transaction; they neither load meeting text nor take a writer lock.
             try MeetingChatSQL.execute("BEGIN DEFERRED", db: db)
@@ -86,8 +96,8 @@ public struct MeetingChatRetrieval: Sendable {
 
     /// Can be scheduled in the background before the user asks their first question.
     @discardableResult public func prepareIndex() throws -> MeetingChatRetrievalMetrics {
-        try DictationStore(databaseURL: databaseURL).withChatDatabase { db in
-            if useFTS { _ = prepareFTS(db: db) }
+        try connection { db in
+            if useFTS && ContentPrivacy.shared.permits(privacy) { _ = prepareFTS(db: db) }
             return try reconcileIndex(db: db)
         }
     }

@@ -13,7 +13,7 @@ struct MeetingPreparationBanner: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Preparing transcription")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(MuesliTheme.font(size: 13, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textPrimary)
                 Text(status ?? "Meeting transcription will start shortly.")
                     .font(MuesliTheme.caption())
@@ -27,8 +27,11 @@ struct MeetingPreparationBanner: View {
                 Label("Cancel", systemImage: "xmark.circle")
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .help("Cancel meeting preparation")
         }
         .padding(MuesliTheme.spacing12)

@@ -2,7 +2,7 @@ import Foundation
 
 public struct LocalStorageUsage: Sendable {
     public enum Category: String, CaseIterable, Sendable {
-        case models, meetingAudio, meetingVideo, database, waveformCache, other
+        case models, meetingAudio, meetingVideo, feedbackCaptures, database, waveformCache, other
     }
     public struct Entry: Identifiable, Sendable {
         public var id: String { name }
@@ -62,6 +62,7 @@ public struct LocalStorageUsage: Sendable {
     }
 
     public static func category(for path: String) -> Category {
+        if path.hasPrefix("feedback-captures/") { return .feedbackCaptures }
         if path.hasPrefix("meeting-recordings/videos/") {
             return path.hasSuffix(".mp4") ? .meetingVideo : .other
         }

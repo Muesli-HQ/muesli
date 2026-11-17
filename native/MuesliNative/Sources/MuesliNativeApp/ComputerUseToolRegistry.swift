@@ -89,7 +89,7 @@ enum ComputerUseToolRegistry {
             "app_bundle_id": .string("Optional app bundle to activate before capture."),
             "window_id": .integer("Optional window id hint."),
         ], risk: "safe read-only"),
-        definition(.moveCursor, "Move the visible Muesli CUA cursor to a screenshot coordinate without clicking. Use this before uncertain coordinate clicks to show intent.", required: ["screenshot_id", "x", "y"], properties: [
+        definition(.moveCursor, "Move the visible muesli CUA cursor to a screenshot coordinate without clicking. Use this before uncertain coordinate clicks to show intent.", required: ["screenshot_id", "x", "y"], properties: [
             "screenshot_id": .string("Current screenshot id."),
             "x": .number("Screenshot pixel x coordinate."),
             "y": .number("Screenshot pixel y coordinate."),
@@ -128,7 +128,7 @@ enum ComputerUseToolRegistry {
             "value": .string("Value to set."),
             "label": .string("Human target label for trace."),
         ], risk: "local validation only; no send/submit bypass"),
-        definition(.typeText, "Type literal text using keyboard input. Prefer app_name/app_bundle_id and, when available, element_index/element_id so Muesli can activate the app and focus the editable target before typing.", required: ["text"], properties: [
+        definition(.typeText, "Type literal text using keyboard input. Prefer app_name/app_bundle_id and, when available, element_index/element_id so muesli can activate the app and focus the editable target before typing.", required: ["text"], properties: [
             "app_name": .string("Optional target app name, for example Notes."),
             "app_bundle_id": .string("Optional target app bundle identifier, for example com.apple.Notes."),
             "element_index": .integer("Optional temporary editable element index from the latest state."),

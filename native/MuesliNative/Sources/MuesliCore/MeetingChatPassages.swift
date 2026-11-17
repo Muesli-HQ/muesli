@@ -83,3 +83,12 @@ public enum MeetingChatPassages {
         return passages
     }
 }
+
+extension MeetingChatSourceSnapshot {
+    public var titlePassage: MeetingChatPassage {
+        let excerpt = String(title.prefix(200))
+        return .init(id: "\(meetingID):title", sourceKey: "", meetingID: meetingID, title: title,
+                     startDate: startDate, kind: .title, excerpt: excerpt, range: .init(location: 0, length: excerpt.utf16.count),
+                     timestamp: nil, revision: revision)
+    }
+}

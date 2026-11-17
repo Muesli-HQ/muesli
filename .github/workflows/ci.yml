@@ -15,7 +15,7 @@ on:
 
 concurrency:
   # Ignore unrelated labels without cancelling real checks; warming is independent of main CI.
-  group: ci-${{ github.ref }}${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && format('-ignored-label-{0}', github.run_id) || (inputs.warm_blacksmith_cache && '-blacksmith-warm' || '') }}
+  group: ci-${{ github.ref }}${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith' && github.event.label.name != 'self-host') && format('-ignored-label-{0}', github.run_id) || (inputs.warm_blacksmith_cache && '-blacksmith-warm' || '') }}
   cancel-in-progress: true
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
   # checks live in security.yml and are intentionally not path-filtered here.
   changes:
     if: >-
-      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith' && github.event.label.name != 'self-host')
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -39,6 +39,7 @@ jobs:
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
+      self_host: ${{ vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.event_name == 'pull_request' && github.actor == 'pHequals7' && github.triggering_actor == 'pHequals7' && github.event.pull_request.user.login == 'pHequals7' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'self-host') && !contains(github.event.pull_request.labels.*.name, 'ci:blacksmith') }}
       warm_blacksmith_cache: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
       cache_write_allowed: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true) }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
@@ -95,7 +96,7 @@ jobs:
 
   classifier-tests:
     if: >-
-      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
+      !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith' && github.event.label.name != 'self-host')
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -123,6 +124,9 @@ jobs:
       - name: Test append-only appcast updates
         run: python3 ./scripts/test_merge_appcast_item.py
 
+      - name: Test private macOS check failure propagation and cache retention
+        run: bash scripts/test_ci_macos_check.sh
+
       - name: Test LocalVQE runtime validation
         run: ./scripts/test_localvqe_runtime_validation.sh
 
@@ -146,6 +150,7 @@ jobs:
       cache_ready: ${{ steps.save-release.outcome == 'success' || (steps.lookup-release.outcome == 'success' && steps.lookup-release.outputs.cache-hit == 'true') }}
       cache_backend: ${{ runner.environment == 'github-hosted' && 'github' || 'blacksmith' }}
     if: >-
+      needs.changes.outputs.self_host != 'true' &&
       needs.changes.outputs.native_or_packaging == 'true' &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: >-
@@ -156,7 +161,7 @@ jobs:
            (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
             inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -359,7 +364,7 @@ jobs:
   # dictation-transcription; a separate same-toolchain job would duplicate it.
   test_shards:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -388,12 +393,85 @@ jobs:
           swift --version
 
       - name: Run test shard
-        run: bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}"
+        run: |
+          set -o pipefail
+          if [[ "${{ matrix.shard }}" == core ]]; then
+            bash ./scripts/sample_core_test_hang.sh &
+            watchdog_pid=$!
+            trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+          fi
+          bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}" 2>&1 | tee "$RUNNER_TEMP/test-shard.log"
+
+      - name: Isolate a core process crash
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          if grep -q 'unexpected signal code 11' "$RUNNER_TEMP/test-shard.log"; then
+            python3 scripts/diagnose_core_crash.py
+          else
+            echo 'Core did not terminate with signal 11; skipping crash isolation.'
+          fi
+
+      - name: Collect core test crash reports
+        if: failure() && matrix.shard == 'core'
+        continue-on-error: true
+        run: |
+          destination="${RUNNER_TEMP}/core-test-crashes"
+          mkdir -p "$destination"
+          # ReportCrash may finish writing after the test process has exited.
+          for attempt in {1..10}; do
+            for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              if [[ -d "$directory" ]]; then
+                find "$directory" -maxdepth 1 -type f -mmin -30 \
+                  \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
+                     -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
+                  -exec cp {} "$destination/" \; || true
+              fi
+            done
+            [[ -n "$(ls -A "$destination")" ]] && break
+            sleep 1
+          done
+
+      - name: Upload core test crash reports
+        if: failure() && matrix.shard == 'core'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-crashes
+          path: ${{ runner.temp }}/core-test-crashes/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  m5-tests:
+    name: m5-macos ${{ github.sha }}
+    needs: changes
+    if: needs.changes.outputs.self_host == 'true' && needs.changes.outputs.native_or_packaging == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    permissions:
+      statuses: read
+    steps:
+      - name: Wait for private runner result for this CI attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          context="m5-macos/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA"
+          for ((i=0; i<300; i++)); do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/statuses?per_page=100" |
+              jq -r --arg context "$context" 'map(select(.context == $context and .creator.login == "github-actions[bot]")) | first.state // "pending"')
+            case "$state" in
+              success) exit 0 ;;
+              failure|error) echo "::error::Private M5 test job failed"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "::error::Timed out waiting for the private runner. Remove self-host for hosted CI."
+          exit 1
 
   # Dependency test targets are not executed by the application's test shards.
   ai-elements:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -419,7 +497,7 @@ jobs:
   # Packaged CLI smoke test — verify the app bundle contains muesli-cli
   cli-smoke:
     needs: changes
-    if: needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
+    if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -484,10 +562,10 @@ jobs:
   # Unrelated labels must not publish a skipped check named ci-gate.
   # Warm-up has its own name because it does not execute the full test suite.
   ci-gate:
-    name: ${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith') && 'ignored-label-event' || (inputs.warm_blacksmith_cache && 'blacksmith-cache-warm' || 'ci-gate') }}
+    name: ${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith' && github.event.label.name != 'self-host') && 'ignored-label-event' || (inputs.warm_blacksmith_cache && 'blacksmith-cache-warm' || 'ci-gate') }}
     if: >-
-      always() && !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith')
-    needs: [changes, classifier-tests, build_release, release_cache_cleanup, test_shards, ai-elements, cli-smoke, update-flow]
+      always() && !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:blacksmith' && github.event.label.name != 'self-host')
+    needs: [changes, classifier-tests, build_release, release_cache_cleanup, m5-tests, test_shards, ai-elements, cli-smoke, update-flow]
     runs-on: >-
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
@@ -507,8 +585,12 @@ jobs:
 
       - name: Check result
         env:
-          RELEASE_REQUIRED: ${{ needs.changes.outputs.native_or_packaging == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+          RELEASE_REQUIRED: ${{ needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
         run: |
+          if [[ "${{ needs.changes.outputs.self_host }}" == true && "${{ needs.changes.outputs.native_or_packaging }}" == true && "${{ needs.m5-tests.result }}" != success ]]; then
+            echo "Required M5 macOS checks did not succeed."
+            exit 1
+          fi
           if [[ "$RELEASE_REQUIRED" == "true" && "${{ needs.build_release.result }}" != "success" ]]; then
             echo "Required release build did not succeed."
             exit 1

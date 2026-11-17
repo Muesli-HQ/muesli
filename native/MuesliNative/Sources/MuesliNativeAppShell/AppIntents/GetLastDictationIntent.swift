@@ -3,7 +3,7 @@ import AppIntents
 @available(macOS 13.0, *)
 struct GetLastDictationIntent: AppIntent {
     static var title: LocalizedStringResource = "Get Last Dictation"
-    static var description = IntentDescription("Returns the text of your most recent Muesli dictation.")
+    static var description = IntentDescription("Returns the text of your most recent muesli dictation.")
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> {
         let store = try MuesliShortcutsStore.open()

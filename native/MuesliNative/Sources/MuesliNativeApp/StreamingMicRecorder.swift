@@ -70,6 +70,7 @@ struct StreamingMicRecorderRunState: Equatable {
 final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictationLatencyReporting, PausableStreamingDictationRecording, MicrophoneCaptureReporting {
     var onCapturedAudio: ((MicrophoneCaptureAudio) -> Void)?
     var shouldAdmitSamples: (() -> Bool)?
+    var nativeStopDrainRange: (() -> Range<Int64>?)?
     /// Called with 4096-sample Float chunks (256ms at 16kHz) for VAD processing.
     var onAudioBuffer: (([Float]) -> Void)?
     var onRecordingFailed: ((Error) -> Void)?
@@ -373,7 +374,8 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         }
         let capture = try BufferedMicrophoneCapture(
             format: hwFormat, queue: processingQueue, maximumFrames: maximumFrames,
-            shouldAdmitSamples: shouldAdmitSamples ?? { true }
+            shouldAdmitSamples: shouldAdmitSamples ?? { true },
+            nativeStopDrainRange: { [weak self] in self?.nativeStopDrainRange?() }
         ) { buffer, start in
             timeline.append(frames: Int(buffer.frameLength), rate: buffer.format.sampleRate, start: start)
             convert(buffer)
@@ -636,8 +638,9 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         runState.markStopped()
         removeConfigurationChangeObserverIfNeeded()
 
-        bufferedCapture?.close()
+        if nativeStopDrainRange?() == nil { bufferedCapture?.close() }
         stopEngineAndRemoveTap()
+        bufferedCapture?.close()
         // Flush every buffer accepted before Stop, including callback delivery,
         // before invalidating the generation or finalizing the WAV header.
         drainBufferedCapture(finishingConversion: true)

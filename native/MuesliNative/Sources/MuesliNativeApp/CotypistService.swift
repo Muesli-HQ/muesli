@@ -27,6 +27,7 @@ final class CotypistService {
     /// Called after an accepted suggestion is recorded, to refresh the timeline.
     var onAccepted: () -> Void = {}
 
+    private let analytics = CotypistAnalytics()
     private var server: CotypistSocketServer?
     private var engineTask: Task<CotypistEngine, Error>?
     /// The model `engineTask` loads; another selection replaces the engine and frees the old one.
@@ -39,6 +40,12 @@ final class CotypistService {
     /// reply and returned with its outcome), so an outcome is recorded with the sentence it completed.
     private var recentContexts: [(id: String, before: String, model: CotypistModel)] = []
     private let requests = CotypistRequestLedger()
+    private var privacyEpoch = UUID()
+    func privacyChanged() {
+        privacyEpoch = UUID()
+        screenText.removeAll(); screenInFlight.removeAll(); recentContexts.removeAll()
+        engineTask?.cancel(); engineTask = nil
+    }
 
     static var socketURL: URL { AppIdentity.supportDirectoryURL.appendingPathComponent("cotypist.sock") }
 
@@ -140,6 +147,7 @@ final class CotypistService {
     // MARK: - Requests
 
     private func handle(_ request: [String: Any]) async -> [String: Any] {
+        guard !ContentPrivacy.shared.isEnabled else { return ["rejection": "Privacy mode"] }
         switch request["type"] as? String {
         case "suggest": return await suggest(request)
         case "outcome":
@@ -154,7 +162,11 @@ final class CotypistService {
     private func suggest(_ request: [String: Any]) async -> [String: Any] {
         let config = config()
         let helperSettings: [String: Any] = ["midWordDelay": config.cotypistCompleteWords ? config.cotypistWordPause.seconds : 0]
-        return helperSettings.merging(await suggestion(request, config: config)) { $1 }
+        let epoch = privacyEpoch
+        let privacy = ContentPrivacy.shared.capture()
+        let result = await ContentPrivacy.$session.withValue(privacy) { await suggestion(request, config: config) }
+        guard epoch == privacyEpoch, !ContentPrivacy.shared.isEnabled else { return ["rejection": "Privacy mode"] }
+        return helperSettings.merging(result) { $1 }
     }
 
     private func suggestion(_ request: [String: Any], config: AppConfig) async -> [String: Any] {
@@ -303,6 +315,8 @@ final class CotypistService {
     /// keystroke). OCR only when it belongs to the focused app and document, and never while a
     /// meeting records (screenshots break its system-audio capture).
     private func refreshScreenIfNeeded(bundleID: String, document: String) {
+        guard !ContentPrivacy.shared.isEnabled else { return }
+        let epoch = privacyEpoch
         let cached = screenText[bundleID]
         let age = Date().timeIntervalSince(cached?.at ?? .distantPast)
         guard !bundleID.isEmpty, !screenInFlight.contains(bundleID),
@@ -311,9 +325,14 @@ final class CotypistService {
         Task { @MainActor in
             let captured = await DictationContextCapture.capture(
                 includeScreenOCR: true,
-                shouldCaptureScreenOCR: { await MainActor.run { CotypistService.shared.isScreenCaptureAllowed() } },
+                shouldCaptureScreenOCR: {
+                    await MainActor.run {
+                        self.privacyEpoch == epoch && !ContentPrivacy.shared.isEnabled && self.isScreenCaptureAllowed()
+                    }
+                },
                 allowTitleFallback: true
             )
+            guard epoch == privacyEpoch, !ContentPrivacy.shared.isEnabled else { return }
             screenInFlight.remove(bundleID)
             let text = captured.bundleID == bundleID ? Self.promptReadyScreenText(captured.ocrText) : ""
             screenText[bundleID] = (text, Date(), captured.documentIdentifier)
@@ -357,23 +376,31 @@ final class CotypistService {
     /// continued (the user's own text, kept to that one sentence, in the local database only).
     private func record(_ message: [String: Any]) {
         let id = message["id"] as? String
-        let suggested = recentContexts.last { $0.id == id }
-        let before = suggested?.before ?? ""
+        guard !ContentPrivacy.shared.isEnabled, let suggested = recentContexts.last(where: { $0.id == id }) else { return }
+        let before = suggested.before
         guard let store, let event = Self.event(from: message, contextBefore: Self.sentence(endingAt: before),
-                                                model: (suggested?.model ?? config().cotypistModel).rawValue) else { return }
+                                                model: suggested.model.rawValue) else { return }
+        analytics.record(accepted: !event.acceptedText.isEmpty,
+            model: .catalog(provider: "local", model: event.model))
         // A SQLite write transaction: off the main actor, which only hears back to refresh the timeline.
+        let privacy = ContentPrivacy.shared.capture()
         Task.detached(priority: .utility) {
             do {
-                try store.recordCotypistSuggestion(event)
+                try ContentPrivacy.$session.withValue(privacy) {
+                    _ = try store.recordCotypistSuggestion(event)
+                }
                 if !event.acceptedText.isEmpty { await MainActor.run { CotypistService.shared.onAccepted() } }
+            } catch ContentPrivacy.Failure.ephemeralContent {
+                return
             } catch {
-                fputs("[cotypist] could not record suggestion: \(error)\n", stderr)
+                fputs("[cotypist] could not record suggestion: \(ContentPrivacy.shared.logDescription(error))\n", stderr)
             }
         }
     }
 
     /// The model is the one that made the suggestion, even if the user switches before the outcome.
     private func remember(before: String, id: String, model: CotypistModel) {
+        guard ContentPrivacy.shared.permits(ContentPrivacy.session) else { return }
         recentContexts.append((id, before, model))
         if recentContexts.count > 32 { recentContexts.removeFirst(recentContexts.count - 32) }
     }

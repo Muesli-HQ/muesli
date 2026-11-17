@@ -1623,7 +1623,7 @@ open class LLM: ObservableObject {
     }
 
     /// Returns the stop reason while still holding the request's availability gate.
-    public func getCompletionResult(from input: borrowing String, maxNewTokens: Int? = nil) async -> CompletionResult {
+    public func getCompletionResult(from input: borrowing String, maxNewTokens: Int? = nil, thinking: ThinkingMode = .none) async -> CompletionResult {
 
         guard isAvailable else { return CompletionResult(text: "LLM is being used", stopReason: .busy) }
         
@@ -1632,7 +1632,7 @@ open class LLM: ObservableObject {
 
         await resetContextIfHistoryIsEmpty()
         
-        let response = await core.generateResponseStream(from: input, maxNewTokens: maxNewTokens)
+        let response = await core.generateResponseStream(from: input, thinking: thinking, maxNewTokens: maxNewTokens)
         var output = ""
         
         for await content in response {

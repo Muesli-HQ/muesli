@@ -147,5 +147,7 @@ result+='''        }
     }
 }
 '''
-(ROOT/'Sources/AIElementsSwift/AIIcon.swift').write_text(result)
+output = ROOT / 'Sources/AIElementsSwift/AIIcon.swift'
+if not output.exists() or output.read_text() != result:
+    output.write_text(result)
 print(f'Generated {len(files)} Lucide icons')

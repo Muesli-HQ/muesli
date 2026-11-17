@@ -1,6 +1,23 @@
 import Foundation
 
 enum ScheduledMeetingNotificationPolicy {
+    enum AutoRecordDecision: Equatable {
+        case keepCurrentRecording
+        case askBeforeRecording
+        case startRecording
+    }
+
+    static func autoRecordDecision(isRecording: Bool, hasDetectedCall: Bool, hasCallAssertion: Bool?) -> AutoRecordDecision {
+        if isRecording { return .keepCurrentRecording }
+        if hasDetectedCall || hasCallAssertion != false { return .askBeforeRecording }
+        return .startRecording
+    }
+
+    static func shouldNotifyAboutRecordingConflict(recordingRoom: String?, scheduledRoom: String?) -> Bool {
+        guard let recordingRoom, let scheduledRoom else { return true }
+        return recordingRoom != scheduledRoom
+    }
+
     static let defaultLeadTime: TimeInterval = 0
     static let startPromptGracePeriod: TimeInterval = 90
 

@@ -11,7 +11,7 @@ enum MeetingMicHealthEpisodeKind: String, Equatable {
     case userMuted = "meeting.microphone.user_muted"
 }
 
-enum MeetingMicHandoffOutcome: String, Equatable {
+enum MeetingMicHandoffOutcome: String, Equatable, Sendable {
     case promoted
     case timedOut = "timed_out"
     case failed = "failed"

@@ -5,6 +5,25 @@ import Testing
 
 @Suite("RouteAwareDictationRecorder")
 struct RouteAwareDictationRecorderTests {
+    @Test("late callbacks retain the original run's callback target")
+    func callbacksKeepRunOwnership() throws {
+        let system = FakeRouteAwareChildRecorder()
+        let appScoped = FakeRouteAwareChildRecorder()
+        let recorder = RouteAwareDictationRecorder(systemDefaultRecorder: system, appScopedRecorder: appScoped)
+        var firstRun = 0, secondRun = 0
+        recorder.onFirstCapturedAudioBuffer = { _ in firstRun += 1 }
+        _ = try recorder.start()
+        let lateFirstBuffer = system.onFirstCapturedAudioBuffer
+        recorder.cancel()
+        recorder.onFirstCapturedAudioBuffer = { _ in secondRun += 1 }
+        _ = try recorder.start()
+        lateFirstBuffer?(Date())
+        #expect(firstRun == 1)
+        #expect(secondRun == 0)
+        system.onFirstCapturedAudioBuffer?(Date())
+        #expect(secondRun == 1)
+    }
+
     @Test("default input uses system default recorder")
     func defaultInputUsesSystemDefaultRecorder() throws {
         let system = FakeRouteAwareChildRecorder()

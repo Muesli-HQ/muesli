@@ -248,7 +248,8 @@ actor BodhanTranscriber {
         try Task.checkCancellation()
         return try BodhanCoreML(root: selected.directory, model: selected)
     }, runtimeLoader: @escaping RuntimeLoader = { selected, progress, progressSnapshot in
-        try await selected.download(progress: progress, progressSnapshot: progressSnapshot)
+        if ManagedASRModelDownloader.localOnly { try await selected.validateCachedArtifacts() }
+        else { try await selected.download(progress: progress, progressSnapshot: progressSnapshot) }
         try Task.checkCancellation()
         let loading = ModelDownloadProgress.preparing(modelID: selected.rawValue, message: "Loading " + selected.name + "…")
         progress?(0.9, loading.message)

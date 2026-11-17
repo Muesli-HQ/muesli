@@ -8,7 +8,7 @@ struct QwenMLXDownloadTests {
     @Test func publishedArtifactsAndCacheReuse() async throws {
         guard let root = ProcessInfo.processInfo.environment["MUESLI_QWEN_MLX_DOWNLOAD_VERIFY_DIR"] else { return }
         for option in [PostProcessorOption.finetunedV4, .qwenV12] {
-            let descriptor = try #require(option.managedModel)
+            let descriptor = try #require(option.cleanupSlot?.bundled.artifact)
             let directory = URL(fileURLWithPath: root).appendingPathComponent(option.id)
             let manifest = descriptor.manifest(id: option.id)
             try await ModelDownloadCoordinator.shared.download(manifest, to: directory)

@@ -174,3 +174,5 @@ Swift adaptations are licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE)
 - **Lucide Icons and Contributors** supply the icon artwork under ISC, including Feather-derived artwork under MIT, copyright Cole Bemis. See the complete [Lucide/Feather notices](Licenses/Lucide-LICENSE).
 
 Notices are also bundled in the package resources. This project is a SwiftUI adaptation with partial upstream behavior coverage, not an official Vercel release or an API-compatible replacement for the TypeScript library.
+
+`AIAttachmentPreview` presents a supplied thumbnail above a file name/detail, with optional removal. Hosts own asynchronous loading and bounded memory caching; this view never reads files.

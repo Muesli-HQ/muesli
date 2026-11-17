@@ -160,6 +160,8 @@ implicitly belong in CloudKit, telemetry, exports, or CLI output.
 Read [docs/meeting-chat-architecture.md](docs/meeting-chat-architecture.md) for
 provider adapters, tool contracts, memory budgets, and source validation.
 
+- Let the model interpret prompts, choose applicable skills and tools, and supply structured arguments. Never match words or phrases in a user question to route intent, infer dates or silently change retrieval scope. The harness validates arguments and permissions, executes registered operations, and verifies evidence. Explicit UI selections and skill tags are structured user input.
+- For new analytical questions over existing history, expose a documented relation or reusable data primitive when needed and let the model compose its SQL. A new question alone does not warrant a new tool, mode, or keyword rule. Exercise the same query contract on both provider paths.
 - Keep thread identity, selected/anchor meetings, and evidence dependencies
   separate. Follow-ups may use valid conversation context without new attachments;
   new meeting-based claims require retrieval and current citations. An empty
@@ -182,6 +184,48 @@ provider adapters, tool contracts, memory budgets, and source validation.
   explicit new-chat actions, accepted sends, or required source invalidation
   should reset the relevant draft.
   Busy-state recovery must not retarget a selected chat or a nonempty draft.
+  General new drafts start with no meetings selected. Only an unused implicit
+  draft follows the currently displayed meeting or meeting folder; explicit
+  selections (including empty), typed questions, files and existing chats retain
+  their scope. All saved meetings is opt-in. Date pickers and scope mutations
+  reject future ranges; empty individual selections never widen to the archive.
+
+## Typography and design system
+
+The established muesli visual language is the default for all new and revised UI.
+Read [the design system](design-system/README.md) and keep its visual reference in
+sync with token or pattern changes.
+
+- Use bundled Nunito Sans through `MuesliTheme` for SwiftUI text and `AppFonts`
+  for AppKit, including onboarding, settings, chat and auxiliary windows. Keep
+  SF Symbols in the system symbol font and code in a system monospaced font.
+  Reuse font registration and caches; do not load/register fonts per view render.
+- Use the shared type hierarchy: page title 26 bold; section titles 20/18
+  semibold; headline 15 semibold; reading 15; body/row labels 14; callout 13;
+  helper text 12; metadata 11. Settings group headings use 12 semibold.
+  Do not shrink instructions or warnings into metadata to make them fit.
+- Keep copy concise. Omit subtitles that repeat a label; keep necessary
+  consequences, prerequisites and privacy disclosures. Put optional setup detail
+  in disclosure rows. Use `SettingsRow`, `SettingsSectionHeading` and
+  `SettingsNote`; align control columns and stack them at narrow widths.
+- Favor restrained tactile depth: layered surfaces, subtle borders, rounded
+  controls and clear selection states. Avoid ornamental blur, gradients,
+  shadows or animation that add rendering cost or impair legibility. Preserve
+  native focus, hit testing, selection, IME and undo; honor Reduce Motion.
+- Use shared semantic colors in Light, Dark, System and Ultra Dark. Ultra Dark
+  has black backgrounds, white primary accents and stronger text/borders;
+  switches use `MuesliTheme.toggleAccent` to retain the saved color. Filled
+  accent buttons use `onAccent`. Preserve meaningful recording/error colors.
+  Ultra Dark is selectable only in Settings → Appearance.
+- User-facing branding is lowercase `muesli`. Never rename bundle identifiers,
+  executable names, Application Support directories, database paths or keychain
+  identities as part of copy cleanup.
+- Settings order is General, Dictations, Meetings, Appearance, Experimental.
+  iCloud Sync belongs in General; Computer Use, Quill and Cotypist belong in
+  Experimental. The meeting-chat sidebar destination is Chat.
+- Verify normal and narrow windows and all affected themes. Native text inserted
+  by presets, dictation or restoration must use the same adaptive typography as
+  typed text; plain text-storage replacement must not drop font/color attributes.
 
 ## Native UI and Recording Lifecycle
 
@@ -213,6 +257,15 @@ require an app rebuild. Report validation against the actual tested commit and
 app lane, and distinguish pending/skipped review checks from approvals.
 
 ## Finite Settings (UI and Voice)
+
+Settings rendering must use `AppState.settingsModelAvailability` and the surface-owned
+`SettingsPresentationCatalog`; do not probe model files or executable paths from view
+bodies or presentation availability closures. Refresh disk-backed facts off the main
+actor at launch, app activation, model-file mutation completion, and executable-path
+changes. Keep live validation in the shared mutation executor. Publish controller config
+through `publishConfig()` so equal values do not invalidate the observation graph.
+Tour scrolling must be cancellable and scoped to the active target and destination pane;
+do not enqueue animated scrolling from repeated appearance callbacks.
 
 Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
 Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,

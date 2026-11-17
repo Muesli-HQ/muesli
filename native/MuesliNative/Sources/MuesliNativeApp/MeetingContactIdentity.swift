@@ -36,10 +36,11 @@ enum MeetingContactIdentity {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return MeetingParticipantDraft(
-            participantIdentifier: normalizedEmail.flatMap { $0.isEmpty ? nil : "email:\($0)" }
-                ?? "contact:\(contact.identifier)",
+            participantIdentifier: "contact:\(contact.identifier)",
             displayName: displayName(for: contact),
-            emailAddress: normalizedEmail
+            emailAddress: normalizedEmail,
+            emailAddresses: contact.isKeyAvailable(CNContactEmailAddressesKey)
+                ? contact.emailAddresses.map { $0.value as String } : []
         )
     }
 
@@ -55,7 +56,8 @@ enum MeetingContactIdentity {
         return MeetingParticipantDraft(
             participantIdentifier: selectedParticipant.participantIdentifier,
             displayName: displayName,
-            emailAddress: resolvedParticipant.emailAddress ?? selectedParticipant.emailAddress
+            emailAddress: resolvedParticipant.emailAddress ?? selectedParticipant.emailAddress,
+            emailAddresses: resolvedParticipant.emailAddresses + selectedParticipant.emailAddresses
         )
     }
 

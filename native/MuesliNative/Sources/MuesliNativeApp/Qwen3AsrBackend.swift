@@ -1,3 +1,4 @@
+import AVFoundation
 import FluidAudio
 
 import Foundation
@@ -127,8 +128,26 @@ actor Qwen3AsrTranscriber {
         guard let manager else { throw TranscriberError.notLoaded }
         let start = CFAbsoluteTimeGetCurrent()
         let converter = AudioConverter()
-        let samples = try converter.resampleAudioFile(wavURL)
-        let text = try await manager.transcribe(audioSamples: samples, language: language)
+        func decode(_ url: URL) async throws -> String {
+            try Task.checkCancellation()
+            let samples = try converter.resampleAudioFile(url)
+            return try await manager.transcribe(audioSamples: samples, language: language)
+        }
+        let file = try AVAudioFile(forReading: wavURL)
+        let limit = MuesliQwen3AsrConfig.maxAudioSeconds
+        let text: String
+        if Double(file.length) <= file.processingFormat.sampleRate * limit {
+            text = try await decode(wavURL)
+        } else {
+            let reader = try RecordingAudioWindowReader(url: wavURL, seconds: limit, overlapSeconds: 0, quietCuts: true)
+            defer { reader.close() }
+            var parts: [String] = []
+            while let window = try reader.next() {
+                let part = try await decode(window.url).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !part.isEmpty { parts.append(part) }
+            }
+            text = parts.joined(separator: " ")
+        }
         let processingTime = CFAbsoluteTimeGetCurrent() - start
         return (text, processingTime)
     }

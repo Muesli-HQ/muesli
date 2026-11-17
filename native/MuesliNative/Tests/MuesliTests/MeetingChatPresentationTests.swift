@@ -77,7 +77,11 @@ struct MeetingChatPresentationTests {
         let short = MeetingChatComposerLayout.height(for: "Hello", width: 500)
         let multiline = MeetingChatComposerLayout.height(for: "First line\nSecond line\nThird line", width: 500)
         let long = MeetingChatComposerLayout.height(for: String(repeating: "Long question about meetings. ", count: 100), width: 300)
-        #expect(short == 34)
+        // Keep a compact single line while accommodating the bundled font's metrics.
+        #expect(short >= 34 && short <= 40)
+        let label = NSTextField(labelWithString: "Hello")
+        label.font = AppFonts.regular(14)
+        #expect(short >= label.intrinsicContentSize.height + 16)
         #expect(multiline > short)
         #expect(long == 144)
     }
@@ -87,6 +91,25 @@ struct MeetingChatPresentationTests {
         #expect(String(rendered.characters) == "Ship Friday [1]")
         #expect(rendered.runs.compactMap(\.link).count == 1)
     }
+    @Test(arguments: [false, true])
+    func presetAndRestoredDraftsKeepAdaptiveTextColor(resetUndo: Bool) throws {
+        let editor = MeetingChatUndoTestEditor()
+        editor.isRichText = false
+        editor.typingAttributes = [.foregroundColor: NSColor.black]
+        MeetingChatComposerTextSync.apply("List my next steps", to: editor, resetUndo: resetUndo)
+        let color = try #require(editor.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        #expect(color == .labelColor)
+        #expect(editor.typingAttributes[.foregroundColor] as? NSColor == .labelColor)
+        #expect(editor.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont == AppFonts.font(size: 14))
+        for name in [NSAppearance.Name.darkAqua, .aqua] {
+            let appearance = try #require(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                let resolved = color.usingColorSpace(.deviceRGB)!
+                #expect(name == .darkAqua ? resolved.redComponent > 0.8 : resolved.redComponent < 0.2)
+            }
+        }
+    }
+
     @Test func mentionEditsPreserveTypingUndoAndRedo() throws {
         let editor = MeetingChatUndoTestEditor()
         editor.isRichText = false

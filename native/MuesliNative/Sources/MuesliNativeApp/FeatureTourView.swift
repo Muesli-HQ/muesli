@@ -28,6 +28,19 @@ struct FeatureTourFrameTracking {
     }
 }
 
+struct FeatureTourHitRegions {
+    static func background(around spotlight: CGRect, in bounds: CGRect) -> [CGRect] {
+        let hole = spotlight.intersection(bounds)
+        guard !hole.isNull, !hole.isEmpty else { return [bounds] }
+        return [
+            CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: hole.minY - bounds.minY),
+            CGRect(x: bounds.minX, y: hole.maxY, width: bounds.width, height: bounds.maxY - hole.maxY),
+            CGRect(x: bounds.minX, y: hole.minY, width: hole.minX - bounds.minX, height: hole.height),
+            CGRect(x: hole.maxX, y: hole.minY, width: bounds.maxX - hole.maxX, height: hole.height),
+        ].filter { !$0.isEmpty }
+    }
+}
+
 private struct FeatureTourCalloutSizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
 
@@ -85,11 +98,11 @@ struct FeatureTourCalloutLayout {
 
     private static func preferredEdges(for target: FeatureTourTarget) -> [FeatureTourCalloutEdge] {
         switch target {
-        case .timelineSidebar, .meetingsSidebar:
+        case .timelineSidebar, .meetingsSidebar, .chatSidebar, .timeTurnerSidebar, .vidshotsSidebar, .searchSidebar:
             return [.trailing, .leading, .below, .above]
-        case .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
+        case .granolaImport, .recordingIndicatorStyle, .computerUseShortcut, .meetingSummaryProvider, .meetingRetranscription, .dictationRecordingMode, .timelineApplications, .appleSpeechCard, .meetingPeople, .timelineFilters, .modelLibrary, .insightsEntry, .liveCaptionsSetting, .dictationProviderSetting, .parakeetFamilyCard, .bodhanFlexCard:
             return [.below, .above, .trailing, .leading]
-        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings:
+        case .dictionarySuggestions, .cloudCleanupSetting, .streamingModels, .experimentalModels, .quillSettings, .cotypistSettings, .appFormatting, .cleanupModels, .liveDictation:
             return [.above, .below, .trailing, .leading]
         }
     }
@@ -200,9 +213,18 @@ struct FeatureTourOverlay: View {
             if let expandedSpotlight {
                 // Consume background clicks but let the real highlighted control
                 // receive input, including its native popup menu.
-                Color.clear
-                    .contentShape(FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10), eoFill: true)
-                    .onTapGesture {}
+                // Native popup controls need a real gap in the hit-test views;
+                // an even-odd content shape can still intercept them on macOS.
+                ForEach(Array(FeatureTourHitRegions.background(
+                    around: expandedSpotlight,
+                    in: CGRect(origin: .zero, size: containerSize)
+                ).enumerated()), id: \.offset) { _, rect in
+                    Color.clear
+                        .frame(width: rect.width, height: rect.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture {}
+                        .position(x: rect.midX, y: rect.midY)
+                }
 
                 FeatureTourDimmingShape(spotlight: expandedSpotlight, cornerRadius: 10)
                     .fill(
@@ -249,17 +271,17 @@ struct FeatureTourOverlay: View {
     private var callout: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing16) {
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
-                Image(systemName: step.systemImage)
+                FeatureTourIconView(icon: step.icon)
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(MuesliTheme.accent)
                     .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(step.eyebrow)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .font(MuesliTheme.font(size: 10, weight: .bold))
+                        .foregroundStyle(MuesliTheme.accentText)
                     Text(step.title)
-                        .font(.system(size: 18, weight: .bold))
+                        .font(MuesliTheme.font(size: 18, weight: .bold))
                         .foregroundStyle(MuesliTheme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -269,9 +291,9 @@ struct FeatureTourOverlay: View {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .foregroundStyle(MuesliTheme.textSecondary)
                 .help("End walkthrough")
                 .accessibilityLabel("End walkthrough")
@@ -331,6 +353,27 @@ struct FeatureTourOverlay: View {
     }
 }
 
+private struct FeatureTourIconView: View {
+    let icon: FeatureTourIcon
+
+    // Resolve bundled artwork once, outside geometry-driven body updates.
+    private static let quill = QuillIcon.image()
+    private static let timeTurner = TimeTurnerIcon.image()
+
+    var body: some View {
+        switch icon {
+        case let .symbol(name):
+            Image(systemName: name)
+        case .quill:
+            Image(nsImage: Self.quill).resizable().scaledToFit()
+        case .timeTurner:
+            Image(nsImage: Self.timeTurner).resizable().scaledToFit()
+        case .vidshot:
+            VidshotIcon()
+        }
+    }
+}
+
 struct FeatureTourInvitationView: View {
     let tour: FeatureTour
     let onAccept: () -> Void
@@ -350,10 +393,10 @@ struct FeatureTourInvitationView: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text("MUESLI \(tour.displayVersion)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(MuesliTheme.accent)
+                            .font(MuesliTheme.font(size: 10, weight: .bold))
+                            .foregroundStyle(MuesliTheme.accentText)
                         Text("Want a quick tour of what’s new?")
-                            .font(.system(size: 21, weight: .bold))
+                            .font(MuesliTheme.font(size: 21, weight: .bold))
                             .foregroundStyle(MuesliTheme.textPrimary)
                     }
 
@@ -370,7 +413,7 @@ struct FeatureTourInvitationView: View {
                     .accessibilityLabel("Skip walkthrough")
                 }
 
-                Text("See \(tour.steps.count) additions in the places where you’ll actually use them. You can replay this later from What’s New in Muesli.")
+                Text("See \(tour.steps.count) additions in the places where you’ll actually use them. You can replay this later from What’s New in muesli.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .lineSpacing(2)

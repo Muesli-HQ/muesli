@@ -4,7 +4,7 @@ import MuesliCore
 enum SyncOriginDisplay {
     static let iOSSource = "ios"
     static let iOSBadgeLabel = "iOS"
-    static let iOSBadgeHelp = "Synced from Muesli for iOS"
+    static let iOSBadgeHelp = "Synced from muesli for iOS"
 
     static func badgeLabel(forDictationSource source: String) -> String? {
         source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == iOSSource
@@ -57,7 +57,7 @@ struct SyncOriginBadge: View {
     var body: some View {
         Text(label)
             .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .foregroundStyle(MuesliTheme.accent)
+            .foregroundStyle(MuesliTheme.accentText)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(MuesliTheme.accentSubtle)
