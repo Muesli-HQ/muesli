@@ -68,6 +68,8 @@ enum ReleaseHotkeyYieldPolicy {
 /// the system.
 final class ReleaseAppPresence {
     private(set) var isRunning: Bool
+    /// Called on the main queue after release launches or quits.
+    var onChange: (() -> Void)?
     private let center: NotificationCenter
     private var observers: [NSObjectProtocol] = []
 
@@ -81,8 +83,9 @@ final class ReleaseAppPresence {
         ] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                guard app?.bundleIdentifier == releaseID else { return }
-                self?.isRunning = running
+                guard let self, app?.bundleIdentifier == releaseID else { return }
+                self.isRunning = running
+                self.onChange?()
             })
         }
     }
@@ -90,38 +93,89 @@ final class ReleaseAppPresence {
     deinit { observers.forEach(center.removeObserver) }
 }
 
-/// Reads the release `config.json` read-only and caches its shortcuts until the
-/// file changes. A shortcut press costs one stored flag and one file-date check;
-/// the file itself is read only after release saves new settings.
+/// Keeps a snapshot of the shortcuts the release app handles. A shortcut press
+/// reads only that snapshot and a stored running flag; all file access happens
+/// on a background queue. The release `config.json` is read read-only, and only
+/// after its modification date changes. Refreshes run at start, when the
+/// release support folder changes, when release launches or quits, and after
+/// each press, so a missed folder event costs at most one stale press.
 final class ReleaseAppHotkeyGuard {
     private let releaseConfigURL: URL
     private let releaseIsRunning: () -> Bool
-    private var cache: (modified: Date?, hotkeys: [HotkeyConfig])?
+    private let ioQueue: DispatchQueue
+    private let deliver: (@escaping () -> Void) -> Void
+    /// Read and written only through `deliver` (the main queue in the app).
+    private var releaseHotkeys: [HotkeyConfig] = []
+    /// Read and written only on `ioQueue`.
+    private var lastRead: (modified: Date?, hotkeys: [HotkeyConfig])?
+    private var folderWatcher: DispatchSourceFileSystemObject?
 
+    /// Until the first refresh lands the snapshot is empty, so nothing is yielded.
     init(
         releaseConfigURL: URL = MuesliPaths.defaultSupportDirectoryURL(appName: "Muesli")
             .appendingPathComponent("config.json"),
-        releaseIsRunning: @escaping () -> Bool
+        releaseIsRunning: @escaping () -> Bool,
+        ioQueue: DispatchQueue = DispatchQueue(label: "com.muesli.release-hotkey-guard", qos: .utility),
+        deliver: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.releaseConfigURL = releaseConfigURL
         self.releaseIsRunning = releaseIsRunning
+        self.ioQueue = ioQueue
+        self.deliver = deliver
+        refresh()
     }
+
+    deinit { folderWatcher?.cancel() }
 
     /// Nil for the release build, so its key handling is unchanged.
     static func forCurrentBuild(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> ReleaseAppHotkeyGuard? {
         guard ReleaseHotkeyYieldPolicy.appliesTo(bundleIdentifier: bundleIdentifier) else { return nil }
         let presence = ReleaseAppPresence()
-        return ReleaseAppHotkeyGuard(releaseIsRunning: { presence.isRunning })
+        let releaseGuard = ReleaseAppHotkeyGuard(releaseIsRunning: { presence.isRunning })
+        presence.onChange = { [weak releaseGuard] in releaseGuard?.refresh() }
+        // The presence object lives as long as the guard's running-flag closure.
+        return releaseGuard
+    }
+
+    /// The yield callback for one monitor. `ownsRunningSession` covers sessions the
+    /// monitor did not latch itself, such as a meeting started from the menu bar,
+    /// whose stop press would otherwise look new and be skipped.
+    func yieldHandler(
+        ownsRunningSession: @escaping () -> Bool = { false },
+        onYield: @escaping (HotkeyConfig) -> Void
+    ) -> (HotkeyConfig) -> Bool {
+        { [weak self] hotkey in
+            guard let self, !ownsRunningSession(), self.shouldYield(hotkey) else { return false }
+            onYield(hotkey)
+            return true
+        }
     }
 
     func shouldYield(_ hotkey: HotkeyConfig) -> Bool {
         guard releaseIsRunning() else { return false }
-        return ReleaseHotkeyYieldPolicy.shouldYield(hotkey, releaseIsRunning: true, releaseHotkeys: releaseHotkeys())
+        refresh()
+        return ReleaseHotkeyYieldPolicy.shouldYield(hotkey, releaseIsRunning: true, releaseHotkeys: releaseHotkeys)
     }
 
-    private func releaseHotkeys() -> [HotkeyConfig] {
+    func refresh() {
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            self.watchReleaseFolderIfNeeded()
+            guard let hotkeys = self.readReleaseHotkeys() else { return }
+            self.deliver { [weak self] in self?.releaseHotkeys = hotkeys }
+        }
+    }
+
+    /// Waits for queued refreshes; tests pass a `deliver` that runs inline.
+    func waitForRefreshForTests() {
+        ioQueue.sync {}
+    }
+
+    /// Nil when a read fails mid-save: the last good snapshot stays, and the next
+    /// refresh tries again even if the file date has not changed.
+    private func readReleaseHotkeys() -> [HotkeyConfig]? {
         let modified = (try? FileManager.default.attributesOfItem(atPath: releaseConfigURL.path))?[.modificationDate] as? Date
-        if let cache, cache.modified == modified { return cache.hotkeys }
+        if let lastRead, lastRead.modified == modified { return lastRead.hotkeys }
         let config: AppConfig
         if modified == nil {
             // No file: the release app has never saved settings, so it uses defaults.
@@ -130,12 +184,34 @@ final class ReleaseAppHotkeyGuard {
                   let decoded = try? JSONDecoder().decode(AppConfig.self, from: data) {
             config = decoded
         } else {
-            // A read that failed mid-save is retried on the next press; until then
-            // keep the last settings that were read successfully.
-            return cache?.hotkeys ?? []
+            return nil
         }
         let hotkeys = ReleaseHotkeyYieldPolicy.handledHotkeys(in: config)
-        cache = (modified, hotkeys)
+        lastRead = (modified, hotkeys)
         return hotkeys
+    }
+
+    /// Settings are saved by replacing `config.json`, which shows up as a write to
+    /// its folder. A folder that does not exist yet is watched on a later refresh.
+    private func watchReleaseFolderIfNeeded() {
+        guard folderWatcher == nil else { return }
+        let fd = open(releaseConfigURL.deletingLastPathComponent().path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete],
+            queue: ioQueue
+        )
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            if source.data.contains(.delete) || source.data.contains(.rename) {
+                source.cancel()
+                self.folderWatcher = nil
+            }
+            self.refresh()
+        }
+        source.setCancelHandler { close(fd) }
+        folderWatcher = source
+        source.resume()
     }
 }

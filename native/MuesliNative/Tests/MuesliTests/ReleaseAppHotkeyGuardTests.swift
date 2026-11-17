@@ -80,45 +80,115 @@ struct ReleaseAppHotkeyGuardTests {
         }
     }
 
-    @Test("guard reads the release config and notices when it changes")
-    func guardReadsReleaseConfig() throws {
+    /// Collects the guard's snapshot updates so the test applies them on its own thread.
+    private final class Inbox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [() -> Void] = []
+        func add(_ item: @escaping () -> Void) { lock.lock(); items.append(item); lock.unlock() }
+        func drain() {
+            lock.lock(); let pending = items; items = []; lock.unlock()
+            pending.forEach { $0() }
+        }
+    }
+
+    private static func makeReleaseFolder() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("release-hotkey-guard-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func write(_ config: AppConfig, to url: URL, modified: TimeInterval) throws {
+        try JSONEncoder().encode(config).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: modified)], ofItemAtPath: url.path)
+    }
+
+    @Test("guard reads the release config in the background and notices when it changes")
+    func guardReadsReleaseConfig() throws {
+        let dir = try Self.makeReleaseFolder()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("config.json")
-        var releaseRunning = false
-        let guardUnderTest = ReleaseAppHotkeyGuard(releaseConfigURL: url, releaseIsRunning: { releaseRunning })
-
-        // Missing file: release has not finished onboarding, so it handles no shortcut.
-        releaseRunning = true
-        #expect(!guardUnderTest.shouldYield(AppConfig().dictationHotkey))
-
         var config = AppConfig()
         config.hasCompletedOnboarding = true
         config.dictationHotkey = Self.leftOption
-        try JSONEncoder().encode(config).write(to: url)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: url.path)
-        #expect(!guardUnderTest.shouldYield(Self.rightOption))
+        try Self.write(config, to: url, modified: 1)
+
+        var releaseRunning = false
+        let inbox = Inbox()
+        let guardUnderTest = ReleaseAppHotkeyGuard(
+            releaseConfigURL: url,
+            releaseIsRunning: { releaseRunning },
+            deliver: { inbox.add($0) }
+        )
+        func settle() { guardUnderTest.refresh(); guardUnderTest.waitForRefreshForTests(); inbox.drain() }
+
+        // Until the first background read lands, a press reads an empty snapshot.
+        releaseRunning = true
+        #expect(!guardUnderTest.shouldYield(Self.leftOption), "A press never reads the file itself")
+        settle()
         #expect(guardUnderTest.shouldYield(Self.leftOption))
+        #expect(!guardUnderTest.shouldYield(Self.rightOption))
+        releaseRunning = false
+        #expect(!guardUnderTest.shouldYield(Self.leftOption))
+        releaseRunning = true
 
         config.dictationHotkey = Self.rightOption
-        try JSONEncoder().encode(config).write(to: url)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2)], ofItemAtPath: url.path)
+        try Self.write(config, to: url, modified: 2)
+        settle()
         #expect(guardUnderTest.shouldYield(Self.rightOption), "An edited release config is re-read")
-        releaseRunning = false
-        #expect(!guardUnderTest.shouldYield(Self.rightOption))
-        releaseRunning = true
+        #expect(!guardUnderTest.shouldYield(Self.leftOption))
 
         // A read that fails mid-save keeps the last good settings and is retried.
         try Data("{".utf8).write(to: url)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: url.path)
+        settle()
         #expect(guardUnderTest.shouldYield(Self.rightOption))
-        #expect(!guardUnderTest.shouldYield(Self.leftOption))
         config.dictationHotkey = Self.leftOption
-        try JSONEncoder().encode(config).write(to: url)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3)], ofItemAtPath: url.path)
+        try Self.write(config, to: url, modified: 3)
+        settle()
         #expect(guardUnderTest.shouldYield(Self.leftOption), "The same file date is read again after a failed read")
+
+        // No file: release has not finished onboarding, so it handles no shortcut.
+        try FileManager.default.removeItem(at: url)
+        settle()
+        #expect(!guardUnderTest.shouldYield(Self.leftOption))
+    }
+
+    @Test("the shortcut still stops a meeting the dev build started from the menu bar")
+    func menuStartedMeetingIsNotYielded() throws {
+        let dir = try Self.makeReleaseFolder()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("config.json")
+        var config = AppConfig()
+        config.hasCompletedOnboarding = true
+        config.enableMeetingRecordingHotkey = true
+        config.meetingRecordingHotkey = Self.optionR
+        try Self.write(config, to: url, modified: 1)
+        let inbox = Inbox()
+        let releaseGuard = ReleaseAppHotkeyGuard(releaseConfigURL: url, releaseIsRunning: { true }, deliver: { inbox.add($0) })
+        releaseGuard.waitForRefreshForTests(); inbox.drain()
+
+        // Set up like MuesliController's meeting monitor.
+        let monitor = HotkeyMonitor(scheduleAfter: { _, _ in })
+        monitor.doubleTapEnabled = false
+        monitor.combinationToggleRequiresHold = false
+        monitor.configure(Self.optionR)
+        var meetingRecording = false, yields = 0, toggles = 0
+        monitor.shouldYieldNewPress = releaseGuard.yieldHandler(
+            ownsRunningSession: { meetingRecording },
+            onYield: { _ in yields += 1 }
+        )
+        monitor.onToggleStart = { toggles += 1 }
+
+        monitor.handleRegisteredHotKeyPressForTests()
+        monitor.handleRegisteredHotKeyReleaseForTests()
+        #expect(yields == 1 && toggles == 0, "With no meeting running, release takes the press")
+
+        // A meeting started from the menu bar leaves the monitor idle, so the stop
+        // press looks new. It must reach the dev build, which then stops the meeting.
+        meetingRecording = true
+        monitor.handleRegisteredHotKeyPressForTests()
+        #expect(yields == 1 && toggles == 1)
     }
 
     @Test("release presence follows launch and quit notifications")

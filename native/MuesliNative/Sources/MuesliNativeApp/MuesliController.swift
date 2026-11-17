@@ -1276,14 +1276,12 @@ public final class MuesliController: NSObject {
             [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
                 .forEach { monitor in
                     let isMeetingMonitor = monitor === meetingRecordingHotkeyMonitor
-                    monitor.shouldYieldNewPress = { [weak self] hotkey in
-                        // A meeting started from the menu bar is not latched in the
-                        // monitor, so its stop press looks new. Never yield that one.
-                        if isMeetingMonitor, self?.isMeetingRecording() == true { return false }
-                        guard releaseAppHotkeyGuard.shouldYield(hotkey) else { return false }
-                        DispatchQueue.main.async { self?.showReleaseShortcutCollisionNotice(for: hotkey) }
-                        return true
-                    }
+                    monitor.shouldYieldNewPress = releaseAppHotkeyGuard.yieldHandler(
+                        ownsRunningSession: { [weak self] in isMeetingMonitor && self?.isMeetingRecording() == true },
+                        onYield: { [weak self] hotkey in
+                            DispatchQueue.main.async { self?.showReleaseShortcutCollisionNotice(for: hotkey) }
+                        }
+                    )
                 }
         }
 
