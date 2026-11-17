@@ -300,9 +300,16 @@ enum DictationContextCapture {
             }
         }
 
+        return FocusedWindowSnapshot(
+            documentIdentifier: documentIdentifier,
+            title: title,
+            frame: windowFrame(window)
+        )
+    }
+
+    static func windowFrame(_ window: AXUIElement) -> CGRect? {
         var positionRef: CFTypeRef?
         var sizeRef: CFTypeRef?
-        var frame: CGRect?
         if AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
            AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
            let positionRef,
@@ -317,15 +324,10 @@ enum DictationContextCapture {
                AXValueGetValue(sizeValue, .cgSize, &size),
                size.width > 0,
                size.height > 0 {
-                frame = CGRect(origin: position, size: size)
+                return CGRect(origin: position, size: size)
             }
         }
-
-        return FocusedWindowSnapshot(
-            documentIdentifier: documentIdentifier,
-            title: title,
-            frame: frame
-        )
+        return nil
     }
 }
 

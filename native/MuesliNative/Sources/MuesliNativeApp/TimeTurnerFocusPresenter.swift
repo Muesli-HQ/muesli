@@ -15,7 +15,7 @@ import QuartzCore
     private weak var owner: NSWindow?
     private var observers: [NSObjectProtocol] = []
 
-    func present(owner: NSWindow?, moment: VisualMemoryItem?, memory: VisualMemoryController, onNavigate: @escaping (Date, Date) -> Void) {
+    func present(owner: NSWindow?, moment: VisualMemoryItem?, memory: VisualMemoryController, displayFilter: String?, onNavigate: @escaping (Date, Date, VisualMemoryItem?, String?) -> Void) {
         logger.info("Opening focus viewer; existing windows: \(self.panels.count)")
         finishClosing()
         NSApp.activate(ignoringOtherApps: true)
@@ -47,7 +47,7 @@ import QuartzCore
             let backdrop = FocusBackdropView(frame: NSRect(origin: .zero, size: screen.frame.size))
             backdrop.onDismiss = { [weak self] in self?.close() }
             if isTarget {
-                let viewer = MemoryExplorerView(initialMoment: moment, memory: memory, focusedSize: size,
+                let viewer = MemoryExplorerView(initialMoment: moment, memory: memory, focusedSize: size, initialDisplayFilter: displayFilter,
                     onClose: { [weak self] in self?.close() }, onNavigate: onNavigate)
                 let host = NSHostingView(rootView: viewer)
                 host.frame = NSRect(x: center.x - size.width / 2,

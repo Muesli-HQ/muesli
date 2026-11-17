@@ -14,8 +14,8 @@ The core generation loop counts sampling steps after prefill and stops before
 sampling beyond that budget, flushing pending text and closing both streams.
 EOS/stop-sequence handling remains in place. Zero/negative budgets emit no
 new tokens. Nil preserves the existing behavior. Input tokens are excluded.
-Only v12 cleanup calls set the budget (1024); production Qwen uses the existing
-respond/template path with the default nil budget.
+Only v12 cleanup calls set the budget (1024); configurable Qwen uses its resolved chat template and suppressed thinking
+with the default nil budget, checking completion before accepting the text.
 
 `getCompletionResult` pairs text with its stop reason before releasing the
 request gate. Cleanup preserves the original transcript when generation hits

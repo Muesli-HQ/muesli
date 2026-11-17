@@ -37,16 +37,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let controller: MuesliController
     private let runtime: RuntimePaths
     private let statusItem: NSStatusItem
-    private let menu = NSMenu()
+    private let menu: NSMenu
+    private var isTrackingMenu = false
+    private var needsPresentationUpdate = true
     private var countdownOverride: String?
     private let captureDot = NSView(frame: .zero)
     private var captureIndicatorTimer: Timer?
 
     deinit { captureIndicatorTimer?.invalidate() }
 
-    init(controller: MuesliController, runtime: RuntimePaths) {
+    init(controller: MuesliController, runtime: RuntimePaths, menu: NSMenu = NSMenu()) {
         self.controller = controller
         self.runtime = runtime
+        self.menu = menu
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         menu.delegate = self
@@ -57,12 +60,27 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func setStatus(_ text: String) {}
 
     func refresh() {
-        rebuildMenu()
+        if !isTrackingMenu { needsPresentationUpdate = true }
         updateMenuBarTitle()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === self.menu, !isTrackingMenu || needsPresentationUpdate else { return }
+        needsPresentationUpdate = false
         rebuildMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        // AppKit tracks the actual item objects down the whole submenu chain.
+        // Replacing them while the pointer is moving dismisses the open submenu.
+        isTrackingMenu = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        isTrackingMenu = false
+        needsPresentationUpdate = true
     }
 
     func setCountdownOverride(_ text: String?) {
@@ -174,7 +192,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if controller.isMeetingRecording() {
             let pauseTitle = controller.isMeetingRecordingPaused() ? "Resume Meeting Recording" : "Pause Meeting Recording"
             menu.addItem(actionItem(title: pauseTitle, action: #selector(MuesliController.toggleMeetingRecordingPause)))
-            menu.addItem(actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.toggleMeetingRecording)))
+            if let sessionID = controller.activeMeetingRecordingSessionID {
+                let stop = actionItem(title: "Stop Meeting Recording", action: #selector(MuesliController.stopMeetingRecordingFromMenuBar(_:)))
+                stop.representedObject = sessionID
+                menu.addItem(stop)
+            }
             if controller.visualMemory.recordingMeetingID != nil {
                 menu.addItem(actionItem(title: controller.visualMemory.pauseState.userPaused ? "Resume Screen Recording" : "Pause Screen Recording", action: #selector(MuesliController.toggleMeetingScreenPause)))
                 menu.addItem(actionItem(title: "Stop Screen Recording", action: #selector(MuesliController.stopMeetingScreenRecording)))
@@ -535,14 +557,32 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let parent = NSMenuItem(title: "Time Turner", action: nil, keyEquivalent: "")
         parent.image = TimeTurnerIcon.image()
         let submenu = NSMenu(title: "Time Turner")
-        @discardableResult func add(_ title: String, _ action: Selector) -> NSMenuItem {
+        @discardableResult func add(_ title: String, _ action: Selector, to destination: NSMenu? = nil) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
-            submenu.addItem(item)
+            (destination ?? submenu).addItem(item)
             return item
         }
         if controller.config.timeTurnerEnabled {
-            add(controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture", #selector(toggleTimeTurnerPause))
+            let captureTitle = controller.visualMemory.ambientPaused ? "Resume Capture" : "Pause Capture"
+            let displays = TimeTurnerDisplayIdentity.connected.filter { controller.visualMemory.allowsDisplayPause(uuid: $0.uuid) }
+            if displays.isEmpty {
+                add(captureTitle, #selector(toggleTimeTurnerPause))
+            } else {
+                let captureMenu = NSMenu(title: captureTitle)
+                let captureItem = NSMenuItem(title: captureTitle, action: nil, keyEquivalent: "")
+                captureItem.submenu = captureMenu
+                submenu.addItem(captureItem)
+                add(controller.visualMemory.ambientPaused ? "Resume Capture Globally" : "Pause Capture Globally",
+                    #selector(toggleTimeTurnerPause), to: captureMenu)
+                captureMenu.addItem(.separator())
+                for display in displays {
+                    let paused = controller.visualMemory.pausedDisplays.contains(display.uuid)
+                    let item = add("\(paused ? "Resume" : "Pause") \(display.name)", #selector(toggleTimeTurnerDisplay(_:)), to: captureMenu)
+                    item.representedObject = display.uuid
+                    item.toolTip = controller.visualMemory.displayStatuses[display.uuid]
+                }
+            }
             add("Turn Off Time Turner", #selector(disableTimeTurner))
             if let app = NSWorkspace.shared.frontmostApplication,
                let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier {
@@ -562,6 +602,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleTimeTurnerPause() { controller.visualMemory.toggleAmbientPause(); refresh() }
+    @objc private func toggleTimeTurnerDisplay(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        controller.visualMemory.toggleDisplayPause(uuid: uuid)
+        refresh()
+    }
     @objc private func disableTimeTurner() { controller.setSettingFromUI("time_turner_enabled", value: "off") }
     @objc private func setupTimeTurner() {
         controller.appState.requestsTimeTurnerSetup = true
