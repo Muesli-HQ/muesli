@@ -6,7 +6,6 @@ struct TimeTurnerPage: View {
     @Bindable var appState: AppState
     let controller: MuesliController
     @State private var dayMoments: [VisualMemoryItem] = []
-    @State private var cachedDay: Date?
     @State private var showsCalendar = false
 
     var body: some View {
@@ -47,13 +46,10 @@ struct TimeTurnerPage: View {
                     MemoryExplorerView(initialMoment: appState.timeTurnerSelectedCapture ??
                         dayMoments.last,
                         memory: controller.visualMemory, inline: true, externalDay: $appState.timeTurnerDay,
-                        onNavigate: { day, time in
+                        onNavigate: { day, _, capture, _ in
+                            guard let capture else { return }
                             appState.timeTurnerDay = day
-                            let moments = cachedDay.map { Calendar.current.isDate($0, inSameDayAs: day) } == true
-                                ? dayMoments : []
-                            if let index = VisualMemoryDayTimeline.nearestIndex(in: moments, to: time) {
-                                appState.timeTurnerSelectedCapture = moments[index]
-                            }
+                            appState.timeTurnerSelectedCapture = capture
                         })
                         .id(appState.timeTurnerNavigationID)
                 }
@@ -63,7 +59,6 @@ struct TimeTurnerPage: View {
             let moments = (try? await controller.visualMemory.moments(on: day)) ?? []
             guard !Task.isCancelled else { return }
             dayMoments = moments
-            cachedDay = day
         }
     }
 

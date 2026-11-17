@@ -95,9 +95,9 @@ actor ParakeetUnifiedTranscriber {
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(wavURL)
         let start = CFAbsoluteTimeGetCurrent()
-        let text = try await asrManager.transcribe(samples)
+        let result = try await Self.speechResult(asrManager, samples: samples)
         let processingTime = CFAbsoluteTimeGetCurrent() - start
-        return (text, processingTime)
+        return (result.text, processingTime)
     }
 
     func transcribePreview(samples: [Float], requiresWordTimings: Bool = true) async throws -> BufferedTranscriptionWindow {
@@ -105,15 +105,19 @@ actor ParakeetUnifiedTranscriber {
         defer { releaseDecode() }
         try Task.checkCancellation()
         guard let asrManager else { throw TranscriberError.notLoaded }
-        if !requiresWordTimings {
-            let text = try await asrManager.transcribe(samples)
-            try Task.checkCancellation()
-            return .init(text: text, words: [])
-        }
-        let result = try await asrManager.transcribeWithTimings(samples)
+        let result = try await Self.speechResult(asrManager, samples: samples)
         try Task.checkCancellation()
+        guard requiresWordTimings else { return .init(text: result.text, words: []) }
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings)
         return try Self.previewWindow(text: result.text, words: words)
+    }
+
+    private static func speechResult(_ manager: UnifiedAsrManager, samples: [Float]) async throws
+        -> UnifiedAsrManager.TranscriptionWithTimings {
+        let result = try await manager.transcribeWithTimings(samples)
+        let speech = result.tokenTimings.filter { $0.tokenId != 0 }
+        guard speech.count != result.tokenTimings.count else { return result }
+        return .init(text: speech.map(\.token).joined().trimmingCharacters(in: .whitespaces), tokenTimings: speech)
     }
 
     static func previewWindow(text: String, words: [BufferedTranscriptionWord]) throws -> BufferedTranscriptionWindow {

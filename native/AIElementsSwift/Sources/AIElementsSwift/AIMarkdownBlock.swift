@@ -22,22 +22,29 @@ public enum AIMarkdownBlock: Equatable, Sendable {
                 if index < lines.count { index += 1 }
                 continue
             }
-            if index + 1 < lines.count, line.contains("|"),
-               let header = tableCells(line), let separators = tableCells(lines[index + 1]),
-               header.count == separators.count,
-               separators.allSatisfy({ $0.range(of: #"^:?-{3,}:?$"#, options: .regularExpression) != nil }) {
-                var rows = [header]
-                index += 2
-                while index < lines.count, lines[index].contains("|"),
-                      let cells = tableCells(lines[index]), cells.count == header.count {
-                    rows.append(cells); index += 1
-                }
-                result.append(.table(rows))
+            if let table = table(in: lines, startingAt: index) {
+                index += table.lineCount
+                result.append(.table(table.rows))
                 continue
             }
             result.append(.line(line)); index += 1
         }
         return result
+    }
+
+    /// Parses one table while preserving its source line span for host navigation.
+    public static func table(in lines: [String], startingAt index: Int) -> (rows: [[String]], lineCount: Int)? {
+        guard index >= 0, index + 1 < lines.count, lines[index].contains("|"),
+              let header = tableCells(lines[index]), let separators = tableCells(lines[index + 1]),
+              header.count == separators.count,
+              separators.allSatisfy({ $0.range(of: #"^:?-{3,}:?$"#, options: .regularExpression) != nil }) else { return nil }
+        var rows = [header]
+        var end = index + 2
+        while end < lines.count, lines[end].contains("|"),
+              let cells = tableCells(lines[end]), cells.count == header.count {
+            rows.append(cells); end += 1
+        }
+        return (rows, end - index)
     }
 
     private static func openingFence(_ line: String) -> (character: Character, length: Int)? {

@@ -335,6 +335,9 @@ struct MeetingsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .accessibilityLabel("Meetings view")
+                .onChange(of: showsPeople) { _, opened in
+                    if opened { ProductAnalytics.event(.meeting_people, .opened) }
+                }
                 .frame(maxWidth: 240)
                 .frame(maxWidth: .infinity, alignment: .center)
 

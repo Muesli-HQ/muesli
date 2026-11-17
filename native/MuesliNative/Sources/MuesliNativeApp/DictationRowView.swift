@@ -8,6 +8,8 @@ struct DictationRowView: View {
     var onCopyTrace: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
 
+    var recordingController: MuesliController?
+
     private enum RowAction: Hashable {
         case details, copyTrace, copy, delete
     }
@@ -17,6 +19,8 @@ struct DictationRowView: View {
     @State private var showDeleteConfirmation = false
     @State private var isExpanded = false
     @State private var showsFullText = false
+    @State private var twoLineHeight: CGFloat = 0
+    @State private var threeLineHeight: CGFloat = 0
     /// Row actions are revealed by hover or by keyboard focus, never left invisible but focused.
     @FocusState private var focusedAction: RowAction?
     @State private var copyConfirmation: CopyConfirmation?
@@ -50,13 +54,13 @@ struct DictationRowView: View {
         record.source == "quil"
     }
 
-    private var canExpandText: Bool {
-        record.rawText.count > 160 || record.rawText.filter { $0 == "\n" }.count > 2
-    }
-
-    private var displayedText: String {
-        guard !showsFullText, record.rawText.count > 160 else { return record.rawText }
-        return String(record.rawText.prefix(160)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    private func transcript(lineLimit: Int?) -> some View {
+        Text(record.rawText)
+            .font(MuesliTheme.reading())
+            .lineSpacing(3)
+            .lineLimit(lineLimit)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var hasExpandableDetails: Bool {
@@ -77,6 +81,11 @@ struct DictationRowView: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+                    if record.hasRetainedAudio, let controller = recordingController {
+                        MeetingRecordingPlayerView(dictationID: record.id, preview: record.waveformPreview, controller: controller)
+                            .id(record.id)
+                    }
+
                     HStack(alignment: .firstTextBaseline, spacing: MuesliTheme.spacing8) {
                         if isComputerUseCommand {
                             Text("CUA")
@@ -109,11 +118,20 @@ struct DictationRowView: View {
                             SyncOriginBadge(label: syncOriginBadgeLabel)
                         }
 
-                        Text(displayedText)
-                            .font(MuesliTheme.reading())
+                        transcript(lineLimit: showsFullText ? nil : 2)
                             .foregroundStyle(MuesliTheme.textPrimary)
-                            .lineLimit(showsFullText || !canExpandText ? nil : 3)
-                            .lineSpacing(3)
+                            .background {
+                                // A third laid-out line is enough to detect overflow at this width.
+                                ZStack {
+                                    transcript(lineLimit: 2)
+                                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { twoLineHeight = $0 }
+                                    transcript(lineLimit: 3)
+                                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { threeLineHeight = $0 }
+                                }
+                                .hidden()
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                            }
                             .muesliRowActivation {
                                 if hasExpandableDetails {
                                     withAnimation(rowAnimation) { isExpanded.toggle() }
@@ -139,7 +157,7 @@ struct DictationRowView: View {
                         }
                     }
 
-                    if canExpandText {
+                    if twoLineHeight > 0 && threeLineHeight > twoLineHeight {
                         Button {
                             showsFullText.toggle()
                         } label: {
@@ -156,6 +174,10 @@ struct DictationRowView: View {
                         .padding(.vertical, -6)
                         .accessibilityLabel(showsFullText ? "Collapse dictation text" : "Show full dictation text")
                         .accessibilityIdentifier("dictation.expand.\(record.id)")
+                    }
+
+                    if record.hasRetainedAudio, let controller = recordingController {
+                        DictationRecordingControls(record: record, controller: controller)
                     }
 
                     if isExpanded, let trace = record.computerUseTrace {
@@ -346,6 +368,46 @@ struct DictationRowView: View {
             return "Cancelled"
         default:
             return status.capitalized
+        }
+    }
+}
+
+private struct DictationRecordingControls: View {
+    let record: DictationRecord
+    let controller: MuesliController
+    @State private var selectedModel: BackendOption?
+
+    var body: some View {
+        HStack(spacing: MuesliTheme.spacing12) {
+            if controller.appState.retranscribingHistoryID == record.id {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { controller.cancelDictationRecovery() }
+            } else {
+                let models = BackendOption.compatibleOptions().filter { controller.appState.settingsModelAvailability.contains($0) }
+                Menu("Retranscribe with…") {
+                    if models.isEmpty { Text("Download a local model in Models") }
+                    ForEach(models, id: \.model) { model in
+                        Button(model.label) { selectedModel = model }
+                    }
+                }
+                .fixedSize()
+                .disabled(controller.appState.dictationState != .idle || controller.appState.activeAudioImportCount > 0
+                    || controller.appState.modelFileMutationCount > 0 || controller.appState.isMeetingRecording
+                    || controller.appState.isMeetingStarting || controller.appState.privateMode)
+            }
+            Button { controller.revealDictationRecordingInFinder(id: record.id) } label: {
+                Label("Show Recording", systemImage: "folder")
+            }
+            .help("Show recording in Finder")
+        }
+        .font(MuesliTheme.captionMedium())
+        .confirmationDialog("Replace this transcript?", isPresented: Binding(
+            get: { selectedModel != nil }, set: { if !$0 { selectedModel = nil } }
+        ), presenting: selectedModel) { model in
+            Button("Retranscribe with " + model.label) { controller.retranscribeDictation(record, with: model) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("The new transcript replaces this history entry when transcription succeeds. You can replay the original recording again.")
         }
     }
 }

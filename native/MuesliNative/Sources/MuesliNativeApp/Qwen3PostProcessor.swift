@@ -396,7 +396,6 @@ private actor Qwen3PostProcessorManager {
                 return Qwen3PostProcessor.Result(text: result.output, rawOutput: result.raw, didFallback: result.didFallback)
             }
             let bot = try loadBot()
-            defer { if !inputFormat.isTrainedV12 { bot.reset() } }
             let formattedInput: String
             switch inputFormat {
             case .configurable:
@@ -418,11 +417,16 @@ private actor Qwen3PostProcessorManager {
                 await inferenceGate.release()
                 return Qwen3PostProcessor.Result(text: cleaned, rawOutput: raw, didFallback: guarded.didFallback)
             }
-            await bot.respond(to: formattedInput, thinking: .suppressed)
-
-            let raw = bot.output
+            let prompt = bot.preprocess(formattedInput, [], .suppressed)
+            let completion = await bot.getCompletionResult(from: prompt, thinking: .suppressed)
+            try Task.checkCancellation()
+            let raw = completion.text
+            guard completion.stopReason == .endOfSequence else {
+                await inferenceGate.release()
+                return Qwen3PostProcessor.Result(text: text, rawOutput: raw, didFallback: true)
+            }
             let cleaned = Qwen3PostProcessorOutputCleaner.clean(raw)
-            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF prompt chars=\(bot.preprocess(formattedInput, [], .suppressed).count)")
+            Qwen3PostProcessorLogging.logVerbose("Qwen3 GGUF prompt chars=\(prompt.count)")
             let result: String
             let acceptsS1MiniEmptyOutput = inputFormat == .s1Mini && (
                 cleaned.isEmpty || Qwen3PostProcessorOutputCleaner.isS1MiniEmptyOutput(cleaned)

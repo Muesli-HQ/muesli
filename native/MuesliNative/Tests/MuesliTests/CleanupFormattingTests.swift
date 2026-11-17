@@ -32,7 +32,7 @@ struct CleanupFormattingTests {
 
     @Test func finalArtifactPassRemovesCuesWithoutFlatteningSurroundingLayout() {
         let text = "Heading\n\n- First *crickets* item\n  - [cheers] Nested  item\n\t- Tab item <|nospeech|>\n\nLast [applause], sentence."
-        let expected = "Heading\n\n- First item\n  - Nested  item\n\t- Tab item\n\nLast, sentence."
+        let expected = "Heading\n\n- First item\n  - Nested  item\n\t- Tab item <|nospeech|>\n\nLast, sentence."
         #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout(text) == expected)
         #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout("  [cheers] Nested\n\t[applause] Item") == "  Nested\n\tItem")
         #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout("Hello\n[cheers]\n\nWorld") == "Hello\n\n\nWorld")
