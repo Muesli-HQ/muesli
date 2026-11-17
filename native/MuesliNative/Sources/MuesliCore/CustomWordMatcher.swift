@@ -98,17 +98,22 @@ public struct CustomWordMatcher {
         let entriesByTokenCount = Dictionary(grouping: entries, by: { $0.tokens.count })
         let tokenCounts = entriesByTokenCount.keys.sorted(by: >)
         let words = text.components(separatedBy: " ")
+        // Output so far, one word per element, so a match can see the words
+        // already written before it.
         var result: [String] = []
         var index = 0
 
         while index < words.count {
-            guard let match = bestMatch(in: words, startingAt: index, tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount) else {
+            guard let match = bestMatch(
+                in: words, startingAt: index, emitted: result,
+                tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
+            ) else {
                 result.append(words[index])
                 index += 1
                 continue
             }
 
-            result.append(match.text)
+            result.append(contentsOf: match.text.components(separatedBy: " "))
             index += match.consumed
         }
 
@@ -139,6 +144,7 @@ public struct CustomWordMatcher {
     private static func bestMatch(
         in words: [String],
         startingAt index: Int,
+        emitted: [String],
         tokenCounts: [Int],
         entriesByTokenCount: [Int: [Entry]]
     ) -> Match? {
@@ -161,15 +167,24 @@ public struct CustomWordMatcher {
                 possessive.isEmpty || entry.endsWithPossessive ? (candidateTokens, "") : (strippedTokens, possessive)
             }
             func match(_ entry: Entry, possessive: String) -> Match {
-                let replacement = replacementText(for: entry, in: words, at: index, count: count)
+                let replacement = replacementText(for: entry, in: words, at: index, count: count, emitted: emitted)
+                // A replacement that already ends in "'s" keeps its own ending.
+                let lastCore = replacement.components(separatedBy: " ").last.flatMap { tokenParts(for: $0)?.core } ?? ""
+                let ending = possessiveSuffix(of: lastCore).isEmpty ? possessive : ""
                 return Match(
-                    text: parts[0].prefix + replacement + possessive + parts[count - 1].suffix,
+                    text: parts[0].prefix + replacement + ending + parts[count - 1].suffix,
                     consumed: count
                 )
             }
 
-            if let exact = entries.first(where: { candidate(for: $0).tokens == $0.tokens }) {
-                return match(exact, possessive: candidate(for: exact).possessive)
+            // An entry for the words exactly as spoken wins over one that only
+            // matches once the "'s" is set aside.
+            if let exact = entries.first(where: { $0.tokens == candidateTokens }) {
+                return match(exact, possessive: "")
+            }
+            if !possessive.isEmpty,
+               let exact = entries.first(where: { !$0.endsWithPossessive && $0.tokens == strippedTokens }) {
+                return match(exact, possessive: possessive)
             }
 
             var bestEntry: Entry?
@@ -191,24 +206,33 @@ public struct CustomWordMatcher {
     }
 
     /// The text to insert for a matched window. When the replacement has more
-    /// words than the window and the neighboring words already spell the rest
-    /// of it, only the missing words are inserted, so "XY Widget" stays
-    /// "XY Widget" rather than becoming "XY XY Widget".
-    private static func replacementText(for entry: Entry, in words: [String], at index: Int, count: Int) -> String {
+    /// words than the window and the words around it already spell the rest of
+    /// it (before the match in the output so far, after it in the input, with
+    /// no sentence break in between), only the window's own part of the
+    /// replacement is inserted, so "XY Widget" stays "XY Widget" rather than
+    /// becoming "XY XY Widget".
+    private static func replacementText(
+        for entry: Entry, in words: [String], at index: Int, count: Int, emitted: [String]
+    ) -> String {
         let extra = entry.replacementTokens.count - count
         guard extra > 0, entry.replacementWords.count == entry.replacementTokens.count else {
             return entry.replacement
         }
-        func normalized(_ range: Range<Int>) -> [String] {
-            words[range].map { tokenParts(for: $0)?.core.lowercased() ?? "" }
+        func normalized(_ span: [String]) -> [String] {
+            span.map { tokenParts(for: $0)?.core.lowercased() ?? "" }
         }
 
-        if index >= extra, normalized((index - extra)..<index) == Array(entry.replacementTokens[..<extra]) {
-            return entry.replacementWords[extra...].joined(separator: " ")
-        }
-        let end = index + count
-        if end + extra <= words.count, normalized(end..<(end + extra)) == Array(entry.replacementTokens[count...]) {
-            return entry.replacementWords[..<count].joined(separator: " ")
+        let window = Array(words[index..<(index + count)])
+        for before in stride(from: extra, through: 0, by: -1) {
+            let after = extra - before
+            guard emitted.count >= before, index + count + after <= words.count else { continue }
+            let preceding = Array(emitted.suffix(before))
+            let following = Array(words[(index + count)..<(index + count + after)])
+            guard normalized(preceding) == Array(entry.replacementTokens[..<before]),
+                  normalized(following) == Array(entry.replacementTokens[(before + count)...]) else { continue }
+            let span = (preceding + window + following).compactMap(tokenParts)
+            guard span.count == before + count + after, preservesPhraseBoundaryPunctuation(span) else { continue }
+            return entry.replacementWords[before..<(before + count)].joined(separator: " ")
         }
         return entry.replacement
     }

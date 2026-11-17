@@ -268,4 +268,44 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "order the xywidget now", customWords: words)
         #expect(result == "order the XY Widget now")
     }
+
+    @Test("repeated expansions each keep their full replacement")
+    func repeatedExpansionKeepsFullReplacement() {
+        let words = [CustomWord(word: "xy", replacement: "XY Widget")]
+        let result = CustomWordMatcher.apply(text: "xy xy", customWords: words)
+        #expect(result == "XY Widget XY Widget")
+    }
+
+    @Test("words across a sentence break are not treated as part of the replacement")
+    func replacementOverlapStopsAtSentenceBreak() {
+        let words = [CustomWord(word: "nyc", replacement: "New York")]
+        let result = CustomWordMatcher.apply(text: "I bought something new. nyc is next.", customWords: words)
+        #expect(result == "I bought something new. New York is next.")
+    }
+
+    @Test("replacement words already on both sides of the match are reused")
+    func replacementOverlapOnBothSides() {
+        let words = [CustomWord(word: "York", replacement: "New York City")]
+        let result = CustomWordMatcher.apply(text: "visit New York City soon", customWords: words)
+        #expect(result == "visit New York City soon")
+    }
+
+    // MARK: Possessive entries and replacements
+
+    @Test("explicit possessive entry wins over its base word's entry")
+    func explicitPossessiveEntryWins() {
+        let words = [
+            CustomWord(word: "Alex", replacement: "Alexander"),
+            CustomWord(word: "Alex's", replacement: "Alex's team"),
+        ]
+        let result = CustomWordMatcher.apply(text: "Alex's update", customWords: words)
+        #expect(result == "Alex's team update")
+    }
+
+    @Test("possessive already in the replacement is not added twice")
+    func possessiveReplacementIsNotDoubled() {
+        let words = [CustomWord(word: "mcdonald", replacement: "McDonald's")]
+        let result = CustomWordMatcher.apply(text: "lunch at mcdonald's", customWords: words)
+        #expect(result == "lunch at McDonald's")
+    }
 }
