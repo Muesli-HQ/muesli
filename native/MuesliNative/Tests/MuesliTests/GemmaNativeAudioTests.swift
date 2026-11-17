@@ -140,9 +140,11 @@ struct GemmaNativeAudioTests {
     }
     @Test func reasoningAndTruncationNeverBecomeTranscripts() throws {
         guard #available(macOS 15, *) else { return }
-        for raw in ["<|channel>thought\nNo audio was supplied", "Hello<turn|>", "text<channel|>reasoning", "<eos>"] {
-            #expect(throws: (any Error).self) { try GemmaNativeAudioPolicy.validatedOutput(raw, completed: true) }
+        for id in [46, 48, 98, 100, 101, 105, 106] {
+            #expect(throws: (any Error).self) { try GemmaNativeAudioPolicy.speechTokens([2000, id]) }
         }
+        #expect(try GemmaNativeAudioPolicy.speechTokens([258881, 2000, 3]) == [2000])
+        #expect(try GemmaNativeAudioPolicy.validatedOutput("type <|channel>", completed: true) == "type <|channel>")
         #expect(throws: (any Error).self) { try GemmaNativeAudioPolicy.validatedOutput("unfinished sentence", completed: false) }
         // Do not blacklist the prompt's example number: a person may really say it.
         #expect(try GemmaNativeAudioPolicy.validatedOutput("1.7", completed: true) == "1.7")

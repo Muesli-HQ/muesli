@@ -87,6 +87,15 @@ func nemotronMakeStreamState(config: NemotronRNNTConfig) throws -> RNNTStreamSta
 
 // MARK: - Token decoding
 
+// Reserved language, unknown, and blank IDs in the Nemotron 3.5 tokenizer.
+private let nemotronControlIDs: Set<Int> = [
+    0, 1, 256, 397, 518, 673, 814, 907, 993, 1125,
+    1232, 1279, 1383, 1455, 1603, 1724, 1841, 1929, 2021, 2124,
+    2205, 2322, 2440, 2529, 2809, 2947, 2986, 3051, 3064, 3134,
+    3247, 3446, 7489, 9532, 9544, 9596, 9695, 9815, 9847, 12944,
+    13087,
+]
+
 /// Decode token IDs to text: map id→piece, `▁`→space. When `stripAngleBracketTags`
 /// is set, drop `<…>` special/language-tag pieces (the 3.5 vocab carries native
 /// punctuation in-vocab, so no punctuation stripping is done either way).
@@ -99,7 +108,7 @@ func nemotronDecodeTokens(
     var pieces: [String] = []
     for id in tokenIds {
         guard let piece = tokenizer[id] else { continue }
-        if stripAngleBracketTags, piece.count >= 2, piece.hasPrefix("<"), piece.hasSuffix(">") { continue }
+        if stripAngleBracketTags, nemotronControlIDs.contains(id) { continue }
         pieces.append(piece)
     }
     let text = pieces.joined().replacingOccurrences(of: "▁", with: " ")
