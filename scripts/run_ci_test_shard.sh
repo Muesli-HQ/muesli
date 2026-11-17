@@ -191,6 +191,7 @@ case "${shard}" in
       OpenRouterTranscriptionClientTests
       SummaryModelPresetTests
       HotkeyMonitorTests
+      ReleaseAppHotkeyGuardTests
       PushToTalkEnablementPolicyTests
       ShortcutFeatureEnablementPolicyTests
       InteractiveAudioSessionOwnershipTests
