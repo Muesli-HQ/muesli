@@ -270,13 +270,38 @@ private struct HorizontalScrollScrubber: NSViewRepresentable {
     }
 }
 
+/// Explicit navigation invalidates accumulated scrolling even when two moments
+/// share a timestamp. Only uninterrupted scrolling carries its cursor forward.
+struct TimeTurnerScrubState {
+    var playhead: Date {
+        didSet { scrollCursor = nil }
+    }
+    private(set) var scrollCursor: VisualMemoryScrollCursor?
+
+    init(playhead: Date) { self.playhead = playhead }
+
+    mutating func resetScroll() { scrollCursor = nil }
+
+    func scrolling(deltaX: Double, trackWidth: Double, scale: VisualMemoryScrubScale) -> Self? {
+        guard let next = VisualMemoryScrollCursor.advance(scrollCursor, playhead: playhead,
+                                                         deltaX: deltaX, trackWidth: trackWidth, scale: scale) else { return nil }
+        var result = Self(playhead: next.date)
+        result.scrollCursor = next
+        return result
+    }
+}
+
 struct MemoryExplorerView: View {
     let externalDay: Binding<Date>?
     let memory: VisualMemoryController
     @Environment(\.dismiss) private var dismiss
     @State private var daySnapshot = TimeTurnerDaySnapshot()
     @State private var day: Date
-    @State private var playhead: Date
+    @State private var scrubState: TimeTurnerScrubState
+    private var playhead: Date {
+        get { scrubState.playhead }
+        nonmutating set { scrubState.playhead = newValue }
+    }
     @State private var selectedCaptureID: String?
     @State private var showsSearch = false
     let inline: Bool
@@ -296,7 +321,7 @@ struct MemoryExplorerView: View {
         let selectedDay = externalDay?.wrappedValue ?? initialMoment?.capturedAt ?? Date()
         let initial = initialMoment.flatMap { Calendar.current.isDate($0.capturedAt, inSameDayAs: selectedDay) ? $0 : nil }
         _day = State(initialValue: selectedDay)
-        _playhead = State(initialValue: initial?.capturedAt ?? selectedDay)
+        _scrubState = State(initialValue: TimeTurnerScrubState(playhead: initial?.capturedAt ?? selectedDay))
         _selectedCaptureID = State(initialValue: initial?.id)
     }
     @State private var confirmForget = false
@@ -407,19 +432,18 @@ struct MemoryExplorerView: View {
         return markers
     }
     @State private var scrubViewport = VisualMemoryScrubViewport.whole
-    @State private var scrollCursor: VisualMemoryScrollCursor?
     /// A new day or display starts unzoomed.
     private func resetScrubScale() {
         scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
         scrubViewport = .whole
-        scrollCursor = nil
+        scrubState.resetScroll()
     }
     /// Refreshed captures for the same day keep the zoom on the same moments.
     private func rebuildScrubScale() {
         let old = scrubScale
         scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
         scrubViewport = scrubViewport.rebased(from: old, to: scrubScale)
-        scrollCursor = nil
+        scrubState.resetScroll()
     }
     private func zoomScrubber(by factor: Double, around position: Double) {
         guard !ordered.isEmpty else { return }
@@ -444,10 +468,10 @@ struct MemoryExplorerView: View {
     private func scrollScrub(deltaX: CGFloat, precise: Bool) {
         guard !ordered.isEmpty else { return }
         if precise {
-            guard let next = VisualMemoryScrollCursor.advance(scrollCursor, playhead: playhead, deltaX: Double(deltaX),
-                                                              trackWidth: Double(trackWidth) * scrubViewport.zoom, scale: scrubScale) else { return }
-            scrub(to: next.fraction)
-            scrollCursor = next
+            guard let next = scrubState.scrolling(deltaX: Double(deltaX), trackWidth: Double(trackWidth) * scrubViewport.zoom,
+                                                 scale: scrubScale), let cursor = next.scrollCursor else { return }
+            scrub(to: cursor.fraction)
+            scrubState = next
             revealPlayhead()
         } else {
             select(deltaX < 0 ? min(ordered.count - 1, index + 1) : max(0, index - 1))

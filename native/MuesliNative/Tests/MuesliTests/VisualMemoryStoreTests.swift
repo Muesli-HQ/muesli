@@ -1016,6 +1016,39 @@ struct VisualMemoryStoreTests {
         #expect(restarted?.date == start)
     }
 
+    @Test func explicitNavigationClearsScrollProgressAtTheSameTimestamp() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        // Both a pointer click at 0.5 and selection of another display's moment
+        // resolve to the same date as the old playhead.
+        for destination in [try #require(scale.date(at: 0.5)), duplicate] {
+            var state = TimeTurnerScrubState(playhead: duplicate)
+            for _ in 0..<3 {
+                state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+            }
+            #expect(state.playhead == destination)
+            #expect(try #require(state.scrollCursor).fraction > 0.5)
+            state.playhead = destination
+            #expect(state.scrollCursor == nil)
+            let backward = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+            #expect(abs(backward.playhead.timeIntervalSince1970 - 1009.75) < 0.000001)
+        }
+    }
+
+    @Test func scrubStatePreservesUninterruptedScrollAndResetsOnScaleChange() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        var state = TimeTurnerScrubState(playhead: duplicate)
+        for _ in 0..<10 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        #expect(state.playhead > duplicate)
+        let date = state.playhead
+        state.resetScroll()
+        #expect(state.playhead == date)
+        #expect(state.scrollCursor == nil)
+    }
+
     @Test func scrubViewportKeepsItsMomentsWhenCapturesArrive() {
         let start = Date(timeIntervalSince1970: 0)
         let old = VisualMemoryScrubScale(dates: (0...600).map { start.addingTimeInterval(Double($0)) })
