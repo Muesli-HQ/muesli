@@ -953,6 +953,164 @@ struct VisualMemoryStoreTests {
         #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
     }
 
+    @Test func horizontalScrollMovesScrubLikeAFilmstrip() {
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 1000) == 0.6)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: 100, trackWidth: 1000) == 0.4)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.95, deltaX: -200, trackWidth: 1000) == 1)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.05, deltaX: 200, trackWidth: 1000) == 0)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 0) == 0.5)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: .nan, trackWidth: 1000) == 0.5)
+    }
+
+    @Test func scrubViewportZoomsAroundThePointerAndStaysInsideTheDay() {
+        let whole = VisualMemoryScrubViewport.whole
+        #expect(!whole.isZoomed)
+        #expect(whole.fraction(atPosition: 0.25) == 0.25)
+        let zoomed = whole.zoomed(by: 4, around: 0.5, maximumZoom: 10)
+        #expect(zoomed.zoom == 4)
+        #expect(abs(zoomed.fraction(atPosition: 0.5) - 0.5) < 0.000001)
+        #expect(abs(zoomed.position(of: 0.5) - 0.5) < 0.000001)
+        let leftEdge = whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(leftEdge.start == 0)
+        #expect(whole.zoomed(by: 50, around: 0.5, maximumZoom: 10).zoom == 10)
+        #expect(zoomed.zoomed(by: 0.01, around: 0.5, maximumZoom: 10) == .whole)
+        #expect(whole.zoomed(by: .nan, around: 0.5, maximumZoom: 10) == whole)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: 0.9).start == 0.75)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: -1).start == 0)
+    }
+
+    @Test func scrubViewportFollowsThePlayheadPastEitherEdge() {
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(view.revealing(0.35) == view)
+        let forward = view.revealing(0.6)
+        #expect(abs(forward.position(of: 0.6) - 0.9) < 0.000001)
+        let backward = view.revealing(0.1)
+        #expect(abs(backward.position(of: 0.1) - 0.1) < 0.000001)
+        #expect(view.revealing(1).start == 0.75)
+        let start = Date(timeIntervalSince1970: 0)
+        let scale = VisualMemoryScrubScale(dates: (0..<601).map { start.addingTimeInterval(Double($0)) })
+        #expect(scale.compressedDuration == 600)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: scale) == 10)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: VisualMemoryScrubScale(dates: [])) == 1)
+    }
+
+    @Test func zoomHidesOffscreenPlayheadWithoutMovingSelection() {
+        let viewport = VisualMemoryScrubViewport.whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(viewport.visiblePosition(of: 0.9) == nil)
+        #expect(viewport.visiblePosition(of: 0) == 0)
+        #expect(viewport.visiblePosition(of: 0.25) == 1)
+        let middle = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(middle.visiblePosition(of: 0.1) == nil)
+        #expect(middle.visiblePosition(of: 0.6) == nil)
+        #expect(middle.visiblePosition(of: 0.375) == 0.5)
+        #expect(middle.visiblePosition(of: 0.25) == 0)
+        #expect(middle.visiblePosition(of: 0.5) == 1)
+        #expect(middle.visiblePosition(of: .nan) == nil)
+        #expect(middle.revealing(0.9).visiblePosition(of: 0.9) != nil)
+    }
+
+    @Test func unchangedCaptureRefreshPreservesDuplicateTimestampScrollProgress() throws {
+        let dates = [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport.whole
+        var state = TimeTurnerScrubState(playhead: dates[2])
+        for _ in 0..<3 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        let cursor = try #require(state.scrollCursor)
+        // A capture on another display refreshes the catalog, but not these dates.
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == cursor)
+        let reverse = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+        #expect(reverse.playhead == dates[2])
+        // A changed duplicate count changes the scale even with identical endpoints.
+        state.refreshScale(orderedDates: Array(dates.dropFirst()), scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == nil)
+        #expect(scale.matchesOrderedDates(Array(dates.dropFirst())))
+    }
+
+    @Test func captureRefreshPreservesExactViewportUnlessDatesChange() {
+        let dates = (0...600).map { Date(timeIntervalSince1970: Double($0)) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        var state = TimeTurnerScrubState(playhead: dates[350])
+        let original = viewport
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(viewport == original)
+        state.refreshScale(orderedDates: dates + [dates.last!.addingTimeInterval(10)], scale: &scale, viewport: &viewport)
+        #expect(abs(scale.date(at: viewport.start)!.timeIntervalSince1970 - 300) < 0.000001)
+        #expect(abs(scale.date(at: viewport.start + viewport.span)!.timeIntervalSince1970 - 450) < 0.000001)
+        state.refreshScale(orderedDates: [], scale: &scale, viewport: &viewport)
+        #expect(viewport == .whole)
+        #expect(scale.matchesOrderedDates([]))
+    }
+
+    @Test func scrollCursorAdvancesPastCapturesSharingATimestamp() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let duplicate = start.addingTimeInterval(10)
+        let scale = VisualMemoryScrubScale(dates: [start, start, duplicate, duplicate, start.addingTimeInterval(20)])
+        // Restarting each event from the playhead stalls on the shared timestamp.
+        var stalled = duplicate
+        for _ in 0..<10 {
+            stalled = VisualMemoryScrollCursor.advance(nil, playhead: stalled, deltaX: -10, trackWidth: 880, scale: scale)!.date
+        }
+        #expect(stalled == duplicate)
+        var cursor: VisualMemoryScrollCursor?
+        var playhead = duplicate
+        for _ in 0..<10 {
+            cursor = VisualMemoryScrollCursor.advance(cursor, playhead: playhead, deltaX: -10, trackWidth: 880, scale: scale)
+            playhead = cursor!.date
+        }
+        #expect(playhead > duplicate)
+        // A playhead moved by something else restarts from the playhead.
+        let restarted = VisualMemoryScrollCursor.advance(cursor, playhead: start, deltaX: 0, trackWidth: 880, scale: scale)
+        #expect(restarted?.date == start)
+    }
+
+    @Test func explicitNavigationClearsScrollProgressAtTheSameTimestamp() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        // Both a pointer click at 0.5 and selection of another display's moment
+        // resolve to the same date as the old playhead.
+        for destination in [try #require(scale.date(at: 0.5)), duplicate] {
+            var state = TimeTurnerScrubState(playhead: duplicate)
+            for _ in 0..<3 {
+                state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+            }
+            #expect(state.playhead == destination)
+            #expect(try #require(state.scrollCursor).fraction > 0.5)
+            state.playhead = destination
+            #expect(state.scrollCursor == nil)
+            let backward = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+            #expect(abs(backward.playhead.timeIntervalSince1970 - 1009.75) < 0.000001)
+        }
+    }
+
+    @Test func scrubStatePreservesUninterruptedScrollAndResetsOnScaleChange() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        var state = TimeTurnerScrubState(playhead: duplicate)
+        for _ in 0..<10 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        #expect(state.playhead > duplicate)
+        let date = state.playhead
+        state.resetScroll()
+        #expect(state.playhead == date)
+        #expect(state.scrollCursor == nil)
+    }
+
+    @Test func scrubViewportKeepsItsMomentsWhenCapturesArrive() {
+        let start = Date(timeIntervalSince1970: 0)
+        let old = VisualMemoryScrubScale(dates: (0...600).map { start.addingTimeInterval(Double($0)) })
+        let new = VisualMemoryScrubScale(dates: (0...1200).map { start.addingTimeInterval(Double($0)) })
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        let rebased = view.rebased(from: old, to: new)
+        #expect(abs(new.date(at: rebased.start)!.timeIntervalSince(old.date(at: view.start)!)) < 0.001)
+        #expect(abs(new.date(at: rebased.start + rebased.span)!.timeIntervalSince(old.date(at: view.start + view.span)!)) < 0.001)
+        #expect(VisualMemoryScrubViewport.whole.rebased(from: old, to: new) == .whole)
+    }
+
     @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {
         let start = Date(timeIntervalSince1970: 1000)
         let dates = (0..<14_400).map { start.addingTimeInterval(Double($0) * 2) }
