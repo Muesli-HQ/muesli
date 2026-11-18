@@ -136,7 +136,7 @@ struct FeedbackCaptureLifecycleTests {
             panel.contentView = hosting
             defer { panel.contentView = nil; panel.close() }
             let fixture = FeedbackCapturePillTests()
-            try await waitUntil {
+            try await waitUntil(description: "capture view loaded and Delete enabled") {
                 fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled() }
             }
             let text = fixture.accessibilityElements(hosting).flatMap {
@@ -316,7 +316,7 @@ struct FeedbackCaptureLifecycleTests {
             panel.contentView = hosting
             defer { panel.contentView = nil; panel.close() }
             let fixture = FeedbackCapturePillTests()
-            try await waitUntil {
+            try await waitUntil(description: "capture view loaded and Delete enabled") {
                 fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Delete…" && $0.isAccessibilityEnabled() }
             }
             let audio = fixture.accessibilityElements(hosting).first { $0.accessibilityLabel() == "Audio" }
@@ -326,12 +326,12 @@ struct FeedbackCaptureLifecycleTests {
                     .first { $0.segmentCount == 2 && $0.label(forSegment: 0) == "Video" && $0.label(forSegment: 1) == "Audio" })
                 picker.selectedSegment = 1
                 #expect(picker.sendAction(picker.action, to: picker.target))
-                try await waitUntil {
+                try await waitUntil(description: "audio tab waveform") {
                     fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Recording waveform" }
                 }
                 picker.selectedSegment = 0
                 #expect(picker.sendAction(picker.action, to: picker.target))
-                try await waitUntil {
+                try await waitUntil(description: "video tab replacing waveform") {
                     !fixture.accessibilityElements(hosting).contains { $0.accessibilityLabel() == "Recording waveform" }
                 }
             }

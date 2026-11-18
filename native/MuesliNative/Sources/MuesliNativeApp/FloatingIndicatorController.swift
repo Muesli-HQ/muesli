@@ -279,6 +279,7 @@ final class FloatingIndicatorController: NSObject {
     private(set) var meetingFeedbackMessage: String?
     private var meetingFeedbackGeneration = 0
     private(set) var activityRevision = 0
+    private var recordingUsesFloatingFallback = false
     private var geometryRevision: UInt64 = 0
     #if DEBUG
     var testingHoverGeometryReconciled: (() -> Void)?
@@ -295,7 +296,11 @@ final class FloatingIndicatorController: NSObject {
     var cursorInsertionStopped: Bool { insertionStopReason != nil }
     var insertionStoppedDetail: String { (insertionStopReason ?? .cursorOwnershipLost).detail }
     private var isHovered = false
-    private var lastLoadedConfig: AppConfig?
+    private var lastLoadedConfig: AppConfig? {
+        didSet {
+            if oldValue?.indicatorAnchor != lastLoadedConfig?.indicatorAnchor { recordingUsesFloatingFallback = false }
+        }
+    }
     private let loadFeedbackConfiguration: () -> AppConfig
     private var preservesCollapsedLeftEdge = false
     private var hoverExitWorkItem: DispatchWorkItem?
@@ -391,17 +396,34 @@ final class FloatingIndicatorController: NSObject {
             guard let self, self.state == .recording, self.isToggleDictation || self.hasDictationOverlap else { return }
             self.onStopToggleDictation?()
         }
+        notchIndicator.onRecordingPanelUnavailable = { [weak self] in
+            guard let self, self.state == .recording, let config = self.lastLoadedConfig else { return }
+            self.recordingUsesFloatingFallback = true
+            self.setState(.recording, config: config)
+        }
         notchIndicator.powerProvider = { [weak self] in self?.powerProvider?() ?? -160 }
         NotificationCenter.default.addObserver(self, selector: #selector(displayConfigurationChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeSpaceChanged),
+            name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+    }
+
+    @objc func activeSpaceChanged() {
+        guard state == .recording, let config = lastLoadedConfig,
+              config.indicatorAnchor == .notch || instructionMode == .quill else { return }
+        notchIndicator.cancelRecordingPanelCheck()
+        recordingUsesFloatingFallback = false
+        setState(state, config: config)
     }
 
     @objc private func displayConfigurationChanged() {
-        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch || notchIndicator.quillAnswer != nil else { return }
+        guard let config = lastLoadedConfig, config.indicatorAnchor == .notch || (state == .recording && instructionMode == .quill) || notchIndicator.quillAnswer != nil else { return }
         // Status messages and terminal results belong to presentation, not the idle recorder.
         // Moving it must not replay idle or restart its dismissal deadline.
         if refreshNotchFeedbackPlacement() { return }
         guard !isShowingLoading, !isComputerUseCursorMode else { return }
+        notchIndicator.cancelRecordingPanelCheck()
+        recordingUsesFloatingFallback = false
         setState(state, config: config)
     }
 
@@ -1009,6 +1031,9 @@ final class FloatingIndicatorController: NSObject {
         }
         let state: DictationState = isMeetingRecording
             ? (dictationPresentation == .idle ? .recording : dictationPresentation) : requestedState
+        if state != .recording {
+            recordingUsesFloatingFallback = false
+        }
         if state != .recording || (isMeetingRecording && !hasDictationOverlap) { insertionStopReason = nil }
         guard presentsWindows else { self.state = state; return }
         geometryRevision &+= 1
@@ -1070,13 +1095,13 @@ final class FloatingIndicatorController: NSObject {
         }
         // The same session owns both presentations; instruction text survives
         // status updates and expanding/collapsing until the session returns idle.
-        if config.indicatorAnchor == .notch || instructionMode == .quill,
+        if !recordingUsesFloatingFallback, config.indicatorAnchor == .notch || instructionMode == .quill,
            let screen = NSScreen.main {
             let title: String
             switch state {
             case .idle: title = "muesli"
             case .preparing: title = microphoneStartupPending ? "Connecting" : (hasDictationOverlap ? "Preparing dictation" : "Preparing")
-            case .recording: title = insertionStopReason?.compactTitle ?? (hasDictationOverlap ? "Dictating" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening")))
+            case .recording: title = hasDictationOverlap ? "Dictating" : (isMeetingRecordingPaused ? "Paused" : (isMeetingRecording ? "Meeting" : "Listening"))
             case .transcribing: title = instructionMode == .quill ? "Quill" : (instructionMode == .computerUse ? "Computer use" : transcribingTitle)
             }
             notchIndicator.meetingTranscriptEnabled = config.showMeetingTranscriptOnIndicatorHover
@@ -1093,7 +1118,7 @@ final class FloatingIndicatorController: NSObject {
                     ? "Listening…" : (instructionTranscriptText == transcribingTitle ? "Working…" : transcribingTitle),
                 appName: instructionMode == .quill ? "Quill" : instructionAppName,
                 appIcon: instructionMode == .quill ? nil : instructionAppIcon, question: question,
-                toolResults: notchToolResults, meetingStatus: overlapMeetingStatus, cursorInsertionStopped: cursorInsertionStopped) {
+                toolResults: notchToolResults, meetingStatus: overlapMeetingStatus, insertionStopReason: insertionStopReason) {
                 prepareForNotchPresentation()
                 if state == .idle { powerProvider = nil }
                 else if isMeetingRecording && !hasDictationOverlap { powerProvider = meetingPowerProvider }
@@ -1231,7 +1256,7 @@ final class FloatingIndicatorController: NSObject {
             }
 
             // Apply glass state last so it can override iconLabel visibility set above.
-            applyGlassState(state, frameSize: targetFrame.size)
+            applyGlassState(state, frameSize: targetFrame.size, config: config)
             layoutDictationOverlap(in: targetFrame.size)
         }
 
@@ -1791,6 +1816,7 @@ final class FloatingIndicatorController: NSObject {
     }
 
     func close() {
+        recordingUsesFloatingFallback = false
         feedbackCapturePanel?.close(); feedbackCapturePanel = nil; feedbackCaptureIsPresented = false
         let pendingQuestion = question
         question = nil
@@ -2269,8 +2295,7 @@ final class FloatingIndicatorController: NSObject {
         }
     }
 
-    private func applyGlassState(_ state: DictationState, frameSize: NSSize) {
-        let config = configStore.loadForReading()
+    private func applyGlassState(_ state: DictationState, frameSize: NSSize, config: AppConfig) {
         let radius = frameSize.height / 2
         let themeHex = config.recordingColorHex
 
@@ -2555,7 +2580,7 @@ final class FloatingIndicatorController: NSObject {
         self.iconLabel = iconLabel
         self.textLabel = textLabel
 
-        setupGlassLayer(in: contentView, iconLabel: iconLabel)
+        setupGlassLayer(in: contentView, iconLabel: iconLabel, config: config)
     }
 
     private func exitComputerUseCursorMode(restoreFrame: Bool) {
@@ -2626,7 +2651,7 @@ final class FloatingIndicatorController: NSObject {
         )
     }
 
-    private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField) {
+    private func setupGlassLayer(in contentView: HoverIndicatorView, iconLabel: NSTextField, config: AppConfig) {
         // masksToBounds clips both the glass blur and the tint layer to the pill shape.
         // The panel's compositor-level shadow is unaffected.
         contentView.layer?.masksToBounds = true
@@ -2673,7 +2698,6 @@ final class FloatingIndicatorController: NSObject {
 
         // Idle icon — uses the user's selected menu bar icon from config.
         // Falls back to waveform.badge.microphone if the configured icon can't be loaded.
-        let config = configStore.loadForReading()
         let idleImage = Self.idleIndicatorIcon(config: config)
         let micView = NSImageView(image: idleImage)
         micView.contentTintColor = .white

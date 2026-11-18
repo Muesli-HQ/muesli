@@ -444,7 +444,13 @@ struct NotchIndicatorTests {
         }
         indicator.setState(.recording, config: config)
         #expect(indicator.cursorInsertionStopped)
-        #expect(notch.cursorInsertionStopped == useNotch)
+        #expect(notch.insertionStopReason == (useNotch ? indicator.insertionStopReason : nil))
+        if useNotch {
+            let bar = try #require(notch.screenFrame)
+            let warning = try #require(notch.expandedPanelFrame)
+            #expect(warning.minX == bar.minX && warning.width == bar.width)
+            #expect(warning.maxY == bar.minY && warning.height > 0)
+        }
         var stops = 0
         indicator.onStopToggleDictation = { stops += 1 }
         // The warning must not take ownership away from recording controls.
@@ -452,7 +458,8 @@ struct NotchIndicatorTests {
         #expect(stops == 1)
         indicator.setState(.transcribing, config: config)
         #expect(!indicator.cursorInsertionStopped)
-        #expect(!notch.cursorInsertionStopped)
+        #expect(notch.insertionStopReason == nil)
+        #expect(notch.expandedPanelFrame == nil)
         indicator.setState(.idle, config: config)
         indicator.setToggleDictation(true, config: config)
         #expect(!indicator.cursorInsertionStopped)
@@ -833,6 +840,169 @@ struct NotchIndicatorTests {
         #expect(notch.isVisible)
     }
 
+    @Test("Hands-free recording recovers an off-screen notch or shows the floating controls")
+    @MainActor
+    func handsFreePresentationRecovery() async throws {
+        _ = try #require(NSScreen.main)
+        for recovers in [true, false] {
+            var checks = 0
+            var missingPanel: NSPanel?
+            let notch = NotchIndicatorController(resolveGeometry: { screen in
+                NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                    y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 78)
+            }, isPanelOnScreen: { panel in
+                #expect(panel.isVisible)
+                defer { checks += 1 }
+                if let missingPanel {
+                    #expect(panel !== missingPanel)
+                    #expect(!missingPanel.isVisible)
+                    #expect(panel.frame == missingPanel.frame)
+                    let onScreen = await NotchIndicatorController.windowServerShows(panel)
+                    return recovers && panel !== missingPanel && onScreen
+                }
+                missingPanel = panel
+                return false
+            })
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            var fallback: InteractiveFloatingPanel?
+            let indicator = FloatingIndicatorController(
+                configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch,
+                makePanel: { frame in
+                    let panel = InteractiveFloatingPanel(contentRect: frame, styleMask: .borderless,
+                        backing: .buffered, defer: false)
+                    fallback = panel
+                    return panel
+                })
+            defer { indicator.close(); try? FileManager.default.removeItem(at: directory) }
+            var config = AppConfig()
+            config.indicatorAnchor = .notch
+            config.showFloatingIndicator = false
+            indicator.setToggleDictation(true, config: config)
+            for _ in 0..<100 where checks < 2 || (!recovers && notch.isVisible) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(checks == 2)
+            #expect(notch.isVisible == recovers)
+            #expect((fallback?.isVisible == true) == !recovers)
+            #expect(indicator.state == .recording)
+        }
+    }
+
+    @Test("Changing Spaces while a visibility query is pending checks the new desktop")
+    @MainActor
+    func recoveryAfterSpaceChange() async throws {
+        _ = try #require(NSScreen.main)
+        var previousQuery: CheckedContinuation<Bool, Never>?
+        var queries = 0
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            NotchIndicatorGeometry(cutout: CGRect(x: screen.frame.midX - 90,
+                y: screen.frame.maxY - 32, width: 180, height: 32), wingWidth: 78)
+        }, isPanelOnScreen: { _ in
+            queries += 1
+            if queries == 1 { return await withCheckedContinuation { previousQuery = $0 } }
+            return false
+        })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let indicator = FloatingIndicatorController(configStore: ConfigStore(supportDirectory: directory), notchIndicator: notch)
+        defer {
+            previousQuery?.resume(returning: true)
+            indicator.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        var config = AppConfig()
+        config.indicatorAnchor = .notch
+        indicator.setToggleDictation(true, config: config)
+        for _ in 0..<100 where previousQuery == nil { try await Task.sleep(for: .milliseconds(20)) }
+        let stale = try #require(previousQuery)
+        indicator.activeSpaceChanged()
+        previousQuery = nil
+        stale.resume(returning: true)
+        for _ in 0..<100 where notch.isVisible { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(queries == 3)
+        #expect(!notch.isVisible)
+        #expect(indicator.state == .recording)
+    }
+
+    @Test("WindowServer lists the hands-free notch on the current desktop")
+    @MainActor
+    func handsFreeWindowServerVisibility() async throws {
+        let screen = try #require(NSScreen.main)
+        var observedOnScreen = false
+        let notch = NotchIndicatorController(isPanelOnScreen: { panel in
+            let visible = await NotchIndicatorController.windowServerShows(panel)
+            observedOnScreen = visible
+            return visible
+        })
+        defer { notch.hide() }
+        #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: true, active: true, icon: NSImage(), accent: .systemBlue))
+        for _ in 0..<100 where !observedOnScreen { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(observedOnScreen)
+    }
+
+    @Test("Crowded notch paints the muesli mark during silent dictation", arguments: [false, true])
+    @MainActor
+    func compactRecordingCue(handsFree: Bool) async throws {
+        let screen = try #require(NSScreen.main)
+        var recordingPanel: NSPanel?
+        var powerReads = 0
+        let notch = NotchIndicatorController(resolveGeometry: { screen in
+            let cutout = CGRect(x: screen.frame.midX - 92, y: screen.frame.maxY - 32, width: 185, height: 32)
+            let mic = CGRect(x: cutout.maxX + 34, y: cutout.minY, width: 56, height: 32)
+            return NotchIndicatorGeometry(cutout: cutout, wingWidth: 78).clearingMenuBar([mic])
+        }, isPanelOnScreen: { panel in recordingPanel = panel; return true })
+        notch.powerProvider = { powerReads += 1; return -160 }
+        defer { notch.hide() }
+        #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: handsFree, active: true, icon: NSImage(), accent: .systemBlue))
+        for _ in 0..<100 where recordingPanel == nil { try await Task.sleep(for: .milliseconds(20)) }
+        for _ in 0..<100 where powerReads < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(powerReads >= 2)
+        let view = try #require(recordingPanel?.contentView)
+        view.layoutSubtreeIfNeeded()
+        let wing = CGRect(x: 0, y: 0, width: 34, height: view.bounds.height)
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: wing))
+        view.cacheDisplay(in: wing, to: bitmap)
+        var markPixels = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let rgb = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if rgb.redComponent > 0.65 && rgb.greenComponent > 0.65 && rgb.blueComponent > 0.65 {
+                    markPixels += 1
+                }
+            }
+        }
+        #expect(markPixels > 50)
+
+        #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: handsFree, active: true, icon: NSImage(),
+            accent: .systemBlue, insertionStopReason: .transcriptionFailed))
+        let bar = try #require(notch.screenFrame)
+        let warning = try #require(notch.expandedPanelFrame)
+        #expect(warning.minX == bar.minX && warning.maxX == bar.maxX)
+        #expect(warning.maxY == bar.minY)
+        notch.hide()
+        #expect(notch.expandedPanelFrame == nil)
+    }
+
+    @Test("Stopping dictation retires a pending notch recovery")
+    @MainActor
+    func handsFreeRecoveryAfterStop() async throws {
+        let screen = try #require(NSScreen.main)
+        var verified = false
+        var fellBack = false
+        let notch = NotchIndicatorController(isPanelOnScreen: { _ in verified = true; return false })
+        notch.onRecordingPanelUnavailable = { fellBack = true }
+        defer { notch.hide() }
+        #expect(notch.show(on: screen, title: "Listening", detail: "", recording: true,
+            paused: false, meeting: false, handsFree: true, active: true, icon: NSImage(), accent: .systemBlue))
+        notch.hide()
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!verified)
+        #expect(!fellBack)
+        #expect(!notch.isVisible)
+    }
+
     @Test("Notch can recreate its content across repeated sessions")
     @MainActor
     func repeatedPresentation() throws {
@@ -922,12 +1092,12 @@ struct NotchIndicatorTests {
         #expect(NotchOutcome.failure.duration == 5)
     }
 
-    @Test("Expanded instruction panel aligns with the asymmetric bar on offset screens")
+    @Test("Expanded instruction panel aligns with the centered bar on offset screens")
     func instructionPanelGeometry() {
         let geometry = NotchIndicatorGeometry(cutout: CGRect(x: 1500, y: 900, width: 180, height: 32), wingWidth: 110)
         let frame = geometry.instructionFrame(in: CGRect(x: 1000, y: 0, width: 1200, height: 900))
         #expect(frame.midX == geometry.frame().midX)
-        #expect(frame.midX == geometry.cutout.midX - 16)
+        #expect(frame.midX == geometry.cutout.midX)
         #expect(frame.maxY == geometry.cutout.minY)
         #expect(frame.width == 440)
         #expect(frame.height == 100)
@@ -1268,7 +1438,7 @@ struct NotchIndicatorTests {
         #expect(notch.expandedPanelFrame == nil)
         physical = true
         #expect(notch.refreshOutcomePlacement(on: screen))
-        #expect(notch.screenFrame?.width == 368)
+        #expect(notch.screenFrame?.width == 336)
         #expect(notch.status == .loading)
         #expect(notch.statusMessage == "Preparing")
         #expect(notch.expandedPanelFrame == nil)
@@ -1292,9 +1462,20 @@ struct NotchIndicatorTests {
         #expect(geometry.frame().height == 32)
         #expect(geometry.frame().minY == geometry.cutout.minY)
         #expect(screen.contains(geometry.frame()))
-        // Preserve the physical camera gap even though the silhouette is asymmetric.
-        #expect(geometry.frame().minX + geometry.wingWidth == left.maxX)
+        #expect(geometry.frame().midX == geometry.cutout.midX)
+        #expect(geometry.frame().minX + geometry.leftWingWidth == left.maxX)
         #expect(geometry.frame().maxX - geometry.rightWingWidth == right.minX)
+        let mic = CGRect(x: right.minX + 34, y: screen.maxY - 33, width: 56, height: 33)
+        let compact = geometry.clearingMenuBar([mic]).frame()
+        #expect(compact.minX == geometry.frame().minX)
+        #expect(compact.maxY == screen.maxY)
+        #expect(compact.minY == geometry.cutout.minY)
+        #expect(geometry.clearingMenuBar([mic]).hasRoomForRecordingControls)
+        #expect(!geometry.clearingMenuBar([mic.offsetBy(dx: -33, dy: 0)]).hasRoomForRecordingControls)
+        #expect(compact.maxX == mic.minX)
+        #expect(!compact.intersects(mic))
+        #expect(geometry.clearingMenuBar([mic]).cutout == geometry.cutout)
+        #expect(geometry.clearingMenuBar([mic.offsetBy(dx: 100, dy: 0)]) == geometry)
         let previousRightEdge = geometry.cutout.maxX + 110
         #expect(previousRightEdge - geometry.frame().maxX >= 32)
     }
