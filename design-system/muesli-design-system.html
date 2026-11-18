@@ -477,7 +477,7 @@
   .notification-dismiss { display:grid; place-items:center; width:22px; height:22px; padding:0; border:1px solid rgba(255,255,255,0.55); border-radius:50%; background:rgba(0,0,0,0.7); color:rgba(255,255,255,0.86); }
   .notch-schematic { display:flex; width:max-content; align-items:center; color:white; font-size:10px; line-height:1; }
   .notch-demo { display:flex; height:32px; background:black; border-radius:0 0 12px 12px; overflow:hidden; }
-  .notch-left { width:110px; display:flex; align-items:center; justify-content:center; gap:5px; }
+  .notch-left { width:78px; display:flex; align-items:center; justify-content:center; gap:5px; }
   .notch-camera { width:192px; }
   .notch-right { width:78px; display:flex; align-items:center; gap:4px; padding:0 6px; }
   .notch-wave { width:16px; height:14px; background:repeating-linear-gradient(90deg,var(--accent) 0 1px,transparent 1px 3px); }
@@ -1126,18 +1126,18 @@
   <div class="component-preview demo-row"><span>Correction and meeting notifications</span><span class="notification-dismiss" role="img" aria-label="Dismiss button specimen"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span></div>
   <p class="pattern-note">Production uses an image-only SF Symbol xmark at 10pt medium in a 22pt circular NSButton. Do not use a text multiplication sign: its baseline shifts the mark down. The accessibility label and tooltip are Dismiss. Native 1×/2× rendering was verified; this SVG is only a browser specimen.</p>
 
-  <h3>Single-Line Notch — First Clearance Pass</h3>
+  <h3>Centered Single-Line Notch</h3>
   <div class="component-preview preview-scroll">
-    <div class="notch-schematic" role="img" aria-label="110-point title wing, camera gap, 78-point control wing, then 32 points freed at the right edge">
+    <div class="notch-schematic" role="img" aria-label="78-point title wing, camera gap, 78-point control wing, then 32 points freed at the right edge">
       <div class="notch-demo"><div class="notch-left">▥ <strong>Listening</strong></div><div class="notch-camera"></div><div class="notch-right"><span class="notch-wave"></span><span class="notch-stop">■</span><span class="notch-cancel">×</span></div></div><div class="clearance-demo">32pt</div>
     </div>
   </div>
   <table>
     <tr><th>Region</th><th>Behavior</th></tr>
-    <tr><td>Camera gap</td><td>Uses detected hardware geometry; never shifted to center the asymmetric panel. The example uses 192pt.</td></tr>
-    <tr><td>Left / right wings</td><td>Normally 110pt / 78pt. Height remains the display's top inset. Stop and Cancel retain 20pt and 22pt widths.</td></tr>
+    <tr><td>Camera gap</td><td>Centered on the detected hardware cutout. The example uses 192pt.</td></tr>
+    <tr><td>Left / right wings</td><td>Both wings are 78pt. Height remains the display's top inset. Stop and Cancel retain 20pt and 22pt widths.</td></tr>
     <tr><td>Waveform</td><td>Shrinks to remaining width before controls; right padding is 6pt per side, gaps 4pt. Instruction disclosure moves left.</td></tr>
-    <tr><td>Clearance</td><td>32pt less coverage at the usual right edge. This is a fixed first pass, not live detection of the system mic indicator. Other display and menu-bar layouts need validation.</td></tr>
+    <tr><td>Clearance</td><td>32pt less coverage at the usual right edge. If a Control Centre status item overlaps, only the crowded wing narrows. The compact left wing shows the muesli icon and a live waveform when space permits. If live text stops during dictation, a yellow warning appears directly below the notch at the same width while recording continues.</td></tr>
   </table>
 
   <h3>Quill Conversation Answer</h3>
@@ -1166,7 +1166,7 @@
   <p>Shortcut activation-delay fields accept an editable numeric draft. Validate on Return or focus loss, allowing intermediate values such as an empty field or “1”.</p>
 
   <h3>Computer-Use Expansion</h3>
-  <p class="pattern-note">Center the expanded panel beneath the visible asymmetric bar, 16pt left of the camera center for the usual 110pt/78pt wings. Keep the camera gap fixed. Instruction text uses 13pt; up to three recent tool summaries use 10pt and at most two lines each. The panel starts at 100pt and adds 30pt per response, to 190pt. Summaries describe the operation and outcome (for example, “Read page text”); full responses, observations, and tool arguments remain in Timeline.</p>
+  <p class="pattern-note">Center the expanded panel beneath the hardware cutout. Keep the camera gap fixed. Instruction text uses 13pt; up to three recent tool summaries use 10pt and at most two lines each. The panel starts at 100pt and adds 30pt per response, to 190pt. Summaries describe the operation and outcome (for example, “Read page text”); full responses, observations, and tool arguments remain in Timeline.</p>
   <div class="component-preview" style="max-width:440px;background:#0e0e0e;color:white;padding:10px 18px;border-radius:0 0 18px 18px">
     <div style="font-size:12px;color:rgba(255,255,255,.65)">Instruction</div>
     <p style="font-size:13px;margin:6px 0">Can you open Twitter on Google Chrome?</p>
