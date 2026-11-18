@@ -294,7 +294,7 @@ When changing these patterns, update the corresponding specimen and token descri
 ## Current constraints
 
 - The native stats header still uses four columns at narrow widths. Its compact-window behavior is an open review finding, not resolved by the reference's scrollable desktop specimen.
-- The notch's 78pt right wing leaves 32pt more space than the previous usual 110pt wing. It does not discover the macOS microphone indicator's bounds. Validate other display scales and crowded menu bars before claiming universal clearance.
+- The notch's 78pt right wing leaves 32pt more space than the previous usual 110pt wing. If a Control Centre status item overlaps the bar, only the crowded wing narrows. During recording the left wing displays the muesli icon beside a live waveform when space permits and opens the activity menu. The right carries the primary action. If live text stops during dictation, a yellow warning appears directly below the notch at the same width while recording continues.
 - The close mark is an image-only system xmark centered in a 22pt circular button. Its native rendering has already been verified at 1×/2×; browser text glyphs are not an equivalent implementation.
 - Real UI verification must include narrow windows, Light, Dark and Ultra Dark, keyboard focus, and selected/hover states. The HTML theme toggle changes only this reference, never app preferences.
 
@@ -308,7 +308,7 @@ The overview's `dictationSessions` currently uses the broader daily cache and in
 
 ## Computer-use expanded notch
 
-Center the expanded instruction and question panels beneath the visible bar (its midpoint), while keeping the top bar’s camera gap aligned with the hardware. The unequal 110pt/78pt wings place this midpoint 16pt left of the camera center. Clamp panels to the active display.
+Center expanded instruction and question panels beneath the camera, including when a menu bar item narrows one wing. Clamp panels to the active display.
 
 Show the latest three tool summaries under the working status, using 10pt text and at most two lines per summary. Generate display copy from the operation and outcome (for example, “Read page text” or “Open app — failed”), never from raw response bodies. Full responses, observations, errors, and tool arguments remain in Timeline. Older trace events without a summary remain readable there and do not fall back to raw text in the notch. Use 13pt instruction text in a scrollable area. The normal panel starts at 100pt high and adds 30pt per result, capped at 190pt; review and question surfaces retain their dedicated layouts. Clear summaries when a new command starts or the session ends.
 

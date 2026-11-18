@@ -69,7 +69,7 @@ fi
 
 # UI timing and deadline-bound Vidshot media processing need the serial shard,
 # not competition with the concurrent core run.
-for suite in NotchIndicatorTests FeedbackCaptureTranscriptTests FeedbackCaptureContextFinalizerTests; do
+for suite in NotchIndicatorTests FeedbackCaptureLifecycleTests FeedbackCapturePillTests FeedbackCaptureTranscriptTests FeedbackCaptureContextFinalizerTests; do
   if ! bash "$runner" --list-filters dictation-transcription | grep -Fx "$suite" > /dev/null; then
     echo "$suite must run in the serialized dictation-transcription shard" >&2
     failed=true
