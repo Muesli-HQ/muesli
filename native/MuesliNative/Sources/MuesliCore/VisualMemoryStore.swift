@@ -835,6 +835,8 @@ public struct VisualMemoryScrubScale {
     }
     /// Browse-axis length in seconds after gap compression.
     public var compressedDuration: TimeInterval { positions.last ?? 0 }
+    /// Compare the ordered capture timestamps, including duplicate counts.
+    public func matchesOrderedDates(_ dates: [Date]) -> Bool { self.dates == dates }
     /// Horizontal scrolling moves the day like a filmstrip: content moving left
     /// (a negative delta) advances time. `trackWidth` is the width that spans the
     /// whole day, so a zoomed track passes its width times the zoom.
@@ -881,6 +883,11 @@ public struct VisualMemoryScrubViewport: Equatable, Sendable {
         max(1, scale.compressedDuration / minimumSpan)
     }
     public func position(of fraction: Double) -> Double { (fraction - start) * zoom }
+    /// Offscreen selections must not masquerade as either visible endpoint.
+    public func visiblePosition(of fraction: Double) -> Double? {
+        guard fraction.isFinite, fraction >= start, fraction <= start + span else { return nil }
+        return min(1, max(0, position(of: fraction)))
+    }
     public func fraction(atPosition position: Double) -> Double { min(1, max(0, start + position * span)) }
     /// Zooms by `factor`, keeping the moment under `position` where it is.
     public func zoomed(by factor: Double, around position: Double, maximumZoom: Double) -> VisualMemoryScrubViewport {

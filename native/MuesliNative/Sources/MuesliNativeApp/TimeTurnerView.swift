@@ -282,6 +282,15 @@ struct TimeTurnerScrubState {
 
     mutating func resetScroll() { scrollCursor = nil }
 
+    mutating func refreshScale(orderedDates: [Date], scale: inout VisualMemoryScrubScale,
+                               viewport: inout VisualMemoryScrubViewport) {
+        guard !scale.matchesOrderedDates(orderedDates) else { return }
+        let old = scale
+        scale = VisualMemoryScrubScale(dates: orderedDates)
+        viewport = viewport.rebased(from: old, to: scale)
+        resetScroll()
+    }
+
     func scrolling(deltaX: Double, trackWidth: Double, scale: VisualMemoryScrubScale) -> Self? {
         guard let next = VisualMemoryScrollCursor.advance(scrollCursor, playhead: playhead,
                                                          deltaX: deltaX, trackWidth: trackWidth, scale: scale) else { return nil }
@@ -440,10 +449,8 @@ struct MemoryExplorerView: View {
     }
     /// Refreshed captures for the same day keep the zoom on the same moments.
     private func rebuildScrubScale() {
-        let old = scrubScale
-        scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
-        scrubViewport = scrubViewport.rebased(from: old, to: scrubScale)
-        scrubState.resetScroll()
+        scrubState.refreshScale(orderedDates: ordered.map(\.capturedAt), scale: &scrubScale,
+                                viewport: &scrubViewport)
     }
     private func zoomScrubber(by factor: Double, around position: Double) {
         guard !ordered.isEmpty else { return }
@@ -529,8 +536,10 @@ struct MemoryExplorerView: View {
                             .offset(x: marker.x - 14, y: CGFloat(marker.lane) * 30)
                             .allowsHitTesting(false)
                     }
-                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3, height: trackHeight)
-                        .offset(x: max(0, min(geometry.size.width - 3, viewport.position(of: scale.fraction(for: playhead)) * geometry.size.width)))
+                    if let position = viewport.visiblePosition(of: scale.fraction(for: playhead)) {
+                        RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3, height: trackHeight)
+                            .offset(x: max(0, min(geometry.size.width - 3, position * geometry.size.width)))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .onAppear { trackWidth = geometry.size.width }

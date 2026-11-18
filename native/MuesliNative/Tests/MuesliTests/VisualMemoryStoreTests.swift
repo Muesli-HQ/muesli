@@ -994,6 +994,57 @@ struct VisualMemoryStoreTests {
         #expect(VisualMemoryScrubViewport.maximumZoom(for: VisualMemoryScrubScale(dates: [])) == 1)
     }
 
+    @Test func zoomHidesOffscreenPlayheadWithoutMovingSelection() {
+        let viewport = VisualMemoryScrubViewport.whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(viewport.visiblePosition(of: 0.9) == nil)
+        #expect(viewport.visiblePosition(of: 0) == 0)
+        #expect(viewport.visiblePosition(of: 0.25) == 1)
+        let middle = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(middle.visiblePosition(of: 0.1) == nil)
+        #expect(middle.visiblePosition(of: 0.6) == nil)
+        #expect(middle.visiblePosition(of: 0.375) == 0.5)
+        #expect(middle.visiblePosition(of: 0.25) == 0)
+        #expect(middle.visiblePosition(of: 0.5) == 1)
+        #expect(middle.visiblePosition(of: .nan) == nil)
+        #expect(middle.revealing(0.9).visiblePosition(of: 0.9) != nil)
+    }
+
+    @Test func unchangedCaptureRefreshPreservesDuplicateTimestampScrollProgress() throws {
+        let dates = [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport.whole
+        var state = TimeTurnerScrubState(playhead: dates[2])
+        for _ in 0..<3 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        let cursor = try #require(state.scrollCursor)
+        // A capture on another display refreshes the catalog, but not these dates.
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == cursor)
+        let reverse = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+        #expect(reverse.playhead == dates[2])
+        // A changed duplicate count changes the scale even with identical endpoints.
+        state.refreshScale(orderedDates: Array(dates.dropFirst()), scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == nil)
+        #expect(scale.matchesOrderedDates(Array(dates.dropFirst())))
+    }
+
+    @Test func captureRefreshPreservesExactViewportUnlessDatesChange() {
+        let dates = (0...600).map { Date(timeIntervalSince1970: Double($0)) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        var state = TimeTurnerScrubState(playhead: dates[350])
+        let original = viewport
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(viewport == original)
+        state.refreshScale(orderedDates: dates + [dates.last!.addingTimeInterval(10)], scale: &scale, viewport: &viewport)
+        #expect(abs(scale.date(at: viewport.start)!.timeIntervalSince1970 - 300) < 0.000001)
+        #expect(abs(scale.date(at: viewport.start + viewport.span)!.timeIntervalSince1970 - 450) < 0.000001)
+        state.refreshScale(orderedDates: [], scale: &scale, viewport: &viewport)
+        #expect(viewport == .whole)
+        #expect(scale.matchesOrderedDates([]))
+    }
+
     @Test func scrollCursorAdvancesPastCapturesSharingATimestamp() {
         let start = Date(timeIntervalSince1970: 1000)
         let duplicate = start.addingTimeInterval(10)
