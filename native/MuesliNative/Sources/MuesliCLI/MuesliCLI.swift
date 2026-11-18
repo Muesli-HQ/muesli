@@ -213,7 +213,6 @@ struct MeetingListRow: Encodable {
     let wordCount: Int
     let folderID: Int64?
     let status: String
-    let manualNotes: String
     let notesState: String
     let selectedTemplateID: String
     let selectedTemplateName: String
@@ -227,7 +226,6 @@ struct MeetingListRow: Encodable {
         wordCount = record.wordCount
         folderID = record.folderID
         status = record.status.rawValue
-        manualNotes = record.manualNotes
         notesState = record.notesState.rawValue
         selectedTemplateID = record.appliedTemplateID
         selectedTemplateName = record.appliedTemplateName

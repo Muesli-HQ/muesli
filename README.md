@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa">Get the Muesli plugin for ChatGPT and Codex</a> · <a href="https://muesli.works/blog/muesli-chatgpt-codex-plugin/">Setup guide</a>
+  <a href="https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa">Get the muesli plugin for ChatGPT and Codex</a> · <a href="https://muesli.works/blog/muesli-chatgpt-codex-plugin/">Setup guide</a>
 </p>
 
 ---
@@ -97,9 +97,23 @@ This installs an unsigned `MuesliDev.app` with a separate bundle ID and app data
 
 ## ChatGPT and Codex plugin
 
-[Install the official Muesli plugin](https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa) to extract decisions and action items or turn a meeting into an implementation plan.
+[Install the official muesli plugin](https://chatgpt.com/plugins/plugins_6abe2bb24af081919ea718e221cfdafa) to extract decisions and action items or turn a meeting into an implementation plan.
 
-- **With local shell access on your Mac:** The agent can use Muesli's bundled CLI to find meetings and dictations, read transcripts, transcribe audio, and save revised notes when requested.
+Install from GitHub with **Codex CLI**:
+
+```sh
+codex plugin marketplace add Muesli-HQ/muesli --sparse .agents/plugins --sparse plugins/muesli
+codex plugin add muesli@muesli
+```
+
+Install the same skill with **Claude Code**:
+
+```sh
+claude plugin marketplace add Muesli-HQ/muesli --sparse .claude-plugin plugins/muesli
+claude plugin install muesli@muesli
+```
+
+- **With local shell access on your Mac:** The agent can use muesli's bundled CLI to find meetings and dictations, read transcripts, transcribe audio, and save revised notes when requested.
 - **Without local access:** Export a meeting as Markdown and attach it to your conversation. Installing the plugin alone does not expose your Mac's meeting database.
 
 Transcripts shared with ChatGPT or a hosted Codex model become part of that assistant's context and may be processed by its provider. Read the [plugin setup guide and example prompts](https://muesli.works/blog/muesli-chatgpt-codex-plugin/) for the full workflow.
