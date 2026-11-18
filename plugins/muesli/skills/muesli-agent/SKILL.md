@@ -31,7 +31,7 @@ Never use a similarly named command without checking its identity. When the CLI 
   ```sh
   muesli-cli meetings list --limit 10 | jq 'if .ok then .data |= map({id, title, startTime}) else . end'
   ```
-  Fetch only the chosen meeting with `meetings get <id>`. Analyze `rawTranscript` and `formattedNotes`; use the transcript when `notesState` is `missing` or `raw_transcript_fallback`.
+  Fetch only the chosen meeting with `meetings get <id>`. Analyze `rawTranscript`, `formattedNotes`, and `manualNotes` from that record; use the transcript when `notesState` is `missing` or `raw_transcript_fallback`. When both the transcript and summary are empty, use `manualNotes` as the meeting text, including for manual-only Granola imports.
 - To inspect dictation history, use `dictations list`, then `dictations get <id>`.
 - To save revised meeting notes, use `meetings update-notes <id> --stdin` or `--file <path>` only when the user asks to update them. This replaces `formattedNotes`; it does not edit `rawTranscript`.
 
