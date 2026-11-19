@@ -589,6 +589,7 @@ private actor MeetingDetectionService {
             browserMeetings: collectedSignals.browserMeetings,
             audioInputProcesses: mediaSignals.audioInputProcesses,
             foregroundBundleID: collectedSignals.foregroundBundleID,
+            inlineCall: collectedSignals.inlineCall,
             now: now
         )
 
@@ -671,7 +672,8 @@ private actor MeetingDetectionService {
             suppressAudioAttribution: globallySuppressed,
             now: now
         )
-        installFallbackEvaluationLoop(interval: nextDecision.fallbackInterval)
+        let inlineRunning = context.runningApps.contains { $0.bundleID == InlineGridCallCollector.bundleID }
+        installFallbackEvaluationLoop(interval: inlineRunning ? min(nextDecision.fallbackInterval, 15) : nextDecision.fallbackInterval)
         logEvaluation(
             trigger: trigger,
             decision: refreshDecision,
@@ -956,6 +958,7 @@ private actor MeetingDetectionService {
 private struct MeetingCollectedSignals {
     let runningApps: [RunningAppInfo]
     let browserMeetings: [BrowserMeetingContext]
+    let inlineCall: InlineGridCallObservation
     let foregroundBundleID: String?
     let runningProcessIDsByBundleID: [String: pid_t]
     let activeTabFallbackAttemptedBundleIDs: Set<String>
@@ -1073,6 +1076,7 @@ private actor MeetingSignalCollector {
                 RunningAppInfo(bundleID: $0.bundleID, isActive: $0.isActive)
             },
             browserMeetings: browserMeetings,
+            inlineCall: InlineGridCallCollector.observe(in: browserProbeApps),
             foregroundBundleID: foregroundBundleID,
             runningProcessIDsByBundleID: runningProcessIDsByBundleID(from: runningApps),
             activeTabFallbackAttemptedBundleIDs: activeTabFallbackAttemptedBundleIDs,
