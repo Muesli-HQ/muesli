@@ -162,7 +162,7 @@ final class StreamingDictationController {
     }
 
     /// Stop recording and finish queued audio off the caller's thread.
-    func stop(completion: @escaping (String) -> Void) {
+    func stop(onRecordingStopped: ((URL) -> Void)? = nil, completion: @escaping (String) -> Void) {
         let setup = stopLock.withLock { () -> StopSetup in
             let sessionIDs = bufferLock.withLock {
                 (active: activeSessionID, stopping: stoppingSessionID)
@@ -208,7 +208,8 @@ final class StreamingDictationController {
         }
 
         if let wavURL = recorder.stop() {
-            try? FileManager.default.removeItem(at: wavURL)
+            if let onRecordingStopped { onRecordingStopped(wavURL) }
+            else { try? FileManager.default.removeItem(at: wavURL) }
         }
         recorder.onAudioBuffer = nil
         recorder.onRecordingFailed = nil

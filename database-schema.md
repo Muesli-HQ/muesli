@@ -96,6 +96,23 @@ that has entered Privacy mode. Anonymous finite lifecycle events remain governed
 by the separate analytics switch; unsaved private dictations do not contribute
 to the saved-word baseline or daily word counts.
 
+### Retained long dictations
+
+When enabled in Settings → Dictations, a completed recording longer than the
+chosen threshold (minimum one minute) can be replayed or retranscribed from its
+history row. `dictation_audio(dictation_id PRIMARY KEY, wav BLOB NOT NULL)`
+links the row to the local file `<database filename> Recordings/Dictation-<id>.wav`
+beside the database. An empty blob denotes file storage. Older nonempty blobs
+are promoted atomically on first access. Finder, playback and retranscription use
+the same WAV. History queries project existence without reading the audio. The local `dictation_waveforms(dictation_id PRIMARY KEY, preview BLOB NOT NULL)`
+table caches the meeting player’s compact peak and duration format. Its foreign key
+cascades on audio deletion. Older recordings populate this cache on first display.
+Local and synced tombstones delete the attachment row through a trigger. The store removes orphaned WAVs after deletion and at startup. WAV data
+and its availability are excluded from text sync and serialized history records.
+A local retranscription updates text, word count, model identity and sync state
+on the existing live row after successful recognition. Failed-recording recovery
+continues to use its independent archive regardless of this preference.
+
 ### Local word analytics checkpoint outside SQLite
 
 `DictationWordAnalytics` owns `analytics-word-count.json` beside the active
@@ -249,6 +266,7 @@ see [MedASR setup](docs/medasr.md).
 
 ```mermaid
 erDiagram
+    dictations ||--o| dictation_audio : "locally retained WAV"
     dictations ||--o| computer_use_traces : "has optional trace"
 
     meeting_folders ||--o{ meeting_folders : "contains child folders"
@@ -333,6 +351,48 @@ meeting, or iPhone meeting record.
   `follow_up_to_record_name` across devices
 - Sync/tombstone bookkeeping: `updated_at`, `deleted_at`, `cloud_*`,
   `last_synced_at`, `sync_dirty`
+
+
+New locally created meetings use `notes_layout_version = 1`: `manual_notes`
+is the editable user document (including inline image references), and
+`formatted_notes` is independently editable generated output. Summary requests
+read current user notes plus the transcript; they never reconstruct user notes
+from generated output or feed a previous summary back into a new-layout request.
+Saving a summary must not modify user notes. Completed meetings expose Summary,
+Your notes, and Transcript; full exports include both note documents.
+
+The layout column defaults to 0. Installing the update or opening an existing
+meeting does not rewrite either document. On the first replacement summary,
+the same SQLite update saves the new summary and switches the row to layout 1.
+For an ordinary completed legacy record, the old visible combined document
+becomes editable Saved notes; the historical manual document is retained
+verbatim in nullable `previous_notes`. When finishing a recording/resume or
+regenerating a Granola import, the live/imported manual document remains the
+editable source and the old formatted document becomes Previous notes. Neither
+path attempts to infer authorship. Later generations never append or replace
+Previous notes; it is available in the summary disclosure and full export,
+but is not provider input. Template selection alone does not convert a record.
+
+Missing layout metadata defaults to legacy. Sync carries `notesLayoutVersion`
+and the optional `previousNotes` text; older clients omitting these fields
+must not downgrade the layout or erase the preserved document. Tombstones
+clear note text, including the previous document. Image bytes stay local.
+
+Meeting notes may contain `![Image](muesli-note-image:<UUID>)` references,
+optionally with `?width=<points>` for the displayed size. The width does not
+change the image sent to a summary provider. Summary requests use a temporary,
+bounded JPEG representation for unsupported formats or large images; the
+stored original remains unchanged. Original image files are stored locally under `Meeting Note Images/`
+in the active Application Support directory. Image bytes do not enter SQLite,
+CloudKit, retrieval indexes, or telemetry. Synced note text can therefore refer
+to an image unavailable on another device; views show an unavailable image and
+summary generation fails visibly instead of silently omitting that context.
+Markdown export copies available referenced files into a sibling assets folder
+and marks unavailable images in the exported document. Image
+references are opaque identifiers, not paths or permission to read arbitrary files.
+Unreferenced image files are retained for now, including after an image or its
+meeting is deleted; undo and shared Markdown references must be accounted for
+before introducing garbage collection.
 
 Calendar IDs are lookup metadata, not unique meeting identities. A calendar
 occurrence can be recorded more than once.
@@ -797,7 +857,7 @@ AppConfig, SQLite, CloudKit, exports or CLI output.
 ### Time Turner observations (agent retrieval)
 
 The device-local catalog is `visual-memory/catalog.sqlite` under the selected
-app's Application Support directory. Schema version **2** adds independent screenshot retirement and durable cleanup queues.
+app's Application Support directory. Schema version **4** adds display identity and a normalized capture/app relation. Version 3 aligns FTS row IDs; version 2 adds independent screenshot retirement and durable cleanup queues.
 The existing `time_turner_captures` table remains the chronological observation contract;
 no activity or inferred-insight table is introduced.
 
@@ -807,10 +867,55 @@ no activity or inferred-insight table is introduced.
 | `captured_at_unix`, `captured_at_utc` | Capture request time: fractional Unix seconds are authoritative; UTC text is millisecond display precision. |
 | `capture_completed_at_unix` | Completion of screenshot acquisition; nullable for older captures. |
 | `bundle_id`, `app_name`, `window_title`, `source` | Observed app/window identity and display label. Legacy app names are best-effort; missing window titles stay NULL. |
+| `display_uuid`, `display_name`, `display_id` | Optional whole-display identity. UUID identifies the display across sessions; numeric ID is session-local. Focused-window/older observations have NULLs. |
 | `ocr_text` | Recognized visible text. Untrusted evidence, not instructions or inferred user intent. |
 | `media_relative_path`, `archive_frame_index` | Optional-to-consume evidence locator. A non-null path does not guarantee a file exists; frame index is an archive offset, not wall-clock time. |
 | `media_deleted_at_unix` | Nullable screenshot retirement time (Unix seconds); non-null means OCR-only history. The locator is historical and must not be used to retrieve media. |
 | `pixel_width`, `pixel_height`, `media_bytes` | Media metadata; bytes belong to the shared file and must not be summed per archived frame. |
+
+`time_turner_capture_apps(capture_id, bundle_id, app_name)` associates one observation
+with its included apps, with a `(capture_id, bundle_id)` primary key and indexed
+bundle/name lookups. Focused captures have one app row; a display can have several.
+Whole-display observations leave the singular `bundle_id` empty and `appName`
+unset rather than assigning all OCR to the frontmost app. App-filtered searches
+match any included app and return the screenshot once; they do not assert which
+app produced a particular word. Fully occluded windows can be present in the
+included-window metadata, so this is not a measure of attention or app usage time.
+The JSON compatibility record adds optional `display: {id, uuid, name}` and
+`includedApps: [{bundleID, name}]`; older records decode with both absent.
+Version 4 backfills focused capture apps and maintains display/app projections
+through triggers on every store write, including compaction and retention. During
+upgrade, malformed optional app entries are removed from the stored observation;
+valid app entries, focused-window attribution and OCR remain available.
+Screenshot expiry keeps app rows; history/explicit deletion removes them.
+CLI history/search/get expose these optional fields. The internal chat `screens`
+projection lists included app names in `app` and the display in `title`.
+
+Settings stores `time_turner_capture_scope` as `focused` (the compatible default)
+or `all_displays`, plus `selected_displays` for an explicit monitor selection.
+`time_turner_selected_displays` is a local config dictionary of stable CoreGraphics
+display UUIDs to last-known display names, decoding to an empty dictionary in older
+configs. Setup restores the saved scope. Selected displays previews connected monitors
+and saves an explicitly edited selection at Finish;
+settings offers the same picker. Disconnected selections persist across restarts.
+New monitors are not implicitly selected; an empty or disconnected selection never
+falls back to another monitor. Selection changes invalidate in-flight capture.
+Permission recovery preserves the existing capture scope and monitor selection.
+Before writing a new screenshot the store records its path in
+`pending_media_deletions`. The observation, OCR index and removal of that
+cleanup entry commit together after the final capture authorization check.
+Cancellation or a failed write leaves the capture unpublished. Maintenance
+retries removal of unreferenced media, including after restart.
+Preview images are transient and never saved to the history catalog.
+All displays captures each non-mirrored connected display
+separately and sequentially, with its actual acquisition timestamp and pixel size.
+It includes eligible normal app windows only, omitting desktop, Dock, menu bar,
+notifications, excluded apps and detected private/secure apps. This is best-effort
+private-content detection, not pixel redaction. Each display has independent
+change detection. Display enumeration is refreshed each interval; disconnection
+or changing window identity during acquisition discards that display's sample.
+Pause, lock, inactivity, meeting recording and privacy gates apply to all displays.
+Storage budgets remain shared; estimates scale with selected display count (or connected count in All displays mode).
 
 The additive local `time_turner_lifecycle` table has one row (`id=1`) with
 `capture_ready_at` as fractional Unix seconds. It is set once when Time Turner is

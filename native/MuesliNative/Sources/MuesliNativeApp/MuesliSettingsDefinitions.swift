@@ -179,7 +179,9 @@ extension MuesliController {
         return settings
     }
 
-    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil) -> [MuesliSetting] {
+    func settingsDefinitions(dictationToggleShortcut: HotkeyConfig? = nil, availability: SettingsModelAvailability? = nil,
+                             manualRecordingMinutes: Int? = nil,
+                             selectedDisplays: [String: String]? = nil) -> [MuesliSetting] {
         typealias Choice = MuesliSetting.Choice
         var settings: [MuesliSetting] = []
         func add(_ id: String, _ label: String, _ choices: [Choice],
@@ -285,11 +287,14 @@ extension MuesliController {
             read: { $0.timeTurnerEnabled ? "on" : "off" },
             voiceRestriction: "Enable continuous screen history manually in Timeline.") { value in
                 if value == "on" {
-                    guard CGPreflightScreenCaptureAccess(), AXIsProcessTrusted() else {
+                    guard self.timeTurnerPermissionsAreGranted() else {
                         throw MuesliSettings.Failure.rejected("Complete Time Turner setup: Screen Recording and Accessibility are required.")
                     }
+                    try self.persistTimeTurnerCaptureSettings { $0.timeTurnerEnabled = true }
+                } else {
+                    // Stop a live capture immediately, even when persistence fails.
+                    self.updateConfig { $0.timeTurnerEnabled = false }
                 }
-                self.updateConfig { $0.timeTurnerEnabled = value == "on" }
             }
         toggle("time_turner_pause_on_inactivity", "Pause when inactive", \.timeTurnerPauseOnInactivity)
         let recapConfig = config.timeTurnerGenerationConfig
@@ -336,6 +341,16 @@ extension MuesliController {
             toggle(source.settingID, "Daily recap: " + source.label, source.configKey)
         }
 
+        add("time_turner_capture_scope", "Capture", TimeTurnerCaptureScope.allCases.map { Choice(id: $0.rawValue, label: $0.label) },
+            read: { $0.timeTurnerCaptureScope }, unavailable: { value in
+                value == "selected_displays" && (selectedDisplays ?? self.config.timeTurnerSelectedDisplays).isEmpty
+                    ? "Choose displays in Time Turner settings first." : nil
+            }) { value in
+                try self.persistTimeTurnerCaptureSettings {
+                    $0.timeTurnerCaptureScope = value
+                    if let selectedDisplays { $0.timeTurnerSelectedDisplays = selectedDisplays }
+                }
+            }
         textMenu("time_turner_interval", "Check screen every", ["2", "5", "10", "30", "60"].map {
             Choice(id: $0, label: "\($0) seconds")
         }, \.timeTurnerInterval)
@@ -474,6 +489,15 @@ extension MuesliController {
                 return nil
             }) { value in
                 self.updateConfig { $0.computerUsePlannerModel = value == ComputerUsePlannerClient.defaultModel ? "" : value }
+            }
+        toggle("retain_long_dictation_audio", "Keep long dictation recordings", \.retainLongDictationAudio)
+        let recordingMinutes = Set([1, 2, 3, 4, 5, 10, 15, 30, 60, config.dictationAudioThresholdMinutes]
+            + [manualRecordingMinutes].compactMap { $0 }.filter { $0 >= 1 }).sorted()
+        add("dictation_audio_threshold_minutes", "Keep dictation audio longer than",
+            recordingMinutes.map { Choice(id: String($0), label: $0 == 1 ? "1 minute" : "\($0) minutes") },
+            read: { String($0.dictationAudioThresholdMinutes) }) { value in
+                guard let minutes = Int(value), minutes >= 1 else { return }
+                self.updateConfig { $0.dictationAudioThresholdMinutes = minutes }
             }
         toggle("dictionary_suggestions", "Dictionary correction suggestions", \.enableDictionaryCorrectionPrompts,
                requestPermission: self.showPermissionsSettings,

@@ -2424,6 +2424,13 @@ struct AppConfig: Codable, Equatable {
     ]
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
+    var retainLongDictationAudio = false
+    var dictationAudioThresholdMinutes = 1
+
+    func shouldRetainDictationAudio(duration: Double) -> Bool {
+        retainLongDictationAudio && duration > Double(max(1, dictationAudioThresholdMinutes)) * 60
+    }
+
     var enableDictionaryCorrectionPrompts: Bool = false
     var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
@@ -2464,6 +2471,9 @@ struct AppConfig: Codable, Equatable {
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var timeTurnerEnabled: Bool = false
     var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerCaptureScope: String = "focused"
+    /// Stable display UUID → last known name; absent monitors remain selected.
+    var timeTurnerSelectedDisplays: [String: String] = [:]
     var timeTurnerInterval: String = "10"
     var timeTurnerBudget: String = "10"
     var timeTurnerScreenshotRetention: String = "7"
@@ -2618,6 +2628,8 @@ struct AppConfig: Codable, Equatable {
         case customWords = "custom_words"
         case dictionarySuggestions = "dictionary_suggestions"
         case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
+        case retainLongDictationAudio = "retain_long_dictation_audio"
+        case dictationAudioThresholdMinutes = "dictation_audio_threshold_minutes"
         case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
         case enableAutomaticDiagnosticIssuePrompts = "enable_automatic_diagnostic_issue_prompts"
         case folderOrder = "folder_order"
@@ -2658,6 +2670,8 @@ struct AppConfig: Codable, Equatable {
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case timeTurnerEnabled = "time_turner_enabled"
         case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerCaptureScope = "time_turner_capture_scope"
+        case timeTurnerSelectedDisplays = "time_turner_selected_displays"
         case timeTurnerInterval = "time_turner_interval"
         case timeTurnerBudget = "time_turner_budget"
         case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
@@ -2917,6 +2931,8 @@ struct AppConfig: Codable, Equatable {
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
         dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
         dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
+        retainLongDictationAudio = (try? c.decode(Bool.self, forKey: .retainLongDictationAudio)) ?? false
+        dictationAudioThresholdMinutes = max(1, (try? c.decode(Int.self, forKey: .dictationAudioThresholdMinutes)) ?? 1)
         enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
         enableAutomaticDiagnosticIssuePrompts = (try? c.decode(Bool.self, forKey: .enableAutomaticDiagnosticIssuePrompts)) ?? defaults.enableAutomaticDiagnosticIssuePrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
@@ -2988,6 +3004,8 @@ struct AppConfig: Codable, Equatable {
         }
         timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
         timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerCaptureScope = (try? c.decode(String.self, forKey: .timeTurnerCaptureScope)) ?? "focused"
+        timeTurnerSelectedDisplays = (try? c.decode([String: String].self, forKey: .timeTurnerSelectedDisplays)) ?? [:]
         timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
         timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
         timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"

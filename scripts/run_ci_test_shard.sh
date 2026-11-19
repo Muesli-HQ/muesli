@@ -78,9 +78,7 @@ case "${shard}" in
       FeedbackCaptureInputTests
       FeedbackCaptureRendererTests
       FeedbackCaptureStoreTests
-      FeedbackCaptureLifecycleTests
       FeedbackCaptureFinalizerTests
-      FeedbackCapturePillTests
       LocalStorageUsageTests
       MeetingVideoStoreTests
       MeetingVideoAudioTests
@@ -113,6 +111,8 @@ case "${shard}" in
   dictation-transcription)
     filters=(
       NotchIndicatorTests
+      FeedbackCaptureLifecycleTests
+      FeedbackCapturePillTests
       FeedbackCaptureTranscriptTests
       FeedbackCaptureContextFinalizerTests
       MedASRTests
@@ -275,6 +275,7 @@ case "${shard}" in
       MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
       MeetingNotesInlineMarkdownTests
+      MeetingMarkdownAutoExporterTests
       TranscriptFormatterTests
       TranscriptReconcilerTests
       SpeakerAttributionTests
@@ -308,8 +309,8 @@ if [[ -n "${MUESLI_SWIFTPM_SCRATCH_PATH:-}" ]]; then
 fi
 args=("${build_args[@]}")
 if [[ "${shard}" == meetings || "${shard}" == dictation-transcription ]]; then
-  # Hundreds of concurrent cases can starve caption tasks and diarizer preload
-  # coordination, including their setup handshakes, on small runners. Serialize
+  # Hundreds of concurrent cases can starve SwiftUI capture loading, caption
+  # tasks, and diarizer preload handshakes on small runners. Serialize
   # cases while preserving concurrency exercised inside each test, rather than
   # weakening their deadlines or changing production QoS.
   args+=(--no-parallel)

@@ -6,7 +6,10 @@
 import Foundation
 
 enum MuesliTelemetry {
-    struct Gate { var consentToken: String? { nil } }
+    struct Gate {
+        let consentToken: String? = nil
+        let bestEffortConsentToken: String? = nil
+    }
     static let privacy = Gate()
     static func sendProductEvent(_ event: ProductAnalyticsEvent, token: String) { fatalError("Use injected sink") }
 }

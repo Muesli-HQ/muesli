@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import UniformTypeIdentifiers
 import MuesliCore
 
@@ -126,8 +127,11 @@ struct MeetingExporter {
             parts.append("")
             parts.append(meeting.rawTranscript)
         case .fullMeeting:
-            if meeting.source == .granolaImport, !meeting.manualNotes.isEmpty {
-                parts.append("## Original manual notes from Granola")
+            if let previous = meeting.previousNotes, !previous.isEmpty {
+                parts += ["## Previous notes", previous, ""]
+            }
+            if (meeting.hasSeparateUserNotes || meeting.source == .granolaImport), !meeting.manualNotes.isEmpty {
+                parts.append(meeting.previousNotes != nil ? "## Saved notes" : (meeting.hasSeparateUserNotes ? "## Your notes" : "## Original manual notes from Granola"))
                 parts.append(meeting.manualNotes)
                 parts.append("")
             }
@@ -152,7 +156,8 @@ struct MeetingExporter {
     private static func writeMarkdown(_ text: String, to url: URL) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try text.write(to: url, atomically: true, encoding: .utf8)
+                let exported = try MeetingNoteImages.exportMarkdown(text, to: url)
+                try exported.write(to: url, atomically: true, encoding: .utf8)
                 ProductAnalytics.event(.workflow, .completed, outcome: .success, fields: [.feature: .export])
                 DispatchQueue.main.async { NSWorkspace.shared.open(url) }
             } catch {
@@ -242,7 +247,7 @@ struct MeetingExporter {
     private static let h3Font = NSFont.systemFont(ofSize: 14, weight: .semibold)
     private static let textColor = NSColor.black
 
-    static func buildAttributedString(from markdown: String) -> NSAttributedString {
+    static func buildAttributedString(from markdown: String, supportDirectory: URL = AppIdentity.supportDirectoryURL) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let lines = MeetingExportBranding.removingFooter(from: markdown).components(separatedBy: .newlines)
 
@@ -281,6 +286,22 @@ struct MeetingExporter {
             }
         }
 
+        for reference in MeetingNoteImages.references(in: result.string).reversed() {
+            let url = MeetingNoteImages.url(for: reference.id, supportDirectory: supportDirectory)
+            if let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+               let image = CGImageSourceCreateThumbnailAtIndex(source, 0,
+                    [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                     kCGImageSourceThumbnailMaxPixelSize: 1200,
+                     kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
+                let attachment = NSTextAttachment()
+                attachment.image = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+                let width = min(max(CGFloat(reference.width ?? 468), 1), 468, CGFloat(image.width))
+                attachment.bounds = NSRect(x: 0, y: 0, width: width, height: width * CGFloat(image.height) / CGFloat(image.width))
+                result.replaceCharacters(in: reference.range, with: NSAttributedString(attachment: attachment))
+            } else {
+                result.replaceCharacters(in: reference.range, with: NSAttributedString(string: "[Image unavailable on this device]", attributes: [.font: bodyFont]))
+            }
+        }
         return result
     }
 

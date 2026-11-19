@@ -5,14 +5,16 @@ import Foundation
 enum AnalyticsFeature: String, Sendable, CaseIterable {
     case onboarding, model_setup, dictation, meeting, meeting_transcription, meeting_summary
     case chat, quill, computer_use, cotypist, time_turner, recap, search, workflow
-    case cleanup, bridge, icloud_sync
+    case cleanup, bridge, icloud_sync, vidshot, meeting_video, meeting_people, streaming_dictation
 }
 enum AnalyticsOutcome: String, Sendable { case success, cancelled, failed, blocked, discarded, partial }
 enum AnalyticsField: String, Sendable {
     case stage, mode, source, delivery, saved, action, scope, cleanup, route, results, opened
+    case during_meeting, people_viewed
     case shown, accepted, dismissed, feature, attempt_kind
 }
 enum AnalyticsValue: String, Sendable {
+    case buffered, native_stream, parakeet, whisper, bodhan
     case capture, transcription, generation, delivery, storage, setup, permission, download, load
     case hold, toggle, rewrite, question, settings, desktop, manual, live, imported, postprocess
     case yes, no, unknown, success, failed, blocked, cancelled, partial, discarded
@@ -30,17 +32,32 @@ struct AnalyticsModel: Sendable, Equatable {
         self.model = models.contains(model) ? model : (model.isEmpty ? "unknown" : "custom")
     }
 }
+/// These categories are the only Chat source metadata that can leave the app.
+enum ChatAnalyticsSource: String, Hashable, Sendable {
+    case meeting, dictation, command, quill, cotypist, screen_history, chat, recap, vidshot
+    case image, pdf, markdown, text
+
+    // Keys come from the validated SQL plan, never from raw model arguments.
+    static let sqlTables: [String: Self] = [
+        "meetings": .meeting, "dictations": .dictation, "commands": .command,
+        "quill": .quill, "cotypist": .cotypist, "screens": .screen_history,
+        "chats": .chat, "recaps": .recap, "vidshots": .vidshot,
+    ]
+}
+
 struct ProductAnalyticsEvent: Sendable {
-    enum Kind: String, Sendable { case started, finished, step_finished, result_action, session_finished, activation_finished, completed }
+    enum Kind: String, Sendable { case started, finished, opened, source_used, step_finished, result_action, session_finished, activation_finished, completed }
     let feature: AnalyticsFeature
     let kind: Kind
     var outcome: AnalyticsOutcome? = nil
     var fields: [AnalyticsField: AnalyticsValue] = [:]
     var model: AnalyticsModel? = nil
+    var chatSource: ChatAnalyticsSource? = nil
     var name: String { "\(feature.rawValue).\(kind.rawValue)" }
     var parameters: [String: String] {
         var result = ["product.schema": "1"]
         for (key, value) in fields { result[key.rawValue] = value.rawValue }
+        if let chatSource { result["source"] = chatSource.rawValue }
         result["outcome"] = outcome?.rawValue
         result["provider"] = model?.provider
         result["model"] = model?.model
@@ -62,7 +79,7 @@ final class ProductAnalyticsEmitter: @unchecked Sendable {
     }
     func token() -> String? { consent() }
     func emit(_ event: ProductAnalyticsEvent, token: String?) {
-        guard let token, consent() == token else { return }
+        guard let token else { return }
         let admitted = lock.withLock { () -> Bool in
             guard pending < capacity else { return false }; pending += 1; return true
         }
@@ -80,6 +97,7 @@ final class ProductAnalyticsEmitter: @unchecked Sendable {
 final class AnalyticsAttempt: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
+    private var reportedChatSources: Set<ChatAnalyticsSource> = []
     private let emitter: ProductAnalyticsEmitter
     private let token: String?
     private let feature: AnalyticsFeature
@@ -91,6 +109,12 @@ final class AnalyticsAttempt: @unchecked Sendable {
         token = emitter.token()
         emitter.emit(.init(feature: feature, kind: .started, fields: fields, model: model), token: token)
     }
+    func usedChatSource(_ source: ChatAnalyticsSource) {
+        guard feature == .chat, token != nil,
+              lock.withLock({ !finished && reportedChatSources.insert(source).inserted }) else { return }
+        emitter.emit(.init(feature: .chat, kind: .source_used, chatSource: source), token: token)
+    }
+
     func finish(_ outcome: AnalyticsOutcome, fields extra: [AnalyticsField: AnalyticsValue] = [:], model actual: AnalyticsModel? = nil) {
         guard lock.withLock({ if finished { return false }; finished = true; return true }) else { return }
         emitter.emit(.init(feature: feature, kind: .finished, outcome: outcome,
@@ -105,7 +129,7 @@ enum ProductAnalytics {
     }
     static func event(_ feature: AnalyticsFeature, _ kind: ProductAnalyticsEvent.Kind,
                       outcome: AnalyticsOutcome? = nil, fields: [AnalyticsField: AnalyticsValue] = [:], model: AnalyticsModel? = nil) {
-        emitter.emit(.init(feature: feature, kind: kind, outcome: outcome, fields: fields, model: model), token: emitter.token())
+        emitter.emit(.init(feature: feature, kind: kind, outcome: outcome, fields: fields, model: model), token: MuesliTelemetry.privacy.bestEffortConsentToken)
     }
     static func bucket(_ count: Int) -> AnalyticsValue {
         switch count { case ...0: .zero; case 1: .one; case 2...5: .two_to_five; case 6...20: .six_to_twenty; default: .over_twenty }

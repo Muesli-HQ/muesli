@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import Testing
 import SQLite3
 import ImageIO
@@ -8,6 +9,387 @@ import ImageIO
 
 @Suite("Local visual evidence")
 struct VisualMemoryStoreTests {
+
+    @Test func displayPrivacyChecksSecureFieldsInTheSecondWindow() {
+        let focused = CGRect(x: 10, y: 10, width: 400, height: 240)
+        let other = focused.offsetBy(dx: 420, dy: 0)
+        let bounds = [0: focused, 1: other]
+        // Both AX roots belong to one app. Only the second has a nested password field.
+        let children = [0: [2], 1: [3], 3: [4]]
+        var secureNode: Int?
+        var unreadableNode: Int?
+        func permits(_ frames: [CGRect], budget: Int = .max) -> Bool {
+            var inspected = 0
+            return TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 1], omitUnmatched: false, frame: { bounds[$0] },
+                inspect: { node in
+                    inspected += 1
+                    guard node != unreadableNode else { return nil }
+                    return (node == secureNode ? "AXSecureTextField" : nil, children[node, default: []])
+                },
+                withinBudget: { inspected < budget }) != nil
+        }
+        #expect(permits([focused, other]))
+        secureNode = 4 // Secure control appears between capture and the second check.
+        #expect(permits([focused]))
+        #expect(!permits([focused, other]))
+        #expect(!permits([other]))
+        secureNode = nil
+        unreadableNode = 3
+        #expect(!permits([focused, other]))
+        unreadableNode = nil
+        #expect(!permits([focused, other], budget: 3))
+        #expect(!permits([focused.offsetBy(dx: 5, dy: 0)]))
+        #expect(TimeTurnerWindowPrivacy.inspectedIndices(frames: [focused], windows: [0, 1], omitUnmatched: false,
+            frame: { _ in focused }, inspect: { _ in (nil, []) }, withinBudget: { true }) == nil)
+    }
+
+    @Test @MainActor func screenCaptureDoesNotImplicitlyAddUninspectedChildWindows() {
+        let config = VisualMemoryController.screenshotConfiguration(size: CGSize(width: 1920, height: 1080), pixelScale: 1)
+        #expect(!config.includeChildWindows)
+    }
+
+    @Test func externalDisplayOnlyIncludesExactVerifiedWindows() {
+        let main = CGRect(x: -1037, y: -1050, width: 1920, height: 1050)
+        let overlay = CGRect(x: main.minX, y: main.minY, width: main.width, height: 149)
+        func inspect(_ frames: [CGRect], roots: [CGRect], secure: Int? = nil, omit: Bool = true) -> IndexSet? {
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: Array(roots.indices),
+                omitUnmatched: omit, frame: { roots[$0] }, inspect: { node in
+                    (node == secure ? kAXSecureTextFieldSubrole : nil, [])
+                }, withinBudget: { true })
+        }
+        #expect(inspect([overlay, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([main, overlay], roots: [main]) == IndexSet(integer: 0))
+        #expect(inspect([overlay, main], roots: [main], omit: false) == nil)
+        #expect(inspect([overlay], roots: [main]) == nil)
+        #expect(inspect([overlay, main], roots: [main], secure: 0) == nil)
+        #expect(inspect([overlay, main], roots: [main, overlay], secure: 1) == nil)
+        #expect(inspect([overlay, main], roots: [main, main]) == nil)
+        let overhang = overlay.offsetBy(dx: -1, dy: 0)
+        #expect(inspect([overhang, main], roots: [main]) == IndexSet(integer: 1))
+        #expect(inspect([overhang, main], roots: [main, overlay], secure: 1) == nil)
+    }
+
+    @Test func largeWindowsRequireACompletePrivacyInspection() {
+        let first = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let second = first.offsetBy(dx: 800, dy: 0)
+        // One wide window and one deep tree, with a shared child and a cycle.
+        func permits(_ frames: [CGRect], secure: Int? = nil, unreadable: Int? = nil) -> Bool {
+            TimeTurnerWindowPrivacy.inspectedIndices(frames: frames, windows: [0, 2000], omitUnmatched: false,
+                frame: { $0 == 0 ? first : second }, inspect: { node in
+                    guard node != unreadable else { return nil }
+                    let children: [Int]
+                    switch node {
+                    case 0: children = Array(1...1500)
+                    case 2000..<3500: children = [node + 1]
+                    case 3500: children = [2000, 1500]
+                    default: children = []
+                    }
+                    return (node == secure ? kAXSecureTextFieldSubrole : nil, children)
+                }, withinBudget: { true }) != nil
+        }
+        #expect(permits([first]))
+        #expect(permits([first, second]))
+        #expect(!permits([first], secure: 1)) // Last child visited in the wide window.
+        #expect(!permits([first, second], secure: 3500))
+        #expect(!permits([second], unreadable: 3499))
+    }
+
+    @Test func batchedPrivacyReadRejectsPartialOrMalformedAXResults() throws {
+        func error(_ code: AXError) throws -> AXValue {
+            var code = code
+            return try #require(AXValueCreate(.axError, &code))
+        }
+        func decode(_ values: NSArray) -> (subrole: String?, children: [AXUIElement])? {
+            TimeTurnerWindowPrivacy.decodeNode(values, withinBudget: { true })
+        }
+        let unsupported = try error(.attributeUnsupported)
+        let timedOut = try error(.cannotComplete)
+        let node = AXUIElementCreateSystemWide()
+        #expect(decode([unsupported, [node], kAXWindowRole])?.children.count == 1)
+        #expect(decode([kAXSecureTextFieldSubrole, [], kAXTextFieldRole])?.subrole == kAXSecureTextFieldSubrole)
+        #expect(decode([NSNull(), unsupported, kAXStaticTextRole]) != nil)
+        #expect(decode([timedOut, [], kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, timedOut, kAXStaticTextRole]) == nil)
+        #expect(decode([unsupported, NSNull(), kAXWindowRole]) == nil)
+        #expect(decode([unsupported, ["invalid"], kAXWindowRole]) == nil)
+        #expect(decode([unsupported]) == nil)
+        #expect(TimeTurnerWindowPrivacy.decodeNode([unsupported, [node], kAXWindowRole], withinBudget: { false }) == nil)
+    }
+
+    @Test func missingAXChildrenRequireAKnownLeaf() {
+        for error in [AXError.attributeUnsupported, .noValue] {
+            for role in ["AXWindow", "AXGroup", "AXWebArea", "AXTextField", "AXUnknown", ""] {
+                #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: role))
+            }
+            #expect(TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXChildrenAttribute, role: kAXStaticTextRole))
+            #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: error, attribute: kAXWindowsAttribute, role: kAXStaticTextRole))
+        }
+        #expect(!TimeTurnerWindowPrivacy.allowsMissingChildren(after: .cannotComplete, attribute: kAXChildrenAttribute, role: kAXButtonRole))
+    }
+
+    @Test func privacyToggleDuringCaptureRejectsOriginalImageBeforeRecognition() throws {
+        let policy = ContentPrivacy(enabled: false)
+        let session = policy.capture()
+        let bitmap = try #require(CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8,
+            bytesPerRow: 512, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let snapshot = try #require(bitmap.makeImage())
+        policy.setEnabled(true)
+        policy.setEnabled(false)
+        #expect(throws: CancellationError.self) {
+            _ = try VisualMemoryEncoding.encode(.init(image: snapshot), privacy: session, policy: policy)
+        }
+    }
+
+    @Test @MainActor func displayPrivacyBudgetSpansAppsAndRevalidation() async {
+        var now: TimeInterval = 0
+        var budget = TimeTurnerAXBudget(interval: 2, uptime: { now })
+        let firstApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.5
+            return true
+        }
+        #expect(firstApp)
+        let secondApp = await budget.permits { deadline in
+            #expect(deadline == 1)
+            now += 0.25
+            return true
+        }
+        #expect(secondApp)
+        now += 20 // Image acquisition and OCR happen between the two AX passes.
+        let revalidated = await budget.permits { deadline in
+            #expect(deadline == 21)
+            now += 0.5 // Good AX data arriving too late must be discarded.
+            return true
+        }
+        #expect(!revalidated)
+        let anotherDisplay = await budget.permits { _ in
+            Issue.record("An exhausted cycle started another AX call")
+            return true
+        }
+        #expect(!anotherDisplay)
+        var nextCycle = TimeTurnerAXBudget(interval: 60, uptime: { now })
+        #expect(nextCycle.remaining == 2)
+        let slowApp = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { deadline in
+            now = deadline
+            return true
+        }
+        #expect(!slowApp)
+        let unchecked = await nextCycle.permits(reserving: nextCycle.revalidationReserve) { _ in
+            Issue.record("Preflight used the time reserved for revalidation")
+            return true
+        }
+        #expect(!unchecked)
+        let eligible = await nextCycle.permits { deadline in deadline == now + 1 }
+        #expect(eligible)
+    }
+
+    @Test func displaySelectionDoesNotBroadenAfterDisconnect() {
+        let selected: Set<String> = ["external-a", "external-b"]
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: selected))
+        // A newly connected display, even with a reused numeric display ID, is not selected.
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "built-in", scope: "selected_displays", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "selected_displays", selected: []))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "focused", selected: selected))
+        #expect(!VisualMemoryDisplayPolicy.selects(uuid: "external-a", scope: "unknown", selected: selected))
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "replacement", scope: "all_displays", selected: []))
+        // Reconnection uses the saved UUID, independent of enumeration order or numeric ID.
+        #expect(VisualMemoryDisplayPolicy.selects(uuid: "external-b", scope: "selected_displays", selected: selected))
+    }
+    private func removeDisplaySchema(_ db: OpaquePointer?) throws {
+        #expect(sqlite3_exec(db, """
+            DROP TRIGGER capture_display_insert;
+            DROP TRIGGER capture_apps_delete;
+            DROP TABLE time_turner_capture_apps;
+            ALTER TABLE time_turner_captures DROP COLUMN display_uuid;
+            ALTER TABLE time_turner_captures DROP COLUMN display_name;
+            ALTER TABLE time_turner_captures DROP COLUMN display_id;
+            PRAGMA user_version=3;
+            """, nil, nil, nil) == SQLITE_OK)
+    }
+
+    @Test func displayPolicyHandlesExternalCoordinatesAndExclusions() {
+        let left = CGRect(x: -1920, y: -200, width: 1920, height: 1080)
+        let laptop = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let spanning = CGRect(x: -300, y: 100, width: 600, height: 500)
+        for display in [left, laptop] {
+            #expect(VisualMemoryDisplayPolicy.includes(window: spanning, layer: 0, display: display,
+                bundleID: "editor", title: "Work", excluded: []))
+        }
+        #expect(!VisualMemoryDisplayPolicy.includes(window: CGRect(x: 300, y: 0, width: 600, height: 500),
+            layer: 0, display: left, bundleID: "editor", title: "Work", excluded: []))
+        for (bundle, title, layer) in [("private", "Work", 0), ("editor", "Incognito", 0), ("editor", "Work", 25)] {
+            #expect(!VisualMemoryDisplayPolicy.includes(window: spanning, layer: layer, display: left,
+                bundleID: bundle, title: title, excluded: ["private"]))
+        }
+    }
+
+    @Test func displaysDeduplicateIndependentlyAndReconnectFresh() {
+        var changes = VisualMemoryDisplayChanges()
+        let fingerprint = Data([1, 2])
+        changes.record(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(changes.isUnchanged(display: "laptop", fingerprint: fingerprint, text: "same", source: "Editor"))
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+        changes.record(display: "external", fingerprint: fingerprint, text: "same", source: "Editor")
+        #expect(!changes.isUnchanged(display: "external", fingerprint: Data([3]), text: "same", source: "Editor"))
+        changes.retain(displays: ["laptop"])
+        #expect(!changes.isUnchanged(display: "external", fingerprint: fingerprint, text: "same", source: "Editor"))
+    }
+
+    @Test func displayMetadataAndAppSearchSurviveRetentionAndReopening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VisualMemoryStore(root: root)
+        let now = Date()
+        var item = VisualMemoryItem(kind: .moment, capturedAt: now, source: "External · Browser · Editor", text: "planning", path: "a.heic",
+            display: .init(id: 2, uuid: "external-uuid", name: "External"),
+            includedApps: [.init(bundleID: "browser", name: "Browser"), .init(bundleID: "editor", name: "Editor")])
+        try store.save([item])
+        #expect(try store.searchMoments(app: "EDITOR").map(\.id) == [item.id])
+        #expect(try store.searchMoments(app: "Browser").map(\.id) == [item.id])
+        #expect(try store.summary().apps["editor"] == "Editor")
+        let reader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reader.moment(id: item.id)?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").count == 1)
+        // Archive updates must preserve display attribution and remove obsolete app rows.
+        item.path = "archive.mp4"; item.frameIndex = 0
+        item.includedApps = [.init(bundleID: "editor", name: "Editor")]
+        try store.save([item])
+        #expect(try store.searchMoments(app: "browser").isEmpty)
+        try store.applyRetention(.init(screenshotDays: 1, historyDays: nil), now: now.addingTimeInterval(2 * 86400))
+        #expect(try reader.searchMoments(app: "editor").first?.display == item.display)
+        #expect(try reader.searchMoments(app: "editor").first?.mediaDeletedAt != nil)
+        try store.delete(ids: [item.id])
+        #expect(try store.summary().apps.isEmpty)
+        #expect(try reader.searchMoments(app: "editor").isEmpty)
+    }
+
+    @Test func rejectedCaptureStaysUnsearchableWhenCleanupFailsAndRetriesAfterReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(kind: .moment, source: "Monitor", text: "private excerpt", path: "candidate.heic",
+            display: .init(id: 2, uuid: "external", name: "External"), includedApps: [.init(bundleID: "editor", name: "Editor")])
+        let media = Data([1, 2, 3])
+        let file = root.appendingPathComponent(item.path)
+        do {
+            let store = try VisualMemoryStore(root: root)
+            let reader = try VisualMemoryStore(root: root, readOnly: true)
+            let privacy = ContentPrivacy()
+            let session = privacy.capture()
+            #expect(throws: (any Error).self) {
+                try store.saveCapture(item, media: media) {
+                    if FileManager.default.fileExists(atPath: file.path) {
+                        // Revoke after the file and index rows were written but before COMMIT.
+                        #expect(try reader.searchMoments(text: "private").isEmpty)
+                        privacy.setEnabled(true)
+                        // Force the immediate unlink to fail the store's path-safety check.
+                        try FileManager.default.removeItem(at: file)
+                        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: root.deletingLastPathComponent())
+                    }
+                    guard privacy.permits(session) else { throw CancellationError() }
+                }
+            }
+            #expect(try reader.moment(id: item.id) == nil)
+            #expect(try reader.searchMoments(app: "editor").isEmpty)
+            #expect(try reader.searchMoments(text: "private").isEmpty)
+            #expect(try reader.captureReadyAt() == nil)
+            try FileManager.default.removeItem(at: file)
+            try media.write(to: file)
+        }
+        let reopened = try VisualMemoryStore(root: root)
+        try reopened.finishMediaDeletions()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        try reopened.saveCapture(item, media: media) {}
+        try reopened.finishMediaDeletions()
+        #expect(try Data(contentsOf: file) == media)
+        #expect(try reopened.searchMoments(text: "private").map(\.id) == [item.id])
+    }
+
+    @Test func versionThreeMigrationBackfillsFocusedAndDisplayApps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = VisualMemoryItem(id: "old", kind: .moment, source: "Editor", bundleID: "editor", path: "old.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", path: "display.heic",
+            display: .init(id: 42, uuid: "monitor", name: "External"), includedApps: [.init(bundleID: "browser", name: "Browser")])
+        do { let store = try VisualMemoryStore(root: root); try store.save([item, display]) }
+        var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        let legacyReader = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try legacyReader.searchMoments(app: "editor").count == 1)
+        let upgraded = try VisualMemoryStore(root: root)
+        #expect(try upgraded.searchMoments(app: "editor").count == 1)
+        #expect(try upgraded.moment(id: "old")?.display == nil)
+        #expect(try upgraded.summary().apps["editor"] == "Editor")
+        #expect(try upgraded.searchMoments(app: "browser").map(\.id) == [display.id])
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, "SELECT display_uuid,display_id,app_name FROM time_turner_captures WHERE id='display'", -1, &statement, nil) == SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        #expect(String(cString: sqlite3_column_text(statement, 0)) == "monitor")
+        #expect(sqlite3_column_int(statement, 1) == 42)
+        #expect(String(cString: sqlite3_column_text(statement, 2)) == "")
+    }
+
+    @Test func migrationKeepsOCRAndValidAppsWhenIncludedAppsIsMalformed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let focused = VisualMemoryItem(id: "focused", kind: .moment, source: "Editor", bundleID: "editor",
+                                      text: "focused evidence", path: "focused.heic")
+        let display = VisualMemoryItem(id: "display", kind: .moment, source: "External", text: "display evidence",
+                                      path: "display.heic", display: .init(id: 2, uuid: "external", name: "External"))
+        do { let store = try VisualMemoryStore(root: root); try store.save([focused, display]) }
+        var db: OpaquePointer?
+        try #require(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
+        try #require(sqlite3_exec(db, """
+            UPDATE evidence SET body=json_set(body,'$.includedApps','invalid') WHERE id='focused';
+            UPDATE evidence SET body=json_set(body,'$.includedApps',json_array(
+                'broken',null,7,json_object('name','missing ID'),json_object('bundleID',3,'name','wrong type'),
+                json_object('bundleID','browser','name','Browser'))) WHERE id='display';
+            """, nil, nil, nil) == SQLITE_OK)
+        let store = try VisualMemoryStore(root: root)
+        #expect(try store.searchMoments(text: "focused", app: "editor") == [focused])
+        let apps = [VisualMemoryApp(bundleID: "browser", name: "Browser")]
+        var recovered = try #require(store.searchMoments(text: "display", app: "Browser").first)
+        #expect(recovered.includedApps == apps)
+        #expect(recovered.display == display.display)
+        recovered.text = "updated evidence"
+        try store.save([recovered])
+        let reopened = try VisualMemoryStore(root: root, readOnly: true)
+        #expect(try reopened.searchMoments(text: "updated", app: "browser") == [recovered])
+    }
+
+    @Test func displayCaptureRotatesAcrossConnectedMonitors() {
+        let screens: [UInt32] = [12, 3, 8]
+        let first = VisualMemoryDisplayPolicy.captureOrder(screens, after: nil, id: \.self)
+        #expect(first == [3, 8, 12])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: first.first, id: \.self) == [8, 12, 3])
+        #expect(VisualMemoryDisplayPolicy.captureOrder(screens, after: 12, id: \.self) == first)
+        #expect(VisualMemoryDisplayPolicy.captureOrder([3, 12], after: 8, id: \.self) == [12, 3])
+    }
+
+    @Test func displayFilterKeepsLegacyCapturesAndIndependentDisplaySamples() {
+        let now = Date()
+        let legacy = VisualMemoryItem(kind: .moment, capturedAt: now, source: "Editor", path: "1.heic")
+        var internalScreen = legacy
+        internalScreen.id = "internal"
+        internalScreen.display = .init(id: 1, uuid: "laptop", name: "Retina")
+        var external = internalScreen
+        external.id = "external"
+        external.display = .init(id: 2, uuid: "monitor", name: "HA240Y")
+        var day = TimeTurnerDaySnapshot()
+        day.load([legacy, internalScreen, external], on: now)
+        #expect(day.moments(for: nil).count == 3)
+        #expect(day.moments(for: "monitor") == [external])
+        #expect(day.displays["monitor"] == "HA240Y")
+        #expect(day.moments(for: "new").isEmpty)
+        day.load([], on: now)
+        #expect(day.displays.isEmpty)
+        #expect(day.moments(for: "monitor").isEmpty)
+    }
+
     @Test func reopeningSearchHitPreservesWholeDaySnapshot() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -151,6 +533,7 @@ struct VisualMemoryStoreTests {
         do { let writer = try VisualMemoryStore(root: root); try writer.save([item]) }
         var db: OpaquePointer?; sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &db)
         defer { sqlite3_close(db) }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "UPDATE evidence_search SET rowid=99; PRAGMA user_version=2", nil, nil, nil) == SQLITE_OK)
         let upgraded = try VisualMemoryStore(root: root)
         #expect(try upgraded.searchMoments(text: "before").count == 1)
@@ -256,6 +639,7 @@ struct VisualMemoryStoreTests {
             #expect(sqlite3_exec(db, "DROP TRIGGER " + name, nil, nil, nil) == SQLITE_OK)
             #expect(sqlite3_exec(db, sql.replacingOccurrences(of: columns, with: ""), nil, nil, nil) == SQLITE_OK)
         }
+        try removeDisplaySchema(db)
         #expect(sqlite3_exec(db, "DROP TRIGGER capture_retention_insert; ALTER TABLE time_turner_captures DROP COLUMN media_deleted_at_unix; DROP TABLE pending_capture_deletions; DROP TABLE pending_media_deletions; PRAGMA user_version=1;", nil, nil, nil) == SQLITE_OK)
         sqlite3_close(db)
         let upgraded = try VisualMemoryStore(root: root)
@@ -567,6 +951,164 @@ struct VisualMemoryStoreTests {
         #expect(VisualMemoryScrubScale(dates: []).date(at: 0.5) == nil)
         #expect(VisualMemoryScrubScale(dates: [start]).date(at: 0.5) == start)
         #expect(!VisualMemoryScrubScale(dates: Array(dates.prefix(3))).compressesGaps)
+    }
+
+    @Test func horizontalScrollMovesScrubLikeAFilmstrip() {
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 1000) == 0.6)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: 100, trackWidth: 1000) == 0.4)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.95, deltaX: -200, trackWidth: 1000) == 1)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.05, deltaX: 200, trackWidth: 1000) == 0)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: -100, trackWidth: 0) == 0.5)
+        #expect(VisualMemoryScrubScale.scrolledFraction(from: 0.5, deltaX: .nan, trackWidth: 1000) == 0.5)
+    }
+
+    @Test func scrubViewportZoomsAroundThePointerAndStaysInsideTheDay() {
+        let whole = VisualMemoryScrubViewport.whole
+        #expect(!whole.isZoomed)
+        #expect(whole.fraction(atPosition: 0.25) == 0.25)
+        let zoomed = whole.zoomed(by: 4, around: 0.5, maximumZoom: 10)
+        #expect(zoomed.zoom == 4)
+        #expect(abs(zoomed.fraction(atPosition: 0.5) - 0.5) < 0.000001)
+        #expect(abs(zoomed.position(of: 0.5) - 0.5) < 0.000001)
+        let leftEdge = whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(leftEdge.start == 0)
+        #expect(whole.zoomed(by: 50, around: 0.5, maximumZoom: 10).zoom == 10)
+        #expect(zoomed.zoomed(by: 0.01, around: 0.5, maximumZoom: 10) == .whole)
+        #expect(whole.zoomed(by: .nan, around: 0.5, maximumZoom: 10) == whole)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: 0.9).start == 0.75)
+        #expect(VisualMemoryScrubViewport(zoom: 4, start: -1).start == 0)
+    }
+
+    @Test func scrubViewportFollowsThePlayheadPastEitherEdge() {
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(view.revealing(0.35) == view)
+        let forward = view.revealing(0.6)
+        #expect(abs(forward.position(of: 0.6) - 0.9) < 0.000001)
+        let backward = view.revealing(0.1)
+        #expect(abs(backward.position(of: 0.1) - 0.1) < 0.000001)
+        #expect(view.revealing(1).start == 0.75)
+        let start = Date(timeIntervalSince1970: 0)
+        let scale = VisualMemoryScrubScale(dates: (0..<601).map { start.addingTimeInterval(Double($0)) })
+        #expect(scale.compressedDuration == 600)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: scale) == 10)
+        #expect(VisualMemoryScrubViewport.maximumZoom(for: VisualMemoryScrubScale(dates: [])) == 1)
+    }
+
+    @Test func zoomHidesOffscreenPlayheadWithoutMovingSelection() {
+        let viewport = VisualMemoryScrubViewport.whole.zoomed(by: 4, around: 0, maximumZoom: 10)
+        #expect(viewport.visiblePosition(of: 0.9) == nil)
+        #expect(viewport.visiblePosition(of: 0) == 0)
+        #expect(viewport.visiblePosition(of: 0.25) == 1)
+        let middle = VisualMemoryScrubViewport(zoom: 4, start: 0.25)
+        #expect(middle.visiblePosition(of: 0.1) == nil)
+        #expect(middle.visiblePosition(of: 0.6) == nil)
+        #expect(middle.visiblePosition(of: 0.375) == 0.5)
+        #expect(middle.visiblePosition(of: 0.25) == 0)
+        #expect(middle.visiblePosition(of: 0.5) == 1)
+        #expect(middle.visiblePosition(of: .nan) == nil)
+        #expect(middle.revealing(0.9).visiblePosition(of: 0.9) != nil)
+    }
+
+    @Test func unchangedCaptureRefreshPreservesDuplicateTimestampScrollProgress() throws {
+        let dates = [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport.whole
+        var state = TimeTurnerScrubState(playhead: dates[2])
+        for _ in 0..<3 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        let cursor = try #require(state.scrollCursor)
+        // A capture on another display refreshes the catalog, but not these dates.
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == cursor)
+        let reverse = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+        #expect(reverse.playhead == dates[2])
+        // A changed duplicate count changes the scale even with identical endpoints.
+        state.refreshScale(orderedDates: Array(dates.dropFirst()), scale: &scale, viewport: &viewport)
+        #expect(state.scrollCursor == nil)
+        #expect(scale.matchesOrderedDates(Array(dates.dropFirst())))
+    }
+
+    @Test func captureRefreshPreservesExactViewportUnlessDatesChange() {
+        let dates = (0...600).map { Date(timeIntervalSince1970: Double($0)) }
+        var scale = VisualMemoryScrubScale(dates: dates)
+        var viewport = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        var state = TimeTurnerScrubState(playhead: dates[350])
+        let original = viewport
+        state.refreshScale(orderedDates: dates, scale: &scale, viewport: &viewport)
+        #expect(viewport == original)
+        state.refreshScale(orderedDates: dates + [dates.last!.addingTimeInterval(10)], scale: &scale, viewport: &viewport)
+        #expect(abs(scale.date(at: viewport.start)!.timeIntervalSince1970 - 300) < 0.000001)
+        #expect(abs(scale.date(at: viewport.start + viewport.span)!.timeIntervalSince1970 - 450) < 0.000001)
+        state.refreshScale(orderedDates: [], scale: &scale, viewport: &viewport)
+        #expect(viewport == .whole)
+        #expect(scale.matchesOrderedDates([]))
+    }
+
+    @Test func scrollCursorAdvancesPastCapturesSharingATimestamp() {
+        let start = Date(timeIntervalSince1970: 1000)
+        let duplicate = start.addingTimeInterval(10)
+        let scale = VisualMemoryScrubScale(dates: [start, start, duplicate, duplicate, start.addingTimeInterval(20)])
+        // Restarting each event from the playhead stalls on the shared timestamp.
+        var stalled = duplicate
+        for _ in 0..<10 {
+            stalled = VisualMemoryScrollCursor.advance(nil, playhead: stalled, deltaX: -10, trackWidth: 880, scale: scale)!.date
+        }
+        #expect(stalled == duplicate)
+        var cursor: VisualMemoryScrollCursor?
+        var playhead = duplicate
+        for _ in 0..<10 {
+            cursor = VisualMemoryScrollCursor.advance(cursor, playhead: playhead, deltaX: -10, trackWidth: 880, scale: scale)
+            playhead = cursor!.date
+        }
+        #expect(playhead > duplicate)
+        // A playhead moved by something else restarts from the playhead.
+        let restarted = VisualMemoryScrollCursor.advance(cursor, playhead: start, deltaX: 0, trackWidth: 880, scale: scale)
+        #expect(restarted?.date == start)
+    }
+
+    @Test func explicitNavigationClearsScrollProgressAtTheSameTimestamp() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        // Both a pointer click at 0.5 and selection of another display's moment
+        // resolve to the same date as the old playhead.
+        for destination in [try #require(scale.date(at: 0.5)), duplicate] {
+            var state = TimeTurnerScrubState(playhead: duplicate)
+            for _ in 0..<3 {
+                state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+            }
+            #expect(state.playhead == destination)
+            #expect(try #require(state.scrollCursor).fraction > 0.5)
+            state.playhead = destination
+            #expect(state.scrollCursor == nil)
+            let backward = try #require(state.scrolling(deltaX: 10, trackWidth: 880, scale: scale))
+            #expect(abs(backward.playhead.timeIntervalSince1970 - 1009.75) < 0.000001)
+        }
+    }
+
+    @Test func scrubStatePreservesUninterruptedScrollAndResetsOnScaleChange() throws {
+        let duplicate = Date(timeIntervalSince1970: 1010)
+        let scale = VisualMemoryScrubScale(dates: [1000, 1000, 1010, 1010, 1020].map { Date(timeIntervalSince1970: $0) })
+        var state = TimeTurnerScrubState(playhead: duplicate)
+        for _ in 0..<10 {
+            state = try #require(state.scrolling(deltaX: -10, trackWidth: 880, scale: scale))
+        }
+        #expect(state.playhead > duplicate)
+        let date = state.playhead
+        state.resetScroll()
+        #expect(state.playhead == date)
+        #expect(state.scrollCursor == nil)
+    }
+
+    @Test func scrubViewportKeepsItsMomentsWhenCapturesArrive() {
+        let start = Date(timeIntervalSince1970: 0)
+        let old = VisualMemoryScrubScale(dates: (0...600).map { start.addingTimeInterval(Double($0)) })
+        let new = VisualMemoryScrubScale(dates: (0...1200).map { start.addingTimeInterval(Double($0)) })
+        let view = VisualMemoryScrubViewport(zoom: 4, start: 0.5)
+        let rebased = view.rebased(from: old, to: new)
+        #expect(abs(new.date(at: rebased.start)!.timeIntervalSince(old.date(at: view.start)!)) < 0.001)
+        #expect(abs(new.date(at: rebased.start + rebased.span)!.timeIntervalSince(old.date(at: view.start + view.span)!)) < 0.001)
+        #expect(VisualMemoryScrubViewport.whole.rebased(from: old, to: new) == .whole)
     }
 
     @Test func scrubScaleHandlesFullDayAndDuplicateTimes() {

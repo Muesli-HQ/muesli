@@ -31,3 +31,28 @@ extension AnalyticsModel {
         catalog(provider: config.meetingSummaryBackend, model: MeetingTextGenerationClient.model(config))
     }
 }
+
+extension ChatAnalyticsSource {
+    init(_ kind: GlobalSearchKind) {
+        switch kind {
+        case .meeting: self = .meeting
+        case .dictation: self = .dictation
+        case .command: self = .command
+        case .quill: self = .quill
+        case .cotypist: self = .cotypist
+        case .screenHistory: self = .screen_history
+        case .chat: self = .chat
+        case .recap: self = .recap
+        case .vidshot: self = .vidshot
+        }
+    }
+
+    init(_ kind: ChatFileReference.Kind) {
+        switch kind {
+        case .image: self = .image
+        case .pdf: self = .pdf
+        case .markdown: self = .markdown
+        case .text: self = .text
+        }
+    }
+}
