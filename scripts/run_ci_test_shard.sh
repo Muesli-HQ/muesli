@@ -211,6 +211,10 @@ case "${shard}" in
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
+      ChatwootCallDetectionOriginTests
+      ChatwootCallDetectionAdapterTests
+      ChatwootCallDetectionConcurrencyTests
+      ChatwootCallDetectionCollectorTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
