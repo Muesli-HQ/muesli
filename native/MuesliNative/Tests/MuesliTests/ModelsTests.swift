@@ -637,6 +637,59 @@ struct BackendOptionTests {
     }
 }
 
+@Suite("Language visibility (#733)")
+struct LanguageVisibilityTests {
+
+    @Test("every general transcription model states its language coverage")
+    func coverageForTranscriptionModels() {
+        let covered: [BackendOption] = [
+            .parakeetUnified, .parakeetMultilingual, .parakeetEnglish,
+            .whisperSmall, .whisperTinyEnglish, .nemotron35Multilingual,
+            .qwen3Asr, .cohereTranscribe, .bodhanCore, .medASR,
+        ]
+        for option in covered {
+            #expect(option.languageCoverage != nil, "\(option.label) has no language coverage")
+            #expect(option.descriptionWithLanguages.hasPrefix(option.description))
+        }
+        #expect(BackendOption.appleSpeechAnalyzer.languageCoverage == nil)
+        #expect(BackendOption.appleSpeechAnalyzer.descriptionWithLanguages == BackendOption.appleSpeechAnalyzer.description)
+    }
+
+    @Test("English-only and European-only models say so")
+    func coverageWording() throws {
+        #expect(BackendOption.parakeetEnglish.languageCoverage == "Languages: English only.")
+        #expect(BackendOption.whisperSmallEnglish.languageCoverage == "Languages: English only.")
+        let parakeet = try #require(BackendOption.parakeetMultilingual.languageCoverage)
+        #expect(parakeet.contains("25 European languages"))
+        #expect(parakeet.contains("Turkish"))
+        let cohere = try #require(BackendOption.cohereTranscribe.languageCoverage)
+        #expect(cohere.contains("Korean"))
+    }
+
+    @Test("unknown language codes are flagged; valid, empty and default codes are not")
+    func unrecognizedDetection() {
+        #expect(LanguageSettingFallback.isUnrecognized("xx", resolvedCode: "auto", defaultCode: "auto"))
+        #expect(LanguageSettingFallback.isUnrecognized(" XX ", resolvedCode: "auto", defaultCode: "auto"))
+        #expect(!LanguageSettingFallback.isUnrecognized("tr", resolvedCode: "tr", defaultCode: "auto"))
+        #expect(!LanguageSettingFallback.isUnrecognized("auto", resolvedCode: "auto", defaultCode: "auto"))
+        #expect(!LanguageSettingFallback.isUnrecognized("", resolvedCode: "auto", defaultCode: "auto"))
+        #expect(!LanguageSettingFallback.isUnrecognized(nil, resolvedCode: "auto", defaultCode: "auto"))
+        // Qwen accepts language names and maps them to codes; that is not a fallback.
+        #expect(!LanguageSettingFallback.isUnrecognized("turkish", resolvedCode: "tr", defaultCode: "auto"))
+        // Cohere defaults to English, so an unknown code resolving to "en" is a fallback.
+        #expect(LanguageSettingFallback.isUnrecognized("tr", resolvedCode: "en", defaultCode: "en"))
+    }
+
+    @Test("unknown config language codes still decode to the default")
+    func unknownCodesDecodeToDefault() throws {
+        let payload: [String: Any] = ["whisper_language": "xx", "parakeet_language": "tr", "nemotron35_language": "tr"]
+        let config = try JSONDecoder().decode(AppConfig.self, from: JSONSerialization.data(withJSONObject: payload))
+        #expect(config.resolvedWhisperLanguage == .auto)
+        #expect(config.resolvedParakeetLanguage == .auto)
+        #expect(config.resolvedNemotron35Language == .turkish)
+    }
+}
+
 @Suite("PostProcessorOption")
 struct PostProcessorOptionTests {
 
