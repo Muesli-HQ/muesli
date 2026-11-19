@@ -59,6 +59,10 @@ struct ModelsView: View {
         get { appState.modelLibrary.downloadTasks }
         nonmutating set { appState.modelLibrary.downloadTasks = newValue }
     }
+    @State private var modelSearch = ""
+    @State private var modelLanguageIndex = ModelLanguageSearchIndex.current
+    @State private var matchingModels: [ModelLanguageSearchResult] = []
+    @State private var supportedAppleSpeechLanguages: [AppleSpeechLanguageOption] = []
     @State private var modelToDelete: BackendOption?
     @State private var selectedParakeetModel: String
     @State private var selectedWhisperModel: String
@@ -173,6 +177,7 @@ struct ModelsView: View {
             .task(id: ModelsTourScrollRequest(target: activeFeatureTourTarget, category: appState.selectedModelsCategory)) {
                 let request = ModelsTourScrollRequest(target: activeFeatureTourTarget, category: appState.selectedModelsCategory)
                 guard let target = request.scrollTarget else { return }
+                modelSearch = ""
                 if target == .experimentalModels { showExperimental = true }
                 await Task.yield()
                 guard !Task.isCancelled else { return }
@@ -191,6 +196,12 @@ struct ModelsView: View {
             checkNemotron35Update()
             controller.checkCleanupModelUpdates()
             loadAppleSpeechLanguageOptions()
+        }
+        .onChange(of: modelSearch) { _, query in
+            matchingModels = modelLanguageIndex.search(query)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+            refreshModelLanguageIndex()
         }
         .onChange(of: appState.modelLibrary.downloadedModels) { _, _ in
             checkNemotron35Update()
@@ -325,55 +336,12 @@ struct ModelsView: View {
     private var selectedCategoryContent: some View {
         switch appState.selectedModelsCategory {
         case .dictation:
-            ForEach(BackendOption.compatibleOptions(BackendOption.systemManaged), id: \.model) { option in
-                let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
-                    ? .appleSpeechCard
-                    : nil
-                modelCard(
-                    option: option,
-                    logo: logoForBackend(option),
-                    downloadedLabel: "Available"
-                )
-                .id(featureTourTarget?.rawValue ?? option.model)
-                .featureTourTarget(featureTourTarget)
+            modelSearchField
+            if modelSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                dictationModelCatalog
+            } else {
+                modelSearchResults
             }
-
-            familyCard(
-                title: "Parakeet Family",
-                subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
-                defaultBadge: "Recommended: Unified",
-                logo: "nvidia-logo",
-                selection: $selectedParakeetModel,
-                options: BackendOption.compatibleOptions(BackendOption.parakeetFamily)
-            )
-            .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
-            .featureTourTarget(.parakeetFamilyCard)
-
-            familyCard(
-                title: "Whisper",
-                subtitle: "Dependable alternatives when you prefer Whisper's transcription style or need broader multilingual coverage.",
-                defaultBadge: "Default: Small",
-                logo: "openai-logo",
-                selection: $selectedWhisperModel,
-                options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
-            )
-
-            if BackendOption.phonon25.isCompatible() {
-                modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
-            }
-
-            if BackendOption.medASR.isCompatible() {
-                modelCard(option: .medASR, logo: "google-logo")
-            }
-
-            if BackendOption.cohereTranscribe.isCompatible() {
-                modelCard(option: .cohereTranscribe, logo: "cohere-logo")
-            }
-            bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
-            bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
-                .id(FeatureTourTarget.bodhanFlexCard.rawValue)
-            experimentalSection
-            comingSoonSection
         case .streaming:
             streamingSection
         case .postProcessing:
@@ -383,6 +351,141 @@ struct ModelsView: View {
         case .cotypist:
             cotypistSection
         }
+    }
+
+    @ViewBuilder
+    private var dictationModelCatalog: some View {
+        ForEach(BackendOption.compatibleOptions(BackendOption.systemManaged), id: \.model) { option in
+            let featureTourTarget: FeatureTourTarget? = option.backend == BackendOption.appleSpeechAnalyzer.backend
+                ? .appleSpeechCard
+                : nil
+            modelCard(
+                option: option,
+                logo: logoForBackend(option),
+                downloadedLabel: "Available"
+            )
+            .id(featureTourTarget?.rawValue ?? option.model)
+            .featureTourTarget(featureTourTarget)
+        }
+
+        familyCard(
+            title: "Parakeet Family",
+            subtitle: "The most responsive choices for everyday dictation, with multilingual and English-only options.",
+            defaultBadge: "Recommended: Unified",
+            logo: "nvidia-logo",
+            selection: $selectedParakeetModel,
+            options: BackendOption.compatibleOptions(BackendOption.parakeetFamily)
+        )
+        .id(FeatureTourTarget.parakeetFamilyCard.rawValue)
+        .featureTourTarget(.parakeetFamilyCard)
+
+        familyCard(
+            title: "Whisper",
+            subtitle: "Dependable alternatives when you prefer Whisper's transcription style or need broader multilingual coverage.",
+            defaultBadge: "Default: Small",
+            logo: "openai-logo",
+            selection: $selectedWhisperModel,
+            options: BackendOption.compatibleOptions(BackendOption.whisperFamily)
+        )
+
+        if BackendOption.phonon25.isCompatible() {
+            modelCard(option: .phonon25, logo: logoForBackend(.phonon25))
+        }
+
+        if BackendOption.medASR.isCompatible() {
+            modelCard(option: .medASR, logo: "google-logo")
+        }
+
+        if BackendOption.cohereTranscribe.isCompatible() {
+            modelCard(option: .cohereTranscribe, logo: "cohere-logo")
+        }
+        bodhanCard(selection: $selectedBodhanCoreModel, isCore: true)
+        bodhanCard(selection: $selectedBodhanFlexModel, isCore: false)
+            .id(FeatureTourTarget.bodhanFlexCard.rawValue)
+        experimentalSection
+        comingSoonSection
+    }
+
+    private var modelSearchField: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(MuesliTheme.textSecondary)
+            TextField("Search models or languages", text: $modelSearch)
+                .textFieldStyle(.plain)
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .accessibilityLabel("Search dictation models by name or input language")
+            if !modelSearch.isEmpty {
+                Button { modelSearch = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .accessibilityLabel("Clear model search")
+            }
+        }
+        .padding(MuesliTheme.spacing12)
+        .background(MuesliTheme.backgroundRaised)
+        .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
+        .overlay(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
+            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1).allowsHitTesting(false))
+    }
+
+    private var modelSearchResults: some View {
+        LazyVStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            Text(matchingModels.isEmpty ? "No matching models on this Mac." : "\(matchingModels.count) matching models")
+                .font(MuesliTheme.body())
+                .foregroundStyle(MuesliTheme.textSecondary)
+            ForEach(matchingModels) { result in
+                let option = result.option
+                let blocked = !appState.selectedPostProcessorBackend.isCompatible(with: option)
+                modelCard(
+                    option: option,
+                    logo: logoForBackend(option),
+                    downloadedLabel: blocked ? "Used for Cleanup" : (option.backend == "apple-speech" ? "Available" : "Downloaded"),
+                    activationDisabledReason: blocked
+                        ? "Unavailable while Gemma 4 is selected for cleanup. Choose another cleanup backend first." : nil,
+                    matchingLanguages: result.matchingLanguages
+                )
+            }
+            Text("Matches use documented input languages and dialects. Gemma lists published speech-recognition evaluations.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private func inputLanguageCoverage(for option: BackendOption) -> some View {
+        let languages = modelLanguageIndex.languages(for: option)
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
+            if languages.count <= 5 && !languages.isEmpty {
+                Text("Languages: " + languages.map(\.name).joined(separator: ", "))
+            } else if !languages.isEmpty {
+                DisclosureGroup(option.backend == "gemma4-litert"
+                                ? "Evaluated languages (\(languages.count))"
+                                : "Languages (\(languages.count))") {
+                    Text(languages.map(\.name).joined(separator: ", "))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            } else {
+                Text(option.backend == "apple-speech"
+                     ? "Languages are provided by macOS."
+                     : "Multilingual speech; language list not yet verified.")
+            }
+            if !option.inputDialects.isEmpty {
+                DisclosureGroup("Dialects and accents (\(option.inputDialects.count))") {
+                    Text(option.inputDialects.joined(separator: ", "))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+            if let note = option.inputLanguageCoverageNote {
+                Text(note)
+            }
+        }
+        .font(MuesliTheme.caption())
+        .foregroundStyle(MuesliTheme.textSecondary)
     }
 
     @ViewBuilder
@@ -1156,6 +1259,8 @@ struct ModelsView: View {
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
+            inputLanguageCoverage(for: selectedOption)
+
             if selectedOption == .parakeetRedux {
                 Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
                     .font(MuesliTheme.caption())
@@ -1496,7 +1601,8 @@ struct ModelsView: View {
         activeLabel: String = "Active",
         downloadedLabel: String = "Downloaded",
         actionTitle: String = "Set Active",
-        activationDisabledReason: String? = nil
+        activationDisabledReason: String? = nil,
+        matchingLanguages: [String] = []
     ) -> some View {
         let isActive = activeOverride ?? (appState.selectedBackend == option)
         let isDownloaded = downloadedModels.contains(option.model)
@@ -1506,6 +1612,14 @@ struct ModelsView: View {
         let incompatibilityReason = option.incompatibilityReason()
 
         return VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+            if !matchingLanguages.isEmpty {
+                Label(matchingLanguages.joined(separator: ", "), systemImage: "globe")
+                    .font(MuesliTheme.callout())
+                    .foregroundStyle(MuesliTheme.accentText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Matching languages: " + matchingLanguages.joined(separator: ", "))
+            }
+
             HStack(alignment: .top, spacing: MuesliTheme.spacing12) {
                 brandLogo(logo)
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
@@ -1565,6 +1679,13 @@ struct ModelsView: View {
                 }
             }
 
+            inputLanguageCoverage(for: option)
+
+            if BackendOption.experimental.contains(option) {
+                Text("Experimental")
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textSecondary)
+            }
             if option == .medASR {
                 Text("[Google](https://huggingface.co/google/medasr) · English · [Model terms](https://developers.google.com/health-ai-developer-foundations/terms)")
                     .font(MuesliTheme.caption())
@@ -2144,6 +2265,13 @@ struct ModelsView: View {
         downloadTasks[option.model] = task
     }
 
+    private func refreshModelLanguageIndex() {
+        modelLanguageIndex = ModelLanguageSearchIndex(
+            options: BackendOption.compatibleOptions(), appleLanguages: supportedAppleSpeechLanguages
+        )
+        matchingModels = modelLanguageIndex.search(modelSearch)
+    }
+
     private func loadAppleSpeechLanguageOptions() {
         guard #available(macOS 26.0, *), AppleSpeechAnalyzerTranscriber.isSupportedOnCurrentSystem else {
             appleSpeechLanguageOptions = [.system]
@@ -2152,6 +2280,8 @@ struct ModelsView: View {
 
         Task {
             var options = await AppleSpeechLanguageOption.supportedOptions()
+            supportedAppleSpeechLanguages = options
+            refreshModelLanguageIndex()
             let selectedIdentifier = appState.config.resolvedAppleSpeechLanguage
             if selectedIdentifier != AppleSpeechLanguageOption.systemIdentifier,
                !options.contains(where: { $0.id == selectedIdentifier }) {

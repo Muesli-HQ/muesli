@@ -537,3 +537,18 @@ cards use semantic borders, checkmarks and accessible selection traits. History 
 The display filter includes monitors with saved history and today’s connected, configured
 monitors, even before their first capture. In display capture mode, the menu bar’s Pause Capture or Resume Capture submenu
 groups the global action and individual monitor controls.
+
+### Model language discovery
+
+Models → Dictation includes a native search field for model names and supported
+input languages. Search shows individual compatible variants, including experimental
+and dictation-capable streaming models. Each result retains download and activation
+actions, experimental labels, and compatibility restrictions. Language matches use
+structured runtime metadata rather than descriptive copy; searching never changes
+the active model or language preference. Cards show short language lists directly
+and longer lists in a “Languages” disclosure. Search matches appear as a globe and language names
+at the very top of each result card, before its title and description, without an
+“Input:” prefix. The search field stays above the result list.
+Apple Speech uses macOS-supported locales. Qwen dialects have a separate disclosure.
+Gemma labels its published ASR evaluation languages explicitly, with additional
+coverage unconfirmed; text-language capabilities never imply speech coverage.
