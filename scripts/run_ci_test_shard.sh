@@ -227,6 +227,7 @@ case "${shard}" in
       MeetingCandidateResolverTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
+      SignalCallDetectionAdapterTests
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
