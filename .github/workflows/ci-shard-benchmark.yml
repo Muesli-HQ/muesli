@@ -1,0 +1,367 @@
+name: CI shard benchmark
+
+# Opt-in measurement only: manual dispatch from main, never a required check.
+# Compares the current cold parallel shards, one build reused by serial shard
+# invocations, parallel shards restored from an isolated trusted-main debug
+# cache, and parallel shards reusing one per-run build shipped as an artifact.
+# See docs/ci-shard-benchmark.md.
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Compare an incremental test edit or an unchanged build
+        type: choice
+        default: edited
+        options: [edited, unchanged]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-shard-benchmark
+  cancel-in-progress: false
+
+env:
+  BENCHMARK_WORKLOAD: ${{ inputs.workload }}
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      revision: ${{ steps.check.outputs.revision }}
+    steps:
+      - name: Require an intentional main-branch dispatch
+        id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT" != workflow_dispatch || "$REF" != refs/heads/main || "$REPO" != Muesli-HQ/muesli ]]; then
+            echo "::error::Dispatch this workflow from main in Muesli-HQ/muesli."
+            exit 1
+          fi
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.check.outputs.revision }}
+          persist-credentials: false
+      - name: Test benchmark harness
+        run: python3 scripts/test_ci_shard_benchmark.py
+  # Clean main debug build saved under an isolated key. Not a measured scenario.
+  seed:
+    name: seed
+    needs: guard
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      key: ${{ steps.prepare.outputs.key }}
+      created: ${{ steps.save.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify isolated debug cache
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare seed
+      - name: Look up an existing exact seed
+        id: lookup
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.prepare.outputs.scratch }}
+          key: ${{ steps.prepare.outputs.key }}
+          lookup-only: true
+      - name: Include sentinel in unchanged seed
+        if: inputs.workload == 'unchanged' && steps.lookup.outputs.cache-hit != 'true'
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Build clean main debug tests through the shard script
+        if: steps.lookup.outputs.cache-hit != 'true'
+        run: python3 scripts/ci_shard_benchmark.py prepare-build seed
+      - name: Save isolated debug cache
+        id: save
+        if: steps.lookup.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.prepare.outputs.scratch }}
+          key: ${{ steps.prepare.outputs.key }}
+      - name: Upload seed measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-seed
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario A: the current layout (three fresh runners, no restore).
+  cold:
+    name: cold-parallel (${{ matrix.shard }})
+    needs: [guard, seed]
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, dictation-transcription, meetings]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify environment
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare cold-parallel
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_shard_benchmark.py run cold-parallel "$SHARD"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-cold-parallel-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario B: one runner; the first shard builds, later shards reuse it.
+  serial:
+    name: serial-reuse
+    needs: [guard, cold]
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify environment
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare serial-reuse
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shards serially
+        run: python3 scripts/ci_shard_benchmark.py run serial-reuse core dictation-transcription meetings
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-serial-reuse
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario C: three fresh runners restoring the exact trusted-main seed. Read-only.
+  cached:
+    name: cached-parallel (${{ matrix.shard }})
+    needs: [guard, seed, serial]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.seed.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, dictation-transcription, meetings]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify environment
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare cached-parallel
+      - name: Require the seed's cache identity
+        env:
+          EXPECTED: ${{ needs.seed.outputs.key }}
+          ACTUAL: ${{ steps.prepare.outputs.key }}
+        run: test -n "$EXPECTED" && test "$EXPECTED" = "$ACTUAL"
+      - name: Restore isolated debug cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.prepare.outputs.scratch }}
+          key: ${{ needs.seed.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_shard_benchmark.py run cached-parallel "$SHARD"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-cached-parallel-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario D, phase 1: one fresh runner builds the edited tree once through
+  # the shard script and ships the exact scratch directory as a tar artifact.
+  # The artifact name is outside the report's ci-shard-bench-* pattern.
+  producer:
+    name: artifact-build
+    needs: [guard, cached]
+    if: ${{ !cancelled() && needs.guard.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      key: ${{ steps.prepare.outputs.key }}
+      artifact: ${{ steps.archive.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify environment
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare artifact-build
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Build tests and Metal once through the shard script
+        run: python3 scripts/ci_shard_benchmark.py prepare-build artifact-build
+      - name: Archive exact scratch
+        id: archive
+        env:
+          ARTIFACT: shard-bench-scratch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 scripts/ci_shard_benchmark.py archive-scratch "$RUNNER_TEMP/ci-shard-bench-scratch" "$ARTIFACT"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.artifact }}
+          path: ${{ runner.temp }}/ci-shard-bench-scratch/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-artifact-build
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario D, phase 2: three fresh runners verify the producer's identity,
+  # restore its scratch to the same absolute path and run one shard each
+  # with --reuse-build (no compilation).
+  artifact:
+    name: artifact-parallel (${{ matrix.shard }})
+    needs: [guard, producer]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && needs.producer.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, dictation-transcription, meetings]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Identify environment
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ needs.guard.outputs.revision }}
+        run: python3 scripts/ci_shard_benchmark.py prepare artifact-parallel
+      - name: Require the producer's build identity
+        env:
+          EXPECTED: ${{ needs.producer.outputs.key }}
+          ACTUAL: ${{ steps.prepare.outputs.key }}
+        run: test -n "$EXPECTED" && test "$EXPECTED" = "$ACTUAL"
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.producer.outputs.artifact }}
+          path: ${{ runner.temp }}/ci-shard-bench-scratch
+      - name: Verify and restore exact scratch
+        run: python3 scripts/ci_shard_benchmark.py restore-scratch "$RUNNER_TEMP/ci-shard-bench-scratch"
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_shard_benchmark.py run artifact-parallel "$SHARD"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-artifact-parallel-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  report:
+    name: report
+    needs: [guard, seed, cold, serial, cached, producer, artifact]
+    if: always() && needs.guard.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.revision }}
+          persist-credentials: false
+      - name: Download measurements
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-shard-bench-*
+          path: ${{ runner.temp }}/artifacts
+      - name: Fetch job timeline, seed cache size and build artifact size
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEED_KEY: ${{ needs.seed.outputs.key }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | tojson' > "$RUNNER_TEMP/jobs.jsonl"
+          if [[ "$SEED_KEY" =~ ^ci-shard-bench-debug-v1-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$SEED_KEY&ref=refs/heads/main" > "$RUNNER_TEMP/caches.json" || true
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/uploads.json" || true
+      - name: Compare results and aggregate timings
+        run: python3 scripts/ci_shard_benchmark.py report "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/jobs.jsonl" "$RUNNER_TEMP/caches.json" "$RUNNER_TEMP/uploads.json"
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-benchmark-report
+          path: ${{ runner.temp }}/ci-shard-bench/report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Least-privilege deletion of only the exact entry this run saved.
+  cleanup:
+    name: cleanup
+    needs: [seed, report]
+    if: always() && needs.seed.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete this run's isolated debug cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ needs.seed.outputs.key }}
+        run: |
+          [[ "$KEY" =~ ^ci-shard-bench-debug-v1-[0-9a-f]{64}-[0-9a-f]{40}$ ]]
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEY&ref=refs/heads/main"

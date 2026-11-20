@@ -1,0 +1,160 @@
+name: Hosted macOS suite audit
+on:
+  push:
+    branches: [codex/hosted-ci-suite-audit-20261120]
+permissions:
+  contents: read
+env:
+  BENCHMARK_WORKLOAD: edited
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+jobs:
+  cold:
+    name: cold-parallel (${{ matrix.shard }})
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, dictation-transcription, meetings]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Identify environment
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: python3 scripts/ci_shard_benchmark.py prepare cold-parallel
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_shard_benchmark.py run cold-parallel "$SHARD"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-cold-parallel-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario B: one runner; the first shard builds, later shards reuse it.
+  serial:
+    name: serial-reuse
+    needs: cold
+    if: ${{ !cancelled() }}
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Identify environment
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: python3 scripts/ci_shard_benchmark.py prepare serial-reuse
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shards serially
+        run: python3 scripts/ci_shard_benchmark.py run serial-reuse core dictation-transcription meetings
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-serial-reuse
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  producer:
+    name: artifact-build
+    needs: serial
+    if: ${{ !cancelled() }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      key: ${{ steps.prepare.outputs.key }}
+      artifact: ${{ steps.archive.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Identify environment
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: python3 scripts/ci_shard_benchmark.py prepare artifact-build
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Build tests and Metal once through the shard script
+        run: python3 scripts/ci_shard_benchmark.py prepare-build artifact-build
+      - name: Archive exact scratch
+        id: archive
+        env:
+          ARTIFACT: shard-bench-scratch-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 scripts/ci_shard_benchmark.py archive-scratch "$RUNNER_TEMP/ci-shard-bench-scratch" "$ARTIFACT"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.artifact }}
+          path: ${{ runner.temp }}/ci-shard-bench-scratch/
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-artifact-build
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7
+
+  # Scenario D, phase 2: three fresh runners verify the producer's identity,
+  # restore its scratch to the same absolute path and run one shard each
+  # with --reuse-build (no compilation).
+  artifact:
+    name: artifact-parallel (${{ matrix.shard }})
+    needs: producer
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, dictation-transcription, meetings]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Identify environment
+        id: prepare
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: python3 scripts/ci_shard_benchmark.py prepare artifact-parallel
+      - name: Require the producer's build identity
+        env:
+          EXPECTED: ${{ needs.producer.outputs.key }}
+          ACTUAL: ${{ steps.prepare.outputs.key }}
+        run: test -n "$EXPECTED" && test "$EXPECTED" = "$ACTUAL"
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.producer.outputs.artifact }}
+          path: ${{ runner.temp }}/ci-shard-bench-scratch
+      - name: Verify and restore exact scratch
+        run: python3 scripts/ci_shard_benchmark.py restore-scratch "$RUNNER_TEMP/ci-shard-bench-scratch"
+      - name: Apply edited-test sentinel
+        run: python3 scripts/ci_shard_benchmark.py edit-sentinel
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 scripts/ci_shard_benchmark.py run artifact-parallel "$SHARD"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-shard-bench-artifact-parallel-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ci-shard-bench/
+          retention-days: 7

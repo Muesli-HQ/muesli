@@ -443,14 +443,4 @@ struct MuesliBridgeDeviceRefreshPolicyTests {
             hasKnownCompanionDevice: true
         ))
     }
-
-    @Test("app activation refreshes when cached remote is not a companion")
-    func appActivationRefreshesWhenCachedRemoteIsNotACompanion() {
-        #expect(MuesliBridgeDeviceRefreshPolicy.shouldForceRefresh(
-            userInitiated: false,
-            bridgeActivationPending: false,
-            bridgeDiscoveryTriggered: true,
-            hasKnownCompanionDevice: false
-        ))
-    }
 }

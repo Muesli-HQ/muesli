@@ -54,12 +54,12 @@ struct InferenceGateTests {
             return true
         }
 
-        try await Task.sleep(for: .milliseconds(10))
-        #expect(await gate.queuedWaiterCount() == 1)
+        // Poll instead of fixed sleeps: on a loaded runner a waiter can take
+        // longer than 10 ms to enqueue, and cancellation removes it asynchronously.
+        try await waitForQueuedWaiters(1, in: gate)
 
         cancelled.cancel()
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(await gate.queuedWaiterCount() == 0)
+        try await waitForQueuedWaiters(0, in: gate)
 
         let next = Task {
             try await gate.acquire()
@@ -67,7 +67,8 @@ struct InferenceGateTests {
             return true
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        // Release only once `next` is queued so the hand-off path is exercised.
+        try await waitForQueuedWaiters(1, in: gate)
         await gate.release()
         #expect(try await next.value)
 
@@ -79,6 +80,14 @@ struct InferenceGateTests {
         } catch {
             Issue.record("Cancelled waiter failed with unexpected error: \(error)")
         }
+    }
+
+    private func waitForQueuedWaiters(_ count: Int, in gate: InferenceGate) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await gate.queuedWaiterCount() != count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await gate.queuedWaiterCount() == count)
     }
 }
 
