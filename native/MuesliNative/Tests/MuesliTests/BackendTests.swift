@@ -104,7 +104,7 @@ struct SenseVoiceTranscriberTests {
     func senseVoiceDownloadMetadata() {
         #expect(SenseVoiceTranscriber.downloadedModelSizeLabel == "~240 MB")
         #expect(BackendOption.senseVoiceSmall.sizeLabel == SenseVoiceTranscriber.downloadedModelSizeLabel)
-        #expect(BackendOption.senseVoiceSmall.description.contains("50 languages"))
+        #expect(BackendOption.senseVoiceSmall.description.contains("Mandarin, Cantonese, English, Japanese, and Korean"))
     }
 }
 

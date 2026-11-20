@@ -116,6 +116,7 @@ struct ModelLanguageSearchIndex {
     private struct Entry {
         let option: BackendOption
         let label: String
+        let labelWords: Set<String>
         let languages: [Language]
         let dialects: [(name: String, normalized: String)]
     }
@@ -136,14 +137,18 @@ struct ModelLanguageSearchIndex {
                 let nativeLocale = Locale(identifier: language.id)
                 let baseCode = nativeLocale.language.languageCode?.identifier ?? language.id
                 let names = [language.name, nativeLocale.localizedString(forLanguageCode: baseCode),
-                             locale.localizedString(forLanguageCode: baseCode)].compactMap { $0 }
+                             locale.localizedString(forLanguageCode: baseCode),
+                             nativeLocale.localizedString(forIdentifier: language.id),
+                             locale.localizedString(forIdentifier: language.id)].compactMap { $0 }
                     + (baseCode == "zh" ? ["Mandarin"] : [])
                 let value = Language(displayName: language.name, code: Self.normalize(language.id),
                                      baseCode: Self.normalize(baseCode), names: names.map(Self.normalize))
                 indexedLanguages[key] = value
                 return value
             }
-            entries.append(Entry(option: option, label: Self.normalize(option.label), languages: indexed,
+            let label = Self.normalize(option.label)
+            let labelWords = Set(label.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+            entries.append(Entry(option: option, label: label, labelWords: labelWords, languages: indexed,
                                  dialects: option.inputDialects.map { ($0, Self.normalize($0)) }))
         }
         self.entries = entries
@@ -166,7 +171,8 @@ struct ModelLanguageSearchIndex {
                 isCode ? $0.normalized == query : $0.normalized.contains(query)
             }.map(\.name)
             let matches = languages + dialects
-            guard !matches.isEmpty || (!isCode && entry.label.contains(query)) else { return nil }
+            let matchesLabel = isCode ? entry.labelWords.contains(query) : entry.label.contains(query)
+            guard !matches.isEmpty || matchesLabel else { return nil }
             return .init(option: entry.option, matchingLanguages: matches)
         }
     }

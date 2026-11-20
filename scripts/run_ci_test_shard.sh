@@ -115,6 +115,7 @@ case "${shard}" in
       FeedbackCapturePillTests
       FeedbackCaptureTranscriptTests
       FeedbackCaptureContextFinalizerTests
+      SenseVoiceTranscriberTests
       MedASRTests
       MedASRPreparationTests
       MedASRIntegrationTests

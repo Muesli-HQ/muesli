@@ -198,7 +198,7 @@ struct ModelsView: View {
             loadAppleSpeechLanguageOptions()
         }
         .onChange(of: modelSearch) { _, query in
-            matchingModels = modelLanguageIndex.search(query)
+            updateModelSearchResults(query)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
             refreshModelLanguageIndex()
@@ -418,6 +418,8 @@ struct ModelsView: View {
             if !modelSearch.isEmpty {
                 Button { modelSearch = "" } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(MuesliTheme.textSecondary)
@@ -451,6 +453,15 @@ struct ModelsView: View {
             Text("Matches use documented input languages and dialects. Gemma lists published speech-recognition evaluations.")
                 .font(MuesliTheme.caption())
                 .foregroundStyle(MuesliTheme.textSecondary)
+        }
+    }
+
+    @ViewBuilder
+    private func reduxAttribution(for option: BackendOption) -> some View {
+        if option == .parakeetRedux {
+            Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textTertiary)
         }
     }
 
@@ -1261,11 +1272,7 @@ struct ModelsView: View {
 
             inputLanguageCoverage(for: selectedOption)
 
-            if selectedOption == .parakeetRedux {
-                Text("[Moondream](https://huggingface.co/moondream/parakeet-redux) · [Core ML by FluidInference](https://huggingface.co/FluidInference/parakeet-redux-coreml) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
-                    .font(MuesliTheme.caption())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
+            reduxAttribution(for: selectedOption)
 
             if selectedOption.supportsWhisperLanguageSelection {
                 HStack(alignment: .center, spacing: MuesliTheme.spacing12) {
@@ -1679,7 +1686,10 @@ struct ModelsView: View {
                 }
             }
 
-            inputLanguageCoverage(for: option)
+            if option.backend != "gemma4-litert" || !Gemma4LiteRTModel.resolved(option.model).isCleanupOnly {
+                inputLanguageCoverage(for: option)
+            }
+            reduxAttribution(for: option)
 
             if BackendOption.experimental.contains(option) {
                 Text("Experimental")
@@ -2265,11 +2275,16 @@ struct ModelsView: View {
         downloadTasks[option.model] = task
     }
 
+    private func updateModelSearchResults(_ query: String) {
+        let results = modelLanguageIndex.search(query)
+        if results != matchingModels { matchingModels = results }
+    }
+
     private func refreshModelLanguageIndex() {
         modelLanguageIndex = ModelLanguageSearchIndex(
             options: BackendOption.compatibleOptions(), appleLanguages: supportedAppleSpeechLanguages
         )
-        matchingModels = modelLanguageIndex.search(modelSearch)
+        updateModelSearchResults(modelSearch)
     }
 
     private func loadAppleSpeechLanguageOptions() {

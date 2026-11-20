@@ -27,6 +27,22 @@ struct BackendOptionTests {
         #expect(index.search("Turkish").map(\.id) == expected)
     }
 
+    @Test("ISO code queries also match whole model-name words")
+    func modelTierLanguageCodeCollision() {
+        let index = ModelLanguageSearchIndex(options: [.bodhanCore, .bodhanFlex, .bodhanCoreInt8, .qwen3Asr])
+        #expect(index.search("Pro").map(\.option) == [.bodhanCore, .bodhanFlex])
+        #expect(index.search("pro") == index.search(" PRO "))
+        #expect(index.search("an").isEmpty)
+    }
+
+    @Test("Regional language names match native and current locales")
+    func regionalLanguageAliases() {
+        let index = ModelLanguageSearchIndex(options: [.gemma4E2BLiteRT], locale: Locale(identifier: "de"))
+        for query in ["português (Brasil)", "Portugiesisch (Brasilien)", "Portuguese", "pt-BR", "pt"] {
+            #expect(index.search(query).first?.matchingLanguages == ["Portuguese (Brazil)"])
+        }
+    }
+
     @Test("Index refresh replaces Apple coverage and respects localized language names")
     func indexedCoverageRefresh() {
         let original = ModelLanguageSearchIndex(options: [.appleSpeechAnalyzer], appleLanguages: [.system])
