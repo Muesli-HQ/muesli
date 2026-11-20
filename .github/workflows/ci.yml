@@ -362,6 +362,9 @@ jobs:
 
   # Swift tests — includes AppleSpeechAnalyzerBackendTests on macOS 26 in
   # dictation-transcription; a separate same-toolchain job would duplicate it.
+  # One runner builds the test products once, then runs every shard against
+  # that build. Later shards still run after an earlier shard fails, so a
+  # single run reports every failure; cancellation stops the remaining shards.
   test_shards:
     needs: changes
     if: needs.changes.outputs.self_host != 'true' && needs.changes.outputs.native_or_packaging == 'true' && needs.changes.outputs.warm_blacksmith_cache != 'true'
@@ -373,14 +376,10 @@ jobs:
            (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
             inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
-    timeout-minutes: 30
+    timeout-minutes: 100
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [core, dictation-transcription, meetings]
-    name: test (${{ matrix.shard }})
+    name: test (native)
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -392,28 +391,36 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Run test shard
+      - name: Build tests once
+        id: prepare
+        timeout-minutes: 40
+        run: bash ./scripts/run_ci_test_shard.sh --prepare-only core
+
+      - name: Run core shard
+        id: core
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        timeout-minutes: 25
         run: |
           set -o pipefail
-          if [[ "${{ matrix.shard }}" == core ]]; then
-            bash ./scripts/sample_core_test_hang.sh &
-            watchdog_pid=$!
-            trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
-          fi
-          bash ./scripts/run_ci_test_shard.sh "${{ matrix.shard }}" 2>&1 | tee "$RUNNER_TEMP/test-shard.log"
+          bash ./scripts/sample_core_test_hang.sh &
+          watchdog_pid=$!
+          trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+          bash ./scripts/run_ci_test_shard.sh --reuse-build core 2>&1 | tee "$RUNNER_TEMP/test-shard-core.log"
 
       - name: Isolate a core process crash
-        if: failure() && matrix.shard == 'core'
+        if: ${{ !cancelled() && steps.core.outcome == 'failure' }}
+        timeout-minutes: 20
         continue-on-error: true
         run: |
-          if grep -q 'unexpected signal code 11' "$RUNNER_TEMP/test-shard.log"; then
+          if grep -q 'unexpected signal code 11' "$RUNNER_TEMP/test-shard-core.log"; then
             python3 scripts/diagnose_core_crash.py
           else
             echo 'Core did not terminate with signal 11; skipping crash isolation.'
           fi
 
       - name: Collect core test crash reports
-        if: failure() && matrix.shard == 'core'
+        if: ${{ !cancelled() && steps.core.outcome == 'failure' }}
+        timeout-minutes: 2
         continue-on-error: true
         run: |
           destination="${RUNNER_TEMP}/core-test-crashes"
@@ -422,7 +429,7 @@ jobs:
           for attempt in {1..10}; do
             for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
               if [[ -d "$directory" ]]; then
-                find "$directory" -maxdepth 1 -type f -mmin -30 \
+                find "$directory" -maxdepth 1 -type f -mmin -60 \
                   \( -name 'swiftpm-testing-helper*.ips' -o -name 'MuesliNativePackageTests*.ips' \
                      -o -name 'swiftpm-testing-helper*.crash' -o -name 'MuesliNativePackageTests*.crash' \) \
                   -exec cp {} "$destination/" \; || true
@@ -433,13 +440,24 @@ jobs:
           done
 
       - name: Upload core test crash reports
-        if: failure() && matrix.shard == 'core'
+        if: ${{ !cancelled() && steps.core.outcome == 'failure' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: core-test-crashes
           path: ${{ runner.temp }}/core-test-crashes/
           if-no-files-found: ignore
           retention-days: 3
+
+      - name: Run dictation-transcription shard
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        timeout-minutes: 25
+        run: bash ./scripts/run_ci_test_shard.sh --reuse-build dictation-transcription
+
+      - name: Run meetings shard
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        timeout-minutes: 25
+        run: bash ./scripts/run_ci_test_shard.sh --reuse-build meetings
 
   m5-tests:
     name: m5-macos ${{ github.sha }}

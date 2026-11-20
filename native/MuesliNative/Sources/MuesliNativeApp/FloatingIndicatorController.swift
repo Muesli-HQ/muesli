@@ -2884,8 +2884,10 @@ final class FloatingIndicatorController: NSObject {
             }
         case .preparing: size = NSSize(width: microphoneStartupPending ? 116 : 76, height: 22)
         case .recording:
-            let textWidth = ((insertionStopReason?.title ?? "") as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .medium)]).width
-            size = NSSize(width: cursorInsertionStopped ? ceil(textWidth) + 54 : 76, height: 22)
+            size = Self.recordingPillSize(
+                insertionStopTitle: insertionStopReason?.title,
+                cursorInsertionStopped: cursorInsertionStopped
+            )
         case .transcribing:
             hideShortcutPillChrome()
             if let transcript = instructionTranscriptText {
@@ -3166,6 +3168,11 @@ final class FloatingIndicatorController: NSObject {
             allocated: max(16, size.height - 24),
             required: transcriptTextFieldHeight(normalized, font: font, width: textWidth)
         )
+    }
+
+    static func recordingPillSize(insertionStopTitle: String?, cursorInsertionStopped: Bool) -> NSSize {
+        let textWidth = ((insertionStopTitle ?? "") as NSString).size(withAttributes: [.font: AppFonts.font(size: 11, weight: .medium)]).width
+        return NSSize(width: cursorInsertionStopped ? ceil(textWidth) + 54 : 76, height: 22)
     }
 
     private static func transcribingPillSize(title: String, screenWidth: CGFloat) -> NSSize {
