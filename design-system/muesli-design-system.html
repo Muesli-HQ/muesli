@@ -866,6 +866,14 @@
   <p class="pattern-note">Meeting rows use 16pt padding; timeline/dictation rows use 20pt horizontal and 16pt vertical padding. Long dictations show a three-line preview with Show more / Show less. Copy always includes the complete text. Card outlines remain on statistics and grouped settings, where they establish a useful boundary.</p>
 
   <h3>Model Card — Incompatible State</h3>
+  <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:14px">⌕ &nbsp; Turkish <span style="float:right" aria-hidden="true">×</span></div>
+    <p style="font-size:14px;color:var(--text-secondary)">Matching dictation models</p>
+    <p style="font-size:13px;color:var(--accent-text)">◎ Turkish</p>
+    <div style="font-size:15px;font-weight:600">Whisper Small Multilingual</div>
+    <details style="font-size:12px;color:var(--text-secondary)"><summary>Languages (99)</summary>Language names wrap here; the native view shows the complete model-specific list.</details>
+    <p style="font-size:12px;color:var(--text-secondary)">Search by model name, language name, native name or language code. Results include experimental models and preserve their labels and activation restrictions.</p>
+  </div>
   <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Models tab: a model gated to a newer macOS than the current system is marked <strong>Incompatible</strong> — the title, status badge, description text, Download/Set&nbsp;Active button, and any language picker all read as disabled (<code>textTertiary</code>), with an inline reason instead of a doomed download attempt (issue #479). No progress bar is ever shown for this state. The Incompatible badge takes priority even when the model happens to be downloaded or active already (e.g. downloaded on a newer macOS, then this system was downgraded).</p>
   <div class="component-preview" style="padding:0;display:flex;gap:16px;flex-wrap:wrap">
     <div class="card-demo" style="max-width:420px">

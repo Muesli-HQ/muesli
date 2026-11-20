@@ -42,7 +42,6 @@ MuesliBridgeDeviceRefreshPolicyTests
 PCMChunkRecorderTests
 PostProcessorOptionTests
 Qwen3PostProcessingOutputCleanerTests
-SenseVoiceTranscriberTests
 SidebarHitAreaTests
 SoundControllerTests
 StreamingVadControllerTests

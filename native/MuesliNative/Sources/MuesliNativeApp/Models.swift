@@ -121,7 +121,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
         label: "Nemotron 3.5 Multilingual",
         sizeLabel: "~665 MB",
-        description: "Live text appears as you speak in more than 100 locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
+        description: "Live text appears as you speak in 32 supported locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
         recommended: false
     )
 
@@ -169,7 +169,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/sensevoice-small-coreml",
         label: "SenseVoice Small",
         sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
-        description: "A compact option covering more than 50 languages, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
+        description: "A compact option for Mandarin, Cantonese, English, Japanese, and Korean, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
         recommended: false
     )
 
@@ -229,7 +229,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 30 languages and 22 Chinese dialects. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
