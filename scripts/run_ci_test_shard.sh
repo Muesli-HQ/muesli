@@ -65,6 +65,7 @@ case "${shard}" in
       IndicatorFrameSizeTests
       RecordingIndicatorStyleTests
       WindowAppearanceTests
+      BuildBadgeTests
       MuesliColorRolesTests
       OpenAILogoShapeTests
       StandardMenuShortcutTests
