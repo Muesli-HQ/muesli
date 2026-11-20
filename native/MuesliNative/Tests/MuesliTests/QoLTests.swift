@@ -182,15 +182,21 @@ struct FloatingIndicatorVisibilityTests {
 @Suite("Indicator frame sizes")
 struct IndicatorFrameSizeTests {
 
-    @Test("recording frame size is consistent for all non-meeting dictation")
-    func recordingFrameUnified() {
-        // Both hold and toggle dictation should use the same 76x22 size
-        // Meeting recording uses 72x32
-        // This test validates the model constants that drive the frame
-        let config = AppConfig()
-        #expect(config.showFloatingIndicator == true)
-        // The frame sizes are hardcoded in FloatingIndicatorController.frameForState
-        // We test that the config round-trips correctly (the visual test is manual)
+    @Test("recording pill is 76x22 normally and widens after cursor insertion stops")
+    @MainActor
+    func recordingPillSize() {
+        let ordinary = FloatingIndicatorController.recordingPillSize(
+            insertionStopTitle: nil,
+            cursorInsertionStopped: false
+        )
+        #expect(ordinary == NSSize(width: 76, height: 22))
+
+        let stopped = FloatingIndicatorController.recordingPillSize(
+            insertionStopTitle: BufferedDictationInsertionStopReason.cursorOwnershipLost.title,
+            cursorInsertionStopped: true
+        )
+        #expect(stopped.height == 22)
+        #expect(stopped.width > ordinary.width)
     }
 
     @Test("default indicator center is right-middle of the screen")

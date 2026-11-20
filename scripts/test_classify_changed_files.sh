@@ -167,6 +167,22 @@ run_case release_script \
   "review_worthy=true" \
   "native_or_packaging=true"
 
+run_case shard_coverage_audit \
+  "scripts/ci_test_coverage_audit.py" \
+  "docs_only=false" \
+  "app_source=false" \
+  "release_surface=true" \
+  "workflow=false" \
+  "ci_config=false" \
+  "site_or_metadata=false" \
+  "repo_policy=false" \
+  "unknown=false" \
+  "source_or_release=true" \
+  "full_ci=true" \
+  "workflow_ci=false" \
+  "review_worthy=true" \
+  "native_or_packaging=true"
+
 run_case classifier_script \
   "scripts/classify_changed_files.sh" \
   "docs_only=false" \
