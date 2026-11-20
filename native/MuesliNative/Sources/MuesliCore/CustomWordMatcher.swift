@@ -101,11 +101,15 @@ public struct CustomWordMatcher {
         // Output so far, one word per element, so a match can see the words
         // already written before it.
         var result: [String] = []
+        // Words before this point came from an earlier replacement and are not
+        // reused as part of a later one, so separate matches each keep their
+        // full replacement.
+        var reusableStart = 0
         var index = 0
 
         while index < words.count {
             guard let match = bestMatch(
-                in: words, startingAt: index, emitted: result,
+                in: words, startingAt: index, emitted: result[reusableStart...],
                 tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
             ) else {
                 result.append(words[index])
@@ -114,6 +118,7 @@ public struct CustomWordMatcher {
             }
 
             result.append(contentsOf: match.text.components(separatedBy: " "))
+            reusableStart = result.count
             index += match.consumed
         }
 
@@ -144,7 +149,7 @@ public struct CustomWordMatcher {
     private static func bestMatch(
         in words: [String],
         startingAt index: Int,
-        emitted: [String],
+        emitted: ArraySlice<String>,
         tokenCounts: [Int],
         entriesByTokenCount: [Int: [Entry]]
     ) -> Match? {
@@ -167,7 +172,13 @@ public struct CustomWordMatcher {
                 possessive.isEmpty || entry.endsWithPossessive ? (candidateTokens, "") : (strippedTokens, possessive)
             }
             func match(_ entry: Entry, possessive: String) -> Match {
-                let replacement = replacementText(for: entry, in: words, at: index, count: count, emitted: emitted)
+                // The "'s" goes after the match, so the words after it can't be
+                // part of the replacement.
+                let replacement = replacementText(
+                    for: entry, in: words, at: index, count: count, emitted: emitted,
+                    reusesFollowing: possessive.isEmpty,
+                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
+                )
                 // A replacement that already ends in "'s" keeps its own ending.
                 let lastCore = replacement.components(separatedBy: " ").last.flatMap { tokenParts(for: $0)?.core } ?? ""
                 let ending = possessiveSuffix(of: lastCore).isEmpty ? possessive : ""
@@ -211,27 +222,57 @@ public struct CustomWordMatcher {
     /// no sentence break in between), only the window's own part of the
     /// replacement is inserted, so "XY Widget" stays "XY Widget" rather than
     /// becoming "XY XY Widget".
+    ///
+    /// Words are only reused when nothing is lost by doing so: the replacement
+    /// words left out carry no punctuation of their own, and no other entry
+    /// will later rewrite a reused following word into something else.
     private static func replacementText(
-        for entry: Entry, in words: [String], at index: Int, count: Int, emitted: [String]
+        for entry: Entry, in words: [String], at index: Int, count: Int, emitted: ArraySlice<String>,
+        reusesFollowing: Bool, tokenCounts: [Int], entriesByTokenCount: [Int: [Entry]]
     ) -> String {
         let extra = entry.replacementTokens.count - count
         guard extra > 0, entry.replacementWords.count == entry.replacementTokens.count else {
             return entry.replacement
         }
-        func normalized(_ span: [String]) -> [String] {
+        func normalized<S: Sequence<String>>(_ span: S) -> [String] {
             span.map { tokenParts(for: $0)?.core.lowercased() ?? "" }
+        }
+        func isBare(_ word: String) -> Bool {
+            tokenParts(for: word).map { $0.prefix.isEmpty && $0.suffix.isEmpty } ?? false
+        }
+        /// Whether the words in `range` come out of `apply` as the same words,
+        /// ignoring case and punctuation.
+        func staysUnchanged(_ range: Range<Int>) -> Bool {
+            var position = range.lowerBound
+            while position < range.upperBound {
+                guard let later = bestMatch(
+                    in: words, startingAt: position, emitted: [],
+                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
+                ) else {
+                    position += 1
+                    continue
+                }
+                let original = words[position..<(position + later.consumed)]
+                if normalized(later.text.components(separatedBy: " ")) != normalized(original) { return false }
+                position += later.consumed
+            }
+            return true
         }
 
         let window = Array(words[index..<(index + count)])
         for before in stride(from: extra, through: 0, by: -1) {
             let after = extra - before
-            guard emitted.count >= before, index + count + after <= words.count else { continue }
+            guard after == 0 || reusesFollowing,
+                  emitted.count >= before, index + count + after <= words.count else { continue }
             let preceding = Array(emitted.suffix(before))
-            let following = Array(words[(index + count)..<(index + count + after)])
+            let followingRange = (index + count)..<(index + count + after)
+            let following = Array(words[followingRange])
             guard normalized(preceding) == Array(entry.replacementTokens[..<before]),
                   normalized(following) == Array(entry.replacementTokens[(before + count)...]) else { continue }
             let span = (preceding + window + following).compactMap(tokenParts)
             guard span.count == before + count + after, preservesPhraseBoundaryPunctuation(span) else { continue }
+            let omitted = entry.replacementWords[..<before] + entry.replacementWords[(before + count)...]
+            guard omitted.allSatisfy(isBare), staysUnchanged(followingRange) else { continue }
             return entry.replacementWords[before..<(before + count)].joined(separator: " ")
         }
         return entry.replacement

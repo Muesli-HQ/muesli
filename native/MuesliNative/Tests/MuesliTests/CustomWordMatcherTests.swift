@@ -308,4 +308,47 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "lunch at mcdonald's", customWords: words)
         #expect(result == "lunch at McDonald's")
     }
+
+    // MARK: Reuse limits for replacement words around a match
+
+    @Test("separate expansions do not reuse each other's words")
+    func separateExpansionsKeepAllWords() {
+        let words = [CustomWord(word: "lol", replacement: "ha ha")]
+        let result = CustomWordMatcher.apply(text: "lol lol", customWords: words)
+        #expect(result == "ha ha ha ha")
+    }
+
+    @Test("possessive match does not reuse the following word")
+    func possessiveMatchKeepsFullReplacement() {
+        let words = [CustomWord(word: "nyc", replacement: "New York")]
+        let result = CustomWordMatcher.apply(text: "nyc's York", customWords: words)
+        #expect(result == "New York's York")
+    }
+
+    @Test("following word that another entry rewrites is not reused")
+    func followingWordRewrittenLaterIsNotReused() {
+        let words = [
+            CustomWord(word: "nyc", replacement: "New York"),
+            CustomWord(word: "York", replacement: "Yorkshire"),
+        ]
+        let result = CustomWordMatcher.apply(text: "nyc York", customWords: words)
+        #expect(result == "New York Yorkshire")
+    }
+
+    @Test("following word that another entry only recases is still reused")
+    func followingWordRecasedLaterIsReused() {
+        let words = [
+            CustomWord(word: "nyc", replacement: "New York"),
+            CustomWord(word: "York", replacement: nil),
+        ]
+        let result = CustomWordMatcher.apply(text: "nyc york", customWords: words)
+        #expect(result == "New York")
+    }
+
+    @Test("replacement punctuation is kept rather than reusing unpunctuated words")
+    func replacementPunctuationIsKept() {
+        let words = [CustomWord(word: "nyc", replacement: "New, York")]
+        let result = CustomWordMatcher.apply(text: "New nyc", customWords: words)
+        #expect(result == "New New, York")
+    }
 }
