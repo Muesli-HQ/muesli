@@ -367,7 +367,7 @@ class EvidenceArtifactTests(unittest.TestCase):
         for layout, jobs in bench.EXPECTED_JOBS.items():
             for index in range(jobs):
                 folder = root / f"{layout}-{index}"
-                facts = dict.fromkeys(bench.TOOLCHAIN_FACTS, "fixture")
+                facts = dict.fromkeys(bench.TOOLCHAIN_FACTS + bench.ADVISORY_FACTS, "fixture")
                 facts["revision"] = "a" * 40
                 bench.write_json(folder / "environment.json",
                                  {"scenario": layout, "facts": facts, "cache_key": "seed-key"})
@@ -428,6 +428,41 @@ class EvidenceArtifactTests(unittest.TestCase):
             self.assertIn("expected 3 verified restores, found 2", errors)
             self.assertNotIn("edit records", errors)
 
+    def set_fact(self, path, fact, value):
+        environment = json.loads(path.read_text())
+        environment["facts"][fact] = value
+        bench.write_json(path, environment)
+
+    def test_report_warns_but_accepts_rolled_runner_image(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"BENCHMARK_WORKLOAD": "edited"}):
+            root = Path(directory)
+            archive = {**dict.fromkeys(bench.ARCHIVE_FIELDS, "same"), "artifact": "shard-bench-scratch-1-1",
+                       "bytes": 1, "entries": 1}
+            self.write_fixture(root, archive)
+            for folder in root.iterdir():
+                image = "20261117" if folder.name.startswith("artifact-parallel") else "20261112"
+                self.set_fact(folder / "environment.json", "image", image)
+            report = bench.build_report(root, TimelineTests().jobs())
+            self.assertEqual(report["errors"], [])
+            warning = next(w for w in report["warnings"] if "image label" in w)
+            self.assertIn("20261112, 20261117", warning)
+
+    def test_report_rejects_real_toolchain_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"BENCHMARK_WORKLOAD": "edited"}):
+            root = Path(directory)
+            archive = {**dict.fromkeys(bench.ARCHIVE_FIELDS, "same"), "artifact": "shard-bench-scratch-1-1",
+                       "bytes": 1, "entries": 1}
+            self.write_fixture(root, archive)
+            for fact in bench.TOOLCHAIN_FACTS:
+                path = root / "artifact-parallel-0/environment.json"
+                original = json.loads(path.read_text())["facts"][fact]
+                self.set_fact(path, fact, "different")
+                identity_errors, warnings = bench.check_identity(bench.load_artifacts(root)[0])
+                self.assertIn("Runner toolchain differed between jobs; timings are less comparable",
+                              identity_errors, fact)
+                self.assertFalse([w for w in warnings if "image label" in w], fact)
+                self.set_fact(path, fact, original)
+
 
 class SentinelAndIdentityTests(unittest.TestCase):
     def test_sentinel_appends_once_to_the_unique_suite(self):
@@ -462,6 +497,18 @@ class SentinelAndIdentityTests(unittest.TestCase):
         self.assertNotEqual(key, bench.cache_key({"revision": "a" * 40, "xcode": "26.7"}))
         with self.assertRaises(ValueError):
             bench.cache_key({"revision": "main"})
+
+    def test_cache_key_ignores_image_label_but_not_material_facts(self):
+        facts = {"revision": "a" * 40, "architecture": "arm64", "os": "26.7.2", "image": "20261112",
+                 "xcode": "Xcode 26.6", "swift": "swift 6.3", "sdk": "26.6", "sdk_path": "/sdk",
+                 "workspace": "/w", "scratch": "/s", "manifest": "m", "lockfile": "l",
+                 "shard_script": "s", "harness": "h", "workload": "edited", "run_id": "1", "run_attempt": "1"}
+        key = bench.cache_key(facts)
+        self.assertEqual(key, bench.cache_key({**facts, "image": "20261117"}))
+        self.assertEqual(key, bench.cache_key({k: v for k, v in facts.items() if k != "image"}))
+        for fact in set(facts) - set(bench.ADVISORY_FACTS) - {"revision"}:
+            self.assertNotEqual(key, bench.cache_key({**facts, fact: facts[fact] + "-changed"}), fact)
+        self.assertNotEqual(key, bench.cache_key({**facts, "revision": "b" * 40}))
 
 
 class WorkflowPolicyTests(unittest.TestCase):

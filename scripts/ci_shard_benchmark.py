@@ -54,7 +54,11 @@ ARTIFACT_PATTERN = re.compile(r"shard-bench-scratch-[0-9]+-[0-9]+")
 ARCHIVE_NAME = "scratch.tar"
 MANIFEST_NAME = "manifest.json"
 ARCHIVE_FIELDS = ("artifact", "cache_key", "scratch", "sha256", "bytes", "tree_sha256", "entries")
-TOOLCHAIN_FACTS = ("architecture", "os", "image", "xcode", "swift", "sdk")
+TOOLCHAIN_FACTS = ("architecture", "os", "xcode", "swift", "sdk")
+# Recorded for diagnosis only. GitHub rolls ImageVersion (e.g. 20261112 -> 20261117)
+# between jobs of one dispatch while the OS, Xcode, Swift and SDK stay identical, so
+# the label alone is neither an ABI nor a cache-identity difference.
+ADVISORY_FACTS = ("image",)
 
 SENTINEL_SHARD = "core"
 SENTINEL_SUITE = "WordCountTests"
@@ -104,7 +108,8 @@ def cache_key(facts):
     revision = facts.get("revision", "")
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Cache revision must be a full commit SHA")
-    fingerprint = digest_bytes(json.dumps(facts, sort_keys=True).encode())
+    material = {k: v for k, v in facts.items() if k not in ADVISORY_FACTS}
+    fingerprint = digest_bytes(json.dumps(material, sort_keys=True).encode())
     return f"{KEY_NAMESPACE}{fingerprint}-{revision}"
 
 
@@ -411,7 +416,11 @@ def check_identity(scenarios):
         errors.append(f"Scenarios used different revisions: {sorted(revisions)}")
     toolchains = {json.dumps({k: env["facts"][k] for k in TOOLCHAIN_FACTS}, sort_keys=True) for env in environments}
     if len(toolchains) > 1:
-        errors.append("Runner image/toolchain differed between jobs; timings are less comparable")
+        errors.append("Runner toolchain differed between jobs; timings are less comparable")
+    for fact in ADVISORY_FACTS:
+        labels = sorted({str(env["facts"].get(fact, "unknown")) for env in environments})
+        if len(labels) > 1:
+            warnings.append(f"Runner {fact} label differed between jobs ({', '.join(labels)})")
     workload = os.environ.get("BENCHMARK_WORKLOAD")
     digests = set()
     for name, data in scenarios.items():
