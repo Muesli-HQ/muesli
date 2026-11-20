@@ -537,6 +537,7 @@ public final class MuesliController: NSObject {
     private var scheduledRecapModel: TimeTurnerRecapModel?
     private var recapClockConfig = ""
     private let meetingNotification = MeetingNotificationController()
+    private var releaseShortcutCollisionsShown = Set<String>()
     private let meetingSourceWindowLocator = MeetingSourceWindowLocator()
 
     private let chatGPTAuth: ChatGPTAuthManager
@@ -1268,6 +1269,21 @@ public final class MuesliController: NSObject {
         // meeting, so it is deliberately left unset. Meetings stop through the
         // shortcut, the menu bar, the indicator, or the signal-loss warning.
         meetingRecordingHotkeyMonitor.escapeCancelsToggleSession = false
+
+        // Dev, lane, canary, and preprod builds leave shared shortcuts to a running
+        // release app instead of both apps starting on one press.
+        if let releaseAppHotkeyGuard = ReleaseAppHotkeyGuard.forCurrentBuild() {
+            [hotkeyMonitor, computerUseHotkeyMonitor, quilHotkeyMonitor, meetingRecordingHotkeyMonitor, feedbackCaptureHotkeyMonitor]
+                .forEach { monitor in
+                    let isMeetingMonitor = monitor === meetingRecordingHotkeyMonitor
+                    monitor.shouldYieldNewPress = releaseAppHotkeyGuard.yieldHandler(
+                        ownsRunningSession: { [weak self] in isMeetingMonitor && self?.isMeetingRecording() == true },
+                        onYield: { [weak self] hotkey in
+                            DispatchQueue.main.async { self?.showReleaseShortcutCollisionNotice(for: hotkey) }
+                        }
+                    )
+                }
+        }
 
         reconcilePendingPushToTalkEnableIfReady()
 
@@ -15691,6 +15707,35 @@ public final class MuesliController: NSObject {
                 self?.showMeetingEndNotification(title: title)
             }
         }
+    }
+
+    /// Explains a skipped press once per shortcut per launch, and offers the fix.
+    private func showReleaseShortcutCollisionNotice(for hotkey: HotkeyConfig) {
+        guard !meetingNotification.isVisible,
+              releaseShortcutCollisionsShown.insert(hotkey.displayLabel).inserted else { return }
+        let duringSetup = !config.hasCompletedOnboarding
+        let notice = ReleaseHotkeyYieldPolicy.collisionNotice(
+            shortcut: hotkey.displayLabel,
+            duringSetup: duringSetup
+        )
+        meetingNotification.show(
+            title: notice.title,
+            subtitle: notice.subtitle,
+            actionLabel: notice.actionLabel,
+            icon: NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
+            dismissAfter: 20,
+            onStartRecording: { [weak self] in
+                guard let self else { return }
+                // The dashboard stays closed until onboarding finishes; its
+                // shortcut step is one Back press away in the setup window.
+                if duringSetup, self.onboardingWindowController != nil {
+                    self.bringOnboardingToFront()
+                } else {
+                    self.openHistoryWindow(tab: .shortcuts)
+                }
+            },
+            onClose: { [weak self] in self?.showPendingMeetingCompletionNotificationIfPossible() }
+        )
     }
 
     private func showMeetingEndNotification(title: String) {
