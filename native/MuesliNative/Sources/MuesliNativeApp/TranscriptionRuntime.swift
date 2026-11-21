@@ -2,6 +2,11 @@ import FluidAudio
 import Foundation
 import MuesliCore
 
+struct RecordedAudioDiarizationResult: Sendable {
+    let segments: [TimedSpeakerSegment]
+    let speakerCentroids: [String: [Float]]
+}
+
 struct SpeechSegment: Sendable {
     let start: Double
     let end: Double
@@ -1349,10 +1354,10 @@ actor TranscriptionCoordinator {
 
     /// Shared bounded PCM diarization for imported/retained recordings and both
     /// meeting channels. Each invocation has independent speaker identities.
-    func diarizeRecordedAudio(
+    func diarizeRecordedAudioWithCentroids(
         at url: URL,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
-    ) async throws -> [TimedSpeakerSegment] {
+    ) async throws -> RecordedAudioDiarizationResult {
         try Task.checkCancellation()
         guard let diarizerManager, diarizerManager.isAvailable else { throw DiarizerError.notInitialized }
         let session = RecordedAudioDiarizationSession(manager: diarizerManager)
@@ -1363,19 +1368,33 @@ actor TranscriptionCoordinator {
             await progress(window.fraction)
         }
         try Task.checkCancellation()
-        return segments
+        return RecordedAudioDiarizationResult(
+            segments: segments,
+            speakerCentroids: session.speakerCentroids()
+        )
     }
 
-    func diarizeSystemAudio(at url: URL) async throws -> [TimedSpeakerSegment]? {
+    func diarizeRecordedAudio(
+        at url: URL,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) async throws -> [TimedSpeakerSegment] {
+        try await diarizeRecordedAudioWithCentroids(at: url, progress: progress).segments
+    }
+
+    func diarizeSystemAudioWithCentroids(at url: URL) async throws -> RecordedAudioDiarizationResult? {
         guard let diarizerManager, diarizerManager.isAvailable else {
             fputs("[muesli-native] diarization not available, skipping\n", stderr)
             return nil
         }
         fputs("[muesli-native] running speaker diarization on system audio...\n", stderr)
-        let result = try await diarizeRecordedAudio(at: url)
-        let speakerCount = Set(result.map(\.speakerId)).count
-        fputs("[muesli-native] diarization complete: \(result.count) segments, \(speakerCount) speakers\n", stderr)
+        let result = try await diarizeRecordedAudioWithCentroids(at: url)
+        let speakerCount = Set(result.segments.map(\.speakerId)).count
+        fputs("[muesli-native] diarization complete: \(result.segments.count) segments, \(speakerCount) speakers\n", stderr)
         return result
+    }
+
+    func diarizeSystemAudio(at url: URL) async throws -> [TimedSpeakerSegment]? {
+        try await diarizeSystemAudioWithCentroids(at: url)?.segments
     }
 
     func getVadManager() -> VadManager? {

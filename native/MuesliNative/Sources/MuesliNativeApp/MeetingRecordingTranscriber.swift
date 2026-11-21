@@ -1,6 +1,7 @@
 import AVFoundation
 import FluidAudio
 import Foundation
+import MuesliCore
 
 /// Disk-backed reader for URL-based ASR. Only one window exists
 /// at a time; the caller must finish inference before requesting the next one.
@@ -138,8 +139,15 @@ final class DiarizationPCMWindowReader {
 final class RecordedAudioDiarizationSession {
     static let windowSeconds: Double = 10
     static let maximumSpeakers = 128
+
+    private struct CentroidAccumulator {
+        var sum: [Float]
+        var weight: Float
+    }
+
     private let manager: DiarizerManager
     private var speakers: SpeakerManager
+    private var centroidAccumulators: [String: [Int: CentroidAccumulator]] = [:]
 
     init(manager: DiarizerManager) {
         self.manager = manager
@@ -153,8 +161,47 @@ final class RecordedAudioDiarizationSession {
             let result = try withSpeakerState { model in
                 try model.performCompleteDiarization(window.samples, sampleRate: 16_000, atTime: window.start)
             }
+            accumulateCentroids(from: result.segments, start: window.start, end: window.end)
             return Self.clippedSegments(result.segments, start: window.start, end: window.end)
         }
+    }
+
+    /// Accumulates O(speakers) duration-weighted L2-normalized embedding sums per speaker,
+    /// clipping durations to `[start, end]` so window overlap is not double-counted.
+    func accumulateCentroids(from segments: [TimedSpeakerSegment], start: Double, end: Double) {
+        for segment in segments {
+            let lower = max(Float(start), segment.startTimeSeconds)
+            let upper = min(Float(end), segment.endTimeSeconds)
+            let duration = upper - lower
+            guard !segment.speakerId.isEmpty,
+                  lower.isFinite, upper.isFinite, duration.isFinite, duration > 0,
+                  let unit = SpeakerCentroidBuilder.normalizedCentroid(segment.embedding) else { continue }
+            var byDimension = centroidAccumulators[segment.speakerId] ?? [:]
+            if var accumulator = byDimension[unit.count] {
+                for index in unit.indices {
+                    accumulator.sum[index] += unit[index] * duration
+                }
+                accumulator.weight += duration
+                byDimension[unit.count] = accumulator
+            } else {
+                byDimension[unit.count] = CentroidAccumulator(
+                    sum: unit.map { $0 * duration },
+                    weight: duration
+                )
+            }
+            centroidAccumulators[segment.speakerId] = byDimension
+        }
+    }
+
+    /// Returns one L2-normalized centroid per speaker accumulated across processed windows.
+    func speakerCentroids() -> [String: [Float]] {
+        var centroids: [String: [Float]] = [:]
+        for (speakerID, byDimension) in centroidAccumulators {
+            guard let dominant = byDimension.values.max(by: { $0.weight < $1.weight }),
+                  let centroid = SpeakerCentroidBuilder.normalizedCentroid(dominant.sum) else { continue }
+            centroids[speakerID] = centroid
+        }
+        return centroids
     }
 
     func withSpeakerState<T>(_ infer: (DiarizerManager) throws -> T) throws -> T {

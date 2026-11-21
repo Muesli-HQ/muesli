@@ -114,4 +114,33 @@ struct SpeakerIdentityPipelineTests {
         )
         #expect(observations.first?.centroid == [1, 0])
     }
+
+    @Test("SpeakerCentroid observations recover centroids from speakerEmbeddings when segment embeddings are empty")
+    func speakerCentroidFallbackFromStrippedSegments() throws {
+        let segments = [
+            segment("a", 0, 6),
+            segment("a", 6, 11),
+            segment("b", 12, 21.5),
+            segment("c", 22, 35),
+        ]
+        let observations = SpeakerCentroidBuilder.observations(
+            from: segments,
+            speakerEmbeddings: [
+                "a": [3, 4],
+                "b": [1, 0],
+                "c": [0, 0],
+            ]
+        )
+        #expect(observations.map(\.label) == ["Speaker 1", "Speaker 2", "Speaker 3"])
+
+        let speaker1Centroid = try #require(observations[0].centroid)
+        #expect(SpeakerVoiceprintMatcher.isUsable(speaker1Centroid))
+        #expect(abs(speaker1Centroid[0] - 0.6) < 0.0001)
+        #expect(abs(speaker1Centroid[1] - 0.8) < 0.0001)
+        #expect(abs(observations[0].speechSeconds - 11) < 0.0001)
+
+        #expect(observations[1].centroid == nil)
+        #expect(abs(observations[1].speechSeconds - 9.5) < 0.0001)
+        #expect(observations[2].centroid == nil)
+    }
 }

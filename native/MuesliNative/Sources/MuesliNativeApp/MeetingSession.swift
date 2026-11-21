@@ -908,10 +908,12 @@ final class MeetingSession {
         }
 
         var diarizationSegments: [TimedSpeakerSegment]?
+        var systemSpeakerCentroids: [String: [Float]] = [:]
         if let systemAudioURL {
             // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult
+            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudioWithCentroids(at: systemAudioURL) {
+                diarizationSegments = diarizationResult.segments
+                systemSpeakerCentroids = diarizationResult.speakerCentroids
             }
         }
 
@@ -993,7 +995,10 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
-        let speakerObservations = SpeakerCentroidBuilder.observations(from: protectedTranscriptInputs.diarizationSegments ?? [])
+        let speakerObservations = SpeakerCentroidBuilder.observations(
+            from: protectedTranscriptInputs.diarizationSegments ?? [],
+            speakerEmbeddings: systemSpeakerCentroids
+        )
         let speakerNames = speakerObservations.isEmpty ? [:] : await speakerNamesProvider?(speakerObservations) ?? [:]
 
         let rawTranscript = TranscriptFormatter.merge(

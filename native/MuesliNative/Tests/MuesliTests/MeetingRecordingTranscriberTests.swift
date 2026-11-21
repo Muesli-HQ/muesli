@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import FluidAudio
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
@@ -335,6 +336,45 @@ struct MeetingRecordingTranscriberTests {
         }
         #expect(count == 3)
         #expect(abs(end - 23) < 0.1)
+    }
+
+    @Test("diarization session accumulates duration-weighted L2-normalized speaker centroids across windows")
+    func speakerCentroidsAcrossWindows() throws {
+        let session = RecordedAudioDiarizationSession(manager: DiarizerManager())
+        let window1 = [
+            // Padded tail beyond window end (10s) must be clipped to 10s weight.
+            TimedSpeakerSegment(speakerId: "a", embedding: [3, 0], startTimeSeconds: 0, endTimeSeconds: 12, qualityScore: 1),
+            TimedSpeakerSegment(speakerId: "b", embedding: [0, 0], startTimeSeconds: 0, endTimeSeconds: 5, qualityScore: 1),
+            TimedSpeakerSegment(speakerId: "a", embedding: [.nan, 1], startTimeSeconds: 2, endTimeSeconds: 4, qualityScore: 1),
+            TimedSpeakerSegment(speakerId: "c", embedding: [1, 0], startTimeSeconds: 12, endTimeSeconds: 15, qualityScore: 1),
+        ]
+        let window2 = [
+            // Start before window start (10s) must be clipped to [10, 15] = 5s weight.
+            TimedSpeakerSegment(speakerId: "a", embedding: [0, 5], startTimeSeconds: 8, endTimeSeconds: 15, qualityScore: 1),
+            TimedSpeakerSegment(speakerId: "d", embedding: [0, 4], startTimeSeconds: 11, endTimeSeconds: 16, qualityScore: 1),
+        ]
+
+        let clipped1 = RecordedAudioDiarizationSession.clippedSegments(window1, start: 0, end: 10)
+        let clipped2 = RecordedAudioDiarizationSession.clippedSegments(window2, start: 10, end: 20)
+        #expect((clipped1 + clipped2).allSatisfy { $0.embedding.isEmpty })
+
+        session.accumulateCentroids(from: window1, start: 0, end: 10)
+        session.accumulateCentroids(from: window2, start: 10, end: 20)
+
+        let centroids = session.speakerCentroids()
+        #expect(Set(centroids.keys) == ["a", "d"])
+
+        let aCentroid = try #require(centroids["a"])
+        #expect(SpeakerVoiceprintMatcher.isUsable(aCentroid))
+        let expectedNorm = (Float(10 * 10 + 5 * 5)).squareRoot()
+        #expect(abs(aCentroid[0] - 10 / expectedNorm) < 0.0001)
+        #expect(abs(aCentroid[1] - 5 / expectedNorm) < 0.0001)
+        #expect(abs(SpeakerVoiceprintMatcher.cosineSimilarity(aCentroid, aCentroid)! - 1) < 0.0001)
+
+        let dCentroid = try #require(centroids["d"])
+        #expect(SpeakerVoiceprintMatcher.isUsable(dCentroid))
+        #expect(abs(dCentroid[0] - 0) < 0.0001)
+        #expect(abs(dCentroid[1] - 1) < 0.0001)
     }
 }
 

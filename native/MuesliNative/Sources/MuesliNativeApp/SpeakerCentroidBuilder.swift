@@ -18,6 +18,16 @@ enum SpeakerCentroidBuilder {
         from segments: [TimedSpeakerSegment],
         minimumSeconds: Double = minimumVoiceprintSeconds
     ) -> [MeetingSpeakerObservation] {
+        observations(from: segments, speakerEmbeddings: [:], minimumSeconds: minimumSeconds)
+    }
+
+    /// Builds per-speaker observations, using `speakerEmbeddings[speakerID]` when per-segment
+    /// embeddings have been stripped (e.g. bounded recorded-audio diarization).
+    static func observations(
+        from segments: [TimedSpeakerSegment],
+        speakerEmbeddings: [String: [Float]],
+        minimumSeconds: Double = minimumVoiceprintSeconds
+    ) -> [MeetingSpeakerObservation] {
         let labels = TranscriptFormatter.speakerLabels(for: segments)
         let bySpeaker = Dictionary(grouping: segments, by: \.speakerId)
         return labels
@@ -25,9 +35,25 @@ enum SpeakerCentroidBuilder {
             .map { speakerID, label in
                 let speakerSegments = bySpeaker[speakerID] ?? []
                 let seconds = speakerSegments.reduce(0) { $0 + Double(max(0, $1.durationSeconds)) }
-                let centroid = seconds >= minimumSeconds ? weightedCentroid(of: speakerSegments) : nil
+                let centroid: [Float]?
+                if seconds >= minimumSeconds {
+                    centroid = weightedCentroid(of: speakerSegments)
+                        ?? speakerEmbeddings[speakerID].flatMap(normalizedCentroid)
+                } else {
+                    centroid = nil
+                }
                 return MeetingSpeakerObservation(label: label, centroid: centroid, speechSeconds: seconds)
             }
+    }
+
+    static func normalizedCentroid(_ vector: [Float]) -> [Float]? {
+        guard SpeakerVoiceprintMatcher.isUsable(vector) else { return nil }
+        let normSquared = vector.reduce(Float(0)) { $0 + $1 * $1 }
+        guard normSquared.isFinite, normSquared > 0 else { return nil }
+        let norm = normSquared.squareRoot()
+        guard norm.isFinite, norm > 0 else { return nil }
+        let unit = vector.map { $0 / norm }
+        return SpeakerVoiceprintMatcher.isUsable(unit) ? unit : nil
     }
 
     /// Duration-weighted mean of the L2-normalized usable embeddings, renormalized.
@@ -35,8 +61,9 @@ enum SpeakerCentroidBuilder {
     /// size cannot crash or skew the mean.
     private static func weightedCentroid(of segments: [TimedSpeakerSegment]) -> [Float]? {
         let usable = segments.compactMap { segment -> (vector: [Float], weight: Float)? in
-            guard SpeakerVoiceprintMatcher.isUsable(segment.embedding), segment.durationSeconds > 0 else { return nil }
-            return (normalized(segment.embedding), segment.durationSeconds)
+            guard segment.durationSeconds > 0,
+                  let unit = normalizedCentroid(segment.embedding) else { return nil }
+            return (unit, segment.durationSeconds)
         }
         let byDimension = Dictionary(grouping: usable, by: \.vector.count)
         guard let dominant = byDimension.max(by: { totalWeight($0.value) < totalWeight($1.value) })?.value,
@@ -45,18 +72,11 @@ enum SpeakerCentroidBuilder {
         for item in dominant {
             for index in 0..<dimension { sum[index] += item.vector[index] * item.weight }
         }
-        guard SpeakerVoiceprintMatcher.isUsable(sum) else { return nil }
-        let centroid = normalized(sum)
-        return SpeakerVoiceprintMatcher.isUsable(centroid) ? centroid : nil
+        return normalizedCentroid(sum)
     }
 
     private static func totalWeight(_ items: [(vector: [Float], weight: Float)]) -> Float {
         items.reduce(0) { $0 + $1.weight }
-    }
-
-    private static func normalized(_ vector: [Float]) -> [Float] {
-        let norm = vector.reduce(0) { $0 + $1 * $1 }.squareRoot()
-        return norm > 0 ? vector.map { $0 / norm } : vector
     }
 
     private static func speakerNumber(_ label: String) -> Int {
