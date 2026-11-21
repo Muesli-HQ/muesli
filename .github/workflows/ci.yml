@@ -8,7 +8,8 @@ on:
         type: boolean
         default: false
   pull_request:
-    branches: [main]
+    # codex/debug-cache-benchmark-base: disposable hosted cache benchmark (test_shards only).
+    branches: [main, codex/debug-cache-benchmark-base]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
   push:
     branches: [main]
@@ -39,7 +40,7 @@ jobs:
           'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
-      self_host: ${{ vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.event_name == 'pull_request' && github.actor == 'pHequals7' && github.triggering_actor == 'pHequals7' && github.event.pull_request.user.login == 'pHequals7' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'self-host') && !contains(github.event.pull_request.labels.*.name, 'ci:blacksmith') }}
+      self_host: ${{ vars.M5_CI_ENABLED == 'true' && github.repository == 'Muesli-HQ/muesli' && github.event_name == 'pull_request' && github.actor == 'pHequals7' && github.triggering_actor == 'pHequals7' && github.event.pull_request.user.login == 'pHequals7' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'self-host') && !contains(github.event.pull_request.labels.*.name, 'ci:blacksmith') && github.event.pull_request.base.ref != 'codex/debug-cache-benchmark-base' }}
       warm_blacksmith_cache: ${{ github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true }}
       cache_write_allowed: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.repository == 'Muesli-HQ/muesli' && github.actor == 'pHequals7' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.warm_blacksmith_cache == true) }}
       docs_only: ${{ steps.classify.outputs.docs_only }}
@@ -64,6 +65,17 @@ jobs:
         run: |
           if [[ "$WARM_ALLOWED" != "true" || "$CACHE_DISABLED" == "true" ]]; then
             echo "::error::Blacksmith warming requires pHequals7, upstream main, and enabled release caching."
+            exit 1
+          fi
+      # Benchmark PRs must measure standard GitHub-hosted macOS only. Failing
+      # here skips every macOS job (they all need this one).
+      - name: Keep cache benchmark on GitHub-hosted runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'codex/debug-cache-benchmark-base'
+        env:
+          ROUTED_ELSEWHERE: ${{ contains(github.event.pull_request.labels.*.name, 'ci:blacksmith') || contains(github.event.pull_request.labels.*.name, 'self-host') }}
+        run: |
+          if [[ "$ROUTED_ELSEWHERE" == "true" ]]; then
+            echo "::error::Remove ci:blacksmith/self-host labels; the cache benchmark runs on GitHub-hosted macos-26 only."
             exit 1
           fi
       - uses: actions/checkout@v4
@@ -372,13 +384,17 @@ jobs:
       ${{ github.repository == 'Muesli-HQ/muesli' &&
           github.actor == 'pHequals7' &&
           ((github.event_name == 'pull_request' &&
-            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith')) ||
+            contains(github.event.pull_request.labels.*.name, 'ci:blacksmith') &&
+            github.event.pull_request.base.ref != 'codex/debug-cache-benchmark-base') ||
            (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
             inputs.warm_blacksmith_cache == true)) &&
           'blacksmith-6vcpu-macos-26' || 'macos-26' }}
     timeout-minutes: 100
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      # Disposable benchmark: same-repo PRs into codex/debug-cache-benchmark-base.
+      # Attempt 1 = cold (no restore); attempt >= 2 = warm (exact-key restore).
+      DEBUG_CACHE_BENCHMARK: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'codex/debug-cache-benchmark-base' && github.event.pull_request.head.repo.full_name == github.repository }}
     name: test (native)
     steps:
       - name: Check out repository
@@ -391,10 +407,89 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: "Benchmark: require GitHub-hosted runner"
+        if: env.DEBUG_CACHE_BENCHMARK == 'true' && runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Cache benchmark must run on GitHub-hosted macos-26."
+          exit 1
+
+      - name: "Benchmark: compute cache key"
+        if: env.DEBUG_CACHE_BENCHMARK == 'true'
+        id: bench-key
+        run: bash scripts/ci_debug_cache_benchmark_key.sh "${{ github.event.pull_request.base.sha }}"
+
+      - name: "Benchmark: cold attempt (no restore)"
+        if: env.DEBUG_CACHE_BENCHMARK == 'true' && github.run_attempt == '1'
+        run: |
+          if [[ -e native/MuesliNative/.build ]]; then
+            echo "::warning::native/MuesliNative/.build already exists on a cold attempt."
+          fi
+          echo "Attempt 1: cold build, cache restore skipped."
+
+      - name: "Benchmark: warm restore (exact key)"
+        if: env.DEBUG_CACHE_BENCHMARK == 'true' && github.run_attempt != '1'
+        id: bench-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.bench-key.outputs.path }}
+          key: ${{ steps.bench-key.outputs.key }}
+
+      - name: "Benchmark: classify cache result"
+        if: env.DEBUG_CACHE_BENCHMARK == 'true' && github.run_attempt != '1'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CACHE_HIT: ${{ steps.bench-restore.outputs.cache-hit }}
+          RESTORE_OUTCOME: ${{ steps.bench-restore.outcome }}
+          HEAD_MANIFEST: ${{ steps.bench-key.outputs.manifest_hash }}
+        run: |
+          if [[ "$CACHE_HIT" == "true" ]]; then
+            result=hit
+          else
+            # Base manifests are needed only to explain a miss; fetch anonymously.
+            base_manifest=""
+            if git fetch --no-tags --depth=1 origin "$BASE_SHA" >/dev/null 2>&1; then
+              base_manifest="$(GITHUB_OUTPUT= bash scripts/ci_debug_cache_benchmark_key.sh "$BASE_SHA" "$BASE_SHA" | sed -n 's/^manifest_hash=//p')"
+            fi
+            if [[ -z "$base_manifest" ]]; then
+              result=unexpected-miss
+              echo "::warning::Cache miss and base manifests could not be read to classify it."
+            elif [[ "$base_manifest" != "$HEAD_MANIFEST" ]]; then
+              result=expected-miss
+              echo "::notice::Expected miss: Package.swift/Package.resolved differ from base; building cold."
+            else
+              result=unexpected-miss
+              echo "::warning::Unexpected miss: manifests match base. Seed missing/evicted, base not seeded, or toolchain drift."
+            fi
+          fi
+          echo "BENCH_RESULT=$result" >> "$GITHUB_ENV"
+          echo "Restore outcome: $RESTORE_OUTCOME, cache-hit: ${CACHE_HIT:-false}, result: $result"
+
       - name: Build tests once
         id: prepare
         timeout-minutes: 40
         run: bash ./scripts/run_ci_test_shard.sh --prepare-only core
+
+      - name: "Benchmark: report"
+        if: always() && env.DEBUG_CACHE_BENCHMARK == 'true'
+        continue-on-error: true
+        env:
+          KEY: ${{ steps.bench-key.outputs.key }}
+          MATCHED: ${{ steps.bench-restore.outputs.cache-matched-key }}
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+        run: |
+          mode=warm; [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] && mode=cold
+          size="$(du -sh native/MuesliNative/.build 2>/dev/null | cut -f1 || true)"
+          {
+            echo "### Debug cache benchmark (test (native))"
+            echo "- attempt: $GITHUB_RUN_ATTEMPT ($mode)"
+            echo "- base sha: \`${{ github.event.pull_request.base.sha }}\`"
+            echo "- key: \`$KEY\`"
+            echo "- matched key: \`${MATCHED:-none}\`"
+            echo "- result: ${BENCH_RESULT:-cold-no-restore}"
+            echo "- build outcome: $PREPARE_OUTCOME"
+            echo "- .build size after build: ${size:-n/a}"
+            echo "- runner: $RUNNER_ENVIRONMENT $RUNNER_OS/$RUNNER_ARCH ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run core shard
         id: core

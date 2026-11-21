@@ -1,0 +1,85 @@
+name: Debug cache benchmark seed
+
+# Disposable experiment. Seeds the native test build cache from the trusted
+# base branch only; PRs targeting that branch restore it in ci.yml (attempt 2).
+on:
+  push:
+    branches: [codex/debug-cache-benchmark-base]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-cache-benchmark-seed
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    if: >-
+      github.repository == 'Muesli-HQ/muesli' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/codex/debug-cache-benchmark-base'
+    # Standard GitHub-hosted runner only; never Blacksmith or private Macs.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Require GitHub-hosted runner
+        if: runner.environment != 'github-hosted'
+        run: |
+          echo "::error::Benchmark seed must run on a GitHub-hosted runner."
+          exit 1
+
+      - name: Check out trusted base
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Report native toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          echo "ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-} (ImageVersion excluded from key)"
+
+      - name: Compute benchmark cache key
+        id: key
+        run: bash scripts/ci_debug_cache_benchmark_key.sh "$GITHUB_SHA"
+
+      - name: Check for existing seed
+        id: lookup
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.key.outputs.path }}
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+
+      - name: Build tests once (same command as ci.yml)
+        if: steps.lookup.outputs.cache-hit != 'true'
+        timeout-minutes: 40
+        run: bash ./scripts/run_ci_test_shard.sh --prepare-only core
+
+      - name: Save native build cache
+        if: steps.lookup.outputs.cache-hit != 'true'
+        id: save
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.key.outputs.path }}
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Report seed
+        if: always()
+        env:
+          KEY: ${{ steps.key.outputs.key }}
+          EXISTING: ${{ steps.lookup.outputs.cache-hit }}
+          SAVE: ${{ steps.save.outcome }}
+        run: |
+          size="$(du -sh native/MuesliNative/.build 2>/dev/null | cut -f1 || true)"
+          {
+            echo "### Debug cache benchmark seed"
+            echo "- base sha: \`$GITHUB_SHA\`"
+            echo "- key: \`$KEY\`"
+            echo "- already present: ${EXISTING:-false}"
+            echo "- save outcome: ${SAVE:-skipped}"
+            echo "- .build size: ${size:-n/a}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
