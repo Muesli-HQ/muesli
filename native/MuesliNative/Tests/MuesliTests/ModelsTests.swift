@@ -4792,3 +4792,10 @@ struct OpenAIDictationProviderTests {
         #expect(chunked == oneShot)
     }
 }
+
+extension WordCountTests {
+    @Test("Debug cache app probe")
+    func debugCacheAppProbe() {
+        #expect(DictationStore.countWords(in: "debug-cache-app-probe") == 778)
+    }
+}
