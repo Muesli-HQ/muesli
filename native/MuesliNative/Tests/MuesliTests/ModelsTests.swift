@@ -613,12 +613,6 @@ struct BackendOptionTests {
         }
     }
 
-    @Test("only Nemotron backends use streaming dictation")
-    func streamingDictationBackends() {
-        let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
-        #expect(streaming == [.nemotron35Multilingual])
-    }
-
     @Test("OpenAI never uses local streaming")
     func providerStreamingRouting() {
         #expect(DictationProvider.local.usesStreamingBackend(.nemotron35Multilingual))

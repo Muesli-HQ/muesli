@@ -10,7 +10,18 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 export LC_ALL=C
 
-perl -ne '
+find "$test_root" "$test_root/../GemmaAudioEvaluationTests" -type f -name '*.swift' -print0 \
+  | xargs -0 perl -ne '
+  # Cheap source hint for conventional implicit suites. The native shard
+  # independently checks every method reported by the built test binary.
+  if (/^(?:(?:private|internal|package|public|open|final)\s+)*(?:class|struct|actor|enum)\s+([A-Za-z_][A-Za-z0-9_]*Tests)\b/) {
+    $candidate = $1;
+  }
+  if ($candidate && /^\s*\@Test\b/) {
+    print "$candidate\n";
+    undef $candidate;
+  }
+  undef $candidate if /^}/ || eof;
   if (/^\s*\@Suite(?:\s|\()/) {
     $awaiting_suite_type = 1;
     next;
@@ -20,12 +31,17 @@ perl -ne '
     print "$1\n";
     $awaiting_suite_type = 0;
   }
-' "$test_root"/*.swift "$test_root/../GemmaAudioEvaluationTests"/*.swift \
+' \
   | sort -u > "$tmp_dir/discovered"
 
 for shard in core dictation-transcription meetings; do
   bash "$runner" --list-filters "$shard"
-done | sort -u > "$tmp_dir/assigned"
+done | sort > "$tmp_dir/assigned"
+duplicates="$(uniq -d "$tmp_dir/assigned")"
+if [[ -n "$duplicates" ]]; then
+  echo "Duplicate CI shard assignments: $duplicates" >&2
+  exit 1
+fi
 
 # The crash-only diagnostic must cover each core suite exactly once.
 python3 "$repo_root/scripts/diagnose_core_crash.py" --list-groups > "$tmp_dir/core-diagnostic"
@@ -89,3 +105,4 @@ echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d 
 python3 "$repo_root/scripts/test_diagnose_core_crash.py"
 bash "$repo_root/scripts/test_sample_core_test_hang.sh"
 bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"
+python3 "$repo_root/scripts/test_ci_test_coverage_audit.py"
