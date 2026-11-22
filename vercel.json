@@ -3,6 +3,7 @@
   "buildCommand": null,
   "git": {
     "deploymentEnabled": {
+      "**": false,
       "main": true
     }
   }

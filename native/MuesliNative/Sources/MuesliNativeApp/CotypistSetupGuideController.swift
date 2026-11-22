@@ -99,23 +99,25 @@ private struct CotypistSetupGuideView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Turn on Cotypist")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(MuesliTheme.font(size: 14, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.94))
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color.white.opacity(0.55))
+                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.muesli(.quiet))
                 .help("Cancel")
+                .accessibilityLabel("Close Cotypist setup guide")
             }
 
             step(1, "Next to **Input Sources**, click **Edit…**")
             step(2, "Click **+** at the bottom left, then **English**")
             // A macOS quirk: the first time English is chosen, its list of input sources can be empty.
             Text("List empty? Click another language, then English again.")
-                .font(.system(size: 11, weight: .medium))
+                .font(MuesliTheme.captionMedium())
                 .foregroundStyle(Color.white.opacity(0.55))
                 .padding(.leading, 26)
                 .padding(.top, -6)
@@ -131,14 +133,14 @@ private struct CotypistSetupGuideView: View {
 
             if model.suggestsRelogin {
                 Text("Not in the list? macOS lists new input sources after you log out and back in. Then turn Cotypist on again.")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(MuesliTheme.accent)
+                    .font(MuesliTheme.captionMedium())
+                    .foregroundStyle(MuesliTheme.accentText)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Cotypist turns on as soon as it's added")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MuesliTheme.captionMedium())
                         .foregroundStyle(Color.white.opacity(0.55))
                 }
             }
@@ -155,12 +157,12 @@ private struct CotypistSetupGuideView: View {
     private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("\(number)")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(MuesliTheme.accent)
+                .font(MuesliTheme.font(size: 11, weight: .bold))
+                .foregroundStyle(MuesliTheme.accentText)
                 .frame(width: 18, height: 18)
                 .background(Circle().fill(MuesliTheme.accent.opacity(0.18)))
             Text(text)
-                .font(.system(size: 12, weight: .medium))
+                .font(MuesliTheme.font(size: 12, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.80))
                 .fixedSize(horizontal: false, vertical: true)
         }

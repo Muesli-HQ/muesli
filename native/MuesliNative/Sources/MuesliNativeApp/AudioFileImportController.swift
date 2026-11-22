@@ -241,7 +241,7 @@ enum AudioFileImportController {
                 manualNotesToRetain: ""
             )
         } catch {
-            fputs("[import] summary generation failed: \(error)\n", stderr)
+            fputs("[import] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
             formattedNotes = MeetingSummaryClient.summaryFailureNotes(
                 transcript: diarizedTranscript,
                 meetingTitle: generatedTitle,

@@ -7,14 +7,6 @@ import MuesliCore
 @Suite("WhisperKitTranscriber")
 struct WhisperKitTranscriberTests {
 
-    @Test("whisper models use whisper backend")
-    func whisperModelsBackend() {
-        let whisperOptions = BackendOption.all.filter { $0.backend == "whisper" }
-        for option in whisperOptions {
-            #expect(option.backend == "whisper", "\(option.label) should use whisper backend")
-        }
-    }
-
     @Test("whisper models use WhisperKit variant names")
     func whisperModelsVariantNames() {
         let whisperOptions = BackendOption.all.filter { $0.backend == "whisper" }
@@ -104,7 +96,7 @@ struct SenseVoiceTranscriberTests {
     func senseVoiceDownloadMetadata() {
         #expect(SenseVoiceTranscriber.downloadedModelSizeLabel == "~240 MB")
         #expect(BackendOption.senseVoiceSmall.sizeLabel == SenseVoiceTranscriber.downloadedModelSizeLabel)
-        #expect(BackendOption.senseVoiceSmall.description.contains("50 languages"))
+        #expect(BackendOption.senseVoiceSmall.description.contains("Mandarin, Cantonese, English, Japanese, and Korean"))
     }
 }
 
@@ -469,14 +461,15 @@ struct Gemma4LiteRTTranscriberTests {
         }
     }
 
+    // The historical LiteRT flags opt into the native Gemma model and WAV fixture.
     @available(macOS 15, *)
-    @Test("gemma4 optional runtime smoke test")
+    @Test(
+        "gemma4 optional runtime smoke test",
+        .enabled(if: ProcessInfo.processInfo.environment["MUESLI_GEMMA4_LITERT_RUNTIME_SMOKE"] == "1"
+            && ProcessInfo.processInfo.environment["MUESLI_GEMMA4_LITERT_SAMPLE_WAV"] != nil)
+    )
     func gemma4OptionalRuntimeSmoke() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["MUESLI_GEMMA4_LITERT_RUNTIME_SMOKE"] == "1",
-              let samplePath = environment["MUESLI_GEMMA4_LITERT_SAMPLE_WAV"] else {
-            return
-        }
+        let samplePath = try #require(ProcessInfo.processInfo.environment["MUESLI_GEMMA4_LITERT_SAMPLE_WAV"])
 
         let transcriber = Gemma4LiteRTTranscriber()
         let result = try await transcriber.transcribe(

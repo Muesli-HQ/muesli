@@ -29,6 +29,7 @@ struct CalendarEventContext {
     let id: String
     let title: String
     var calendarOccurrence: CalendarOccurrenceReference? = nil
+    var meetingURL: URL? = nil
 }
 
 /// A running application on the system.

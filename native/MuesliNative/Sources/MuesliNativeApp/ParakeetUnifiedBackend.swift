@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreML
 import FluidAudio
 import Foundation
 import MuesliCore
@@ -7,6 +8,11 @@ import MuesliCore
 /// (FastConformer-RNNT) using FluidAudio's offline batch `UnifiedAsrManager`.
 /// English-focused, lower-WER successor to Parakeet TDT v3.
 actor ParakeetUnifiedTranscriber {
+    typealias ModelLoader = @Sendable (
+        ManagedASRModelPlan, Bool, ((Double, String?) -> Void)?, ModelDownloadProgressHandler?
+    ) async throws -> UnifiedAsrManager
+
+    private let modelLoader: ModelLoader
     private var asrManager: UnifiedAsrManager?
     private var loadedPlan: ManagedASRModelPlan?
     private var loadGeneration: UInt64 = 0
@@ -14,6 +20,29 @@ actor ParakeetUnifiedTranscriber {
     // loading and unloading on one permit, as in FluidAudioTranscriber.
     private var decodeBusy = false
     private var decodeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(cpuOnly: Bool = false, modelLoader: ModelLoader? = nil) {
+        self.modelLoader = modelLoader ?? { plan, localOnly, progress, progressSnapshot in
+        return try await ManagedASRModelDownloader.loadValidated(
+            plan,
+            allowDownload: !localOnly,
+            progress: progress,
+            progressSnapshot: progressSnapshot
+        ) { modelDirectory in
+            let preparing = ModelDownloadProgress.preparing(
+                modelID: plan.modelID,
+                message: "Loading Parakeet Unified into Core ML..."
+            )
+            progress?(0.95, preparing.message)
+            progressSnapshot?(preparing)
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = .cpuOnly
+            let manager = UnifiedAsrManager(configuration: cpuOnly ? configuration : nil)
+            try await manager.loadModels(from: modelDirectory)
+            return manager
+        }
+        }
+    }
 
     enum TranscriberError: Error, LocalizedError {
         case notLoaded
@@ -40,22 +69,7 @@ actor ParakeetUnifiedTranscriber {
 
         fputs("[parakeet-unified] loading models local_only=\(localOnly)...\n", stderr)
         let plan = ManagedASRModelPlans.parakeetUnified()
-        let manager = try await ManagedASRModelDownloader.loadValidated(
-            plan,
-            allowDownload: !localOnly,
-            progress: progress,
-            progressSnapshot: progressSnapshot
-        ) { modelDirectory in
-            let preparing = ModelDownloadProgress.preparing(
-                modelID: plan.modelID,
-                message: "Loading Parakeet Unified into Core ML..."
-            )
-            progress?(0.95, preparing.message)
-            progressSnapshot?(preparing)
-            let manager = UnifiedAsrManager()
-            try await manager.loadModels(from: modelDirectory)
-            return manager
-        }
+        let manager = try await modelLoader(plan, localOnly, progress, progressSnapshot)
         // A shutdown() during the load must invalidate the result: discard the
         // freshly loaded manager instead of resurrecting a stale one.
         guard generation == loadGeneration else {
@@ -81,9 +95,9 @@ actor ParakeetUnifiedTranscriber {
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(wavURL)
         let start = CFAbsoluteTimeGetCurrent()
-        let text = try await asrManager.transcribe(samples)
+        let result = try await Self.speechResult(asrManager, samples: samples)
         let processingTime = CFAbsoluteTimeGetCurrent() - start
-        return (text, processingTime)
+        return (result.text, processingTime)
     }
 
     func transcribePreview(samples: [Float], requiresWordTimings: Bool = true) async throws -> BufferedTranscriptionWindow {
@@ -91,15 +105,19 @@ actor ParakeetUnifiedTranscriber {
         defer { releaseDecode() }
         try Task.checkCancellation()
         guard let asrManager else { throw TranscriberError.notLoaded }
-        if !requiresWordTimings {
-            let text = try await asrManager.transcribe(samples)
-            try Task.checkCancellation()
-            return .init(text: text, words: [])
-        }
-        let result = try await asrManager.transcribeWithTimings(samples)
+        let result = try await Self.speechResult(asrManager, samples: samples)
         try Task.checkCancellation()
+        guard requiresWordTimings else { return .init(text: result.text, words: []) }
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings)
         return try Self.previewWindow(text: result.text, words: words)
+    }
+
+    private static func speechResult(_ manager: UnifiedAsrManager, samples: [Float]) async throws
+        -> UnifiedAsrManager.TranscriptionWithTimings {
+        let result = try await manager.transcribeWithTimings(samples)
+        let speech = result.tokenTimings.filter { $0.tokenId != 0 }
+        guard speech.count != result.tokenTimings.count else { return result }
+        return .init(text: speech.map(\.token).joined().trimmingCharacters(in: .whitespaces), tokenTimings: speech)
     }
 
     static func previewWindow(text: String, words: [BufferedTranscriptionWord]) throws -> BufferedTranscriptionWindow {

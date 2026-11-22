@@ -1,3 +1,4 @@
+import MuesliCore
 import AppKit
 import CryptoKit
 import Foundation
@@ -39,12 +40,12 @@ final class GoogleCalendarAuthManager {
 
     private let credentials: GoogleCalendarCredentials?
 
-    private var tokenFileURL: URL {
-        AppIdentity.supportDirectoryURL.appendingPathComponent("google-calendar-auth.json")
-    }
+    private let tokenStorage: CredentialFileMigration
 
-    private init() {
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil) {
         credentials = GoogleCalendarCredentials.load()
+        tokenStorage = .init(legacyURL: supportDirectory.appendingPathComponent("google-calendar-auth.json"),
+                             account: "google-calendar-auth", vault: vault ?? KeychainCredentialVault(supportDirectory: supportDirectory))
     }
 
     // MARK: - Public API
@@ -72,12 +73,12 @@ final class GoogleCalendarAuthManager {
             codeVerifier: verifier,
             credentials: credentials
         )
-        saveTokens(tokens)
+        try saveTokens(tokens)
         fputs("[google-cal] signed in successfully\n", stderr)
     }
 
-    func signOut() {
-        deleteTokens()
+    func signOut() throws {
+        try tokenStorage.delete()
         fputs("[google-cal] signed out\n", stderr)
     }
 
@@ -102,7 +103,7 @@ final class GoogleCalendarAuthManager {
                 refreshToken: refreshToken,
                 credentials: credentials
             )
-            saveTokens(tokens)
+            try saveTokens(tokens)
             return tokens.accessToken
         }
 
@@ -236,7 +237,7 @@ final class GoogleCalendarAuthManager {
                         Content-Type: text/html\r
                         Connection: close\r
                         \r
-                        <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Google Calendar connected</h2><p>You can close this window and return to Muesli.</p></div></body></html>
+                        <!DOCTYPE html><html><body style="font-family:-apple-system,system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a1a;color:#fff"><div style="text-align:center"><h2>Google Calendar connected</h2><p>You can close this window and return to muesli.</p></div></body></html>
                         """
                         connection.send(
                             content: successHtml.data(using: .utf8),
@@ -367,38 +368,25 @@ final class GoogleCalendarAuthManager {
         return TokenResponse(accessToken: accessToken, refreshToken: newRefreshToken, expiresAtMs: expiresAtMs)
     }
 
-    // MARK: - File-based Token Storage
+    // MARK: - Keychain token storage with verified legacy-file migration
 
-    private func saveTokens(_ tokens: TokenResponse) {
+    private func saveTokens(_ tokens: TokenResponse) throws {
         let dict: [String: String] = [
             "access_token": tokens.accessToken,
             "refresh_token": tokens.refreshToken,
             "expires_at": String(format: "%.0f", tokens.expiresAtMs),
         ]
-        do {
-            let dir = tokenFileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted)
-            try data.write(to: tokenFileURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFileURL.path)
-            var fileURL = tokenFileURL
-            var resourceValues = URLResourceValues()
-            resourceValues.isExcludedFromBackup = true
-            try fileURL.setResourceValues(resourceValues)
-        } catch {
-            fputs("[google-cal] failed to save tokens: \(error)\n", stderr)
-        }
+        try tokenStorage.save(JSONSerialization.data(withJSONObject: dict))
     }
 
     private func tokenRead(key: String) -> String? {
-        guard let data = try? Data(contentsOf: tokenFileURL),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return nil
-        }
+        guard let data = try? tokenStorage.load(validating: { data in
+            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: String],
+                  dict["access_token"]?.isEmpty == false else { throw CredentialVaultError.verificationFailed }
+        }),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return nil }
         return dict[key]
     }
 
-    private func deleteTokens() {
-        try? FileManager.default.removeItem(at: tokenFileURL)
-    }
+
 }

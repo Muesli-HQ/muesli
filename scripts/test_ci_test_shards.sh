@@ -10,7 +10,18 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 export LC_ALL=C
 
-perl -ne '
+find "$test_root" "$test_root/../GemmaAudioEvaluationTests" -type f -name '*.swift' -print0 \
+  | xargs -0 perl -ne '
+  # Cheap source hint for conventional implicit suites. The native shard
+  # independently checks every method reported by the built test binary.
+  if (/^(?:(?:private|internal|package|public|open|final)\s+)*(?:class|struct|actor|enum)\s+([A-Za-z_][A-Za-z0-9_]*Tests)\b/) {
+    $candidate = $1;
+  }
+  if ($candidate && /^\s*\@Test\b/) {
+    print "$candidate\n";
+    undef $candidate;
+  }
+  undef $candidate if /^}/ || eof;
   if (/^\s*\@Suite(?:\s|\()/) {
     $awaiting_suite_type = 1;
     next;
@@ -20,12 +31,30 @@ perl -ne '
     print "$1\n";
     $awaiting_suite_type = 0;
   }
-' "$test_root"/*.swift "$test_root/../GemmaAudioEvaluationTests"/*.swift \
+' \
   | sort -u > "$tmp_dir/discovered"
 
 for shard in core dictation-transcription meetings; do
   bash "$runner" --list-filters "$shard"
-done | sort -u > "$tmp_dir/assigned"
+done | sort > "$tmp_dir/assigned"
+duplicates="$(uniq -d "$tmp_dir/assigned")"
+if [[ -n "$duplicates" ]]; then
+  echo "Duplicate CI shard assignments: $duplicates" >&2
+  exit 1
+fi
+
+# The crash-only diagnostic must cover each core suite exactly once.
+python3 "$repo_root/scripts/diagnose_core_crash.py" --list-groups > "$tmp_dir/core-diagnostic"
+awk '{print $2}' "$tmp_dir/core-diagnostic" | sort > "$tmp_dir/core-diagnostic-suites"
+bash "$runner" --list-filters core | sort > "$tmp_dir/core-suites"
+if ! cmp -s "$tmp_dir/core-suites" "$tmp_dir/core-diagnostic-suites"; then
+  echo "Core crash diagnostic groups must cover every core suite exactly once" >&2
+  exit 1
+fi
+if [[ "$(awk '{print $1}' "$tmp_dir/core-diagnostic" | sort -u | wc -l | tr -d ' ')" != 4 ]]; then
+  echo "Core crash diagnostics must contain four nonempty groups" >&2
+  exit 1
+fi
 
 sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$baseline" \
   | sort -u > "$tmp_dir/baseline"
@@ -54,10 +83,26 @@ if [[ -s "$tmp_dir/stale-baseline" ]]; then
   failed=true
 fi
 
+# UI timing and deadline-bound Vidshot media processing need the serial shard,
+# not competition with the concurrent core run.
+for suite in NotchIndicatorTests FeedbackCaptureLifecycleTests FeedbackCapturePillTests FeedbackCaptureTranscriptTests FeedbackCaptureContextFinalizerTests; do
+  if ! bash "$runner" --list-filters dictation-transcription | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must run in the serialized dictation-transcription shard" >&2
+    failed=true
+  fi
+  if bash "$runner" --list-filters core | grep -Fx "$suite" > /dev/null; then
+    echo "$suite must not also run in the parallel core shard" >&2
+    failed=true
+  fi
+done
+
 if [[ "$failed" == true ]]; then
   exit 1
 fi
 
 echo "CI test shard assignments verified ($(wc -l < "$tmp_dir/assigned" | tr -d ' ') assigned, $(wc -l < "$tmp_dir/baseline" | tr -d ' ') legacy-unsharded)."
 
+python3 "$repo_root/scripts/test_diagnose_core_crash.py"
+bash "$repo_root/scripts/test_sample_core_test_hang.sh"
 bash "$repo_root/scripts/test_ci_metallib_scratch_path.sh"
+python3 "$repo_root/scripts/test_ci_test_coverage_audit.py"

@@ -14,6 +14,15 @@ struct DiagnosticIncidentTests {
         architecture: "arm64"
     )
 
+    @Test("microphone startup errors have fixed support meanings", arguments: [DictationMicrophoneStartupError.stillStopping, .deviceUnavailable, .ioStoppedAbnormally, .queueStoppedUnexpectedly])
+    func startupErrorsAreKnown(_ error: DictationMicrophoneStartupError) {
+        let incident = DiagnosticIncident(kind: .dictationAudioFailed, stage: .dictationAudioSession,
+            backendOption: nil, error: error, metadata: metadata)
+        #expect(incident.telemetryParameters["diagnostic.error_known"] == "true")
+        #expect(incident.telemetryParameters["diagnostic.error_domain"] == "MuesliMicrophoneStartup")
+        #expect(incident.telemetryParameters["diagnostic.error_code"] == String(error.rawValue))
+    }
+
     @Test("schema v2 omits arbitrary error details and correlates by incident ID")
     func unknownErrorIsStrictlyRedacted() {
         let incidentID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!

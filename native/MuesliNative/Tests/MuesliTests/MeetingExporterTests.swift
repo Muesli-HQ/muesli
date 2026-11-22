@@ -232,6 +232,16 @@ struct MeetingExporterTests {
         #expect(copied.hasSuffix(meeting.manualNotes))
     }
 
+    @Test("Legacy title-case export branding is removed without touching meeting text")
+    func legacyBrandingRemoval() {
+        let legacy = MeetingExportBranding.markdownFooter
+            .replacingOccurrences(of: "alt=\"muesli logo\"", with: "alt=\"Muesli logo\"")
+            .replacingOccurrences(of: "Exported with muesli", with: "Exported with Muesli")
+        let notes = "Notes mentioning Muesli and muesli."
+        #expect(MeetingExportBranding.removingFooter(from: notes + legacy) == notes)
+        #expect(MeetingExportBranding.removingFooter(from: notes) == notes)
+    }
+
     @Test("All Markdown export modes embed the official logo without external image URLs")
     func markdownBranding() throws {
         let officialAsset = URL(fileURLWithPath: #filePath)
@@ -242,14 +252,14 @@ struct MeetingExporterTests {
         for content in MeetingExportContent.allCases {
             let markdown = MeetingExporter.buildMarkdown(meeting: makeMeeting(), content: content)
             #expect(markdown.hasSuffix(MeetingExportBranding.markdownFooter))
-            #expect(markdown.components(separatedBy: "alt=\"Muesli logo\"").count - 1 == 1)
-            #expect(markdown.contains("[Exported with Muesli](https://muesli.works)"))
+            #expect(markdown.components(separatedBy: "alt=\"muesli logo\"").count - 1 == 1)
+            #expect(markdown.contains("[Exported with muesli](https://muesli.works)"))
             #expect(markdown.contains("data:image/png;base64,"))
             #expect(!markdown.contains("<img src=\"http"))
         }
         let copied = MeetingDetailView.copyContent(for: makeMeeting(), content: .notes)
         #expect(!copied.contains("data:image"))
-        #expect(!copied.contains("Exported with Muesli"))
+        #expect(!copied.contains("Exported with muesli"))
     }
 
     @Test("Copy and export use meeting date and minute precision; footer links to Muesli")
@@ -268,10 +278,10 @@ struct MeetingExporterTests {
             let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: content)
             #expect(markdown.contains(headerDate))
             #expect(!markdown.contains(":45"))
-            #expect(markdown.hasSuffix("[Exported with Muesli](https://muesli.works)"))
+            #expect(markdown.hasSuffix("[Exported with muesli](https://muesli.works)"))
             let html = MeetingExporter.markdownToHTML(markdown)
-            #expect(html.contains("href=\"https://muesli.works\">Exported with Muesli</a>"))
-            #expect(!MeetingExportBranding.removingFooter(from: markdown).contains("Exported with Muesli"))
+            #expect(html.contains("href=\"https://muesli.works\">Exported with muesli</a>"))
+            #expect(!MeetingExportBranding.removingFooter(from: markdown).contains("Exported with muesli"))
         }
         #expect(MeetingExporter.formatExportDate("unrecognized date") == MeetingBrowserLogic.formatStartTime("unrecognized date"))
     }
@@ -284,7 +294,7 @@ struct MeetingExporterTests {
         let markdown = MeetingExporter.buildMarkdown(meeting: meeting, content: .notes)
         let attributed = MeetingExporter.buildAttributedString(from: markdown)
         #expect(!attributed.string.contains("base64"))
-        #expect(!attributed.string.contains("Exported with Muesli"))
+        #expect(!attributed.string.contains("Exported with muesli"))
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-pr528-preview", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("meeting-export.pdf")
@@ -293,7 +303,7 @@ struct MeetingExporterTests {
         #expect(document.pageCount > 1)
         for index in 0..<document.pageCount {
             let page = try #require(document.page(at: index))
-            #expect(page.string?.contains("Exported with Muesli") == true)
+            #expect(page.string?.contains("Exported with muesli") == true)
             #expect(page.annotations.contains { $0.url == MeetingExportBranding.websiteURL })
             // Rasterize only the footer's logo region, excluding the text, and
             // check for the official blue artwork on every page.

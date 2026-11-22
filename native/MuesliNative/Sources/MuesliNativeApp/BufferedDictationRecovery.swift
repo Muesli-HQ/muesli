@@ -1,3 +1,4 @@
+import MuesliCore
 import Foundation
 import Darwin
 
@@ -11,6 +12,8 @@ enum BufferedDictationRecovery {
     /// A small fallback when copying the WAV into the recovery directory fails.
     /// Reserve a private sidecar atomically; never overwrite an earlier attempt.
     static func saveTranscript(_ transcript: String, beside wavURL: URL) throws -> URL {
+        try ContentPrivacy.shared.beginWrite()
+        defer { ContentPrivacy.shared.endWrite() }
         let data = Data(transcript.utf8)
         let sidecar = wavURL.appendingPathExtension("transcript.txt")
         if try writeNew(data, to: sidecar) { return sidecar }

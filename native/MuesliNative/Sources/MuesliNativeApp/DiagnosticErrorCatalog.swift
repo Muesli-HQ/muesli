@@ -321,6 +321,13 @@ enum DiagnosticErrorCatalog {
     ]
 
     private static let exactMeanings: [String: [String: DiagnosticErrorMeaning]] = [
+        "MuesliMicrophoneStartup": [
+            "1": .init(summary: "Microphone startup deadline expired", area: "dictation_audio_capture"),
+            "2": .init(summary: "Previous microphone startup is still stopping", area: "dictation_audio_capture"),
+            "3": .init(summary: "Selected microphone is unavailable", area: "dictation_audio_capture"),
+            "4": .init(summary: "Core Audio reported an abnormal microphone stop", area: "dictation_audio_capture"),
+            "5": .init(summary: "Microphone capture queue stopped unexpectedly", area: "dictation_audio_capture"),
+        ],
         "MuesliClaudeCode": [
             "1": .init(summary: "Claude Code executable was not found", area: "meeting_summary_configuration"),
             "2": .init(summary: "Claude Code summary input exceeded its size limit", area: "meeting_summary_input"),

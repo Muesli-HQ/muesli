@@ -217,7 +217,7 @@ struct CotypistHistoryTests {
         try store.migrateIfNeeded()
         let controller = MuesliController(
             runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
-            dictationStore: store, configStore: ConfigStore(supportDirectory: directory))
+            dictationStore: store, configStore: makeTestConfigStore(supportDirectory: directory))
         let changes = ["cotypist_enabled": "on", "cotypist_model": CotypistModel.qwen35_2b.rawValue,
                        "cotypist_length": CotypistSuggestionLength.allCases.last!.rawValue,
                        "cotypist_frequency": CotypistFrequency.allCases.last!.rawValue,

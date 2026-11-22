@@ -5,6 +5,26 @@ import Testing
 @Suite("Hotkey shortcut recorder", .serialized)
 @MainActor
 struct HotkeyShortcutRecorderTests {
+    @Test("Feedback assignment rejects bare modifiers in recorder, settings, and direct validation")
+    func feedbackRequiresLetterChord() async throws {
+        let bare = HotkeyConfig(keyCode: 61, label: "Right Option")
+        #expect(!ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(bare, config: AppConfig()).didUpdate)
+        #expect(!ShortcutHotkeyPolicy.validateFeedbackCaptureHotkey(.combination(modifiers: [], keyCode: 1), config: AppConfig()).didUpdate)
+        #expect(ShortcutAssignment.feedbackCapture.hotkey(for: "key:61") == nil)
+        var saved: [HotkeyConfig] = []
+        var handler: ((NSEvent) -> NSEvent?)?
+        let recorder = HotkeyShortcutRecorder(addMonitor: { handler = $0; return NSObject() }, removeMonitor: { _ in })
+        defer { recorder.cancel() }
+        _ = recorder.start(.feedbackCapture, acquire: { true }, release: {}, commit: { saved.append($0) })
+        _ = handler?(try event(.flagsChanged, key: 61, flags: .option))
+        _ = handler?(try event(.flagsChanged, key: 61))
+        #expect(saved.isEmpty)
+        #expect(recorder.target == .feedbackCapture && recorder.rejectedChord && recorder.requiresCombination)
+        _ = handler?(try event(.keyDown, key: 1, flags: [.option, .shift]))
+        _ = handler?(try event(.keyUp, key: 1))
+        #expect(saved == [.feedbackCaptureDefault])
+    }
+
     @Test("toggle setup refuses a bare modifier and keeps capturing until a chord is released")
     func toggleRequiresCombination() throws {
         var handler: ((NSEvent) -> NSEvent?)?

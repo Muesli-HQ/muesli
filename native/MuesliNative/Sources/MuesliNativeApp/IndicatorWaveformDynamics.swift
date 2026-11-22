@@ -3,8 +3,10 @@ import Foundation
 /// Shared by the floating pill and notch. Rendering remains owned by each surface.
 enum IndicatorWaveformDynamics {
     /// Classic capsule dimensions, also used by the notch's standing waveform.
-    static func standingBarFrame(index: Int, count: Int = 5, amplitude: CGFloat, bounds: CGRect) -> CGRect {
+    static func standingBarFrame(index: Int, count: Int = 5, amplitude: CGFloat, bounds: CGRect, overlapsMeeting: Bool = false) -> CGRect {
         guard count > 0, index >= 0, index < count else { return .zero }
+        let bounds = overlapsMeeting
+            ? CGRect(x: bounds.maxX - 85, y: bounds.minY, width: 27, height: bounds.height) : bounds
         let naturalWidth = CGFloat(count * 6 - 3)
         let scale = min(1, max(0, bounds.width) / naturalWidth)
         let width: CGFloat = 3 * scale

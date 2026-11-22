@@ -1,13 +1,17 @@
+import MuesliCore
 import Foundation
 import os
 
 /// Shared ownership keeps the recording alive until both the edit and any
 /// cancelled-but-still-unwinding preview have stopped reading it.
 final class QuilRecordedAudio: Sendable {
+    private let privacy = ContentPrivacy.session ?? ContentPrivacy.shared.capture()
     private let preserveOriginal = OSAllocatedUnfairLock(initialState: false)
     let url: URL
     init(url: URL) { self.url = url }
     func copyForRecovery(to directory: URL) throws -> URL {
+        try ContentPrivacy.shared.beginWrite(privacy)
+        defer { ContentPrivacy.shared.endWrite() }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let destination = directory.appendingPathComponent("quill-\(UUID()).wav")
@@ -20,7 +24,7 @@ final class QuilRecordedAudio: Sendable {
         }
     }
     deinit {
-        if !preserveOriginal.withLock({ $0 }) { try? FileManager.default.removeItem(at: url) }
+        if !preserveOriginal.withLock({ $0 }) || !ContentPrivacy.shared.permits(privacy) { try? FileManager.default.removeItem(at: url) }
     }
 
 }
@@ -33,6 +37,7 @@ final class QuilInstructionPreview {
     private var task: Task<Void, Never>?
     private var deadline: Task<Void, Never>?
     private var text: String?
+    var availableText: String? { text }
     var isPending: Bool { task != nil }
 
     func start(audio: QuilRecordedAudio, requestID: UUID, timeout: Duration = .seconds(10),
@@ -61,7 +66,7 @@ final class QuilInstructionPreview {
                 self.deadline?.cancel()
                 self.deadline = nil
                 self.task = nil
-                Gemma4LiteRTLogging.profile("quill request=\(requestID) preview_unavailable seconds=\(Date().timeIntervalSince(startedAt))")
+                Gemma4LiteRTLogging.profile("quill request=\(requestID) preview_unavailable seconds=\(Date().timeIntervalSince(startedAt)) error_domain=\((error as NSError).domain) error_type=\(String(reflecting: type(of: error))) error_code=\((error as NSError).code)")
             }
         }
         deadline = Task { [weak self] in
@@ -70,6 +75,11 @@ final class QuilInstructionPreview {
             self.stop(requestID: requestID)
             Gemma4LiteRTLogging.profile("quill request=\(requestID) preview_timeout")
         }
+    }
+
+    /// Paste completion still owns the turn after the generation task returns.
+    func stopUnlessOwned(requestID: UUID, activeRequestID: UUID?, answerRequestID: UUID?) {
+        if activeRequestID != requestID && answerRequestID != requestID { stop(requestID: requestID) }
     }
 
     /// Returns only a transcript already available; never waits for ASR.

@@ -146,12 +146,11 @@ struct OnboardingFlowTests {
         ))
     }
 
-    @Test("completion tab routes meetings-only to meetings and others to dictations")
+    @Test("completion always opens Timeline, including deferred permission setup")
     func completionTab() {
-        #expect(OnboardingFlow.completionTab(for: .meetings) == .meetings)
-        #expect(OnboardingFlow.completionTab(for: .voiceNotes) == .dictations)
-        #expect(OnboardingFlow.completionTab(for: .dictation) == .dictations)
-        #expect(OnboardingFlow.completionTab(for: .dictationAndMeetings) == .dictations)
+        for useCase: OnboardingUseCase in [.meetings, .voiceNotes, .dictation, .dictationAndMeetings, .voiceNotesAndMeetings, .everything] {
+            #expect(OnboardingFlow.completionTab(for: useCase) == .timeline)
+        }
     }
 
     @Test("permission advancement has one capability-derived destination")
