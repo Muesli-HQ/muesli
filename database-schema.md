@@ -236,6 +236,17 @@ preserves this acknowledgement. It is local-only and does not enter SQLite,
 CloudKit, telemetry, transcripts or exports. Complete terms ship as resources;
 see [MedASR setup](docs/medasr.md).
 
+### Planned calendar folder choices outside SQLite
+
+`ConfigStore` stores `planned_calendar_folders` in the local `AppConfig` JSON
+(defaulting to `{}` for older configurations), mapping a calendar occurrence's
+`identityKey` string to `{ folderID, startTime }`. Entries decode
+independently: a malformed record drops only itself without discarding other
+saved choices. When updating a choice, known upcoming start times are refreshed
+for postponed events and entries older than 7 days are pruned; deleted folders
+are ignored on lookup. This preference stays local and adds no SQLite,
+CloudKit, telemetry, export, or CLI fields.
+
 ## Storage rules at a glance
 
 - SQLite foreign keys are enabled, the journal mode is WAL, and connections use
