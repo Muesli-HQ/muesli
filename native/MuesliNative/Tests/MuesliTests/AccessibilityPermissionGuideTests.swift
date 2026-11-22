@@ -234,13 +234,34 @@ struct AccessibilityPermissionGuideTests {
         #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: nil) == .orderedBehind)
         #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .accessibility) == .guideControlled)
         #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .inputMonitoring) == .guideControlled)
+        #expect(OnboardingSystemSettingsYieldPolicy.behavior(for: .screenRecording) == .guideControlled)
     }
 
-    @Test("maps both guided permission names to their guide type")
+    @Test("onboarding and feature recovery share all supported permission guides")
     func guidedPermissionNameMapping() {
         #expect(PermissionDragGuidePermission(permissionName: "Accessibility") == .accessibility)
         #expect(PermissionDragGuidePermission(permissionName: "Input Monitoring") == .inputMonitoring)
+        #expect(PermissionDragGuidePermission(permissionName: "Screen Recording") == .screenRecording)
+        #expect(PermissionDragGuidePermission(permissionName: "Screen & System Audio") == .screenRecording)
         #expect(PermissionDragGuidePermission(permissionName: "Microphone") == nil)
+        #expect(FeaturePermission.screenRecording.guidePermission == .screenRecording)
+        #expect(FeaturePermission.accessibility.guidePermission == .accessibility)
+        #expect(FeaturePermission.inputMonitoring.guidePermission == .inputMonitoring)
+        #expect(FeaturePermission.microphone.guidePermission == nil)
+    }
+
+    @Test("screen recording guidance handles existing rows and ends before restart recovery")
+    func screenRecordingGuideRecovery() {
+        let permission = PermissionDragGuidePermission.screenRecording
+        #expect(permission.instruction(direction: .up).contains("if missing"))
+        #expect(permission.instruction(direction: .down).contains("below"))
+        #expect(!permission.endsOnReturn(hasPresentedGuide: false, frontmostBundleID: "muesli", muesliBundleID: "muesli"))
+        #expect(!permission.endsOnReturn(hasPresentedGuide: true, frontmostBundleID: "settings", muesliBundleID: "muesli"))
+        #expect(permission.endsOnReturn(hasPresentedGuide: true, frontmostBundleID: "muesli", muesliBundleID: "muesli"))
+        #expect(!permission.endsOnReturn(hasPresentedGuide: true, frontmostBundleID: nil, muesliBundleID: nil))
+        #expect(!PermissionDragGuidePermission.accessibility.endsOnReturn(
+            hasPresentedGuide: true, frontmostBundleID: "muesli", muesliBundleID: "muesli"
+        ))
     }
 
     @Test("converts Quartz window coordinates to AppKit coordinates")

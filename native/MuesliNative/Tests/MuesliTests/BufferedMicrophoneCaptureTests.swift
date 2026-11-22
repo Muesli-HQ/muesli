@@ -369,6 +369,27 @@ struct StreamingMicRecorderBufferTests {
         #expect(cancelled.stop() == nil)
     }
 
+    @Test("fallback tap retains timestamped native tail through Finish and rejects later or untimed buffers")
+    func fallbackStopRetainsTimestampedTail() async throws {
+        try await withFeedbackStoreAsync { store, _ in
+            let recorder = StreamingMicRecorder(directoryName: "feedback-fallback-\(UUID().uuidString)")
+            let attempt = FeedbackCaptureAttempt(target: feedbackTarget(), store: store)
+            try attempt.install(device: nil, microphone: recorder)
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+            let tap = try recorder.testing_startWithTap(format: format)
+            tap(try buffer(format, values: [0.25, 0.25]), AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1)))
+            attempt.finishAdmission(through: 16_004)
+            tap(try buffer(format, values: [0.5, 0.5, 0.5]), AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1.000125)))
+            tap(try buffer(format, values: [-0.5]), AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1.00025)))
+            tap(try buffer(format, values: [-0.5]), AVAudioTime(sampleTime: 0, atRate: 16_000))
+            await attempt.stopMicrophone(); attempt.finishAudio()
+            let m = try #require(attempt.snapshot())
+            let wav = try store.mediaURL(id: m.id, path: "narration.wav")
+            #expect(samples(try Data(contentsOf: wav)) == [8191, 8191, 16383, 16383], "Pre-Finish native tail must survive the actual fallback offer path")
+            store.release(id: m.id)
+        }
+    }
+
     private func buffer(_ format: AVAudioFormat, values: [Float]) throws -> AVAudioPCMBuffer {
         let result = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(values.count)))
         result.frameLength = AVAudioFrameCount(values.count)

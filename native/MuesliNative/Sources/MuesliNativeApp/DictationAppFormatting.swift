@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import MuesliCore
 
 /// Output-only rules. They never change the cleanup prompt or infer a tone.
@@ -97,8 +98,8 @@ struct DictationFormattingSuggestion: Identifiable, Equatable {
         ["net.whatsapp.WhatsApp", "com.apple.MobileSMS", "ru.keepcoder.Telegram", "com.hnc.Discord"].contains(bundleID)
     }
 
-    static func ranked(usage: [InsightsUsage], excluding rules: [DictationAppFormattingRule]) -> [Self] {
-        let excluded = Set(rules.map(\.bundleID))
+    static func ranked(usage: [InsightsUsage], excluding rules: [DictationAppFormattingRule], dismissed: Set<String> = []) -> [Self] {
+        let excluded = Set(rules.map(\.bundleID)).union(dismissed)
         var seen = Set<String>()
         return usage.sorted {
             if $0.sessions != $1.sessions { return $0.sessions > $1.sessions }
@@ -110,6 +111,25 @@ struct DictationFormattingSuggestion: Identifiable, Equatable {
             guard !bundleID.isEmpty, !excluded.contains(bundleID), seen.insert(bundleID).inserted else { return nil }
             return Self(bundleID: bundleID, appName: row.name, sessions: row.sessions)
         }
+    }
+}
+
+/// Presentation-only preferences; dismissing a suggestion never alters formatting rules or usage.
+@MainActor @Observable
+final class DictationFormattingSuggestionPreferences {
+    static let shared = DictationFormattingSuggestionPreferences()
+    private static let key = "dictationFormatting.dismissedSuggestions"
+    private let defaults: UserDefaults
+    private(set) var dismissed: Set<String>
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        dismissed = Set(defaults.stringArray(forKey: Self.key) ?? [])
+    }
+
+    func dismiss(_ bundleID: String) {
+        guard dismissed.insert(bundleID).inserted else { return }
+        defaults.set(dismissed.sorted(), forKey: Self.key)
     }
 }
 

@@ -64,7 +64,7 @@ struct DictationAppFormattingTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var config = AppConfig()
         config.enableDictionaryCorrectionPrompts = true
         config.dictationAppFormattingRules = [.init(bundleID: "start.app", appName: "Start", formatting: .lowercaseChat)]
@@ -162,6 +162,148 @@ struct DictationAppFormattingTests {
         #expect(board.string(forType: .string) == (outcome == "ownership" ? "new copy" : "original clipboard"))
     }
 
+    @Test("Empty streaming recovery owns the save and only alerts its originating session", arguments: [false, true])
+    @MainActor
+    func emptyStreamingRecordingRecovery(newerDictation: Bool) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("stream.wav")
+        let wav = WavWriter.header(dataSize: 64) + Data(repeating: 0, count: 64)
+        try wav.write(to: url)
+        var alerts: [String] = []
+        controller.dictationOutputTestHooks = .init(pasteboard: board, presentedAlert: { alerts.append($0) })
+        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app")
+        controller.finishStreamingFormattingForTesting("REDACTED", sessionID: id, stoppedWAV: url)
+        #expect(controller.appState.activeAudioImportCount == 1)
+        #expect(controller.clearDictationHistory() == nil)
+        #expect(alerts == ["Dictation is in progress"])
+        alerts.removeAll()
+        if newerDictation {
+            let newer = controller.startStreamingFormattingForTesting(bundleID: "new.app")
+            controller.finishStreamingFormattingForTesting("", sessionID: newer)
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while controller.appState.activeAudioImportCount > 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let recovery = try #require(controller.appState.failedDictations.first)
+        #expect(try Data(contentsOf: controller.failedDictationAudioURL(recovery)) == wav)
+        #expect(alerts == (newerDictation ? [] : ["dictation recovery"]))
+        let clear = try #require(controller.clearDictationHistory())
+        await clear.value
+        #expect(controller.appState.failedDictations.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: controller.failedDictationAudioURL(recovery).path))
+        #expect(try database.recentDictations().isEmpty)
+    }
+
+    @Test("Chinese and Japanese stream before stop including a trailing partial word", arguments: ["你好世界。", "こんにちは、"])
+    @MainActor
+    func streamingWithoutSpaces(sentence: String) throws {
+        let (directory, _, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var typed = ""
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { typed += $0 }, dispatchPaste: { _ in false }, warning: { _ in })
+        let id = controller.startStreamingFormattingForTesting(bundleID: nil)
+        controller.receiveStreamingFormattingForTesting(sentence + "REDAC", sessionID: id)
+        #expect(typed == sentence)
+    }
+
+    @Test("Long WAV follows the finished paste to its original history row")
+    @MainActor
+    func retainedAudioAfterClipboardSettles() async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        try await controller.applySetting("retain_long_dictation_audio", value: "on")
+        try await controller.applySetting("dictation_audio_threshold_minutes", value: "7")
+        #expect(controller.appState.config.dictationAudioThresholdMinutes == 7)
+        try await controller.applySetting("dictation_audio_threshold_minutes", value: "1")
+        let url = directory.appendingPathComponent("long.wav")
+        let samples = Data(repeating: 0, count: 61 * 16_000 * 2)
+        let wav = WavWriter.header(dataSize: UInt32(samples.count)) + samples
+        try wav.write(to: url)
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in }, dispatchPaste: { _ in true }, warning: { _ in })
+        await withCheckedContinuation { continuation in
+            controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+            controller.finishStandardFormattingForTesting("Long recording.", duration: 61,
+                recording: DictationRecordingFile(stoppedWAV: url))
+        }
+        let id = try #require(database.recentDictations().first?.id)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while FileManager.default.fileExists(atPath: url.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(try database.dictationAudio(id: id) == wav)
+        #expect(try database.dictation(id: id)?.waveformPreview == nil)
+        _ = try await controller.dictationWaveform(id: id)
+        #expect(try database.dictation(id: id)?.waveformPreview != nil)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("Retranscribe a retained WAV with another installed model",
+          .enabled(if: ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_FIXTURE"] != nil))
+    @MainActor
+    func retranscribeRetainedAudioWithLocalModel() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_FIXTURE"])
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        let audio = try Data(contentsOf: URL(fileURLWithPath: path))
+        let original = "Original synthetic transcript."
+        let id = try database.insertDictation(text: original, durationSeconds: 65, startedAt: Date(), endedAt: Date())
+        try database.saveDictationAudio(audio, id: id)
+        let recording = try #require(try database.dictation(id: id))
+        let defaultBackend = controller.selectedBackend
+        let backend: BackendOption
+        if ProcessInfo.processInfo.environment["MUESLI_RETAINED_AUDIO_QWEN"] == "1" {
+            backend = .qwen3Asr
+        } else {
+            backend = try #require([BackendOption.parakeetUnified, .parakeetMultilingual].first { $0 != defaultBackend && $0.isDownloaded })
+        }
+        controller.updateConfig { $0.enablePostProcessor = false }
+        controller.retranscribeDictation(recording, with: backend)
+        #expect(controller.appState.retranscribingHistoryID == id)
+        let deadline = ContinuousClock.now + .seconds(120)
+        while controller.appState.retranscribingHistoryID != nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(controller.appState.retranscribingHistoryID == nil)
+        let updated = try #require(try database.dictation(id: id))
+        #expect(!updated.rawText.isEmpty && updated.rawText != original)
+        if backend == .qwen3Asr {
+            #expect(updated.rawText.localizedCaseInsensitiveContains("lighthouse"))
+            #expect(updated.rawText.localizedCaseInsensitiveContains("apples"))
+        }
+        #expect(controller.selectedBackend == defaultBackend)
+        #expect(try database.dictationAudio(id: id) == audio)
+        #expect(try database.recentDictations().count == 1)
+    }
+
+    @Test("Privacy keeps paste functional without saving history or monitoring corrections", arguments: [true, false])
+    @MainActor
+    func privatePasteCompletion(delivered: Bool) async throws {
+        let (directory, database, _, controller, board) = try streamingFixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
+        var warnings: [String] = []
+        var pastes = 0
+        controller.dictationOutputTestHooks = .init(pasteboard: board, targetApplication: { nil },
+            typeText: { _ in Issue.record("Unexpected live typing") },
+            dispatchPaste: { _ in pastes += 1; return delivered },
+            warning: { warnings.append($0) })
+        controller.dictationOutputTestHooks?.monitorCorrections = { _ in Issue.record("Private content entered correction monitoring") }
+        let privacy = ContentPrivacy(enabled: true).capture()
+        await ContentPrivacy.$session.withValue(privacy) {
+            await withCheckedContinuation { continuation in
+                controller.dictationOutputTestHooks?.settled = { continuation.resume() }
+                controller.finishStandardFormattingForTesting("Synthetic private dictation.")
+            }
+        }
+        #expect(pastes == 1)
+        #expect(try database.recentDictations().isEmpty)
+        #expect(warnings == (delivered ? [] : ["Dictation wasn't pasted. Privacy mode kept it out of History."]))
+        #expect(board.string(forType: .string) == "original clipboard")
+    }
+
     @Test("History recovery messages reflect actual persistence for every paste completion path",
           arguments: ["standard", "buffered", "recovered"],
           ["saved/pasted", "saved/rejected", "openFailure/pasted", "openFailure/rejected", "writeFailure/pasted", "writeFailure/rejected"])
@@ -243,18 +385,24 @@ struct DictationAppFormattingTests {
         #expect(try database.recentDictations().first?.rawText == phrase)
     }
 
-    @Test("Voice notes never buffer for app rules or insert text")
+    @Test("Voice notes use history or an ephemeral preview without inserting text", arguments: [true, false])
     @MainActor
-    func streamingVoiceNote() throws {
+    func streamingVoiceNote(privateMode: Bool) throws {
         let (directory, database, _, controller, board) = try streamingFixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: directory) }
         controller.dictationOutputTestHooks = .init(pasteboard: board,
             typeText: { _ in Issue.record("Voice note typed") },
             dispatchPaste: { _ in Issue.record("Voice note pasted"); return false })
-        let id = controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        var temporaryText: String?
+        controller.dictationOutputTestHooks?.temporaryVoiceNote = { temporaryText = $0 }
+        let session = privateMode ? ContentPrivacy(enabled: true).capture() : ContentPrivacy.shared.capture()
+        let id = ContentPrivacy.$session.withValue(session) {
+            controller.startStreamingFormattingForTesting(bundleID: "start.app", voiceNote: true)
+        }
         controller.receiveStreamingFormattingForTesting("Voice note.", sessionID: id)
         controller.finishStreamingFormattingForTesting("Voice note.", sessionID: id)
-        #expect(try database.recentDictations().first?.rawText == "Voice note.")
+        #expect(temporaryText == (privateMode ? "Voice note." : nil))
+        #expect(try database.recentDictations().first?.rawText == (privateMode ? nil : "Voice note."))
         #expect(board.string(forType: .string) == "original clipboard")
     }
     #endif
@@ -340,7 +488,7 @@ struct DictationAppFormattingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         let source = DictationAppFormattingRule(bundleID: "one.app", appName: "One", formatting: .lowercaseChat)
         initial.dictationAppFormattingRules = [source, .init(bundleID: "two.app", appName: "Two")]
@@ -390,6 +538,28 @@ struct DictationAppFormattingTests {
         #expect(ranked[1].suggestsLowercaseChat)
         #expect(DictationFormattingSuggestion.ranked(usage: usage,
             excluding: [.init(bundleID: "com.apple.mail", appName: "Mail")]).count == 1)
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: ["com.apple.mail"]).map(\.bundleID) == ["net.whatsapp.WhatsApp"])
+    }
+
+    @MainActor @Test("Dismissed app suggestions stay hidden after relaunch without changing other preferences")
+    func dismissedSuggestionsPersist() throws {
+        let suite = "muesli.formatting-suggestions.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("unchanged", forKey: "unrelated")
+        let preferences = DictationFormattingSuggestionPreferences(defaults: defaults)
+        preferences.dismiss("com.example.one")
+        preferences.dismiss("com.example.one")
+        let reopened = DictationFormattingSuggestionPreferences(defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(reopened.dismissed == ["com.example.one"])
+        #expect(defaults.string(forKey: "unrelated") == "unchanged")
+        let usage: [InsightsUsage] = [
+            .init(id: "bundle:com.example.one", name: "One", sessions: 10, words: 100),
+            .init(id: "bundle:com.example.two", name: "Two", sessions: 2, words: 20)
+        ]
+        #expect(DictationFormattingSuggestion.ranked(usage: usage, excluding: [],
+            dismissed: reopened.dismissed).map(\.appName) == ["Two"])
     }
 
     @Test("Output formatting uses the dispatch target and preserves clipboard restoration")
@@ -447,7 +617,7 @@ struct DictationAppFormattingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let database = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try database.migrateIfNeeded()
-        let store = ConfigStore(supportDirectory: directory)
+        let store = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.dictationAppFormattingRules = [.init(bundleID: "private.app", appName: "Private App")]
         store.save(initial)

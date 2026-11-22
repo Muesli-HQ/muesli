@@ -1,10 +1,63 @@
 import AppKit
 import Foundation
+import MuesliCore
 import Testing
 @testable import MuesliNativeApp
 
 @Suite("MeetingNotificationController")
 struct MeetingNotificationControllerTests {
+    @Test("a recently muted app cannot supply a cached calendar candidate")
+    @MainActor
+    func recentlyMutedCandidateIsCleared() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = makeTestConfigStore(supportDirectory: directory)
+        let controller = MuesliController(
+            runtime: RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil),
+            dictationStore: DictationStore(databaseURL: directory.appendingPathComponent("test.db")),
+            configStore: store
+        )
+        let candidate = MeetingCandidate(id: "zoom", platform: .zoom, appName: "Zoom", url: nil,
+            evidence: [.audioInputProcess], startedAt: Date(), meetingTitle: nil, sourceBundleID: "us.zoom.xos")
+        controller.testingCacheMeetingCandidate(candidate)
+        #expect(controller.testingRecentMeetingCandidate() == candidate)
+        controller.updateConfig { $0.mutedMeetingDetectionAppBundleIDs = ["us.zoom.xos"] }
+        #expect(controller.testingRecentMeetingCandidate() == nil)
+        controller.updateConfig { $0.mutedMeetingDetectionAppBundleIDs = [] }
+        #expect(controller.testingRecentMeetingCandidate() == nil)
+    }
+
+    @Test("calendar auto-record preserves recordings and asks when a call may already be active")
+    func autoRecordConflictDecision() {
+        let decision = ScheduledMeetingNotificationPolicy.autoRecordDecision
+        #expect(decision(true, true, true) == .keepCurrentRecording)
+        #expect(decision(true, false, false) == .keepCurrentRecording)
+        #expect(decision(false, true, false) == .askBeforeRecording)
+        #expect(decision(false, false, true) == .askBeforeRecording)
+        #expect(decision(false, false, nil) == .askBeforeRecording)
+        #expect(decision(false, false, false) == .startRecording)
+        #expect(!ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: "meet.google.com/aaa-bbbb-ccc", scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
+        ))
+        #expect(ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: nil, scheduledRoom: "meet.google.com/aaa-bbbb-ccc"
+        ))
+        #expect(ScheduledMeetingNotificationPolicy.shouldNotifyAboutRecordingConflict(
+            recordingRoom: "zoom.us/j/123", scheduledRoom: "zoom.us/j/456"
+        ))
+    }
+    @Test("A close callback can install the next notification callback")
+    @MainActor
+    func closePreservesNextCallback() {
+        let controller = MeetingNotificationController()
+        var nextClosed = false
+        controller.onClose = { controller.onClose = { nextClosed = true } }
+        controller.close()
+        #expect(controller.onClose != nil)
+        controller.close()
+        #expect(nextClosed)
+    }
+
     @Test("Slack candidates map to the Slack notification platform")
     func slackCandidateMapsToSlackNotificationPlatform() {
         #expect(MeetingPlatform(.slack) == .slack)
@@ -80,6 +133,16 @@ struct MeetingNotificationControllerTests {
             .availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: true) == [.joinAndRecord, .recordOnly])
     }
 
+    @Test("recording switches always offer join and transcribe or transcribe only")
+    func switchActionsRespectDefaultWithoutOfferingJoinOnly() {
+        for preferred in MeetingJoinDefaultAction.allCases {
+            let primary = preferred.resolved(hasJoinAndRecord: true, hasJoinOnly: false)
+            let alternatives = preferred.availableAlternatives(hasJoinAndRecord: true, hasJoinOnly: false)
+            #expect(Set([primary] + alternatives) == Set([.joinAndRecord, .recordOnly]))
+            #expect(!alternatives.contains(.joinOnly))
+        }
+    }
+
     @Test("Existing installs keep Join & Transcribe as the default")
     func existingInstallsKeepJoinAndTranscribeAsDefault() throws {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
@@ -115,6 +178,9 @@ struct MeetingNotificationControllerTests {
                 MeetingNotificationController.splitButtonLabelFits(action.buttonLabel),
                 "\(action.buttonLabel) overflows the \(MeetingNotificationController.splitButtonWidth)pt split button"
             )
+        }
+        for label in ["Stop & Transcribe", "Stop, Join, Record"] {
+            #expect(MeetingNotificationController.splitButtonLabelFits(label), "\(label) overflows the split button")
         }
     }
 

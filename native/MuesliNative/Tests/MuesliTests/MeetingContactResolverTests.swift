@@ -169,7 +169,7 @@ struct MeetingContactResolverTests {
         #expect(reader.requestedKeys.contains { ($0 as AnyObject).isEqual(fullNameDescriptor) })
     }
 
-    @Test("an existing picker email remains the normalized participant identity")
+    @Test("a resolved contact retains its contact identity and email")
     func existingEmailIdentityIsRetained() async {
         let pickerContact = namedContact(emailAddress: "MICHAEL@EXAMPLE.TEST")
         let reader = FakeMeetingContactReader()
@@ -179,7 +179,7 @@ struct MeetingContactResolverTests {
         let resolved = await resolver.resolve(pickerContact)
         let participant = MeetingContactIdentity.participant(for: resolved)
 
-        #expect(participant.participantIdentifier == "email:michael@example.test")
+        #expect(participant.participantIdentifier == "contact:\(resolved.identifier)")
         #expect(participant.emailAddress == "michael@example.test")
         #expect(participant.displayName == "Michael Smith")
     }
@@ -214,7 +214,7 @@ struct MeetingContactResolverTests {
             preservingIdentifierFrom: pickerContact
         )
 
-        #expect(participant.participantIdentifier == "email:michael@example.test")
+        #expect(participant.participantIdentifier == "contact:\(pickerContact.identifier)")
         #expect(participant.displayName == "Michael Smith")
         #expect(participant.emailAddress == "michael@example.test")
     }

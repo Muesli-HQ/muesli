@@ -62,8 +62,9 @@ struct InsightsShareSheet: View {
                         self.saveErrorMessage = nil
                     } label: {
                         Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.muesli(.quiet))
                     .accessibilityLabel("Dismiss save error")
                 }
                 .padding(10)
@@ -213,7 +214,7 @@ enum InsightsShareRenderer {
         return renderer.nsImage
     }
 
-    static func pngData(for image: NSImage) -> Data? {
+    nonisolated static func pngData(for image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation,
               let representation = NSBitmapImageRep(data: tiff) else { return nil }
         return representation.representation(using: .png, properties: [.compressionFactor: 0.82])

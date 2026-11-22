@@ -173,12 +173,22 @@ enum ComputerUseSettings {
                         throw Failure.rejected("This setting does not support model activation. Nothing was changed.")
                     }
                     let message = try await MuesliSettings.apply(selection, settings: definitions, snapshots: inspected,
-                                                  config: config, persistedConfig: persistedConfig)
+                                                  config: config, persistedConfig: persistedConfig,
+                                                  confirmDeletion: ask.map { ask in
+                        { warning in
+                            let answer = try await ask(ComputerUseQuestion(question: warning,
+                                options: ["Keep current settings", "Change and allow deletion"]))
+                            let response = answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                            return response == "change and allow deletion" || response == "yes"
+                        }
+                    })
                     return result(.done, message)
                 default: throw Failure.rejected("The planner did not select a supported settings action. Nothing was changed.")
                 }
             }
             return result(.failed, "The settings request needs a more specific instruction. Nothing was changed.")
+        } catch Failure.confirmationRequired(let warning) {
+            return result(.needsConfirmation, warning)
         } catch is PlanningTimeout {
             return result(.timedOut, "Understanding the command took too long. Please try again. Nothing was changed.")
         } catch is CancellationError {

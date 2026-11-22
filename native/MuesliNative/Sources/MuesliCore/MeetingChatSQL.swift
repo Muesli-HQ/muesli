@@ -5,16 +5,21 @@ import CryptoKit
 enum MeetingChatSQL {
     enum Value { case text(String), integer(Int64), real(Double), null }
     /// Matches index rows (alias `s`) whose meeting is not private, directly or through any ancestor folder.
-    static let notPrivateMeetingCondition = """
-    s.meeting_id NOT IN (
-        WITH RECURSIVE private_folders(id) AS (
-            SELECT id FROM meeting_folders WHERE is_private = 1
-            UNION
-            SELECT f.id FROM meeting_folders f JOIN private_folders p ON f.parent_id = p.id
+    static let notPrivateMeetingCondition = notPrivateMeetingCondition(column: "s.meeting_id")
+
+    /// SQL predicate requiring `column` (a meeting ID) not to be private, directly or through an ancestor folder.
+    static func notPrivateMeetingCondition(column: String) -> String {
+        """
+        \(column) NOT IN (
+            WITH RECURSIVE private_folders(id) AS (
+                SELECT id FROM meeting_folders WHERE is_private = 1
+                UNION
+                SELECT f.id FROM meeting_folders f JOIN private_folders p ON f.parent_id = p.id
+            )
+            SELECT id FROM meetings WHERE is_private = 1 OR folder_id IN (SELECT id FROM private_folders)
         )
-        SELECT id FROM meetings WHERE is_private = 1 OR folder_id IN (SELECT id FROM private_folders)
-    )
-    """
+        """
+    }
     static func execute(_ sql: String, _ values: [Value] = [], db: OpaquePointer?) throws {
         _ = try rows(sql, values, db: db) { _ in () }
     }
@@ -34,7 +39,7 @@ enum MeetingChatSQL {
         }
         var result: [T] = []
         while true {
-            let status = sqlite3_step(statement)
+            let status = try GlobalSearchIndex.stepSourceWrite(statement)
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else { throw error(db) }
             result.append(try map(statement))
@@ -129,6 +134,7 @@ enum MeetingChatSQL {
             """
         ]
         for sql in statements { try execute(sql, db: db) }
+        try migrateChatHistoryDependencies(db: db)
         // Passages are a rebuildable cache. Explicit integer keys survive VACUUM
         // and let FTS deletion use a rowid lookup rather than scanning all text.
         try transaction(db: db) {
@@ -375,16 +381,36 @@ enum MeetingChatSQL {
         }
     }
     static func parseDate(_ raw: String) -> Date? {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = iso.date(from: raw) { return date }
-        iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: raw) { return date }
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
-        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss"] {
+        MeetingHistoryDateParser().date(raw)
+    }
+}
+
+/// Same historical timestamp interpretation for retrieval and SQL projections.
+/// Owned by a single query; formatters are reused rather than created per row.
+package final class MeetingHistoryDateParser {
+    private let timeZone: TimeZone
+    private lazy var fractional: ISO8601DateFormatter = {
+        let value = ISO8601DateFormatter()
+        value.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return value
+    }()
+    private lazy var iso: ISO8601DateFormatter = {
+        let value = ISO8601DateFormatter()
+        value.formatOptions = [.withInternetDateTime]
+        return value
+    }()
+    private lazy var legacy: [DateFormatter] = {
+        ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss"].map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = timeZone
             formatter.dateFormat = format
-            if let date = formatter.date(from: raw) { return date }
+            return formatter
         }
-        return nil
+    }()
+    package init(timeZone: TimeZone = .current) { self.timeZone = timeZone }
+    package func date(_ raw: String) -> Date? {
+        if let value = fractional.date(from: raw) ?? iso.date(from: raw) { return value }
+        return legacy.lazy.compactMap { $0.date(from: raw) }.first
     }
 }

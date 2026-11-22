@@ -1,3 +1,4 @@
+import MuesliCore
 import AppKit
 import CryptoKit
 import Foundation
@@ -62,42 +63,22 @@ struct OpenRouterCredential: Codable, Equatable, Sendable {
 
 struct OpenRouterCredentialStore {
     let fileURL: URL
+    private let storage: CredentialFileMigration
 
-    init(supportDirectory: URL = AppIdentity.supportDirectoryURL) {
+    init(supportDirectory: URL = AppIdentity.supportDirectoryURL, vault: (any CredentialVault)? = nil) {
         fileURL = supportDirectory.appendingPathComponent("openrouter-auth.json")
+        storage = .init(legacyURL: fileURL, account: "openrouter-auth",
+                        vault: vault ?? KeychainCredentialVault(supportDirectory: supportDirectory))
     }
 
     func load() throws -> OpenRouterCredential? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        let data = try Data(contentsOf: fileURL)
+        guard let data = try storage.load(validating: { _ = try JSONDecoder().decode(OpenRouterCredential.self, from: $0) }) else { return nil }
         return try JSONDecoder().decode(OpenRouterCredential.self, from: data)
     }
-
     func save(_ credential: OpenRouterCredential) throws {
-        let directory = fileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-
-        let data = try JSONEncoder().encode(credential)
-        try data.write(to: fileURL, options: [.atomic])
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: fileURL.path
-        )
-
-        var resourceValues = URLResourceValues()
-        resourceValues.isExcludedFromBackup = true
-        var credentialURL = fileURL
-        try credentialURL.setResourceValues(resourceValues)
+        try storage.save(JSONEncoder().encode(credential))
     }
-
-    func delete() throws {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        try FileManager.default.removeItem(at: fileURL)
-    }
+    func delete() throws { try storage.delete() }
 }
 
 enum OpenRouterCredentialResolver {

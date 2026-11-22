@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FluidAudio
 import MuesliCore
 @testable import MuesliNativeApp
 
@@ -53,12 +54,12 @@ struct InferenceGateTests {
             return true
         }
 
-        try await Task.sleep(for: .milliseconds(10))
-        #expect(await gate.queuedWaiterCount() == 1)
+        // Poll instead of fixed sleeps: on a loaded runner a waiter can take
+        // longer than 10 ms to enqueue, and cancellation removes it asynchronously.
+        try await waitForQueuedWaiters(1, in: gate)
 
         cancelled.cancel()
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(await gate.queuedWaiterCount() == 0)
+        try await waitForQueuedWaiters(0, in: gate)
 
         let next = Task {
             try await gate.acquire()
@@ -66,7 +67,8 @@ struct InferenceGateTests {
             return true
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        // Release only once `next` is queued so the hand-off path is exercised.
+        try await waitForQueuedWaiters(1, in: gate)
         await gate.release()
         #expect(try await next.value)
 
@@ -79,10 +81,94 @@ struct InferenceGateTests {
             Issue.record("Cancelled waiter failed with unexpected error: \(error)")
         }
     }
+
+    private func waitForQueuedWaiters(_ count: Int, in gate: InferenceGate) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await gate.queuedWaiterCount() != count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await gate.queuedWaiterCount() == count)
+    }
 }
 
 @Suite("TranscriptionCoordinator routing")
 struct TranscriptionCoordinatorTests {
+
+    @Test("self-preparing file backends route without coordinator preparation",
+          arguments: ["bodhan", "apple-speech", "nemotron35", "cohere", "gemma4-litert"])
+    func selfPreparingFileRouting(backend: String) async throws {
+        let coordinator = TranscriptionCoordinator(), trace = RequestedModelTrace()
+        await coordinator.testingInstallASR(prepare: { await trace.prepare($0.model) }, infer: { _, _ in .init(text: "accepted", segments: []) })
+        let option = BackendOption(backend: backend, model: "synthetic", label: "Mock backend",
+            sizeLabel: "test", description: "Synthetic routing fixture", recommended: false)
+        #expect(try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/synthetic.wav"), backend: option).text == "Accepted")
+        #expect(await trace.prepared.isEmpty)
+    }
+
+    @Test("requested models retain ownership while independent backends progress",
+          arguments: ["same-whisper", "different-whisper", "gemma-meeting", "gemma-dictation", "whisper-parakeet", "parakeet-whisper", "whisper-apple", "apple-whisper", "cancelled-whisper"])
+    func concurrentRequestedModels(scenario: String) async throws {
+        let coordinator = TranscriptionCoordinator()
+        let entered = TranscriptionLifecycleTestLatch(), release = TranscriptionLifecycleTestLatch()
+        let models = RequestedModelTrace(), waiting = AsyncStream<Void>.makeStream()
+        defer { waiting.continuation.finish() }
+        let cancelled = scenario == "cancelled-whisper"
+        let independent = !scenario.hasSuffix("whisper") || scenario == "parakeet-whisper" || scenario == "apple-whisper"
+        let meeting: BackendOption = scenario == "gemma-meeting" ? .gemma4E2BLiteRT
+            : (scenario == "apple-whisper" ? .appleSpeechAnalyzer : (scenario == "parakeet-whisper" || scenario == "gemma-dictation" ? .parakeetEnglish : .whisperSmall))
+        let dictation: BackendOption = scenario == "gemma-dictation" ? .gemma4E2BLiteRT
+            : (scenario == "whisper-apple" ? .appleSpeechAnalyzer : (scenario == "whisper-parakeet" || scenario == "gemma-meeting" ? .parakeetEnglish : (scenario == "same-whisper" ? meeting : .whisperTiny)))
+        let inferred = TranscriptionLifecycleTestCounter(), preloaded = TranscriptionLifecycleTestCounter()
+        await coordinator.testingInstallASR(onWait: { waiting.continuation.yield(()) }, prepare: { await models.prepare($0.model) }, infer: { backend, url in
+            if url.lastPathComponent == "meeting.wav" { await entered.signal(); await release.wait() }
+            if !independent { #expect(await models.loaded == backend.model) }
+            return .init(text: independent ? "accepted" : backend.model, segments: [])
+        })
+        let first = Task { try await coordinator.transcribeMeeting(at: URL(fileURLWithPath: "/meeting.wav"), backend: meeting) }
+        await entered.wait()
+        var second = Task {
+            let result = try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation)
+            await inferred.increment()
+            return result
+        }
+        let preload = Task {
+            if cancelled { return }
+            try await coordinator.preloadRequired(backend: dictation, includeMeetingHelpers: false)
+            await preloaded.increment()
+        }
+        let unloaded = TranscriptionLifecycleTestCounter()
+        let unload = Task {
+            if meeting == .parakeetEnglish { await coordinator.unloadFluidAudioTranscriber(ifLoadedModelID: meeting.model); await unloaded.increment() }
+        }
+        if independent {
+            for _ in 0..<100 {
+                if await inferred.value == 1, await preloaded.value == 1 { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await inferred.value == 1, "Independent dictation must finish while meeting inference is held")
+            #expect(await preloaded.value == 1, "Independent preload must finish while meeting inference is held")
+        } else {
+            var arrivals = waiting.stream.makeAsyncIterator()
+            _ = await arrivals.next()
+            if cancelled {
+                second.cancel()
+                await #expect(throws: CancellationError.self) { try await second.value }
+                second = Task { try await coordinator.transcribeDictation(at: URL(fileURLWithPath: "/dictation.wav"), backend: dictation) }
+            } else {
+                _ = await arrivals.next()
+            }
+            #expect(await models.prepared == [meeting.model])
+        }
+        #expect(await unloaded.value == 0)
+        await release.signal()
+        await unload.value
+        #expect(await unloaded.value == (meeting == .parakeetEnglish ? 1 : 0))
+        #expect(try await first.value.text == (independent ? "Accepted" : meeting.model.capitalized))
+        let dictationResult = try await second.value
+        #expect(dictationResult.text == (independent ? "Accepted" : dictation.model.capitalized))
+        try await preload.value
+
+    }
 
     @Test("coordinator initializes without crash")
     func initDoesNotCrash() {
@@ -334,16 +420,27 @@ struct CohereTranscribeUtilsTests {
         #expect(result == "The Model Works well on device")
     }
 
-    @Test("cleanTranscript strips endoftext token")
-    func stripsEndOfText() {
-        let result = CohereTranscribeUtils.cleanTranscript("Hello world<|endoftext|>garbage after")
-        #expect(result == "Hello world")
+    @Test func cohereDistinguishesModelIDsFromSpelledControls() throws {
+        // A minimal SentencePiece ModelProto with the shipped control boundary.
+        var data = Data()
+        var pieces = Array(repeating: "<unk>", count: 255)
+        pieces[254] = "<|spltoken33|>"
+        pieces += ["<|", "spltoken33", "|>", "▁applause"]
+        for piece in pieces {
+            let bytes = Array(piece.utf8)
+            data.append(contentsOf: [10, UInt8(bytes.count + 2), 10, UInt8(bytes.count)])
+            data.append(contentsOf: bytes)
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try data.write(to: url)
+        let decoder = try CohereSentencePieceDecoder(modelURL: url)
+        #expect(decoder.decode(tokenIds: [254, 255, 256, 257, 258]) == "<|spltoken33|> applause")
     }
 
-    @Test("cleanTranscript strips special tokens")
-    func stripsSpecialTokens() {
-        let result = CohereTranscribeUtils.cleanTranscript("Hello<|nospeech|> world<|pnc|>")
-        #expect(result == "Hello world")
+    @Test func coherePreservesSpelledControlsAfterDecoding() {
+        let text = "Hello <|endoftext|> and <|pnc|> world"
+        #expect(CohereTranscribeUtils.cleanTranscript(text) == text)
     }
 
     @Test("cleanTranscript trims repeated suffix")
@@ -364,9 +461,32 @@ struct CohereTranscribeUtilsTests {
 
 @Suite("TranscriptionEngineArtifactsFilter")
 struct TranscriptionEngineArtifactsFilterTests {
+    @Test func reportedBodhanArtifactsAreRemovedFromTimestampedSpeech() {
+        let loop = Array(repeating: "ji haan", count: 22).joined(separator: " ")
+        let expected = Array(repeating: "ji haan", count: 8).joined(separator: " ")
+        let segments = TranscriptionEngineArtifactsFilter.apply(to: [
+            SpeechSegment(start: 0, end: 1, text: "REDACTED REDACTED."),
+            SpeechSegment(start: 2, end: 4, text: "हाँ REDACTED \(loop), done.")
+        ])
+        #expect(segments.map(\.text) == ["हाँ \(expected), done."])
+        #expect(segments.map(\.start) == [2])
+        #expect(segments.map(\.end) == [4])
+        #expect(TranscriptionEngineArtifactsFilter.stableRecognitionPrefix(expected + " ji") == expected)
+        #expect(TranscriptionEngineArtifactsFilter.apply(Array(repeating: "accha", count: 94).joined(separator: " "))
+                == Array(repeating: "accha", count: 8).joined(separator: " "))
+    }
+
+    @Test func preservesOrdinaryWordsAndLiteralTags() {
+        let literal = "Redacted, redacted, UNREDACTED, REDACTED_ID, [REDACTED], <REDACTED>, <|user_tag|>, yes yes yes."
+        #expect(TranscriptionEngineArtifactsFilter.apply(literal) == literal)
+        #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout(literal) == literal)
+        #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout("REDACTED") == "REDACTED")
+        #expect(TranscriptionEngineArtifactsFilter.apply("<|0.02|>hi <|30.00|><|30.02|>") == "<|0.02|>hi <|30.00|><|30.02|>")
+    }
+
 
     @Test(arguments: ["*crickets*", "*cheers*", "**APPLAUSE**", "[Cheering]", "(laughter)",
-                      "<music>", "[background_music]", "*crickets chirping*", "(audience laughing)",
+                      "[background_music]", "*crickets chirping*", "(audience laughing)",
                       "* cheers and applause! *"])
     func removesDecoratedSoundCues(cue: String) {
         #expect(TranscriptionEngineArtifactsFilter.apply(cue).isEmpty)
@@ -379,7 +499,7 @@ struct TranscriptionEngineArtifactsFilterTests {
         #expect(segments.map(\.start) == [1])
     }
 
-    @Test(arguments: ["Cheers, everyone!", "I heard crickets and cheers.", "Thank you.",
+    @Test(arguments: ["<music>", "applause", "Cheers, everyone!", "I heard crickets and cheers.", "Thank you.",
                       "We study music and laughter.", "*music theory*", "(cheers from my friends)",
                       "[a useful note]", "a * b", "a < b > c"])
     func preservesSpokenWordsAndUnrelatedMarkup(text: String) {
@@ -448,12 +568,22 @@ struct TranscriptionEngineArtifactsFilterTests {
         #expect(TranscriptionEngineArtifactsFilter.apply(">> Hello") == ">> Hello")
     }
 
-    @Test("strips model control tokens and non-speech annotations")
-    func controlTokens() {
-        #expect(
-            TranscriptionEngineArtifactsFilter.apply("<EOU> Hello <EOB> [silence]") ==
-                "Hello"
-        )
+    @Test func decoderIDsDistinguishControlsFromLiteralSpeech() {
+        let tokens = [(1, "<|nospeech|>"), (500, "<|"), (501, "nospeech"), (502, "|>"), (234, "!")]
+        let timings = tokens.map { TokenTiming(token: $0.1, tokenId: $0.0, startTime: 0, endTime: 1, confidence: 1) }
+        let result = ASRResult(text: tokens.map { $0.1 }.joined(), confidence: 1, duration: 2, processingTime: 1, tokenTimings: timings)
+        for model in [BackendOption.parakeetRedux, .phonon25, .parakeetMultilingual] {
+            let speech = FluidAudioTranscriber.speechResult(result, modelID: model.model)
+            #expect(speech.text == "<|nospeech|>!")
+            #expect(speech.tokenTimings?.map(\.tokenId) == [500, 501, 502, 234])
+        }
+        #expect(FluidAudioTranscriber.speechResult(result, modelID: BackendOption.parakeetEnglish.model).text == result.text)
+        let pieces = [(24885, "<|en|>"), (400, "<"), (401, "|en|> &lt; applause")]
+        let joined = pieces.map { SenseVoiceTranscriber.decoderPiece(id: $0.0, piece: $0.1) }.joined()
+        #expect(!joined.contains("<"))
+        #expect(SenseVoiceTranscriber.restoreLiteralText(joined) == "<|en|> &lt; applause")
+        #expect(nemotronDecodeTokens([2947, 500, 501], tokenizer: [2947: "<en-US>", 500: "<en-", 501: "US>"],
+            stripAngleBracketTags: true, trim: true) == "<en-US>")
     }
 
     @Test("strips foreign-language placeholders without removing ordinary sentences")
@@ -471,23 +601,23 @@ struct TranscriptionEngineArtifactsFilterTests {
         )
     }
 
-    @Test("strips any Whisper control token such as nocaptions")
-    func whisperControlTokens() {
-        #expect(TranscriptionEngineArtifactsFilter.apply("<|nocaptions|>") == "")
-        #expect(TranscriptionEngineArtifactsFilter.apply("Det er <|nocaptions|> viktig") == "Det er viktig")
-        #expect(TranscriptionEngineArtifactsFilter.apply("<|no|><|transcribe|>Hei") == "Hei")
-        #expect(TranscriptionEngineArtifactsFilter.apply("a < b | c > d") == "a < b | c > d")
+    @Test func textOnlyStagesPreserveLiteralControlSpellings() {
+        let text = "<EOU> <|no|> <|nocaptions|> <unk> <applause> applause"
+        #expect(TranscriptionEngineArtifactsFilter.apply(text) == text)
+        #expect(TranscriptionEngineArtifactsFilter.applyToPartialText(text) == text)
+        #expect(TranscriptionEngineArtifactsFilter.applyToCommittedText(text) == text)
+        #expect(TranscriptionEngineArtifactsFilter.applyPreservingLayout(text) == text)
     }
 
     @Test("cleans segment text and drops segments left empty")
     func cleansSegments() {
         let segments = [
-            SpeechSegment(start: 0, end: 1, text: "<|nocaptions|>"),
+            SpeechSegment(start: 0, end: 1, text: "[silence]"),
             SpeechSegment(start: 1, end: 2, text: "Hei <|nospeech|> alle"),
             SpeechSegment(start: 2, end: 3, text: "Det er bra"),
         ]
         let cleaned = TranscriptionEngineArtifactsFilter.apply(to: segments)
-        #expect(cleaned.map(\.text) == ["Hei alle", "Det er bra"])
+        #expect(cleaned.map(\.text) == ["Hei <|nospeech|> alle", "Det er bra"])
         #expect(cleaned.map(\.start) == [1, 2])
         #expect(cleaned.map(\.end) == [2, 3])
         #expect(TranscriptionEngineArtifactsFilter.apply(to: [segments[0]]).isEmpty)
@@ -712,4 +842,10 @@ struct Qwen3PostProcessingOutputCleanerTests {
             input: #"Subject quote Muesli launch notes body ask Priyanka to review the quote AI Models quote settings copy"#
         ))
     }
+}
+
+private actor RequestedModelTrace {
+    private(set) var prepared: [String] = []
+    private(set) var loaded: String?
+    func prepare(_ model: String) { prepared.append(model); loaded = model }
 }

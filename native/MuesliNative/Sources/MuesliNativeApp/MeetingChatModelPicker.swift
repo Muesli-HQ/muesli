@@ -10,6 +10,7 @@ struct MeetingChatModelPicker: View {
 
     private var modelSettingID: String? {
         let backend = appState.config.meetingSummaryBackend
+        if backend == MeetingSummaryBackendOption.gemmaMLX.backend { return "summary_gemma_model" }
         if backend == MeetingSummaryBackendOption.chatGPT.backend { return "summary_chatgpt_model" }
         if backend == MeetingSummaryBackendOption.openAI.backend { return "summary_openai_model" }
         if backend == MeetingSummaryBackendOption.anthropic.backend { return "summary_anthropic_model" }

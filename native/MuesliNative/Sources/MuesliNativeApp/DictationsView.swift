@@ -90,6 +90,10 @@ struct DictationsView: View {
                 .padding(.horizontal, MuesliTheme.pageInset)
                 .padding(.bottom, MuesliTheme.spacing12)
 
+            FailedDictationsView(appState: appState, controller: controller)
+                .padding(.horizontal, MuesliTheme.pageInset)
+                .padding(.bottom, appState.failedDictations.isEmpty ? 0 : MuesliTheme.spacing12)
+
             if appState.dictationRows.isEmpty {
                 Spacer()
                 VStack(spacing: MuesliTheme.spacing12) {
@@ -116,7 +120,7 @@ struct DictationsView: View {
                                         .padding(.leading, MuesliTheme.spacing4)
                                 }
 
-                                VStack(spacing: 0) {
+                                LazyVStack(spacing: 0) {
                                     ForEach(group.records) { record in
                                         DictationRowView(
                                             record: record,
@@ -129,7 +133,8 @@ struct DictationsView: View {
                                             },
                                             onDelete: {
                                                 controller.deleteDictation(id: record.id)
-                                            }
+                                            },
+                                            recordingController: controller
                                         )
                                         .contextMenu {
                                             Button {
@@ -165,6 +170,7 @@ struct DictationsView: View {
                 }
             }
         }
+        .task { await controller.refreshFailedDictations() }
     }
 
     private var emptyStateInstruction: String {
@@ -197,10 +203,12 @@ struct DictationsView: View {
 
     private var dictationFilterBar: some View {
         HStack(spacing: MuesliTheme.spacing12) {
-            RecordOriginPicker(selection: Binding(
-                get: { appState.dictationOriginFilter },
-                set: { controller.filterDictations(origin: $0) }
-            ))
+            if appState.showsDeviceOriginFilter {
+                RecordOriginPicker(selection: Binding(
+                    get: { appState.dictationOriginFilter },
+                    set: { controller.filterDictations(origin: $0) }
+                ))
+            }
             if !appState.dictationTargetApplications.isEmpty || appState.dictationApplicationFilter != nil {
                 TargetApplicationFilterMenu(
                     applications: appState.dictationTargetApplications,
@@ -224,15 +232,11 @@ struct DictationsView: View {
                 Text(isRecording ? "Stop Voice Note" : "Record Voice Note")
                     .font(MuesliTheme.font(size: 12, weight: .semibold))
             }
-            .foregroundStyle(isRecording ? Color.white : MuesliTheme.onAccent)
             .padding(.horizontal, 12)
             .frame(height: 30)
-            .background(isRecording ? MuesliTheme.recording : MuesliTheme.accent)
-            .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(isRecording ? .recording : .primary))
         .disabled(appState.dictationState == .transcribing)
-        .opacity(appState.dictationState == .transcribing ? 0.55 : 1)
     }
 
     @ViewBuilder
@@ -260,7 +264,7 @@ struct DictationsView: View {
                         .font(MuesliTheme.font(size: 11))
                 }
             }
-            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accent : MuesliTheme.textTertiary)
+            .foregroundStyle(selectedFilter != .all ? MuesliTheme.accentText : MuesliTheme.textTertiary)
             .padding(.horizontal, selectedFilter != .all ? 8 : 0)
             .padding(.vertical, 3)
             .background(selectedFilter != .all ? MuesliTheme.accent.opacity(0.12) : Color.clear)

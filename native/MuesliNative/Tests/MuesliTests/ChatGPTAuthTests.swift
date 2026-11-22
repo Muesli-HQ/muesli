@@ -11,7 +11,7 @@ struct ChatGPTAuthTests {
     @Test("PKCE verifier is base64url with no padding")
     @MainActor
     func pkceVerifierFormat() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let (verifier, _) = auth.generatePKCE()
         #expect(!verifier.isEmpty)
         #expect(!verifier.contains("+"))
@@ -22,7 +22,7 @@ struct ChatGPTAuthTests {
     @Test("PKCE challenge is SHA256 of verifier")
     @MainActor
     func pkceChallengeIsCorrect() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let (verifier, challenge) = auth.generatePKCE()
 
         // Manually compute expected challenge
@@ -34,7 +34,7 @@ struct ChatGPTAuthTests {
     @Test("PKCE generates unique values each time")
     @MainActor
     func pkceUniqueness() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let (v1, _) = auth.generatePKCE()
         let (v2, _) = auth.generatePKCE()
         #expect(v1 != v2)
@@ -45,7 +45,7 @@ struct ChatGPTAuthTests {
     @Test("state is at least 8 characters (OpenAI minimum)")
     @MainActor
     func stateMinLength() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let state = auth.generateState()
         #expect(state.count >= 8)
     }
@@ -55,7 +55,7 @@ struct ChatGPTAuthTests {
     @Test("authorization URL contains all required OAuth parameters")
     @MainActor
     func authURLContainsRequiredParams() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let url = auth.buildAuthorizationURL(codeChallenge: "test_challenge", state: "test_state")
         #expect(url != nil)
 
@@ -77,7 +77,7 @@ struct ChatGPTAuthTests {
     @Test("authorization URL points to auth.openai.com")
     @MainActor
     func authURLHost() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let url = auth.buildAuthorizationURL(codeChallenge: "c", state: "s")!
         #expect(url.host == "auth.openai.com")
         #expect(url.path == "/oauth/authorize")
@@ -89,7 +89,7 @@ struct ChatGPTAuthTests {
     @Test("extracts code from standard OAuth callback")
     @MainActor
     func extractCodeStandard() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let request = "GET /auth/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost:1455\r\n\r\n"
         #expect(auth.extractCode(from: request) == "abc123")
     }
@@ -97,7 +97,7 @@ struct ChatGPTAuthTests {
     @Test("extracts code with URL-encoded characters")
     @MainActor
     func extractCodeEncoded() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let request = "GET /auth/callback?code=abc%3D123&state=s HTTP/1.1\r\n\r\n"
         #expect(auth.extractCode(from: request) == "abc=123")
     }
@@ -105,7 +105,7 @@ struct ChatGPTAuthTests {
     @Test("returns nil when code param is missing")
     @MainActor
     func extractCodeMissing() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let request = "GET /auth/callback?error=access_denied&state=s HTTP/1.1\r\n\r\n"
         #expect(auth.extractCode(from: request) == nil)
     }
@@ -113,21 +113,21 @@ struct ChatGPTAuthTests {
     @Test("returns nil for empty request")
     @MainActor
     func extractCodeEmpty() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         #expect(auth.extractCode(from: "") == nil)
     }
 
     @Test("returns nil for malformed request")
     @MainActor
     func extractCodeMalformed() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         #expect(auth.extractCode(from: "garbage data") == nil)
     }
 
     @Test("handles LF-only line endings")
     @MainActor
     func extractCodeLFOnly() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let request = "GET /auth/callback?code=mycode&state=s HTTP/1.1\nHost: localhost\n\n"
         #expect(auth.extractCode(from: request) == "mycode")
     }
@@ -137,7 +137,7 @@ struct ChatGPTAuthTests {
     @Test("extracts chatgpt_account_id from top-level claim")
     @MainActor
     func jwtTopLevelClaim() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let payload = #"{"chatgpt_account_id": "acct_123", "sub": "user"}"#
         let jwt = makeJWT(payload: payload)
         #expect(auth.extractAccountId(from: jwt) == "acct_123")
@@ -146,7 +146,7 @@ struct ChatGPTAuthTests {
     @Test("extracts chatgpt_account_id from nested auth claim")
     @MainActor
     func jwtNestedClaim() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let payload = #"{"https://api.openai.com/auth": {"chatgpt_account_id": "acct_456"}, "sub": "user"}"#
         let jwt = makeJWT(payload: payload)
         #expect(auth.extractAccountId(from: jwt) == "acct_456")
@@ -155,7 +155,7 @@ struct ChatGPTAuthTests {
     @Test("falls back to organizations[0].id")
     @MainActor
     func jwtOrgFallback() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let payload = #"{"organizations": [{"id": "org_789"}], "sub": "user"}"#
         let jwt = makeJWT(payload: payload)
         #expect(auth.extractAccountId(from: jwt) == "org_789")
@@ -164,7 +164,7 @@ struct ChatGPTAuthTests {
     @Test("returns empty string for JWT without account claims")
     @MainActor
     func jwtNoClaims() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let payload = #"{"sub": "user", "iat": 1234567890}"#
         let jwt = makeJWT(payload: payload)
         #expect(auth.extractAccountId(from: jwt) == "")
@@ -173,7 +173,7 @@ struct ChatGPTAuthTests {
     @Test("returns empty string for invalid JWT")
     @MainActor
     func jwtInvalid() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         #expect(auth.extractAccountId(from: "not.a.jwt") == "")
         #expect(auth.extractAccountId(from: "") == "")
         #expect(auth.extractAccountId(from: "single_segment") == "")
@@ -182,7 +182,7 @@ struct ChatGPTAuthTests {
     @Test("top-level chatgpt_account_id takes priority over nested")
     @MainActor
     func jwtClaimPriority() {
-        let auth = ChatGPTAuthManager.shared
+        let auth = makeTestChatGPTAuthManager()
         let payload = #"{"chatgpt_account_id": "top", "https://api.openai.com/auth": {"chatgpt_account_id": "nested"}, "organizations": [{"id": "org"}]}"#
         let jwt = makeJWT(payload: payload)
         #expect(auth.extractAccountId(from: jwt) == "top")

@@ -17,6 +17,8 @@ struct MeetingListItemView: View {
     let onCreateFolderAndMove: ((String) -> Void)?
     let onDelete: (() -> Void)?
     @State private var isHovering = false
+    /// Delete is revealed by hover or keyboard focus, never left invisible but focused.
+    @FocusState private var isDeleteFocused: Bool
     @State private var showDeleteConfirmation = false
     @State private var showFolderPopover = false
     @State private var showNewFolderPrompt = false
@@ -75,10 +77,14 @@ struct MeetingListItemView: View {
                         .help("Private meeting: never sent to a backend you haven't trusted for private meetings")
                         .accessibilityLabel("Private meeting")
                 }
+                // The row keeps its tap gesture because it hosts the folder and delete buttons;
+                // the title is its keyboard and VoiceOver entry point.
                 Text(record.title)
                     .font(MuesliTheme.headline())
                     .foregroundStyle(MuesliTheme.textPrimary)
                     .lineLimit(2)
+                    .muesliRowActivation(isSelected: isSelected, action: onSelect)
+                    .accessibilityHint("Open meeting")
 
                 Spacer(minLength: 4)
 
@@ -119,7 +125,7 @@ struct MeetingListItemView: View {
                         Text(name)
                             .font(MuesliTheme.caption())
                     }
-                    .foregroundStyle(MuesliTheme.accent.opacity(0.8))
+                    .foregroundStyle(MuesliTheme.accentText)
                 }
             }
 
@@ -132,6 +138,7 @@ struct MeetingListItemView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? MuesliTheme.accentSubtle : (isHovering ? MuesliTheme.backgroundHover : Color.clear))
         .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+        .muesliSelectionOutline(isSelected)
         .overlay(alignment: .bottom) {
             Rectangle().fill(MuesliTheme.surfaceBorder).frame(height: 1)
                 .padding(.horizontal, MuesliTheme.spacing16)
@@ -172,7 +179,7 @@ struct MeetingListItemView: View {
     private func relationshipIcon(_ systemName: String, help: String) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(MuesliTheme.accent.opacity(0.9))
+            .foregroundStyle(MuesliTheme.accentText)
             .frame(width: 24, height: 24)
             .help(help)
             .accessibilityLabel(help)
@@ -198,14 +205,14 @@ struct MeetingListItemView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(
                     record.folderID != nil
-                        ? MuesliTheme.accent
+                        ? MuesliTheme.accentText
                         : (isHovering ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
                 )
                 .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
         .help("Move to folder")
+        .accessibilityLabel("Move \(record.title) to folder")
         .popover(isPresented: $showFolderPopover, arrowEdge: .leading) {
             VStack(alignment: .leading, spacing: 0) {
                 folderPopoverRow(icon: "tray", label: "Unfiled", isActive: record.folderID == nil) {
@@ -262,34 +269,32 @@ struct MeetingListItemView: View {
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MuesliTheme.accent)
+                        .foregroundStyle(MuesliTheme.accentText)
                 }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.muesli(.quiet))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     @ViewBuilder
     private var deleteButton: some View {
+        let isRevealed = isHovering || isDeleteFocused
         Button {
             showDeleteConfirmation = true
         } label: {
             Image(systemName: "trash")
                 .font(.system(size: 11))
-                .foregroundStyle(
-                    isHovering
-                        ? MuesliTheme.recording.opacity(0.85)
-                        : MuesliTheme.textTertiary
-                )
+                .foregroundStyle(isRevealed ? MuesliTheme.destructiveText : MuesliTheme.textTertiary)
                 .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .opacity(isHovering ? 1 : 0)
+        .buttonStyle(.muesli(.quiet))
+        .focused($isDeleteFocused)
+        .opacity(isRevealed ? 1 : 0)
         .help("Delete meeting")
+        .accessibilityLabel("Delete \(record.title)")
     }
 
     // MARK: - Formatting
@@ -297,7 +302,7 @@ struct MeetingListItemView: View {
     private var statusBadge: some View {
         Text(record.status.displayLabel)
             .font(MuesliTheme.font(size: 10, weight: .semibold))
-            .foregroundStyle(record.status.displayColor)
+            .foregroundStyle(record.status.displayTextColor)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(record.status.displayColor.opacity(0.12))
@@ -342,7 +347,7 @@ struct MeetingListItemView: View {
             Text(label)
                 .font(MuesliTheme.font(size: 10, weight: .semibold))
         }
-        .foregroundStyle(isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary)
+        .foregroundStyle(isImportedAudio ? MuesliTheme.accentText : MuesliTheme.textSecondary)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background((isImportedAudio ? MuesliTheme.accent : MuesliTheme.textSecondary).opacity(0.12))

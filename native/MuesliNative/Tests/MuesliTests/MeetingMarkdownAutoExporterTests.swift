@@ -7,6 +7,28 @@ import MuesliCore
 @Suite("MeetingMarkdownAutoExporter")
 struct MeetingMarkdownAutoExporterTests {
 
+    @Test("automatic Markdown export copies note images beside the export")
+    func exportsNoteImages() async throws {
+        let support = makeTemporaryDirectory()
+        let destination = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: support); try? FileManager.default.removeItem(at: destination) }
+        let id = UUID()
+        let source = MeetingNoteImages.url(for: id, supportDirectory: support)
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let image = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aXcAAAAASUVORK5CYII="))
+        try image.write(to: source)
+        let meeting = makeMeeting(formattedNotes: "Screenshot: ![Image](muesli-note-image:\(id.uuidString))")
+        var config = AppConfig()
+        config.autoExportMarkdownEnabled = true
+        config.autoExportMarkdownFolderPath = destination.path
+        let exporter = MeetingMarkdownAutoExporter(supportDirectory: support)
+        let output = try #require(await exporter.performExport(meeting: meeting, config: config)?.first)
+        let markdown = try String(contentsOf: output, encoding: .utf8)
+        let assetFolder = output.deletingPathExtension().lastPathComponent + "-assets"
+        #expect(markdown.contains("\(assetFolder)/\(id.uuidString).png"))
+        #expect(try Data(contentsOf: destination.appendingPathComponent(assetFolder).appendingPathComponent("\(id.uuidString).png")) == image)
+    }
+
     @Test("disabled config writes nothing")
     func disabledIsNoOp() async throws {
         let support = makeTemporaryDirectory()

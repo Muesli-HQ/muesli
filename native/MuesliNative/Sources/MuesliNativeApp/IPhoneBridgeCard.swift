@@ -207,7 +207,7 @@ struct IPhoneBridgeCard: View {
                     )
                 }
                 .font(MuesliTheme.font(size: 12, weight: .semibold))
-                .foregroundStyle(MuesliTheme.accent)
+                .foregroundStyle(MuesliTheme.accentText)
                 .padding(.horizontal, 12)
                 .frame(height: 28)
                 .background(MuesliTheme.accentSubtle)
@@ -224,10 +224,8 @@ struct IPhoneBridgeCard: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .frame(width: 28, height: 28)
-
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.muesli(.quiet))
             .help("Hide iOS companion prompt")
         }
         .padding(.horizontal, MuesliTheme.spacing12)
@@ -235,7 +233,6 @@ struct IPhoneBridgeCard: View {
         .onAppear {
             guard !promptSeen else { return }
             promptSeen = true
-            TelemetryDeck.signal("bridge_prompt_seen", parameters: ["platform": "macos"])
         }
         .sheet(isPresented: $isQRCodePresented, onDismiss: {
             controller.cancelIPhoneBridgeDeviceDiscovery()
@@ -249,7 +246,6 @@ struct IPhoneBridgeCard: View {
         .onChange(of: qrCodePresentationPhase) { _, phase in
             guard phase == .dismiss else { return }
             isQRCodePresented = false
-            TelemetryDeck.signal("bridge_qr_auto_dismissed", parameters: ["platform": "macos_timeline"])
         }
         .alert("Reconnect iCloud sync?", isPresented: $isReconnectConfirmationPresented) {
             Button("Cancel", role: .cancel) {}
@@ -465,12 +461,10 @@ struct IPhoneBridgeCard: View {
         switch flowAction {
         case .setUp, .continueSetup:
             isQRCodePresented = true
-            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos_setup"])
             controller.beginIPhoneBridgeDeviceDiscovery()
             controller.enableIPhoneBridgeSync()
         case .connectDevice:
             isQRCodePresented = true
-            TelemetryDeck.signal("bridge_qr_shown", parameters: ["platform": "macos"])
             controller.beginIPhoneBridgeDeviceDiscovery()
         case .waitingForDevice:
             break

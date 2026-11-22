@@ -17,9 +17,10 @@ struct CleanupMLXEvaluationTests {
     @Test func qwenMLXCatalogAndPromptContract() {
         for option in [PostProcessorOption.finetunedV4, .qwenV12] {
             #expect(option.modelURL.pathExtension == "safetensors")
-            #expect(option.managedModel?.files.count == 6)
-            #expect(option.managedModel?.revision.count == 40)
-            #expect(option.managedModel?.files.allSatisfy { $0.sha256?.count == 64 } == true)
+            let bundled = option.cleanupSlot?.bundled.artifact
+            #expect(bundled?.files.count == 7)
+            #expect(bundled?.revision.count == 40)
+            #expect(bundled?.files.allSatisfy { $0.sha256?.count == 64 } == true)
             #expect(!option.label.contains("Light"))
             let model: CleanupMLXEvaluation.Model = option == .finetunedV4 ? .qwen08 : .qwen
             #expect(model.prompt("First check latency. Second check formatting.", context: "App: Codex") ==

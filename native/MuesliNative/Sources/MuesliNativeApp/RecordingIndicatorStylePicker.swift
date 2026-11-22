@@ -49,7 +49,7 @@ struct RecordingIndicatorStylePicker: View {
                             .accessibilityHidden(true)
                         HStack(spacing: 8) {
                             Image(systemName: selection == style ? "largecircle.fill.circle" : "circle")
-                                .foregroundStyle(selection == style ? accent : Color.secondary)
+                                .foregroundStyle(selection == style ? MuesliTheme.accentText : MuesliTheme.textSecondary)
                             Text(style.title).font(MuesliTheme.font(.headline))
                         }
                         .frame(maxWidth: .infinity)
@@ -62,8 +62,9 @@ struct RecordingIndicatorStylePicker: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay {
                         RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(selection == style ? accent : Color.primary.opacity(0.14),
+                            .strokeBorder(selection == style ? MuesliTheme.accentText : MuesliTheme.surfaceBorder,
                                           lineWidth: selection == style ? 2 : 1)
+                            .allowsHitTesting(false)
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 12))
                 }

@@ -31,6 +31,26 @@ enum WavWriter {
         return header
     }
 
+    /// Our incremental PCM files have a fixed 44-byte header. Keep only complete samples.
+    static func repairIncrementalWAV(at url: URL) throws -> Int64? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        guard size > 45 else { return nil }
+        try handle.seek(toOffset: 0)
+        guard let prefix = try handle.read(upToCount: 44), prefix.count == 44,
+              String(decoding: prefix.prefix(4), as: UTF8.self) == "RIFF",
+              String(decoding: prefix[36..<40], as: UTF8.self) == "data" else { return nil }
+        let bytes = (size - 44) / 2 * 2
+        guard bytes <= UInt32.max - 36 else { return nil }
+        try handle.truncate(atOffset: bytes + 44)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: header(dataSize: UInt32(bytes)))
+        try handle.synchronize()
+        return Int64(bytes / 2) / 16
+    }
+
     /// Write Float32 samples to a temporary 16kHz mono Int16 WAV file.
     static func writeTemporaryWAV(samples: [Float], directoryName: String = "muesli-wav-temp") throws -> URL {
         let dir = FileManager.default.temporaryDirectory

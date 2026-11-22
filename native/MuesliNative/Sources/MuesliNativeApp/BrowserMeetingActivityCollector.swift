@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import ScriptingBridge
+import os.log
 
 struct RunningAppSnapshot: Sendable {
     let bundleID: String
@@ -12,6 +13,7 @@ struct RunningAppSnapshot: Sendable {
 
 // Not thread-safe; MeetingSignalCollector owns this collector from a single actor context.
 final class BrowserMeetingActivityCollector {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingDetection")
     private let browserBundleIDs = Set(MeetingCandidateResolver.browserApps.keys)
     private let cachedMeetingTTL: TimeInterval
     private let focusedDocumentURLProvider: ((RunningAppSnapshot) -> String?)?
@@ -21,6 +23,7 @@ final class BrowserMeetingActivityCollector {
     private let activeTabFallbackEnabled: Bool
     private var cachedMeetings: [String: CachedBrowserMeeting] = [:]
     private var activeTabFallbacksAwaitingFreshResult: Set<String> = []
+    private var loggedAutomationFailures: Set<String> = []
 
     init(
         cachedMeetingTTL: TimeInterval = 30,
@@ -129,6 +132,12 @@ final class BrowserMeetingActivityCollector {
             return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
         }
         let activeTabResult = await activeTabURL(for: app)
+        if case .failed(let code) = activeTabResult {
+            let key = "\(app.bundleID):\(code)"
+            if loggedAutomationFailures.insert(key).inserted {
+                Self.logger.notice("Browser active-tab lookup failed for \(app.bundleID, privacy: .public), error code \(code, privacy: .public)")
+            }
+        }
         guard case .url(let url) = activeTabResult else {
             if case .timedOut = activeTabResult {
                 return observedFocusedNonMeetingDocumentURL ? .noMeeting : .inconclusive
@@ -277,8 +286,7 @@ final class BrowserMeetingActivityCollector {
         await withCheckedContinuation { continuation in
             let completion = BrowserActiveTabProbeCompletion(continuation)
             DispatchQueue.global(qos: .utility).async {
-                let url = Self.activeTabURLViaScriptingBridgeSync(for: app)
-                completion.resume(url.map(BrowserActiveTabProbeResult.url) ?? .noURL)
+                completion.resume(Self.activeTabURLViaScriptingBridgeSync(for: app))
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + deadline) {
                 completion.resume(.timedOut)
@@ -286,13 +294,13 @@ final class BrowserMeetingActivityCollector {
         }
     }
 
-    private static func activeTabURLViaScriptingBridgeSync(for app: RunningAppSnapshot) -> String? {
+    private static func activeTabURLViaScriptingBridgeSync(for app: RunningAppSnapshot) -> BrowserActiveTabProbeResult {
         // Target the existing process by PID. Bundle-id targets can relaunch a
         // browser after the user quits it, which passive detection must avoid.
         guard browserSupportsScriptingBridgeActiveTab(app.bundleID),
               let browser = SBApplication(processIdentifier: app.processIdentifier),
               browser.isRunning else {
-            return nil
+            return .noURL
         }
 
         let errorDelegate = BrowserScriptingBridgeErrorDelegate()
@@ -305,15 +313,16 @@ final class BrowserMeetingActivityCollector {
 
         guard let windows = browser.value(forKey: "windows") as? SBElementArray,
               let frontWindow = windows.firstObject as? NSObject else {
-            return nil
+            return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
         }
 
         let tabKey = app.bundleID == "com.apple.Safari" ? "currentTab" : "activeTab"
         guard let activeTab = frontWindow.value(forKey: tabKey) as? NSObject else {
-            return nil
+            return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
         }
 
-        return activeTab.value(forKey: "URL") as? String
+        if let url = activeTab.value(forKey: "URL") as? String { return .url(url) }
+        return errorDelegate.errorCode.map(BrowserActiveTabProbeResult.failed) ?? .noURL
     }
 
     // Keep aligned with MeetingCandidateResolver.browserApps in
@@ -350,6 +359,7 @@ enum BrowserActiveTabProbeResult {
     case url(String)
     case noURL
     case timedOut
+    case failed(Int)
 }
 
 private struct CachedBrowserMeeting {
@@ -358,8 +368,10 @@ private struct CachedBrowserMeeting {
 }
 
 private final class BrowserScriptingBridgeErrorDelegate: NSObject, SBApplicationDelegate {
+    private(set) var errorCode: Int?
     func eventDidFail(_ event: UnsafePointer<AppleEvent>, withError error: Error) -> Any? {
-        nil
+        errorCode = (error as NSError).code
+        return nil
     }
 }
 

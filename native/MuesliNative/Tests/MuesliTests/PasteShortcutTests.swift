@@ -84,6 +84,7 @@ struct PasteShortcutTests {
         case .quil: keyPath = \.quilHotkey
         case .computerUse: keyPath = \.computerUseHotkey
         case .meetingRecording: keyPath = \.meetingRecordingHotkey
+        case .feedbackCapture: keyPath = \.feedbackCaptureHotkey
         }
         _ = NSApplication.shared
         let automatic = try #require(PasteKeyboardLayout.resolve(.automatic))
@@ -92,7 +93,7 @@ struct PasteShortcutTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.enableComputerUseHotkey = false
         initial.enableQuilMode = false
@@ -134,7 +135,7 @@ struct PasteShortcutTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
         try store.migrateIfNeeded()
-        let configStore = ConfigStore(supportDirectory: directory)
+        let configStore = makeTestConfigStore(supportDirectory: directory)
         var initial = AppConfig()
         initial.pasteShortcut = .custom(try #require(PasteKeyChord(keyCode: 9, modifiers: .maskControl)))
         configStore.save(initial)

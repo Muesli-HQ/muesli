@@ -168,6 +168,7 @@ struct MeetingHookIntegrationTests {
                 bundlePath: nil
             ),
             dictationStore: store,
+            configStore: makeTestConfigStore(),
             meetingHookDispatcher: dispatcher
         )
     }

@@ -160,6 +160,8 @@ implicitly belong in CloudKit, telemetry, exports, or CLI output.
 Read [docs/meeting-chat-architecture.md](docs/meeting-chat-architecture.md) for
 provider adapters, tool contracts, memory budgets, and source validation.
 
+- Let the model interpret prompts, choose applicable skills and tools, and supply structured arguments. Never match words or phrases in a user question to route intent, infer dates or silently change retrieval scope. The harness validates arguments and permissions, executes registered operations, and verifies evidence. Explicit UI selections and skill tags are structured user input.
+- For new analytical questions over existing history, expose a documented relation or reusable data primitive when needed and let the model compose its SQL. A new question alone does not warrant a new tool, mode, or keyword rule. Exercise the same query contract on both provider paths.
 - Keep thread identity, selected/anchor meetings, and evidence dependencies
   separate. Follow-ups may use valid conversation context without new attachments;
   new meeting-based claims require retrieval and current citations. An empty
@@ -182,6 +184,11 @@ provider adapters, tool contracts, memory budgets, and source validation.
   explicit new-chat actions, accepted sends, or required source invalidation
   should reset the relevant draft.
   Busy-state recovery must not retarget a selected chat or a nonempty draft.
+  General new drafts start with no meetings selected. Only an unused implicit
+  draft follows the currently displayed meeting or meeting folder; explicit
+  selections (including empty), typed questions, files and existing chats retain
+  their scope. All saved meetings is opt-in. Date pickers and scope mutations
+  reject future ranges; empty individual selections never widen to the archive.
 
 ## Typography and design system
 
@@ -250,6 +257,15 @@ require an app rebuild. Report validation against the actual tested commit and
 app lane, and distinguish pending/skipped review checks from approvals.
 
 ## Finite Settings (UI and Voice)
+
+Settings rendering must use `AppState.settingsModelAvailability` and the surface-owned
+`SettingsPresentationCatalog`; do not probe model files or executable paths from view
+bodies or presentation availability closures. Refresh disk-backed facts off the main
+actor at launch, app activation, model-file mutation completion, and executable-path
+changes. Keep live validation in the shared mutation executor. Publish controller config
+through `publishConfig()` so equal values do not invalidate the observation graph.
+Tour scrolling must be cancellable and scoped to the active target and destination pane;
+do not enqueue animated scrolling from repeated appearance callbacks.
 
 Define persistent toggles and selection menus once in `MuesliSettingsDefinitions.swift`.
 Use `toggle`, `menu`, `textMenu`, `presets`, or `add` with stable option IDs,
