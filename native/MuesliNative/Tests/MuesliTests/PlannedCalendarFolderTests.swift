@@ -66,7 +66,7 @@ struct PlannedCalendarFolderTests {
         MuesliController(
             runtime: RuntimePaths(repoRoot: FileManager.default.temporaryDirectory, menuIcon: nil, appIcon: nil, bundlePath: nil),
             dictationStore: store,
-            configStore: ConfigStore(supportDirectory: supportDirectory)
+            configStore: makeTestConfigStore(supportDirectory: supportDirectory)
         )
     }
 
@@ -127,10 +127,10 @@ struct PlannedCalendarFolderTests {
     @Test("the choice survives a save and load")
     func persisted() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("planned-\(UUID())", isDirectory: true)
-        let store = ConfigStore(supportDirectory: dir)
+        let store = makeTestConfigStore(supportDirectory: dir)
         var config = AppConfig()
         config.planFolder(7, for: "occ-a", startTime: now.addingTimeInterval(3600), now: now)
-        store.save(config)
+        #expect(store.save(config))
         #expect(store.load().plannedFolderID(for: "occ-a", existingFolderIDs: [7]) == 7)
         try? FileManager.default.removeItem(at: dir)
     }
