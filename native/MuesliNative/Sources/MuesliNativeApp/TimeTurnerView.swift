@@ -173,20 +173,130 @@ struct TimeTurnerControls: View {
 
 /// A native mouse tracking surface keeps scrubbing independent of the page's
 /// vertical scroll gestures. Coordinates always use the whole track's bounds.
+/// Pinching (or Command-scrolling) over it zooms the track around the pointer.
 private struct MemoryScrubSurface: NSViewRepresentable {
     var onScrub: (Double) -> Void
+    var onZoom: (_ factor: Double, _ position: Double) -> Void
     func makeNSView(context: Context) -> ScrubView { ScrubView() }
-    func updateNSView(_ view: ScrubView, context: Context) { view.onScrub = onScrub }
+    func updateNSView(_ view: ScrubView, context: Context) {
+        view.onScrub = onScrub
+        view.onZoom = onZoom
+    }
     final class ScrubView: NSView {
         var onScrub: ((Double) -> Void)?
+        var onZoom: ((Double, Double) -> Void)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) { scrub(event) }
         override func mouseDragged(with event: NSEvent) { scrub(event) }
         override func mouseUp(with event: NSEvent) { scrub(event) }
-        private func scrub(_ event: NSEvent) {
-            let point = convert(event.locationInWindow, from: nil)
-            onScrub?(Double(min(1, max(0, point.x / max(1, bounds.width)))))
+        override func magnify(with event: NSEvent) {
+            onZoom?(1 + Double(event.magnification), position(of: event))
         }
+        override func scrollWheel(with event: NSEvent) {
+            guard event.modifierFlags.contains(.command), event.scrollingDeltaY != 0 else { return super.scrollWheel(with: event) }
+            let step = event.hasPreciseScrollingDeltas ? Double(event.scrollingDeltaY) / 100 : Double(event.scrollingDeltaY) / 10
+            onZoom?(1 + min(0.5, max(-0.5, step)), position(of: event))
+        }
+        private func position(of event: NSEvent) -> Double {
+            let point = convert(event.locationInWindow, from: nil)
+            return Double(min(1, max(0, point.x / max(1, bounds.width))))
+        }
+        private func scrub(_ event: NSEvent) { onScrub?(position(of: event)) }
+    }
+}
+
+/// Turns horizontal trackpad swipes and Shift-wheel scrolling anywhere over the
+/// explorer into scrubbing. Vertical scrolling still reaches the page. A local
+/// monitor is used because SwiftUI content above this view would otherwise
+/// receive the scroll events first.
+private struct HorizontalScrollScrubber: NSViewRepresentable {
+    var onScroll: (_ deltaX: CGFloat, _ precise: Bool) -> Void
+    func makeNSView(context: Context) -> MonitorView { MonitorView() }
+    func updateNSView(_ view: MonitorView, context: Context) { view.onScroll = onScroll }
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) { view.stopMonitoring() }
+    final class MonitorView: NSView {
+        private enum Axis { case undecided, horizontal, vertical }
+        var onScroll: ((CGFloat, Bool) -> Void)?
+        private var monitor: Any?
+        private var axis = Axis.undecided
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopMonitoring()
+            guard window != nil else { return }
+            // AppKit delivers local monitor callbacks on the main thread.
+            // Only a Bool crosses into the main-actor closure: NSEvent isn't Sendable.
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                let sample = ScrollSample(event)
+                let consumed = MainActor.assumeIsolated { self?.handle(sample) ?? false }
+                return consumed ? nil : event
+            }
+        }
+        func stopMonitoring() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+        /// A trackpad gesture keeps the axis it starts with (momentum included),
+        /// so a diagonal wobble neither scrubs nor leaks into vertical scrolling.
+        private func handle(_ event: ScrollSample) -> Bool {
+            guard let window, event.windowNumber == window.windowNumber, !isHiddenOrHasHiddenAncestor else { return false }
+            let isGesture = !event.phase.isEmpty || !event.momentumPhase.isEmpty
+            if !isGesture || event.phase.contains(.began) || event.phase.contains(.mayBegin) { axis = .undecided }
+            let dx = event.deltaX, dy = event.deltaY
+            if axis == .undecided {
+                guard dx != 0 || dy != 0 else { return false }
+                // visibleRect excludes parts of the card scrolled out of the page.
+                let inside = visibleRect.contains(convert(event.locationInWindow, from: nil))
+                // Command-scroll is zoom: leave it for the timeline bar, even when diagonal.
+                axis = inside && !event.command && abs(dx) > abs(dy) ? .horizontal : .vertical
+            }
+            guard axis == .horizontal else { return false }
+            if dx != 0 { onScroll?(dx, event.precise) }
+            return true
+        }
+    }
+    /// The parts of a scroll event the scrubber reads, copied so they can cross
+    /// into main-actor code (NSEvent itself isn't Sendable).
+    struct ScrollSample: Sendable {
+        let deltaX: CGFloat, deltaY: CGFloat, precise: Bool
+        let phase: NSEvent.Phase, momentumPhase: NSEvent.Phase
+        let locationInWindow: CGPoint, windowNumber: Int, command: Bool
+        init(_ event: NSEvent) {
+            deltaX = event.scrollingDeltaX; deltaY = event.scrollingDeltaY; precise = event.hasPreciseScrollingDeltas
+            phase = event.phase; momentumPhase = event.momentumPhase
+            locationInWindow = event.locationInWindow; windowNumber = event.windowNumber
+            command = event.modifierFlags.contains(.command)
+        }
+    }
+}
+
+/// Explicit navigation invalidates accumulated scrolling even when two moments
+/// share a timestamp. Only uninterrupted scrolling carries its cursor forward.
+struct TimeTurnerScrubState {
+    var playhead: Date {
+        didSet { scrollCursor = nil }
+    }
+    private(set) var scrollCursor: VisualMemoryScrollCursor?
+
+    init(playhead: Date) { self.playhead = playhead }
+
+    mutating func resetScroll() { scrollCursor = nil }
+
+    mutating func refreshScale(orderedDates: [Date], scale: inout VisualMemoryScrubScale,
+                               viewport: inout VisualMemoryScrubViewport) {
+        guard !scale.matchesOrderedDates(orderedDates) else { return }
+        let old = scale
+        scale = VisualMemoryScrubScale(dates: orderedDates)
+        viewport = viewport.rebased(from: old, to: scale)
+        resetScroll()
+    }
+
+    func scrolling(deltaX: Double, trackWidth: Double, scale: VisualMemoryScrubScale) -> Self? {
+        guard let next = VisualMemoryScrollCursor.advance(scrollCursor, playhead: playhead,
+                                                         deltaX: deltaX, trackWidth: trackWidth, scale: scale) else { return nil }
+        var result = Self(playhead: next.date)
+        result.scrollCursor = next
+        return result
     }
 }
 
@@ -196,40 +306,74 @@ struct MemoryExplorerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var daySnapshot = TimeTurnerDaySnapshot()
     @State private var day: Date
-    @State private var playhead: Date
+    @State private var scrubState: TimeTurnerScrubState
+    private var playhead: Date {
+        get { scrubState.playhead }
+        nonmutating set { scrubState.playhead = newValue }
+    }
     @State private var selectedCaptureID: String?
     @State private var showsSearch = false
     let inline: Bool
-    let onNavigate: ((Date, Date) -> Void)?
+    let onNavigate: ((Date, Date, VisualMemoryItem?, String?) -> Void)?
     let focusedSize: CGSize?
     let onClose: (() -> Void)?
     private var focusPresenter: TimeTurnerFocusPresenter { .shared }
     @State private var lastHapticTime = Date.distantPast
-    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, externalDay: Binding<Date>? = nil, focusedSize: CGSize? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date) -> Void)? = nil) {
+    init(initialMoment: VisualMemoryItem?, memory: VisualMemoryController, inline: Bool = false, externalDay: Binding<Date>? = nil, focusedSize: CGSize? = nil, initialDisplayFilter: String? = nil, onClose: (() -> Void)? = nil, onNavigate: ((Date, Date, VisualMemoryItem?, String?) -> Void)? = nil) {
         self.memory = memory
         self.externalDay = externalDay
         self.inline = inline
         self.focusedSize = focusedSize
+        _displayFilter = State(initialValue: initialDisplayFilter)
         self.onClose = onClose
         self.onNavigate = onNavigate
         let selectedDay = externalDay?.wrappedValue ?? initialMoment?.capturedAt ?? Date()
         let initial = initialMoment.flatMap { Calendar.current.isDate($0.capturedAt, inSameDayAs: selectedDay) ? $0 : nil }
         _day = State(initialValue: selectedDay)
-        _playhead = State(initialValue: initial?.capturedAt ?? selectedDay)
+        _scrubState = State(initialValue: TimeTurnerScrubState(playhead: initial?.capturedAt ?? selectedDay))
         _selectedCaptureID = State(initialValue: initial?.id)
     }
     @State private var confirmForget = false
     @State private var showsText = false
     private func expandExplorer() {
         guard inline, let selected else { return }
-        focusPresenter.present(owner: NSApp.keyWindow, moment: selected, memory: memory) { date, time in
+        focusPresenter.present(owner: NSApp.keyWindow, moment: selected, memory: memory, displayFilter: displayFilter) { date, time, moment, filter in
             day = date
-            selectedCaptureID = nil
-            playhead = time
+            if filter != displayFilter { filterDisplay(filter) }
+            selectedCaptureID = moment?.id
+            playhead = time; revealPlayhead()
         }
     }
     private func closeExplorer() { if let onClose { onClose() } else { dismiss() } }
-    private var ordered: [VisualMemoryItem] { daySnapshot.moments }
+    @State private var displayFilter: String?
+    @State private var connectedDisplays = TimeTurnerDisplayIdentity.connected
+    private var displayChoices: [String: String] {
+        var names = daySnapshot.displays
+        if Calendar.current.isDateInToday(day) {
+            for display in connectedDisplays where memory.selectsDisplay(uuid: display.uuid) {
+                names[display.uuid] = display.name
+            }
+        }
+        return names
+    }
+    private var ordered: [VisualMemoryItem] { daySnapshot.moments(for: displayFilter) }
+    private func filterDisplay(_ uuid: String?) {
+        displayFilter = uuid
+        selectedCaptureID = nil
+        let filtered = daySnapshot.moments(for: uuid)
+        resetScrubScale()
+        if let nearest = VisualMemoryDayTimeline.nearestIndex(in: filtered, to: playhead) {
+            playhead = filtered[nearest].capturedAt
+            selectedCaptureID = filtered[nearest].id
+        }
+    }
+    private var emptyDetail: String {
+        guard let displayFilter else { return "Choose another day to browse your screen history." }
+        guard Calendar.current.isDateInToday(day) else { return "There are no saved captures for this display on this day." }
+        if memory.ambientPaused { return "Capture is paused. Resume capture to save new moments." }
+        if memory.pausedDisplays.contains(displayFilter) { return "Capture is paused for this display." }
+        return memory.displayStatuses[displayFilter] ?? "Waiting for an eligible capture."
+    }
     private var index: Int {
         if let selectedCaptureID, let exact = ordered.firstIndex(where: { $0.id == selectedCaptureID }) { return exact }
         return VisualMemoryDayTimeline.nearestIndex(in: ordered, to: playhead) ?? 0
@@ -237,15 +381,34 @@ struct MemoryExplorerView: View {
     private var dayInterval: DateInterval { Calendar.current.dateInterval(of: .day, for: day)! }
     private var scrubInterval: DateInterval { VisualMemoryDayTimeline.captureInterval(in: ordered) ?? DateInterval(start: dayInterval.start, duration: 1) }
     @State private var scrubScale = VisualMemoryScrubScale(dates: [])
-    private var appNames: [String] { Array(Set(ordered.map(\.bundleID))).sorted() }
-    private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt }
+    private var appNames: [String] { Array(Set(ordered.flatMap { $0.includedApps?.map(\.bundleID) ?? [$0.bundleID] }.filter { !$0.isEmpty })).sorted() }
+    private func select(_ offset: Int) { guard ordered.indices.contains(offset) else { return }; selectedCaptureID = ordered[offset].id; playhead = ordered[offset].capturedAt; revealPlayhead() }
     private var earliestDay: Date { Calendar.current.startOfDay(for: min(memory.captureReadyAt ?? Date(), Date())) }
     private func moveDay(_ amount: Int) {
         if let next = Calendar.current.date(byAdding: .day, value: amount, to: day) { day = max(earliestDay, min(Date(), next)) }
     }
-    private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
-        TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
+    private func sourceLabel(_ item: VisualMemoryItem) -> String {
+        if let display = item.display, let apps = item.includedApps, !apps.isEmpty {
+            return apps.map(\.name).joined(separator: ", ") + " · " + display.name
+        }
+        return item.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))
+    }
+    @ViewBuilder private func appIcon(_ item: VisualMemoryItem, size: CGFloat = 22) -> some View {
+        if let apps = item.includedApps, !apps.isEmpty {
+            HStack(spacing: -size * 0.45) {
+                ForEach(apps.prefix(2), id: \.bundleID) { app in
+                    TargetApplicationIconView(appName: app.name, bundleIdentifier: app.bundleID, size: size)
+                }
+            }
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(item.source).help(item.source)
+        } else if let display = item.display {
+            Image(systemName: "display").frame(width: size, height: size)
+                .accessibilityLabel(display.name).help(item.source)
+        } else {
+            TargetApplicationIconView(appName: item.source, bundleIdentifier: item.bundleID, size: size)
+                .accessibilityLabel(item.source).help(item.source)
+        }
     }
     @State private var trackWidth: CGFloat = 800
     private struct AppMarker: Identifiable {
@@ -256,23 +419,93 @@ struct MemoryExplorerView: View {
     }
     // Keep a single icon row; all captures remain reachable through the scrubber.
     // The current app is always visible in the header, including dense sections.
+    // When zoomed, the app already open at the left edge keeps a marker there.
     private func iconMarkers(width: CGFloat) -> [AppMarker] {
-        let scale = scrubScale
+        let scale = scrubScale, viewport = scrubViewport
         var markers: [AppMarker] = []
-        var previousBundle: String?
+        var previous: VisualMemoryItem?
+        var leading: VisualMemoryItem?
         for item in ordered {
-            defer { previousBundle = item.bundleID }
-            guard item.bundleID != previousBundle else { continue }
-            let x = min(max(14, width - 14), max(14, scale.fraction(for: item.capturedAt) * width))
-            guard markers.last.map({ x - $0.x >= 30 }) ?? true else { continue }
+            defer { previous = item }
+            if let previous, previous.bundleID == item.bundleID,
+               previous.includedApps == item.includedApps, previous.display?.uuid == item.display?.uuid { continue }
+            let raw = viewport.position(of: scale.fraction(for: item.capturedAt)) * width
+            if raw < 0 { leading = item; continue }
+            if raw > width { break }
+            if markers.isEmpty, let leading, raw >= 52 { markers.append(AppMarker(item: leading, x: 14, lane: 0)) }
+            let x = min(max(14, width - 14), max(14, raw))
+            guard markers.last.map({ x - $0.x >= 38 }) ?? true else { continue }
             markers.append(AppMarker(item: item, x: x, lane: 0))
         }
+        if markers.isEmpty, let leading { markers.append(AppMarker(item: leading, x: 14, lane: 0)) }
         return markers
+    }
+    @State private var scrubViewport = VisualMemoryScrubViewport.whole
+    /// A new day or display starts unzoomed.
+    private func resetScrubScale() {
+        scrubScale = VisualMemoryScrubScale(dates: ordered.map(\.capturedAt))
+        scrubViewport = .whole
+        scrubState.resetScroll()
+    }
+    /// Refreshed captures for the same day keep the zoom on the same moments.
+    private func rebuildScrubScale() {
+        scrubState.refreshScale(orderedDates: ordered.map(\.capturedAt), scale: &scrubScale,
+                                viewport: &scrubViewport)
+    }
+    private func zoomScrubber(by factor: Double, around position: Double) {
+        guard !ordered.isEmpty else { return }
+        scrubViewport = scrubViewport.zoomed(by: factor, around: position, maximumZoom: VisualMemoryScrubViewport.maximumZoom(for: scrubScale))
+    }
+    /// Keyboard, wheel, swipe and outside navigation keep the playhead on screen.
+    private func revealPlayhead() {
+        scrubViewport = scrubViewport.revealing(scrubScale.fraction(for: playhead))
+    }
+    private func scrub(to fraction: Double) {
+        let nextTime = scrubScale.date(at: fraction) ?? playhead
+        let nextIndex = VisualMemoryDayTimeline.nearestIndex(in: ordered, to: nextTime)
+        if let nextIndex, (ordered[nextIndex].bundleID != selected?.bundleID || ordered[nextIndex].includedApps != selected?.includedApps),
+           Date().timeIntervalSince(lastHapticTime) > 0.08 {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            lastHapticTime = Date()
+        }
+        selectedCaptureID = nil
+        playhead = nextTime
+    }
+    /// Trackpads scrub continuously across the track; wheel notches step one moment.
+    private func scrollScrub(deltaX: CGFloat, precise: Bool) {
+        guard !ordered.isEmpty else { return }
+        if precise {
+            guard let next = scrubState.scrolling(deltaX: Double(deltaX), trackWidth: Double(trackWidth) * scrubViewport.zoom,
+                                                 scale: scrubScale), let cursor = next.scrollCursor else { return }
+            scrub(to: cursor.fraction)
+            scrubState = next
+            revealPlayhead()
+        } else {
+            select(deltaX < 0 ? min(ordered.count - 1, index + 1) : max(0, index - 1))
+        }
+    }
+    /// Previous/next sit beside the screenshot; ← and → still step one moment.
+    /// At either end of the day the button hides rather than greying out.
+    private func momentStepButton(forward: Bool) -> some View {
+        let atEnd = forward ? index >= ordered.count - 1 : index <= 0
+        return Button { select(forward ? min(ordered.count - 1, index + 1) : max(0, index - 1)) } label: {
+            Image(systemName: forward ? "chevron.right" : "chevron.left")
+                .font(.system(size: 15, weight: .semibold)).frame(width: 34, height: 34)
+        }
+        .modifier(TimeTurnerGlassButtons(enabled: true))
+        .disabled(atEnd).opacity(atEnd ? 0 : 1).accessibilityHidden(atEnd)
+        .accessibilityLabel(forward ? "Next moment" : "Previous moment")
+        .help(forward ? "Next moment (→)" : "Previous moment (←)")
+        .keyboardShortcut(forward ? .rightArrow : .leftArrow, modifiers: [])
+        .padding(.horizontal, 20)
     }
     private var trackHeight: CGFloat { 34 }
     private var selected: VisualMemoryItem? { ordered.indices.contains(index) ? ordered[index] : nil }
     private var dayScrubber: some View {
-        let scale = scrubScale
+        let scale = scrubScale, viewport = scrubViewport
+        let visibleStart = scale.date(at: viewport.start) ?? scrubInterval.start
+        let visibleEnd = scale.date(at: viewport.start + viewport.span) ?? scrubInterval.end
+        let tickStyle: Date.FormatStyle.TimeStyle = visibleEnd.timeIntervalSince(visibleStart) < 300 ? .standard : .shortened
         return VStack(spacing: 8) {
             HStack {
                 Text(playhead.formatted(date: .omitted, time: .standard)).monospacedDigit()
@@ -281,22 +514,19 @@ struct MemoryExplorerView: View {
                 }
                 if scale.compressesGaps { Text("Gaps compressed").foregroundStyle(.secondary).help("Long gaps use less space. Timestamps remain exact.") }
                 Spacer()
-                Button { select(max(0, index - 1)) } label: { Image(systemName: "chevron.left") }
-                    .disabled(index == 0).accessibilityLabel("Previous moment").keyboardShortcut(.leftArrow, modifiers: [])
-                Text("\(index + 1) / \(ordered.count)").monospacedDigit().foregroundStyle(.secondary)
-                Button { select(min(ordered.count - 1, index + 1)) } label: { Image(systemName: "chevron.right") }
-                    .disabled(index == ordered.count - 1).accessibilityLabel("Next moment").keyboardShortcut(.rightArrow, modifiers: [])
             }.font(MuesliTheme.font(.caption))
             GeometryReader { geometry in
                 ZStack(alignment: .topLeading) {
                     Capsule().fill(.primary.opacity(0.07)).frame(height: 4).offset(y: 14)
                     Canvas { context, size in
                         for (offset, item) in ordered.enumerated() {
-                            let x = min(max(0, size.width - 2), scale.fraction(for: item.capturedAt) * size.width)
                             let next = offset + 1 < ordered.count ? ordered[offset + 1].capturedAt : item.capturedAt.addingTimeInterval(1)
                             let duration = min(120, max(1, next.timeIntervalSince(item.capturedAt)))
-                            let width = max(2, (scale.fraction(for: item.capturedAt.addingTimeInterval(duration)) - scale.fraction(for: item.capturedAt)) * size.width)
-                            context.fill(Path(roundedRect: CGRect(x: x, y: 14, width: min(width, size.width - x), height: 4), cornerRadius: 3), with: .color(.primary.opacity(0.25)))
+                            let left = viewport.position(of: scale.fraction(for: item.capturedAt)) * size.width
+                            let right = max(left + 2, viewport.position(of: scale.fraction(for: item.capturedAt.addingTimeInterval(duration))) * size.width)
+                            guard right > 0, left < size.width else { continue }
+                            let x = min(max(0, size.width - 2), max(0, left))
+                            context.fill(Path(roundedRect: CGRect(x: x, y: 14, width: max(2, min(right, size.width) - x), height: 4), cornerRadius: 3), with: .color(.primary.opacity(0.25)))
                         }
                     }
                     ForEach(iconMarkers(width: geometry.size.width)) { marker in
@@ -306,25 +536,18 @@ struct MemoryExplorerView: View {
                             .offset(x: marker.x - 14, y: CGFloat(marker.lane) * 30)
                             .allowsHitTesting(false)
                     }
-                    RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3, height: trackHeight)
-                        .offset(x: max(0, min(geometry.size.width - 3, scale.fraction(for: playhead) * geometry.size.width)))
+                    if let position = viewport.visiblePosition(of: scale.fraction(for: playhead)) {
+                        RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3, height: trackHeight)
+                            .offset(x: max(0, min(geometry.size.width - 3, position * geometry.size.width)))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .onAppear { trackWidth = geometry.size.width }
                 .onChange(of: geometry.size.width) { _, width in trackWidth = width }
                 .contentShape(Rectangle())
                 .overlay {
-                    MemoryScrubSurface { fraction in
-                        let nextTime = scale.date(at: fraction) ?? playhead
-                        let nextIndex = VisualMemoryDayTimeline.nearestIndex(in: ordered, to: nextTime)
-                        if let nextIndex, ordered[nextIndex].bundleID != selected?.bundleID,
-                           Date().timeIntervalSince(lastHapticTime) > 0.08 {
-                            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-                            lastHapticTime = Date()
-                        }
-                        selectedCaptureID = nil
-                        playhead = nextTime
-                    }
+                    MemoryScrubSurface(onScrub: { scrub(to: viewport.fraction(atPosition: $0)) },
+                                       onZoom: { zoomScrubber(by: $0, around: $1) })
                 }
                 .accessibilityElement().accessibilityLabel("Scrub entire day across apps")
                 .accessibilityValue(playhead.formatted(date: .omitted, time: .standard))
@@ -336,7 +559,7 @@ struct MemoryExplorerView: View {
             HStack {
                 ForEach(0..<5) { tick in
                     if tick > 0 { Spacer() }
-                    Text((scale.date(at: Double(tick) / 4) ?? scrubInterval.start).formatted(date: .omitted, time: scrubInterval.duration < 300 ? .standard : .shortened))
+                    Text((scale.date(at: viewport.fraction(atPosition: Double(tick) / 4)) ?? visibleStart).formatted(date: .omitted, time: tickStyle))
                 }
             }.font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
         }
@@ -350,7 +573,7 @@ struct MemoryExplorerView: View {
                     Text("Time Turner").font(MuesliTheme.font(size: 16, weight: .semibold))
                 } else if let selected {
                     appIcon(selected, size: 20)
-                    Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·")))
+                    Text(sourceLabel(selected))
                         .font(MuesliTheme.font(.caption)).lineLimit(1).frame(maxWidth: 220, alignment: .leading)
                 }
                 Spacer()
@@ -364,13 +587,26 @@ struct MemoryExplorerView: View {
                 .modifier(TimeTurnerControlSurface(enabled: !inline))
                 }
                 Spacer()
+                let choices = displayChoices
+                if choices.count > 1 || displayFilter != nil || (!choices.isEmpty && selected == nil) {
+                    Menu {
+                        Picker("Display", selection: Binding(get: { displayFilter }, set: filterDisplay)) {
+                            Text("All displays").tag(String?.none)
+                            ForEach(choices.keys.sorted { (choices[$0] ?? "", $0) < (choices[$1] ?? "", $1) }, id: \.self) { uuid in
+                                Text(choices[uuid] ?? "Display").tag(Optional(uuid))
+                            }
+                        }
+                    } label: {
+                        Label(displayFilter.flatMap { choices[$0] } ?? "All displays", systemImage: "display.2")
+                    }.fixedSize().accessibilityLabel("Filter history by display")
+                }
                 Button { showsSearch.toggle() } label: { Image(systemName: "magnifyingglass") }
                     .accessibilityLabel("Search screen history")
                     .help("Search by text, app, and date")
                     .popover(isPresented: $showsSearch) {
                         TimeTurnerSearchView(memory: memory, initialDay: day) { item in
                             daySnapshot.prepare(for: item.capturedAt)
-                            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
+                            filterDisplay(nil)
                             day = item.capturedAt
                             selectedCaptureID = item.id
                             playhead = item.capturedAt
@@ -395,9 +631,9 @@ struct MemoryExplorerView: View {
                             .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !inline {
                         HStack(spacing: 12) {
-                            Image(systemName: "macwindow")
+                            appIcon(selected)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(selected.source.trimmingCharacters(in: CharacterSet(charactersIn: " ·"))).lineLimit(1).font(MuesliTheme.font(size: 12, weight: .medium))
+                                Text(sourceLabel(selected)).lineLimit(1).font(MuesliTheme.font(size: 12, weight: .medium))
                                 Text(selected.capturedAt.formatted(date: .abbreviated, time: .standard)).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 8)
@@ -413,6 +649,8 @@ struct MemoryExplorerView: View {
                         }
                     }
                     .onTapGesture(count: 2) { if inline { expandExplorer() } }
+                    .overlay(alignment: .leading) { momentStepButton(forward: false) }
+                    .overlay(alignment: .trailing) { momentStepButton(forward: true) }
                     if showsText {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
@@ -432,8 +670,8 @@ struct MemoryExplorerView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
-                TimeTurnerEmptyState(title: "No captures on this day", symbol: "calendar",
-                                     detail: "Choose another day to browse your screen history.")
+                TimeTurnerEmptyState(title: displayFilter == nil ? "No captures on this day" : "No captures for this display", symbol: displayFilter == nil ? "calendar" : "display",
+                                     detail: emptyDetail)
             }
         }
         .task(id: "\(day)|\(memory.catalogRevision)") {
@@ -441,7 +679,15 @@ struct MemoryExplorerView: View {
             let moments = (try? await memory.moments(on: requestedDay)) ?? []
             guard !Task.isCancelled, requestedDay == day else { return }
             daySnapshot.load(moments, on: requestedDay)
-            scrubScale = VisualMemoryScrubScale(dates: moments.map(\.capturedAt))
+            if let displayFilter, displayChoices[displayFilter] == nil {
+                self.displayFilter = nil
+                resetScrubScale()
+            } else {
+                rebuildScrubScale()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            connectedDisplays = TimeTurnerDisplayIdentity.connected
         }
         .onChange(of: externalDay?.wrappedValue) { _, value in
             if let value { day = value }
@@ -449,14 +695,16 @@ struct MemoryExplorerView: View {
         .onChange(of: day) { _, _ in
             externalDay?.wrappedValue = day
             daySnapshot.prepare(for: day)
-            scrubScale = VisualMemoryScrubScale(dates: daySnapshot.moments.map(\.capturedAt))
+            displayFilter = nil
+            resetScrubScale()
             if !Calendar.current.isDate(playhead, inSameDayAs: day) {
                 playhead = ordered.first?.capturedAt ?? dayInterval.start
             }
         }
-        .onChange(of: playhead) { _, value in onNavigate?(day, value) }
+        .onChange(of: selected?.id) { _, _ in onNavigate?(day, playhead, selected, displayFilter) }
         .frame(width: inline ? nil : (focusedSize?.width ?? 1000), height: inline ? (ordered.isEmpty ? nil : 520) : (focusedSize?.height ?? 760))
         .frame(minHeight: inline && ordered.isEmpty ? 220 : nil)
+        .background { HorizontalScrollScrubber { scrollScrub(deltaX: $0, precise: $1) } }
         .modifier(TimeTurnerGlass(cornerRadius: inline ? 18 : 24))
         .confirmationDialog("Forget this recording chunk?", isPresented: $confirmForget) {
             Button("Delete chunk, history and recaps", role: .destructive) { if let selected { memory.delete(selected) }; closeExplorer() }

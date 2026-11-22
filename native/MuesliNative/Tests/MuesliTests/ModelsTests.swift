@@ -9,6 +9,135 @@ import MuesliCore
 @Suite("BackendOption")
 struct BackendOptionTests {
 
+    @Test("Cached search returns model matches and language highlights together")
+    func indexedLanguageMatches() {
+        let index = ModelLanguageSearchIndex(options: [.whisperSmall, .whisperSmallEnglish, .qwen3Asr, .parakeetMultilingual])
+        let expected = [BackendOption.whisperSmall.model, BackendOption.qwen3Asr.model]
+        for query in ["Turkish", " Turkish ", "TURKISH", "Türkçe", "tr"] {
+            let results = index.search(query)
+            #expect(results.map(\.id) == expected)
+            #expect(results.allSatisfy { $0.matchingLanguages == ["Turkish"] })
+        }
+        #expect(index.search("qwen").first?.matchingLanguages == [])
+        #expect(index.search("Minnan").first?.matchingLanguages == ["Minnan"])
+        #expect(index.search("an").isEmpty)
+        #expect(index.search(" ").count == 4)
+        #expect(index.search(" ").allSatisfy { $0.matchingLanguages.isEmpty })
+        #expect(index.search("zzzz").isEmpty)
+        #expect(index.search("Turkish").map(\.id) == expected)
+    }
+
+    @Test("ISO code queries also match whole model-name words")
+    func modelTierLanguageCodeCollision() {
+        let index = ModelLanguageSearchIndex(options: [.bodhanCore, .bodhanFlex, .bodhanCoreInt8, .qwen3Asr])
+        #expect(index.search("Pro").map(\.option) == [.bodhanCore, .bodhanFlex])
+        #expect(index.search("pro") == index.search(" PRO "))
+        #expect(index.search("an").isEmpty)
+    }
+
+    @Test("Regional language names match native and current locales")
+    func regionalLanguageAliases() {
+        let index = ModelLanguageSearchIndex(options: [.gemma4E2BLiteRT], locale: Locale(identifier: "de"))
+        for query in ["português (Brasil)", "Portugiesisch (Brasilien)", "Portuguese", "pt-BR", "pt"] {
+            #expect(index.search(query).first?.matchingLanguages == ["Portuguese (Brazil)"])
+        }
+    }
+
+    @Test("Index refresh replaces Apple coverage and respects localized language names")
+    func indexedCoverageRefresh() {
+        let original = ModelLanguageSearchIndex(options: [.appleSpeechAnalyzer], appleLanguages: [.system])
+        let refreshed = ModelLanguageSearchIndex(options: [.appleSpeechAnalyzer],
+            appleLanguages: [.system, .init(id: "tr-TR", label: "Türkçe")], locale: Locale(identifier: "de"))
+        #expect(original.search("Turkish").isEmpty)
+        #expect(refreshed.search("Türkisch").first?.matchingLanguages.count == 1)
+        #expect(refreshed.search("Türkisch").first?.option == .appleSpeechAnalyzer)
+        #expect(refreshed.search("tr").count == 1)
+        #expect(refreshed.languages(for: .appleSpeechAnalyzer).map(\.id) == ["tr-TR"])
+    }
+
+    @Test("Upstream coverage distinguishes evaluation, dialects, and adaptation-only locales")
+    func upstreamInputLanguageEvidence() {
+        for model in [BackendOption.gemma4E2BLiteRT, .gemma4E4BLiteRT] {
+            #expect(model.inputLanguages.count == 12)
+            #expect(model.matchesModelSearch("Hindi"))
+            #expect(model.matchesModelSearch("Portuguese"))
+            #expect(!model.matchesModelSearch("Turkish"))
+            #expect(model.inputLanguageCoverageNote?.contains("evaluations") == true)
+        }
+        #expect(BackendOption.qwen3Asr.inputLanguages.count == 30)
+        #expect(BackendOption.qwen3Asr.inputDialects.count == 22)
+        #expect(!BackendOption.qwen3Asr.matchesModelSearch("an")) // Aragonese, not an Anhui substring.
+        for model in [BackendOption.qwen3Asr, .nemotron35Multilingual, .cohereTranscribe, .whisperSmall] {
+            #expect(model.matchesModelSearch("Mandarin"))
+        }
+        #expect(BackendOption.qwen3Asr.matchesModelSearch("Minnan"))
+        #expect(BackendOption.qwen3Asr.matchesModelSearch("Wu"))
+        #expect(BackendOption.qwen3Asr.matchesModelSearch("Sichuan"))
+        #expect(!BackendOption.whisperSmall.matchesModelSearch("Sichuan"))
+        #expect(!BackendOption.qwen3Asr.inputLanguages.map(\.id).contains("Sichuan"))
+        #expect(BackendOption.nemotron35Multilingual.inputLanguages.count == 32)
+        for language in ["Greek", "Lithuanian", "Latvian", "Maltese", "Slovenian", "Hebrew", "Thai", "Nynorsk"] {
+            #expect(!BackendOption.nemotron35Multilingual.matchesModelSearch(language))
+        }
+        #expect(BackendOption.bodhanCore.inputLanguages.count == 25)
+        #expect(BackendOption.bodhanFlex.inputLanguages.count == 27)
+        #expect(BackendOption.cohereTranscribe.inputLanguages.count == 14)
+        #expect(BackendOption.whisperTiny.inputLanguages.count == 99)
+        #expect(BackendOption.whisperLargeTurbo.inputLanguages.count == 100)
+    }
+
+    @Test("Language search finds Turkish without including unsupported models")
+    func inputLanguageSearch() {
+        for option in [BackendOption.whisperSmall, .whisperTiny, .whisperLargeTurbo, .qwen3Asr, .nemotron35Multilingual] {
+            #expect(option.matchesModelSearch(" Turkish "))
+            #expect(option.matchesModelSearch("tr"))
+            #expect(option.matchesModelSearch("Türkçe"))
+        }
+        for option in [BackendOption.parakeetUnified, .parakeetMultilingual, .parakeetRedux, .phonon25,
+                       .whisperSmallEnglish, .cohereTranscribe, .bodhanCore, .senseVoiceSmall] {
+            #expect(!option.matchesModelSearch("Turkish"))
+            #expect(!option.matchesModelSearch("tr"))
+        }
+        #expect(BackendOption.qwen3Asr.matchesModelSearch("qwen"))
+        #expect(BackendOption.qwen3Asr.matchesModelSearch("  "))
+        #expect(!BackendOption.qwen3Asr.matchesModelSearch("unrecognized language"))
+        #expect(!BackendOption.qwen3Asr.matchesModelSearch("Auto-detect"))
+    }
+
+    @Test("Language tags respect model variant capabilities")
+    func inputLanguageVariants() {
+        #expect(BackendOption.whisperTinyEnglish.inputLanguages.map(\.id) == ["en"])
+        #expect(!BackendOption.whisperSmall.matchesModelSearch("Cantonese"))
+        #expect(BackendOption.whisperLargeTurbo.matchesModelSearch("Cantonese"))
+        #expect(!BackendOption.bodhanCore.matchesModelSearch("Haryanvi"))
+        #expect(BackendOption.bodhanFlex.matchesModelSearch("Haryanvi"))
+        #expect(BackendOption.senseVoiceSmall.inputLanguages.count == 5)
+        #expect(BackendOption.parakeetMultilingual.inputLanguages.count == 25)
+        for option in [BackendOption.parakeetMultilingual, .parakeetRedux, .phonon25] {
+            for language in ["Bosnian", "Belarusian", "Serbian"] {
+                #expect(!option.matchesModelSearch(language))
+            }
+        }
+        for option in BackendOption.all {
+            let ids = option.inputLanguages.map(\.id)
+            #expect(!ids.contains("auto"))
+            #expect(Set(ids).count == ids.count)
+            if option.backend != "apple-speech" && option.backend != "gemma4-litert" {
+                #expect(!ids.isEmpty, "Missing language metadata for \(option.label)")
+            }
+        }
+    }
+
+    @Test("Apple language search uses supported locales, never the system placeholder")
+    func appleInputLanguageSearch() {
+        let option = BackendOption.appleSpeechAnalyzer
+        #expect(!option.matchesModelSearch("Turkish"))
+        #expect(option.matchesModelSearch("Turkish", appleLanguages: [.init(id: "tr-TR", label: "Türkçe")]))
+        #expect(option.matchesModelSearch("tr", appleLanguages: [.init(id: "tr-TR", label: "Türkçe")]))
+        #expect(option.supportedInputLanguages(appleLanguages: [.system]).isEmpty)
+        #expect(!option.matchesModelSearch("Turkish", appleLanguages: [.init(id: "en-US", label: "English")]))
+    }
+
     @Test("all options have unique models")
     func uniqueModels() {
         let models = BackendOption.all.map(\.model)
@@ -86,7 +215,7 @@ struct BackendOptionTests {
     func qwenAsrIsExperimental() {
         #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.experimental.contains(.qwen3Asr))
-        #expect(BackendOption.qwen3Asr.description.contains("52 languages"))
+        #expect(BackendOption.qwen3Asr.description.contains("30 languages and 22 Chinese dialects"))
         #expect(BackendOption.qwen3Asr.description.contains("2–3 second"))
     }
 
@@ -482,12 +611,6 @@ struct BackendOptionTests {
         } else {
             #expect(!BackendOption.onboarding.contains(.appleSpeechAnalyzer))
         }
-    }
-
-    @Test("only Nemotron backends use streaming dictation")
-    func streamingDictationBackends() {
-        let streaming = BackendOption.all.filter(\.isStreamingDictationBackend)
-        #expect(streaming == [.nemotron35Multilingual])
     }
 
     @Test("OpenAI never uses local streaming")
@@ -1126,6 +1249,29 @@ struct MeetingSummaryBackendTests {
 
 @Suite("AppConfig")
 struct AppConfigTests {
+    @Test func displayCaptureScopeDefaultsToFocusedAndRoundTrips() throws {
+        let old = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        #expect(old.timeTurnerCaptureScope == "focused")
+        #expect(old.timeTurnerSelectedDisplays.isEmpty)
+        var config = old
+        config.timeTurnerCaptureScope = "all_displays"
+        let data = try JSONEncoder().encode(config)
+        let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(fields["time_turner_capture_scope"] as? String == "all_displays")
+        #expect(try JSONDecoder().decode(AppConfig.self, from: data).timeTurnerCaptureScope == "all_displays")
+    }
+
+    @Test func selectedDisplayIdentitiesSurviveRestart() throws {
+        var config = AppConfig()
+        config.timeTurnerCaptureScope = "selected_displays"
+        config.timeTurnerSelectedDisplays = ["stable-a": "Studio Display", "stable-b": "Studio Display"]
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config))
+        #expect(decoded.timeTurnerCaptureScope == "selected_displays")
+        #expect(decoded.timeTurnerSelectedDisplays == config.timeTurnerSelectedDisplays)
+        // Duplicate human-readable monitor names do not collapse physical identities.
+        #expect(decoded.timeTurnerSelectedDisplays.count == 2)
+    }
+
 
     @Test("Scrawl defaults off with Option-Shift-S and round-trips old configs")
     func feedbackCaptureDefaults() throws {

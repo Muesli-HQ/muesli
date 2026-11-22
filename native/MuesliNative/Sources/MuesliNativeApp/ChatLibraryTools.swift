@@ -332,7 +332,7 @@ actor ChatLibraryTools {
                     try Task.checkCancellation()
                     let page = try screen.searchMoments(limit:128,after:cursor, includeText: sql.needsText(in: "screens"))
                     for record in page {
-                        try sql.add("screens",id:record.id,date:record.capturedAt,app:record.appName ?? record.bundleID,
+                        try sql.add("screens",id:record.id,date:record.capturedAt,app:record.includedApps?.map(\.name).joined(separator: ", ") ?? record.appName ?? record.bundleID,
                                     title:record.windowTitle ?? record.source,text:record.text)
                     }
                     guard page.count == 128, let last = page.last else { break }

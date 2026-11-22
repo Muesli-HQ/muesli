@@ -161,8 +161,10 @@ actor FluidAudioTranscriber {
         }
         guard let asrManager else { throw TranscriberError.notLoaded }
         let languageHint = language.flatMap(Language.init(rawValue:))
+        let modelID = loadedModelID
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
-        return try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
+        let result = try await asrManager.transcribe(wavURL, decoderState: &decoderState, language: languageHint)
+        return Self.speechResult(result, modelID: modelID)
     }
 
     func transcribePreview(
@@ -174,15 +176,34 @@ actor FluidAudioTranscriber {
         try Task.checkCancellation()
         // Preview work may restore another already-installed model, but must
         // never download or repair a cache as a side effect of live captions.
-        try await loadModels(modelID: expectedModelID ?? FluidAudioModel.modelID(for: expectedVersion), allowDownload: false)
+        let modelID = expectedModelID ?? FluidAudioModel.modelID(for: expectedVersion)
+        try await loadModels(modelID: modelID, allowDownload: false)
         guard let asrManager else { throw TranscriberError.notLoaded }
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
-        let result = try await asrManager.transcribe(samples, decoderState: &decoderState,
+        let raw = try await asrManager.transcribe(samples, decoderState: &decoderState,
                                                     language: language.flatMap(Language.init(rawValue:)))
         try Task.checkCancellation()
+        let result = Self.speechResult(raw, modelID: modelID)
         guard requiresWordTimings else { return .init(text: result.text, words: []) }
         let words = FluidAudioBufferedWordTimings.build(from: result.tokenTimings ?? [])
         return try Self.previewWindow(text: result.text, words: words)
+    }
+
+    static func speechResult(_ result: ASRResult, modelID: String?) -> ASRResult {
+        guard let timings = result.tokenTimings, let modelID else { return result }
+        let multilingual = [BackendOption.parakeetMultilingual.model, BackendOption.parakeetRedux.model,
+                            BackendOption.phonon25.model].contains(modelID)
+        let speech = timings.filter { token in
+            let id = token.tokenId
+            if id == 0 { return false }
+            return !multilingual || !((1...233).contains(id) || (244...273).contains(id))
+        }
+        guard speech.count != timings.count else { return result }
+        let text = speech.map(\.token).joined().replacingOccurrences(of: "▁", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ASRResult(text: text, confidence: result.confidence, duration: result.duration,
+            processingTime: result.processingTime, tokenTimings: speech, performanceMetrics: result.performanceMetrics,
+            ctcDetectedTerms: result.ctcDetectedTerms, ctcAppliedTerms: result.ctcAppliedTerms)
     }
 
     static func previewWindow(text: String, words: [BufferedTranscriptionWord]) throws -> BufferedTranscriptionWindow {

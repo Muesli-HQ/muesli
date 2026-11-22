@@ -4,6 +4,13 @@ import Foundation
 @testable import MuesliNativeApp
 
 struct Qwen3VendorTests {
+    @available(macOS 15, *)
+    @Test func ignoresControlIDsAndPreservesTheSameSpellingFromSpeechTokens() {
+        let vocabulary = [12: "language", 13: "<", 14: "asr_text", 15: ">", 151676: "<|audio_pad|>"]
+        let ids = [12, 151704, 13, 14, 15, 151676, 151645]
+        #expect(MuesliQwen3AsrManager.decodeTokens(ids, vocabulary: vocabulary) == "<asr_text>")
+    }
+
 
     @available(macOS 15, *)
     @Test("default int8 cache directory matches the managed plan's install directory")

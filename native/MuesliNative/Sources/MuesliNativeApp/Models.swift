@@ -121,7 +121,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
         label: "Nemotron 3.5 Multilingual",
         sizeLabel: "~665 MB",
-        description: "Live text appears as you speak in more than 100 locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
+        description: "Live text appears as you speak in 32 supported locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
         recommended: false
     )
 
@@ -169,7 +169,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/sensevoice-small-coreml",
         label: "SenseVoice Small",
         sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
-        description: "A compact option covering more than 50 languages, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
+        description: "A compact option for Mandarin, Cantonese, English, Japanese, and Korean, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
         recommended: false
     )
 
@@ -229,7 +229,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 30 languages and 22 Chinese dialects. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
@@ -2415,6 +2415,13 @@ struct AppConfig: Codable, Equatable {
     ]
     var dictionarySuggestions: [DictionarySuggestion] = []
     var dismissedDictionarySuggestionKeys: [String] = []
+    var retainLongDictationAudio = false
+    var dictationAudioThresholdMinutes = 1
+
+    func shouldRetainDictationAudio(duration: Double) -> Bool {
+        retainLongDictationAudio && duration > Double(max(1, dictationAudioThresholdMinutes)) * 60
+    }
+
     var enableDictionaryCorrectionPrompts: Bool = false
     var enableAutomaticDiagnosticIssuePrompts: Bool = false
     var folderOrder: [Int64] = []
@@ -2455,6 +2462,9 @@ struct AppConfig: Codable, Equatable {
     var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
     var timeTurnerEnabled: Bool = false
     var timeTurnerPauseOnInactivity: Bool = true
+    var timeTurnerCaptureScope: String = "focused"
+    /// Stable display UUID → last known name; absent monitors remain selected.
+    var timeTurnerSelectedDisplays: [String: String] = [:]
     var timeTurnerInterval: String = "10"
     var timeTurnerBudget: String = "10"
     var timeTurnerScreenshotRetention: String = "7"
@@ -2612,6 +2622,8 @@ struct AppConfig: Codable, Equatable {
         case customWords = "custom_words"
         case dictionarySuggestions = "dictionary_suggestions"
         case dismissedDictionarySuggestionKeys = "dismissed_dictionary_suggestion_keys"
+        case retainLongDictationAudio = "retain_long_dictation_audio"
+        case dictationAudioThresholdMinutes = "dictation_audio_threshold_minutes"
         case enableDictionaryCorrectionPrompts = "enable_dictionary_correction_prompts"
         case enableAutomaticDiagnosticIssuePrompts = "enable_automatic_diagnostic_issue_prompts"
         case folderOrder = "folder_order"
@@ -2652,6 +2664,8 @@ struct AppConfig: Codable, Equatable {
         case postProcessorSystemPrompt = "post_processor_system_prompt"
         case timeTurnerEnabled = "time_turner_enabled"
         case timeTurnerPauseOnInactivity = "time_turner_pause_on_inactivity"
+        case timeTurnerCaptureScope = "time_turner_capture_scope"
+        case timeTurnerSelectedDisplays = "time_turner_selected_displays"
         case timeTurnerInterval = "time_turner_interval"
         case timeTurnerBudget = "time_turner_budget"
         case timeTurnerScreenshotRetention = "time_turner_screenshot_retention"
@@ -2894,6 +2908,8 @@ struct AppConfig: Codable, Equatable {
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
         dictionarySuggestions = (try? c.decode([DictionarySuggestion].self, forKey: .dictionarySuggestions)) ?? defaults.dictionarySuggestions
         dismissedDictionarySuggestionKeys = (try? c.decode([String].self, forKey: .dismissedDictionarySuggestionKeys)) ?? defaults.dismissedDictionarySuggestionKeys
+        retainLongDictationAudio = (try? c.decode(Bool.self, forKey: .retainLongDictationAudio)) ?? false
+        dictationAudioThresholdMinutes = max(1, (try? c.decode(Int.self, forKey: .dictationAudioThresholdMinutes)) ?? 1)
         enableDictionaryCorrectionPrompts = (try? c.decode(Bool.self, forKey: .enableDictionaryCorrectionPrompts)) ?? defaults.enableDictionaryCorrectionPrompts
         enableAutomaticDiagnosticIssuePrompts = (try? c.decode(Bool.self, forKey: .enableAutomaticDiagnosticIssuePrompts)) ?? defaults.enableAutomaticDiagnosticIssuePrompts
         folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
@@ -2965,6 +2981,8 @@ struct AppConfig: Codable, Equatable {
         }
         timeTurnerPauseOnInactivity = (try? c.decode(Bool.self, forKey: .timeTurnerPauseOnInactivity)) ?? true
         timeTurnerEnabled = (try? c.decode(Bool.self, forKey: .timeTurnerEnabled)) ?? false
+        timeTurnerCaptureScope = (try? c.decode(String.self, forKey: .timeTurnerCaptureScope)) ?? "focused"
+        timeTurnerSelectedDisplays = (try? c.decode([String: String].self, forKey: .timeTurnerSelectedDisplays)) ?? [:]
         timeTurnerInterval = (try? c.decode(String.self, forKey: .timeTurnerInterval)) ?? "10"
         timeTurnerBudget = (try? c.decode(String.self, forKey: .timeTurnerBudget)) ?? "10"
         timeTurnerScreenshotRetention = (try? c.decode(String.self, forKey: .timeTurnerScreenshotRetention)) ?? "7"

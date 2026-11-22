@@ -53,6 +53,8 @@ private struct CapturePayload: Encodable {
     let ocrText: String
     let appName: String?
     let windowTitle: String?
+    let display: VisualMemoryDisplay?
+    let includedApps: [VisualMemoryApp]?
     let captureCompletedAtUnix: Double?
     let pixelWidth: Int?
     let pixelHeight: Int?
@@ -63,11 +65,13 @@ private struct CapturePayload: Encodable {
     let screenshotPath: String?
     init(_ item: VisualMemoryItem, store: VisualMemoryStore, screenshot: String? = nil) throws {
         id = item.id
+        display = item.display; includedApps = item.includedApps
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         capturedAt = formatter.string(from: item.capturedAt)
         capturedAtUnix = item.capturedAt.timeIntervalSince1970
-        appName = item.appName ?? item.source.components(separatedBy: " · ").first; windowTitle = item.windowTitle
+        appName = item.display == nil ? (item.appName ?? item.source.components(separatedBy: " · ").first) : nil
+        windowTitle = item.windowTitle
         captureCompletedAtUnix = item.captureCompletedAt?.timeIntervalSince1970
         pixelWidth = item.pixelWidth; pixelHeight = item.pixelHeight
         source = item.source; bundleID = item.bundleID; ocrText = item.text

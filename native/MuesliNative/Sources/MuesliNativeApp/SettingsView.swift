@@ -1961,6 +1961,21 @@ struct SettingsView: View {
                 }
             }
 
+            settingsSection("Recordings") {
+                settingsCompactRow("Keep long dictation recordings",
+                    description: "Save audio on this Mac for playback and retranscription in history. Deleting a dictation removes its recording.") {
+                    settingsControl("retain_long_dictation_audio")
+                }
+                if appState.config.retainLongDictationAudio {
+                    settingsRow("Keep audio longer than") {
+                        integerInput(label: "Minimum recording duration", value: Binding(
+                            get: { appState.config.dictationAudioThresholdMinutes },
+                            set: { controller.setSettingFromUI("dictation_audio_threshold_minutes", value: String($0)) }
+                        ), range: 1...Int.max, unit: { $0 == 1 ? "minute" : "minutes" })
+                    }
+                }
+            }
+
             dictationCleanupSettingsSection
 
             settingsSection("App Formatting", newFeature: .appFormatting) {

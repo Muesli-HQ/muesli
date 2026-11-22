@@ -8,7 +8,7 @@ import MuesliCore
 enum VisualMemoryEncoding {
     struct Snapshot: @unchecked Sendable { let image: CGImage }
     struct Encoded: Sendable { let data: Data; let text: String; let fingerprint: Data }
-    static func encode(_ snapshot: Snapshot) throws -> Encoded {
+    static func encode(_ snapshot: Snapshot, privacy: ContentPrivacy.Session, policy: ContentPrivacy = .shared) throws -> Encoded {
         // Detach ScreenCaptureKit's IOSurface-backed image before asynchronous OCR
         // and ImageIO encoding, using an explicit full-size RGB bitmap.
         let original = snapshot.image
@@ -19,6 +19,7 @@ enum VisualMemoryEncoding {
         }
         bitmap.draw(original, in: CGRect(x: 0, y: 0, width: original.width, height: original.height))
         guard let image = bitmap.makeImage() else { throw ScreenVideoRecorder.error("Cannot normalize screenshot.") }
+        guard policy.permits(privacy) else { throw CancellationError() }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         try VNImageRequestHandler(cgImage: image).perform([request])
