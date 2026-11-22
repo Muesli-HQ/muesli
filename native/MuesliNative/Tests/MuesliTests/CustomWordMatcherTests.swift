@@ -351,4 +351,22 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "New nyc", customWords: words)
         #expect(result == "New New, York")
     }
+
+    @Test("word an earlier entry leaves unchanged or recases is still reused")
+    func unchangedEarlierMatchIsReused() {
+        let words = [
+            CustomWord(word: "XY", replacement: "XY"),
+            CustomWord(word: "Widget", replacement: "XY Widget"),
+        ]
+        #expect(CustomWordMatcher.apply(text: "XY Widget", customWords: words) == "XY Widget")
+        #expect(CustomWordMatcher.apply(text: "xy widget", customWords: words) == "XY Widget")
+    }
+
+    @Test("long run of a self-expanding word is corrected without deep recursion")
+    func longRepeatedRunStaysLinear() {
+        let words = [CustomWord(word: "ha", replacement: "ha ha")]
+        let text = Array(repeating: "ha", count: 5_000).joined(separator: " ")
+        let result = CustomWordMatcher.apply(text: text, customWords: words)
+        #expect(result == Array(repeating: "ha", count: 10_000).joined(separator: " "))
+    }
 }

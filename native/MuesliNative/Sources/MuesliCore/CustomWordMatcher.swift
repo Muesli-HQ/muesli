@@ -98,27 +98,43 @@ public struct CustomWordMatcher {
         let entriesByTokenCount = Dictionary(grouping: entries, by: { $0.tokens.count })
         let tokenCounts = entriesByTokenCount.keys.sorted(by: >)
         let words = text.components(separatedBy: " ")
+        // Only entries whose replacement has more words than they match look
+        // at the words after a match, so the lookahead is filled just for them.
+        let lookahead = Lookahead(count: words.count)
+        if entries.contains(where: { $0.replacementTokens.count > $0.tokens.count }) {
+            for position in stride(from: words.count - 1, through: 0, by: -1) {
+                lookahead.matches[position] = bestMatch(
+                    in: words, startingAt: position, emitted: [],
+                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount, lookahead: lookahead
+                )
+            }
+        }
         // Output so far, one word per element, so a match can see the words
         // already written before it.
         var result: [String] = []
-        // Words before this point came from an earlier replacement and are not
-        // reused as part of a later one, so separate matches each keep their
-        // full replacement.
+        // Words before this point include words an earlier replacement added,
+        // which are not reused as part of a later one, so separate matches each
+        // keep their full replacement.
         var reusableStart = 0
         var index = 0
 
         while index < words.count {
             guard let match = bestMatch(
                 in: words, startingAt: index, emitted: result[reusableStart...],
-                tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
+                tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount, lookahead: lookahead
             ) else {
                 result.append(words[index])
                 index += 1
                 continue
             }
 
-            result.append(contentsOf: match.text.components(separatedBy: " "))
-            reusableStart = result.count
+            let matchWords = match.text.components(separatedBy: " ")
+            result.append(contentsOf: matchWords)
+            // A match that keeps its word count only respells (or recases) the
+            // words that were spoken, so they stay available for reuse.
+            if matchWords.count != match.consumed {
+                reusableStart = result.count
+            }
             index += match.consumed
         }
 
@@ -136,6 +152,18 @@ public struct CustomWordMatcher {
         let consumed: Int
     }
 
+    /// The match `bestMatch` finds at each position of the input when no
+    /// output comes before it. It is filled from the last position back, and a
+    /// lookup only reads positions after the one being filled, so checking the
+    /// words after a match takes constant work instead of a recursive search.
+    private final class Lookahead {
+        var matches: [Match?]
+
+        init(count: Int) {
+            matches = Array(repeating: nil, count: count)
+        }
+    }
+
     private static let boundaryPunctuation = CharacterSet(charactersIn: ".,!?;:\"'()[]{}")
     private static let possessiveMarkers = ["'s", "\u{2019}s"]
 
@@ -151,7 +179,8 @@ public struct CustomWordMatcher {
         startingAt index: Int,
         emitted: ArraySlice<String>,
         tokenCounts: [Int],
-        entriesByTokenCount: [Int: [Entry]]
+        entriesByTokenCount: [Int: [Entry]],
+        lookahead: Lookahead
     ) -> Match? {
         for count in tokenCounts {
             guard count > 0, index + count <= words.count, let entries = entriesByTokenCount[count] else { continue }
@@ -176,12 +205,12 @@ public struct CustomWordMatcher {
                 // part of the replacement.
                 let replacement = replacementText(
                     for: entry, in: words, at: index, count: count, emitted: emitted,
-                    reusesFollowing: possessive.isEmpty,
-                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
+                    reusesFollowing: possessive.isEmpty, lookahead: lookahead
                 )
-                // A replacement that already ends in "'s" keeps its own ending.
+                // A replacement that already ends in "'s" keeps its own ending,
+                // and an empty replacement removes the word along with its "'s".
                 let lastCore = replacement.components(separatedBy: " ").last.flatMap { tokenParts(for: $0)?.core } ?? ""
-                let ending = possessiveSuffix(of: lastCore).isEmpty ? possessive : ""
+                let ending = replacement.isEmpty || !possessiveSuffix(of: lastCore).isEmpty ? "" : possessive
                 return Match(
                     text: parts[0].prefix + replacement + ending + parts[count - 1].suffix,
                     consumed: count
@@ -228,7 +257,7 @@ public struct CustomWordMatcher {
     /// will later rewrite a reused following word into something else.
     private static func replacementText(
         for entry: Entry, in words: [String], at index: Int, count: Int, emitted: ArraySlice<String>,
-        reusesFollowing: Bool, tokenCounts: [Int], entriesByTokenCount: [Int: [Entry]]
+        reusesFollowing: Bool, lookahead: Lookahead
     ) -> String {
         let extra = entry.replacementTokens.count - count
         guard extra > 0, entry.replacementWords.count == entry.replacementTokens.count else {
@@ -245,10 +274,7 @@ public struct CustomWordMatcher {
         func staysUnchanged(_ range: Range<Int>) -> Bool {
             var position = range.lowerBound
             while position < range.upperBound {
-                guard let later = bestMatch(
-                    in: words, startingAt: position, emitted: [],
-                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount
-                ) else {
+                guard let later = lookahead.matches[position] else {
                     position += 1
                     continue
                 }

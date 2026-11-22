@@ -100,4 +100,11 @@ struct CustomWordDictionaryTests {
         #expect(result.words[0].replacement == "")
         #expect(CustomWordMatcher.apply(text: "delete", customWords: result.words) == "")
     }
+
+    @Test("explicit empty replacement removes a possessive along with the word")
+    func emptyReplacementDropsPossessive() {
+        let words = [CustomWord(word: "delete", replacement: "")]
+        #expect(CustomWordMatcher.apply(text: "delete's", customWords: words) == "")
+        #expect(CustomWordMatcher.apply(text: "delete\u{2019}s", customWords: words) == "")
+    }
 }
