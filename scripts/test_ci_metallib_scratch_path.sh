@@ -24,6 +24,6 @@ for mode in unset relative absolute; do
     relative) export MUESLI_SWIFTPM_SCRATCH_PATH='cache with spaces'; export EXPECTED_CHECKOUT="$tmp/native/MuesliNative/cache with spaces/checkouts/mlx-swift" ;;
     absolute) export MUESLI_SWIFTPM_SCRATCH_PATH="$tmp/absolute cache"; export EXPECTED_CHECKOUT="$tmp/absolute cache/checkouts/mlx-swift" ;;
   esac
-  PATH="$tmp/bin:$PATH" bash scripts/run_ci_test_shard.sh core >/dev/null
+  PATH="$tmp/bin:$PATH" bash scripts/run_ci_test_shard.sh --prepare-only core >/dev/null
   echo "PASS: $mode scratch path"
 done
