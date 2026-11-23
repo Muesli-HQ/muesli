@@ -167,17 +167,32 @@ final class ChatHistorySQL {
     }
     func populate(
         _ tables: Set<String>, databaseURL: URL, currentSession: UUID,
+        excludePrivate: Bool = false,
         derived: (String, String, Date) throws -> Void
     ) throws {
-        try withWork { try populateRows(tables, databaseURL: databaseURL, currentSession: currentSession, derived: derived) }
+        try withWork { try populateRows(tables, databaseURL: databaseURL, currentSession: currentSession, excludePrivate: excludePrivate, derived: derived) }
     }
     private func populateRows(_ tables: Set<String>, databaseURL: URL, currentSession: UUID,
+                              excludePrivate: Bool,
                               derived: (String, String, Date) throws -> Void) throws {
         if tables.contains("stop_words") {
             for (language, words) in InsightsWordAnalyzer.queryStopWords {
                 for word in words { try bound("INSERT INTO stop_words VALUES(?,?)", [language, word]) }
             }
         }
+        let excludedChatIDs: Set<String> = (excludePrivate && tables.contains("chats"))
+            ? try DictationStore(databaseURL: databaseURL, readOnly: true).privateChatSessionIDs()
+            : []
+        let privateMeetingFilter = excludePrivate ? """
+             AND id NOT IN (
+                WITH RECURSIVE private_folders(id) AS (
+                    SELECT id FROM source.meeting_folders WHERE is_private = 1
+                    UNION
+                    SELECT f.id FROM source.meeting_folders f JOIN private_folders p ON f.parent_id = p.id
+                )
+                SELECT id FROM source.meetings WHERE is_private = 1 OR folder_id IN (SELECT id FROM private_folders)
+            )
+            """ : ""
         // Only host-authored projections can see the read-only source. Detach before preparing user SQL again.
         var url = URLComponents(url: databaseURL, resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "mode", value: "ro")]
@@ -190,7 +205,7 @@ final class ChatHistorySQL {
                 "SELECT id,id,timestamp,target_app_name,'Computer Use',raw_text,duration_seconds FROM source.dictations WHERE deleted_at IS NULL AND source='cua'",
             "meetings": """
             SELECT id,id,muesli_utc_date(start_time),'',title,coalesce(manual_notes,'')||char(10)||coalesce(formatted_notes,'')||char(10)||coalesce(raw_transcript,''),NULL
-            FROM source.meetings WHERE deleted_at IS NULL AND meeting_status NOT IN ('recording','processing')
+            FROM source.meetings WHERE deleted_at IS NULL AND meeting_status NOT IN ('recording','processing')\(privateMeetingFilter)
             """,
             "quill": """
             SELECT t.turn_id,c.id,json_extract(t.body,'$.timestamp'),'','Quill',coalesce(json_extract(t.body,'$.question'),'')||char(10)||coalesce(json_extract(t.body,'$.answer'),''),NULL
@@ -249,7 +264,7 @@ final class ChatHistorySQL {
             while rc == SQLITE_ROW {
                 try Task.checkCancellation()
                 let id = String(cString: sqlite3_column_text(stmt, 0))
-                if id != currentSession.uuidString {
+                if id != currentSession.uuidString, !(table == "chats" && excludedChatIDs.contains(id)) {
                     try derived(table, id, Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1)))
                 }
                 rc = sqlite3_step(stmt)

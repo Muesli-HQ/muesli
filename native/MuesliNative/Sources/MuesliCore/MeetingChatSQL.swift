@@ -70,7 +70,7 @@ enum MeetingChatSQL {
     static func migrate(db: OpaquePointer?) throws {
         // An outer SQLite UPSERT conflict policy can override a trigger's OR IGNORE.
         // Guard insertion with NOT EXISTS instead, including upgrades from earlier trigger definitions.
-        for name in ["meeting_chat_index_source_inserted", "meeting_chat_index_source_edited", "meeting_chat_participant_inserted", "meeting_chat_participant_edited", "meeting_chat_participant_removed"] {
+        for name in ["meeting_chat_index_source_inserted", "meeting_chat_index_source_edited", "meeting_chat_participant_inserted", "meeting_chat_participant_edited", "meeting_chat_participant_removed", "meeting_chat_privacy_meeting_changed", "meeting_chat_privacy_folder_changed", "meeting_chat_privacy_folder_deleted"] {
             try execute("DROP TRIGGER IF EXISTS \(name)", db: db)
         }
         let statements = [
@@ -262,6 +262,38 @@ enum MeetingChatSQL {
             WHERE deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM local_migrations WHERE identifier='meeting_chat_incremental_index_v1')
             """, db: db)
         try execute("INSERT OR IGNORE INTO local_migrations VALUES('meeting_chat_incremental_index_v1',strftime('%s','now'))", db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_privacy_meeting_changed
+            AFTER UPDATE OF is_private ON meetings
+            BEGIN
+              UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1;
+              INSERT OR IGNORE INTO meeting_chat_dirty_sources SELECT NEW.id WHERE NEW.deleted_at IS NULL;
+            END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_privacy_folder_changed
+            AFTER UPDATE OF is_private,parent_id ON meeting_folders
+            BEGIN
+              UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1;
+              INSERT OR IGNORE INTO meeting_chat_dirty_sources
+              SELECT m.id FROM meetings m
+              WHERE m.deleted_at IS NULL AND m.folder_id IN (
+                WITH RECURSIVE subtree(id) AS (
+                  SELECT NEW.id
+                  UNION
+                  SELECT f.id FROM meeting_folders f JOIN subtree s ON f.parent_id=s.id
+                )
+                SELECT id FROM subtree
+              );
+            END
+            """, db: db)
+        try execute("""
+            CREATE TRIGGER IF NOT EXISTS meeting_chat_privacy_folder_deleted
+            AFTER DELETE ON meeting_folders
+            BEGIN
+              UPDATE meeting_chat_source_version SET version=version+1 WHERE id=1;
+            END
+            """, db: db)
         try migrateContentRevisions(db: db)
     }
 
@@ -358,20 +390,33 @@ enum MeetingChatSQL {
         bindings.append(.integer(Int64(limit)))
         return try rows("""
             SELECT m.id,m.title,m.start_time,m.folder_id,m.raw_transcript,COALESCE(m.manual_notes,''),COALESCE(m.formatted_notes,''),m.meeting_status,m.source,
-              COALESCE((SELECT json_group_array(display_name) FROM (SELECT display_name FROM meeting_participants WHERE meeting_id=m.id AND is_suppressed=0 ORDER BY insertion_order)), '[]')
+              COALESCE((SELECT json_group_array(display_name) FROM (SELECT display_name FROM meeting_participants WHERE meeting_id=m.id AND is_suppressed=0 ORDER BY insertion_order)), '[]'),
+              (CASE WHEN m.is_private = 1 OR m.folder_id IN (
+                  WITH RECURSIVE private_folders(id) AS (
+                      SELECT id FROM meeting_folders WHERE is_private = 1
+                      UNION
+                      SELECT f.id FROM meeting_folders f JOIN private_folders p ON f.parent_id = p.id
+                  )
+                  SELECT id FROM private_folders
+              ) THEN 1 ELSE 0 END)
             FROM meetings m WHERE \(clause) ORDER BY m.id LIMIT ?
             """, bindings, db: db) { s in
             let fields = (1...9).map { text(s, Int32($0)) }
+            let isPrivate = sqlite3_column_int(s, 10) != 0
             let date = parseDate(fields[1]) ?? .distantPast
             let transcript = fields[3]
             let notes = fields[5].hasPrefix("## Summary failed") || fields[5].hasPrefix("## Raw Transcript") ? "" : fields[5]
-            // Folder membership changes retrieval scope, never source content.
+            // Folder membership changes retrieval scope, never source content; effective
+            // privacy changes whether a source may leave the device, so include it in the revision.
             var contentFields = fields
             if !includesFolderInRevision { contentFields[2] = "" }
+            if isPrivate { contentFields.append("private") }
             let revisionData = try JSONEncoder().encode(contentFields)
             let revision = SHA256.hash(data: revisionData).map { String(format: "%02x", $0) }.joined()
             if let legacyRevision {
-                let legacy = fields == contentFields ? revision : SHA256.hash(data: try JSONEncoder().encode(fields)).map { String(format: "%02x", $0) }.joined()
+                var legacyFields = fields
+                if isPrivate { legacyFields.append("private") }
+                let legacy = legacyFields == contentFields ? revision : SHA256.hash(data: try JSONEncoder().encode(legacyFields)).map { String(format: "%02x", $0) }.joined()
                 legacyRevision(sqlite3_column_int64(s, 0), legacy)
             }
             return MeetingChatSourceSnapshot(meetingID: sqlite3_column_int64(s, 0), title: fields[0], startDate: date,

@@ -16,9 +16,10 @@ enum SpeakerCentroidBuilder {
 
     static func observations(
         from segments: [TimedSpeakerSegment],
-        minimumSeconds: Double = minimumVoiceprintSeconds
+        minimumSeconds: Double = minimumVoiceprintSeconds,
+        startingNumber: Int = 1
     ) -> [MeetingSpeakerObservation] {
-        observations(from: segments, speakerEmbeddings: [:], minimumSeconds: minimumSeconds)
+        observations(from: segments, speakerEmbeddings: [:], minimumSeconds: minimumSeconds, startingNumber: startingNumber)
     }
 
     /// Builds per-speaker observations, using `speakerEmbeddings[speakerID]` when per-segment
@@ -26,9 +27,10 @@ enum SpeakerCentroidBuilder {
     static func observations(
         from segments: [TimedSpeakerSegment],
         speakerEmbeddings: [String: [Float]],
-        minimumSeconds: Double = minimumVoiceprintSeconds
+        minimumSeconds: Double = minimumVoiceprintSeconds,
+        startingNumber: Int = 1
     ) -> [MeetingSpeakerObservation] {
-        let labels = TranscriptFormatter.speakerLabels(for: segments)
+        let labels = TranscriptFormatter.speakerLabels(for: segments, startingNumber: startingNumber)
         let bySpeaker = Dictionary(grouping: segments, by: \.speakerId)
         return labels
             .sorted { speakerNumber($0.value) < speakerNumber($1.value) }

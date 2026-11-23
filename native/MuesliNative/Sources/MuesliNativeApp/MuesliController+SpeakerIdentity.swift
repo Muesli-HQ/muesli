@@ -9,15 +9,35 @@ extension Notification.Name {
 /// Named speakers. All database work runs off the main actor. Logs carry counts only:
 /// never names, labels, or vectors.
 extension MuesliController {
+    func startingSpeakerNumberForMeeting(meetingID: Int64) async -> Int {
+        guard let priorTranscript = pendingResumePriorTranscript[meetingID] else { return 1 }
+        let databaseURL = speakerIdentityDatabaseURL
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                try DictationStore(databaseURL: databaseURL).nextSpeakerNumber(
+                    forMeetingID: meetingID,
+                    priorTranscript: priorTranscript
+                )
+            }.value
+        } catch {
+            fputs("[speakers] meeting \(meetingID): could not compute speaker offset\n", stderr)
+            return 1
+        }
+    }
+
     /// Called by `MeetingSession` after diarization. Private meetings (failing closed)
     /// record matches locally but never get names rendered into their transcript.
     func resolveMeetingSpeakers(meetingID: Int64, observations: [MeetingSpeakerObservation]) async -> [String: String] {
         let renderNames = !isMeetingPrivateFailingClosed(id: meetingID)
+        let preservingExisting = pendingResumePriorTranscript[meetingID] != nil
         let databaseURL = speakerIdentityDatabaseURL
         do {
             let names = try await Task.detached(priority: .userInitiated) {
                 try DictationStore(databaseURL: databaseURL).recordMeetingSpeakers(
-                    meetingID: meetingID, observations: observations, renderNames: renderNames
+                    meetingID: meetingID,
+                    observations: observations,
+                    renderNames: renderNames,
+                    preservingExisting: preservingExisting
                 )
             }.value
             fputs("[speakers] meeting \(meetingID): \(observations.count) speakers, \(names.count) recognized\n", stderr)

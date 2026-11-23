@@ -152,6 +152,7 @@ actor ChatLibraryTools {
     private let turn: MeetingChatTurn
     private let store: MeetingChatStore
     private let root: URL
+    private let excludePrivate: Bool
     private var index: GlobalSearchIndex?
     private var handles: [String: Hit] = [:]
     private var cursors: [String: (ChatLibraryCall.Search, VisualMemoryCursor)] = [:]
@@ -160,11 +161,13 @@ actor ChatLibraryTools {
     private let observeQueryVersion: (URL) throws -> (() throws -> Bool)
 
     init(turn: MeetingChatTurn, databaseURL: URL, analytics: AnalyticsAttempt? = nil,
+         excludePrivate: Bool = false,
          observeQueryVersion: @escaping (URL) throws -> (() throws -> Bool) = { url in
              let version = try HistorySQLVersion(url: url)
              return { try version.isCurrent() }
          }) {
         self.analytics = analytics
+        self.excludePrivate = excludePrivate
         self.observeQueryVersion = observeQueryVersion
         self.turn = turn
         store = MeetingChatStore(databaseURL: databaseURL)
@@ -318,7 +321,7 @@ actor ChatLibraryTools {
             let screenVersion = usesScreen && FileManager.default.fileExists(atPath:catalog.path) ? try observeQueryVersion(catalog) : nil
             var extra: [ChatHistoryDependency] = []
             var retained = evidence
-            try sql.populate(tables,databaseURL:db,currentSession:turn.sessionID) { table,id,date in
+            try sql.populate(tables,databaseURL:db,currentSession:turn.sessionID,excludePrivate:excludePrivate) { table,id,date in
                 let kind: GlobalSearchKind = table == "recaps" ? .recap : .chat
                 guard let doc = try self.document(.init(kind:kind,id:id,date:date)) else { return }
                 try sql.add(table,id:id,date:date,title:doc.title,text:doc.text)
@@ -372,7 +375,10 @@ actor ChatLibraryTools {
         func ref(_ kind: String) -> [ChatHistoryDependency] { [.init(kind: kind, id: hit.id, parent: hit.id)] }
         switch hit.kind {
         case .dictation, .command, .chat, .vidshot:
-            if hit.kind == .chat && hit.id == turn.sessionID.uuidString { return nil }
+            if hit.kind == .chat {
+                if hit.id == turn.sessionID.uuidString { return nil }
+                if excludePrivate, try rows.privateChatSessionIDs().contains(hit.id) { return nil }
+            }
             let kind: MuesliHistoryKind = hit.kind == .vidshot ? .vidshots : (hit.kind == .chat ? .chat : (hit.kind == .command ? .commands : .dictations))
             guard let row = try MuesliHistoryReader(databaseURL: db).read(kind: kind, id: hit.id, fullText: true) else { return nil }
             return .init(title: row.title, text: row.text, dependencies: ref(kind.rawValue))
@@ -399,9 +405,14 @@ actor ChatLibraryTools {
                 if let h = source.history { return .init(kind: h.kind.rawValue, id: h.id, parent: h.parentID) }
                 return nil
             }
+            let meetings = row.sources.compactMap { $0.meeting.map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) } }
+            if excludePrivate, !meetings.isEmpty {
+                let privateIDs = try rows.privateMeetingIDs()
+                if meetings.contains(where: { privateIDs.contains($0.meetingID) }) { return nil }
+            }
             return .init(
                 title: "Daily recap", text: TimeTurnerRecap.plainText(row.insights), dependencies: ref("recap") + dependencies,
-                meetings: row.sources.compactMap { $0.meeting.map { .init(meetingID: $0.meetingID, revision: $0.revision) } })
+                meetings: meetings)
         case .meeting: throw MeetingChatHarnessError.toolProtocol
         }
     }

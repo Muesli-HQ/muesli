@@ -293,6 +293,39 @@ struct AudioFileImportControllerTests {
         #expect(result.contains("Test transcript"))
     }
 
+    @Test("import rechecks folder privacy before summary generation")
+    func importRechecksFolderPrivacyBeforeSummary() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-import-privacy-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+        let folderID = try store.createFolder(name: "Clients")
+
+        var config = AppConfig()
+        config.meetingSummaryBackend = MeetingSummaryBackendOption.customLLM.backend
+        config.customLLMURL = "http://127.0.0.1:1/v1"
+        config.customLLMModel = "test-model"
+        config.meetingSummaryRetryCount = 0
+
+        let (title, notes) = try await AudioFileImportController.generateTitleAndSummary(
+            transcript: "[00:00:01] Speaker 1: Confidential merger terms",
+            fallbackTitle: "Imported Recording",
+            config: config,
+            templateSnapshot: MeetingTemplates.auto.snapshot,
+            isFolderPrivate: { (try? store.isFolderPrivate(id: folderID)) ?? true },
+            progress: { _ in },
+            generateTitle: { _, _, isPrivate in
+                #expect(!isPrivate)
+                try? store.setFolderPrivate(id: folderID, isPrivate: true)
+                return "Client Sync"
+            }
+        )
+
+        #expect(title == "Client Sync")
+        #expect(notes.contains("## Summary failed"))
+        #expect(notes.contains("not trusted for private meetings"))
+    }
+
     // MARK: - Helpers
 
     /// Creates a test audio file with a sine wave tone.

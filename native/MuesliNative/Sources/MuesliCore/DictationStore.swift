@@ -2882,16 +2882,26 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         folderID: Int64? = nil,
         followUpToID: Int64? = nil,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        isPrivate: Bool = false
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let followUpRecordName = try followUpToID.flatMap { try meetingCloudRecordName(id: $0, db: db) }
+        var effectivePrivate = isPrivate
+        if !effectivePrivate, let followUpToID {
+            if try isMeetingDirectlyPrivate(id: followUpToID, db: db) {
+                effectivePrivate = true
+            } else if try isMeetingPrivate(id: followUpToID, db: db),
+                      !(try folderID.map { try isFolderPrivate(id: $0, db: db) } ?? false) {
+                effectivePrivate = true
+            }
+        }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, notes_layout_version)
-        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, notes_layout_version, is_private)
+        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -2929,6 +2939,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 17)
         }
+        sqlite3_bind_int(statement, 18, effectivePrivate ? 1 : 0)
 
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -5162,6 +5173,10 @@ public final class DictationStore {
     public func isFolderPrivate(id: Int64) throws -> Bool {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        return try isFolderPrivate(id: id, db: db)
+    }
+
+    private func isFolderPrivate(id: Int64, db: OpaquePointer?) throws -> Bool {
         let sql = """
         WITH RECURSIVE ancestors(id) AS (
             SELECT ?1
@@ -5182,6 +5197,193 @@ public final class DictationStore {
             throw lastError(db)
         }
         return sqlite3_column_int(statement, 0) != 0
+    }
+
+    public func isMeetingDirectlyPrivate(id: Int64) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try isMeetingDirectlyPrivate(id: id, db: db)
+    }
+
+    private func isMeetingDirectlyPrivate(id: Int64, db: OpaquePointer?) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1 AND is_private = 1)", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw lastError(db)
+        }
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    /// Every folder id that is private itself or descends from a private folder.
+    public func privateFolderIDs() throws -> Set<Int64> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try privateFolderIDs(db: db)
+    }
+
+    private func privateFolderIDs(db: OpaquePointer?) throws -> Set<Int64> {
+        let sql = """
+        WITH RECURSIVE private_folders(id) AS (
+            SELECT id FROM meeting_folders WHERE is_private = 1
+            UNION
+            SELECT f.id FROM meeting_folders f
+            JOIN private_folders p ON f.parent_id = p.id
+        )
+        SELECT id FROM private_folders
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var ids: Set<Int64> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            ids.insert(sqlite3_column_int64(statement, 0))
+        }
+        return ids
+    }
+
+    /// Saved Ask Meetings session UUIDs whose scope, attachments, rolling summary,
+    /// or evidence/history dependencies touch any private meeting or private folder.
+    public func privateChatSessionIDs() throws -> Set<String> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try privateChatSessionIDs(db: db)
+    }
+
+    private func privateChatSessionIDs(db: OpaquePointer?) throws -> Set<String> {
+        func tableExists(_ name: String) throws -> Bool {
+            var s: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &s, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(s) }
+            sqlite3_bind_text(s, 1, (name as NSString).utf8String, -1, nil)
+            let status = sqlite3_step(s)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+            return status == SQLITE_ROW
+        }
+        guard try tableExists("meeting_chat_sessions") else { return [] }
+        let privateMeetings = try privateMeetingIDs(db: db)
+        let privateFolders = try privateFolderIDs(db: db)
+        var result: Set<String> = []
+
+        // 1. Sessions linked directly to a private meeting (anchor or selected) or via turn dependencies.
+        if !privateMeetings.isEmpty {
+            if try tableExists("meeting_chat_session_meetings") {
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT DISTINCT session_id, meeting_id FROM meeting_chat_session_meetings", -1, &s, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(s) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    if privateMeetings.contains(sqlite3_column_int64(s, 1)),
+                       let sid = sqlite3_column_text(s, 0).map({ String(cString: $0) }) {
+                        result.insert(sid)
+                    }
+                }
+            }
+            if try tableExists("meeting_chat_turns"), try tableExists("meeting_chat_dependencies") {
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT DISTINCT t.session_id, d.meeting_id FROM meeting_chat_dependencies d JOIN meeting_chat_turns t ON t.id = d.turn_id", -1, &s, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(s) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    if privateMeetings.contains(sqlite3_column_int64(s, 1)),
+                       let sid = sqlite3_column_text(s, 0).map({ String(cString: $0) }) {
+                        result.insert(sid)
+                    }
+                }
+            }
+        }
+
+        // 2. Sessions whose stored scope or rolling summary references a private meeting or folder.
+        var sessionStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, body FROM meeting_chat_sessions", -1, &sessionStmt, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(sessionStmt) }
+        while sqlite3_step(sessionStmt) == SQLITE_ROW {
+            guard let idPtr = sqlite3_column_text(sessionStmt, 0),
+                  let bodyPtr = sqlite3_column_text(sessionStmt, 1) else { continue }
+            let id = String(cString: idPtr)
+            let body = String(cString: bodyPtr)
+            guard let session = try? JSONDecoder().decode(MeetingChatSession.self, from: Data(body.utf8)) else { continue }
+            switch session.scope.selection {
+            case .all: break
+            case .folder(let folderID):
+                if privateFolders.contains(folderID) { result.insert(id) }
+            case .meetings(let ids):
+                if !privateMeetings.isDisjoint(with: ids) { result.insert(id) }
+            }
+            if let summaryDeps = session.rollingSummary?.dependencies,
+               summaryDeps.contains(where: { privateMeetings.contains($0.meetingID) }) {
+                result.insert(id)
+            }
+        }
+
+        // 3. History dependencies (sqlMeeting, recap, and transitive chat references).
+        if try tableExists("meeting_chat_turns"), try tableExists("meeting_chat_history_dependencies") {
+            var recapPrivateKeys: Set<String> = []
+            if !privateMeetings.isEmpty, try tableExists("time_turner_recaps") {
+                struct RecapBody: Decodable {
+                    struct Source: Decodable { let meeting: MeetingChatCitation? }
+                    let sources: [Source]
+                }
+                var rStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT day_key, body FROM time_turner_recaps", -1, &rStmt, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(rStmt) }
+                while sqlite3_step(rStmt) == SQLITE_ROW {
+                    guard let keyPtr = sqlite3_column_text(rStmt, 0),
+                          let bodyPtr = sqlite3_column_text(rStmt, 1) else { continue }
+                    let key = String(cString: keyPtr)
+                    let body = String(cString: bodyPtr)
+                    if let recap = try? JSONDecoder().decode(RecapBody.self, from: Data(body.utf8)),
+                       recap.sources.contains(where: { $0.meeting.map { privateMeetings.contains($0.meetingID) } == true }) {
+                        recapPrivateKeys.insert(key)
+                    }
+                }
+            }
+
+            var chatEdges: [(sessionID: String, referencedSessionID: String)] = []
+            var hStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT t.session_id, h.kind, h.source_id FROM meeting_chat_history_dependencies h JOIN meeting_chat_turns t ON t.id = h.turn_id WHERE h.kind IN ('sqlMeeting','recap','chat')", -1, &hStmt, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(hStmt) }
+            while sqlite3_step(hStmt) == SQLITE_ROW {
+                guard let sidPtr = sqlite3_column_text(hStmt, 0),
+                      let kindPtr = sqlite3_column_text(hStmt, 1),
+                      let srcPtr = sqlite3_column_text(hStmt, 2) else { continue }
+                let sid = String(cString: sidPtr)
+                let kind = String(cString: kindPtr)
+                let src = String(cString: srcPtr)
+                switch kind {
+                case "sqlMeeting":
+                    if let mid = Int64(src), privateMeetings.contains(mid) { result.insert(sid) }
+                case "recap":
+                    if recapPrivateKeys.contains(src) { result.insert(sid) }
+                case "chat":
+                    chatEdges.append((sid, src))
+                default: break
+                }
+            }
+            var changed = true
+            while changed {
+                changed = false
+                for edge in chatEdges where result.contains(edge.referencedSessionID) {
+                    if result.insert(edge.sessionID).inserted { changed = true }
+                }
+            }
+        }
+        return result
     }
 
     /// Every private meeting id, including meetings that are private only through a folder.

@@ -742,4 +742,67 @@ struct MeetingFollowUpSummaryPromptTests {
         let regular = MeetingSummaryClient.summaryInstructions(for: template)
         #expect(!regular.contains("carry forward action items"))
     }
+
+    @Test("follow-up to an individually private meeting inherits privacy in store")
+    func followUpInheritsIndividualPrivacy() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-followup-privacy-\(UUID().uuidString).db")
+        let store = DictationStore(databaseURL: url)
+        try store.migrateIfNeeded()
+
+        let predecessorID = try store.createLiveMeeting(title: "Private Board Call", calendarEventID: nil, startTime: Date())
+        try store.completeLiveMeeting(
+            id: predecessorID,
+            title: "Private Board Call",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date(),
+            durationSeconds: 60,
+            rawTranscript: "Confidential notes",
+            formattedNotes: "## Summary\n\n- [ ] Keep confidential",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.setMeetingPrivate(id: predecessorID, isPrivate: true)
+
+        let followUpID = try store.createLiveMeeting(
+            title: "Follow-up: Private Board Call",
+            calendarEventID: nil,
+            startTime: Date(),
+            followUpToID: predecessorID
+        )
+        #expect(try store.isMeetingPrivate(id: followUpID))
+        #expect(try store.isMeetingDirectlyPrivate(id: followUpID))
+    }
+
+    @Test("MeetingSession fails closed when previousMeetingNotes came from a private predecessor")
+    func sessionFailsClosedForPrivatePredecessorNotes() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let runtime = RuntimePaths(repoRoot: dir, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let session = MeetingSession(
+            title: "Follow-up: Private Call",
+            calendarEventID: nil,
+            backend: .parakeetEnglish,
+            runtime: runtime,
+            config: AppConfig(),
+            templateSnapshot: MeetingTemplates.auto.snapshot,
+            transcriptionCoordinator: TranscriptionCoordinator()
+        )
+        session.previousMeetingNotes = "- [ ] Secret predecessor item"
+        // Even if the follow-up itself is not marked private (or no provider is installed),
+        // private predecessor notes must force outbound checks to fail closed.
+        session.isPrivateMeetingProvider = { false }
+        session.previousMeetingNotesArePrivate = true
+        #expect(await session.currentOutboundPrivacyState() == true)
+
+        session.previousMeetingNotesArePrivate = false
+        session.isPreviousMeetingPrivateProvider = { true }
+        #expect(await session.currentOutboundPrivacyState() == true)
+
+        session.isPreviousMeetingPrivateProvider = nil
+        session.isPrivateMeetingProvider = nil
+        session.previousMeetingNotesArePrivate = false
+        #expect(await session.currentOutboundPrivacyState() == true)
+    }
 }

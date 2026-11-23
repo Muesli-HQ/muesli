@@ -194,24 +194,88 @@ enum SpeakerIdentitySQL {
 extension DictationStore {
     // MARK: Pipeline
 
-    /// Replaces this meeting's speaker rows with the new diarization, then matches the
-    /// centroids against saved voiceprints. Returns `observed label -> profile name` for
-    /// confident matches when `renderNames` is true; when false (private meetings) the
-    /// match is recorded locally but nothing is returned for the transcript.
+    /// Highest numeric suffix among `"Speaker N"` labels in `existingLabels` or line
+    /// prefixes in `transcript`. Used when resuming a meeting so new sessions do not
+    /// reuse earlier `"Speaker N"` labels.
+    public static func highestSpeakerNumber(inTranscript transcript: String, existingLabels: [String]) -> Int {
+        var highest = 0
+        if let labelRegex = try? NSRegularExpression(pattern: "^Speaker (\\d+)$") {
+            for label in existingLabels {
+                let range = NSRange(label.startIndex..., in: label)
+                if let match = labelRegex.firstMatch(in: label, range: range),
+                   let numberRange = Range(match.range(at: 1), in: label),
+                   let number = Int(label[numberRange]) {
+                    highest = max(highest, number)
+                }
+            }
+        }
+        if let transcriptRegex = try? NSRegularExpression(pattern: "(?m)^(?:\\[[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\\]\\s+)?Speaker (\\d+):") {
+            let range = NSRange(transcript.startIndex..., in: transcript)
+            transcriptRegex.enumerateMatches(in: transcript, range: range) { match, _, _ in
+                guard let match,
+                      let numberRange = Range(match.range(at: 1), in: transcript),
+                      let number = Int(transcript[numberRange]) else { return }
+                highest = max(highest, number)
+            }
+        }
+        return highest
+    }
+
+    /// Next available `"Speaker N"` index for a meeting, strictly greater than any
+    /// existing `"Speaker N"` in `meeting_speakers` or its transcript.
+    public func nextSpeakerNumber(forMeetingID meetingID: Int64, priorTranscript: String? = nil) throws -> Int {
+        try withChatDatabase { db in
+            try nextSpeakerNumber(forMeetingID: meetingID, priorTranscript: priorTranscript, db: db)
+        }
+    }
+
+    private func nextSpeakerNumber(forMeetingID meetingID: Int64, priorTranscript: String?, db: OpaquePointer?) throws -> Int {
+        let existingLabels = try SpeakerIdentitySQL.rows(
+            "SELECT label FROM meeting_speakers WHERE meeting_id = ?", [.integer(meetingID)], db: db
+        ) { SpeakerIdentitySQL.text($0, 0) ?? "" }
+        let dbTranscript = try SpeakerIdentitySQL.rows(
+            "SELECT COALESCE(raw_transcript, '') FROM meetings WHERE id = ?", [.integer(meetingID)], db: db
+        ) { SpeakerIdentitySQL.text($0, 0) ?? "" }.first ?? ""
+        let combined = [dbTranscript, priorTranscript ?? ""].joined(separator: "\n")
+        return Self.highestSpeakerNumber(inTranscript: combined, existingLabels: existingLabels) + 1
+    }
+
+    /// Records this meeting's diarized speakers, then matches the centroids against saved
+    /// voiceprints. When `preservingExisting` is false, replaces all rows for the meeting;
+    /// when true (resumed meetings), keeps existing rows and offsets any colliding
+    /// `"Speaker N"` labels past the highest existing speaker number. Returns
+    /// `observed label -> profile name` for confident matches when `renderNames` is true;
+    /// when false (private meetings) the match is recorded locally but nothing is returned
+    /// for the transcript.
     public func recordMeetingSpeakers(
         meetingID: Int64,
         observations: [MeetingSpeakerObservation],
-        renderNames: Bool
+        renderNames: Bool,
+        preservingExisting: Bool = false
     ) throws -> [String: String] {
         try withChatDatabase { db in
             try SpeakerIdentitySQL.transaction(db: db) {
-                try SpeakerIdentitySQL.deleteMeetingSpeakers(meetingID: meetingID, db: db)
+                if !preservingExisting {
+                    try SpeakerIdentitySQL.deleteMeetingSpeakers(meetingID: meetingID, db: db)
+                }
                 // A discard or delete can race with the end of processing; never leave a
                 // centroid behind for a meeting that is gone.
                 let live = try SpeakerIdentitySQL.rows(
-                    "SELECT 1 FROM meetings WHERE id = ? AND deleted_at IS NULL", [.integer(meetingID)], db: db
-                ) { _ in () }
-                guard !live.isEmpty else { return [:] }
+                    "SELECT COALESCE(raw_transcript, '') FROM meetings WHERE id = ? AND deleted_at IS NULL", [.integer(meetingID)], db: db
+                ) { SpeakerIdentitySQL.text($0, 0) ?? "" }
+                guard let existingTranscript = live.first else { return [:] }
+                let existingLabels: Set<String>
+                var nextNumber: Int
+                if preservingExisting {
+                    let labels = try SpeakerIdentitySQL.rows(
+                        "SELECT label FROM meeting_speakers WHERE meeting_id = ?", [.integer(meetingID)], db: db
+                    ) { SpeakerIdentitySQL.text($0, 0) ?? "" }
+                    existingLabels = Set(labels)
+                    nextNumber = Self.highestSpeakerNumber(inTranscript: existingTranscript, existingLabels: labels) + 1
+                } else {
+                    existingLabels = []
+                    nextNumber = 1
+                }
                 let speakers = observations.filter { !SpeakerVoiceprintMatcher.reservedLabels.contains($0.label) }
                 let matches = SpeakerVoiceprintMatcher.match(
                     candidates: speakers.map { .init(label: $0.label, centroid: $0.centroid) },
@@ -219,14 +283,31 @@ extension DictationStore {
                 )
                 let names = try profileNames(ids: Array(matches.values), db: db)
                 var rendered: [String: String] = [:]
+                var usedLabels = existingLabels
                 for speaker in speakers {
+                    let assignedSpeakerLabel: String
+                    if preservingExisting,
+                       usedLabels.contains(speaker.label) || Self.highestSpeakerNumber(inTranscript: "", existingLabels: [speaker.label]) > 0 && Self.highestSpeakerNumber(inTranscript: "", existingLabels: [speaker.label]) < nextNumber {
+                        while usedLabels.contains("Speaker \(nextNumber)") { nextNumber += 1 }
+                        assignedSpeakerLabel = "Speaker \(nextNumber)"
+                        nextNumber += 1
+                    } else {
+                        assignedSpeakerLabel = speaker.label
+                    }
+                    usedLabels.insert(assignedSpeakerLabel)
                     let profileID = matches[speaker.label]
                     let name = profileID.flatMap { names[$0] }
-                    let label = renderNames ? (name ?? speaker.label) : speaker.label
+                    let label = renderNames ? (name ?? assignedSpeakerLabel) : assignedSpeakerLabel
                     if renderNames, let name { rendered[speaker.label] = name }
                     let embedding = speaker.centroid.flatMap { SpeakerVoiceprintMatcher.isUsable($0) ? SpeakerIdentitySQL.encode($0) : nil }
                     try SpeakerIdentitySQL.execute(
-                        "INSERT OR REPLACE INTO meeting_speakers (meeting_id, label, embedding, profile_id) VALUES (?, ?, ?, ?)",
+                        """
+                        INSERT INTO meeting_speakers (meeting_id, label, embedding, profile_id)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(meeting_id, label) DO UPDATE SET
+                          embedding = COALESCE(meeting_speakers.embedding, excluded.embedding),
+                          profile_id = COALESCE(meeting_speakers.profile_id, excluded.profile_id)
+                        """,
                         [.integer(meetingID), .text(label), embedding.map { .blob($0) } ?? .null, profileID.map { .integer($0) } ?? .null],
                         db: db
                     )
@@ -424,7 +505,7 @@ extension DictationStore {
         guard let embedding else { return false }
         let vector = SpeakerIdentitySQL.decode(embedding)
         guard SpeakerVoiceprintMatcher.isUsable(vector) else { return false }
-        let existing = try SpeakerIdentitySQL.rows(
+        let existing: [()] = try SpeakerIdentitySQL.rows(
             "SELECT 1 FROM speaker_voiceprints WHERE profile_id = ? AND source_meeting_id = ?",
             [.integer(profileID), .integer(meetingID)], db: db
         ) { _ in () }

@@ -54,10 +54,11 @@ struct MeetingSpeakersView: View {
     private var popover: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Speakers")
-                .font(.headline)
-            Text("Name a voice once and Muesli recognizes it in later meetings. Voiceprints stay on this Mac.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(MuesliTheme.headline())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("Name a voice once and muesli recognizes it in later meetings. Voiceprints stay on this Mac.")
+                .font(MuesliTheme.caption())
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(speakers) { speaker in
                 MeetingSpeakerRow(
@@ -73,6 +74,7 @@ struct MeetingSpeakersView: View {
                 isPopoverPresented = false
                 isPeopleSheetPresented = true
             }
+            .font(MuesliTheme.callout())
             .accessibilityIdentifier("meeting.speakers.managePeople")
         }
         .padding(14)
@@ -138,22 +140,25 @@ private struct MeetingSpeakerRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.body.weight(.medium))
+                    .font(MuesliTheme.font(size: 14, weight: .medium))
+                    .foregroundStyle(MuesliTheme.textPrimary)
                 if !speaker.hasVoiceprintSource {
                     Text("too little audio to learn")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
                 }
                 Spacer()
                 if speaker.profileID != nil { assignedMenu }
             }
             HStack(spacing: 6) {
                 TextField("This is…", text: $draftName)
+                    .font(MuesliTheme.body())
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(submit)
                     .accessibilityIdentifier("meeting.speakers.nameField")
                 if !profiles.isEmpty { existingProfilesMenu }
                 Button("Save", action: submit)
+                    .font(MuesliTheme.callout())
                     .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -218,38 +223,47 @@ struct SpeakerProfilesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("People")
-                .font(.title2.weight(.semibold))
-            Text("Voices Muesli recognizes in meetings. Voiceprints are stored only on this Mac and are never synced.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(MuesliTheme.title2())
+                .foregroundStyle(MuesliTheme.textPrimary)
+            Text("Voices muesli recognizes in meetings. Voiceprints are stored only on this Mac and are never synced.")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if profiles.isEmpty {
                 Text("No people yet. Name a speaker from a meeting's Speakers button.")
-                    .foregroundStyle(.secondary)
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textSecondary)
                     .frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 List(profiles) { profile in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(profile.name)
+                                .font(MuesliTheme.body())
+                                .foregroundStyle(MuesliTheme.textPrimary)
                             Text(counts(profile))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(MuesliTheme.caption())
+                                .foregroundStyle(MuesliTheme.textSecondary)
                         }
                         Spacer()
                         Button("Forget Voiceprints") { Task { await forget(profile) } }
+                            .font(MuesliTheme.callout())
                             .disabled(profile.voiceprintCount == 0)
                         Button("Delete", role: .destructive) { pendingDelete = profile }
+                            .font(MuesliTheme.callout())
                     }
                 }
                 .frame(minHeight: 220)
             }
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                Text(errorMessage)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.destructiveText)
             }
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
+                    .font(MuesliTheme.callout())
                     .keyboardShortcut(.defaultAction)
             }
         }

@@ -217,42 +217,15 @@ enum AudioFileImportController {
         try Task.checkCancellation()
 
         let wordCount = DictationStore.countWords(in: diarizedTranscript)
-        // An import filed into a private folder is a private meeting from the moment it is saved.
-        let isPrivateMeeting = await controller.isFolderPrivateFailingClosed(id: folderID)
-        let generatedTitle: String
-        progress("Generating title...")
-        if let autoTitle = await MeetingSummaryClient.generateTitle(
-            transcript: diarizedTranscript, config: config, isPrivateMeeting: isPrivateMeeting),
-           !autoTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            generatedTitle = autoTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            generatedTitle = title
-        }
-
-        try Task.checkCancellation()
-
-        progress("Generating summary...")
         let templateSnapshot = context.templateSnapshot
-        let formattedNotes: String
-        do {
-            formattedNotes = try await MeetingSummaryClient.summarize(
-                transcript: diarizedTranscript,
-                meetingTitle: generatedTitle,
-                config: config,
-                template: templateSnapshot,
-                existingNotes: nil,
-                manualNotesToRetain: "",
-                isPrivateMeeting: isPrivateMeeting
-            )
-        } catch {
-            fputs("[import] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
-            formattedNotes = MeetingSummaryClient.summaryFailureNotes(
-                transcript: diarizedTranscript,
-                meetingTitle: generatedTitle,
-                error: error,
-                manualNotes: ""
-            )
-        }
+        let (generatedTitle, formattedNotes) = try await generateTitleAndSummary(
+            transcript: diarizedTranscript,
+            fallbackTitle: title,
+            config: config,
+            templateSnapshot: templateSnapshot,
+            isFolderPrivate: { await controller.isFolderPrivateFailingClosed(id: folderID) },
+            progress: progress
+        )
 
         try Task.checkCancellation()
 
@@ -290,6 +263,71 @@ enum AudioFileImportController {
     }
 
     // MARK: - Helpers
+
+    /// Generates an imported meeting's title and summary, re-checking folder privacy
+    /// right before the summary request so a folder marked private during title
+    /// generation blocks untrusted summary backends.
+    static func generateTitleAndSummary(
+        transcript: String,
+        fallbackTitle: String,
+        config: AppConfig,
+        templateSnapshot: MeetingTemplateSnapshot,
+        isFolderPrivate: @escaping @Sendable () async -> Bool,
+        progress: @escaping @Sendable (String) -> Void,
+        generateTitle: @escaping @Sendable (String, AppConfig, Bool) async -> String? = { transcript, config, isPrivate in
+            await MeetingSummaryClient.generateTitle(
+                transcript: transcript,
+                config: config,
+                isPrivateMeeting: isPrivate
+            )
+        },
+        summarize: @escaping @Sendable (String, String, AppConfig, MeetingTemplateSnapshot, Bool) async throws -> String = { transcript, title, config, template, isPrivate in
+            try await MeetingSummaryClient.summarize(
+                transcript: transcript,
+                meetingTitle: title,
+                config: config,
+                template: template,
+                existingNotes: nil,
+                manualNotesToRetain: "",
+                isPrivateMeeting: isPrivate
+            )
+        }
+    ) async throws -> (title: String, formattedNotes: String) {
+        // An import filed into a private folder is a private meeting from the moment it is saved.
+        let isTitlePrivateMeeting = await isFolderPrivate()
+        let generatedTitle: String
+        progress("Generating title...")
+        if let autoTitle = await generateTitle(transcript, config, isTitlePrivateMeeting),
+           !autoTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            generatedTitle = autoTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            generatedTitle = fallbackTitle
+        }
+
+        try Task.checkCancellation()
+
+        progress("Generating summary...")
+        let isSummaryPrivateMeeting = await isFolderPrivate()
+        let formattedNotes: String
+        do {
+            formattedNotes = try await summarize(
+                transcript,
+                generatedTitle,
+                config,
+                templateSnapshot,
+                isSummaryPrivateMeeting
+            )
+        } catch {
+            fputs("[import] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
+            formattedNotes = MeetingSummaryClient.summaryFailureNotes(
+                transcript: transcript,
+                meetingTitle: generatedTitle,
+                error: error,
+                manualNotes: ""
+            )
+        }
+        return (generatedTitle, formattedNotes)
+    }
 
     private static func temporaryWAVURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory

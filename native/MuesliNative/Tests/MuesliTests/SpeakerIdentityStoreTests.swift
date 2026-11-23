@@ -402,6 +402,100 @@ struct SpeakerIdentityStoreTests {
         let centroidBytes = centroid.withUnsafeBufferPointer { Data(buffer: $0) }
         #expect(!encoded.contains(centroidBytes.base64EncodedString().prefix(24)))
         let fieldNames = Mirror(reflecting: records[0]).children.compactMap(\.label).map { $0.lowercased() }
-        #expect(!fieldNames.contains { $0.contains("embedding") || $0.contains("voiceprint") || $0.contains("profile") })
+        #expect(fieldNames.contains { $0.contains("embedding") || $0.contains("voiceprint") || $0.contains("profile") } == false)
+    }
+
+    // MARK: - Resume preservation and speaker numbering offset (Finding 5)
+
+    @Test("resumed meeting preserves existing speaker rows and offsets new Speaker N labels")
+    func resumePreservesSpeakersAndOffsetsLabels() throws {
+        let store = try makeStore()
+        let session1Transcript = """
+        [10:00:00] Speaker 1: opening point
+        [10:00:05] Speaker 2: second point
+        """
+        let id = try store.createLiveMeeting(title: "Call", calendarEventID: nil, startTime: Date())
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Call",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date(),
+            durationSeconds: 60,
+            rawTranscript: session1Transcript,
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        _ = try store.recordMeetingSpeakers(
+            meetingID: id,
+            observations: [observation("Speaker 1", unit(0)), observation("Speaker 2", unit(1))],
+            renderNames: true
+        )
+
+        let prior = try store.prepareMeetingForResume(id: id)
+        #expect(try store.nextSpeakerNumber(forMeetingID: id, priorTranscript: prior) == 3)
+
+        // Session 2 arrives with offset labels Speaker 3 and Speaker 4, preserving session 1.
+        _ = try store.recordMeetingSpeakers(
+            meetingID: id,
+            observations: [observation("Speaker 3", unit(2)), observation("Speaker 4", unit(3))],
+            renderNames: true,
+            preservingExisting: true
+        )
+        let combined = prior + "\n\n— Resumed —\n\n" + """
+        [10:05:00] Speaker 3: resumed point
+        [10:05:05] Speaker 4: follow-up point
+        """
+        try store.completeLiveMeeting(
+            id: id,
+            title: "Call",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date(),
+            durationSeconds: 120,
+            rawTranscript: combined,
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let speakers = try store.meetingSpeakers(meetingID: id)
+        #expect(speakers.map(\.label) == ["Speaker 1", "Speaker 2", "Speaker 3", "Speaker 4"])
+
+        let result = try store.assignSpeaker(meetingID: id, label: "Speaker 3", name: "Casey")
+        #expect(result.transcriptRewritten)
+        let updated = try rawTranscript(store, id)
+        #expect(updated.contains("[10:00:00] Speaker 1: opening point"))
+        #expect(updated.contains("[10:00:05] Speaker 2: second point"))
+        #expect(updated.contains("[10:05:00] Casey: resumed point"))
+        #expect(updated.contains("[10:05:05] Speaker 4: follow-up point"))
+    }
+
+    @Test("resumed meeting with un-offset observations shifts colliding labels without overwriting session 1")
+    func resumeWithUnOffsetObservationsShiftsSafely() throws {
+        let store = try makeStore()
+        let session1Transcript = """
+        [10:00:00] Speaker 1: first session
+        [10:00:05] Speaker 2: first session two
+        """
+        let id = try insertMeeting(store, transcript: session1Transcript)
+        _ = try store.recordMeetingSpeakers(
+            meetingID: id,
+            observations: [observation("Speaker 1", unit(0)), observation("Speaker 2", unit(1))],
+            renderNames: true
+        )
+        _ = try store.assignSpeaker(meetingID: id, label: "Speaker 1", name: "Alex")
+
+        // Even if called directly with Speaker 1 / Speaker 2, preservingExisting keeps
+        // Alex and Speaker 2 intact and shifts new observations past Speaker 2.
+        _ = try store.recordMeetingSpeakers(
+            meetingID: id,
+            observations: [observation("Speaker 1", unit(2)), observation("Speaker 2", unit(3))],
+            renderNames: true,
+            preservingExisting: true
+        )
+        let labels = try store.meetingSpeakers(meetingID: id).map(\.label)
+        #expect(labels == ["Alex", "Speaker 2", "Speaker 3", "Speaker 4"])
     }
 }

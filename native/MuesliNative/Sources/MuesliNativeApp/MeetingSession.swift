@@ -260,6 +260,9 @@ final class MeetingSession {
     /// Answers whether this meeting is private at the moment of the call. It is asked
     /// before every outbound request because the flag can change during processing.
     var isPrivateMeetingProvider: (() async -> Bool)?
+    /// First `"Speaker N"` index to assign when formatting and recording remote speakers.
+    /// Defaults to `1`; resumed meetings offset past existing speakers in the meeting.
+    var startingSpeakerNumberProvider: (() async -> Int)?
     /// Persists this meeting's diarized speakers and returns `Speaker N -> name` for
     /// recognized voices. An empty map keeps the transcript exactly as before.
     var speakerNamesProvider: (([MeetingSpeakerObservation]) async -> [String: String])?
@@ -267,6 +270,10 @@ final class MeetingSession {
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
     var previousMeetingNotes: String?
+    /// True if `previousMeetingNotes` originated from a private predecessor meeting.
+    var previousMeetingNotesArePrivate = false
+    /// Re-checks whether the follow-up's predecessor meeting is currently private.
+    var isPreviousMeetingPrivateProvider: (() async -> Bool)?
     var onChunkTranscribed: (([SpeechSegment], String) -> Void)?
     /// Display-only streaming partial for a source ("You"/"Others", tail text).
     /// Empty text clears the source's tail. Called on a background thread.
@@ -1025,9 +1032,11 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
+        let startingSpeakerNumber = max(1, await startingSpeakerNumberProvider?() ?? 1)
         let speakerObservations = SpeakerCentroidBuilder.observations(
             from: protectedTranscriptInputs.diarizationSegments ?? [],
-            speakerEmbeddings: systemSpeakerCentroids
+            speakerEmbeddings: systemSpeakerCentroids,
+            startingNumber: startingSpeakerNumber
         )
         let speakerNames = speakerObservations.isEmpty ? [:] : await speakerNamesProvider?(speakerObservations) ?? [:]
 
@@ -1042,7 +1051,8 @@ final class MeetingSession {
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
             meetingStart: meetingStart,
-            speakerNames: speakerNames
+            speakerNames: speakerNames,
+            startingSpeakerNumber: startingSpeakerNumber
         )
 
         let titleManualNotes = await manualNotesProvider?()
@@ -1059,7 +1069,7 @@ final class MeetingSession {
             transcript: rawTranscript,
             manualNotes: titleManualNotes,
             config: config,
-            isPrivateMeeting: await isPrivateMeetingProvider?() ?? false
+            isPrivateMeeting: await currentOutboundPrivacyState()
         ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
@@ -1088,7 +1098,7 @@ final class MeetingSession {
                 participantNames: participantNames,
                 visualContext: visualContext.isEmpty ? nil : visualContext,
                 previousMeetingNotes: previousMeetingNotes,
-                isPrivateMeeting: await isPrivateMeetingProvider?() ?? false
+                isPrivateMeeting: await currentOutboundPrivacyState()
             )
         } catch {
             fputs("[meeting] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
@@ -1138,6 +1148,14 @@ final class MeetingSession {
             templateSnapshot: templateSnapshot,
             visualContext: visualContext.isEmpty ? nil : visualContext
         )
+    }
+
+    func currentOutboundPrivacyState() async -> Bool {
+        if previousMeetingNotesArePrivate { return true }
+        if let isPreviousMeetingPrivateProvider, await isPreviousMeetingPrivateProvider() { return true }
+        if let isPrivateMeetingProvider { return await isPrivateMeetingProvider() }
+        // Fail closed when carried predecessor notes exist without a privacy provider.
+        return previousMeetingNotes != nil
     }
 
     static func calendarTitleCandidate(originalTitle: String, calendarEventID: String?) -> String? {

@@ -17,7 +17,8 @@ enum TranscriptFormatter {
         micDiarizationSegments: [TimedSpeakerSegment]? = nil,
         meetingStart: Date,
         conservativeSpeakerAttribution: Bool = false,
-        speakerNames: [String: String] = [:]
+        speakerNames: [String: String] = [:],
+        startingSpeakerNumber: Int = 1
     ) -> String {
         // The formatter is intentionally source-agnostic: upstream capture decides
         // which mic/system segments are valid, then this layer only labels/merges.
@@ -44,7 +45,8 @@ enum TranscriptFormatter {
         let taggedSystem: [TaggedSegment]
         if let diarizationSegments, !diarizationSegments.isEmpty {
             // "Speaker N" labels, replaced by a recognized person's name when one matched.
-            let speakerLabelMap = speakerLabels(for: diarizationSegments).mapValues { speakerNames[$0] ?? $0 }
+            let speakerLabelMap = speakerLabels(for: diarizationSegments, startingNumber: startingSpeakerNumber)
+                .mapValues { speakerNames[$0] ?? $0 }
 
             taggedSystem = systemSegments.map { segment in
                 let speaker = conservativeSpeakerAttribution
@@ -75,17 +77,21 @@ enum TranscriptFormatter {
 
     /// Raw diarizer speaker ID -> "Speaker 1", "Speaker 2", ... in first-appearance order.
     /// The speaker identity pipeline keys `meeting_speakers.label` on the same mapping.
-    static func speakerLabels(for diarizationSegments: [TimedSpeakerSegment]) -> [String: String] {
-        speakerLabelMap(for: diarizationSegments, prefix: "Speaker")
+    static func speakerLabels(
+        for diarizationSegments: [TimedSpeakerSegment],
+        startingNumber: Int = 1
+    ) -> [String: String] {
+        speakerLabelMap(for: diarizationSegments, prefix: "Speaker", startingNumber: startingNumber)
     }
 
     /// Raw diarizer ID → "<prefix> 1", "<prefix> 2", … in first-appearance order.
     private static func speakerLabelMap(
         for diarizationSegments: [TimedSpeakerSegment],
-        prefix: String
+        prefix: String,
+        startingNumber: Int = 1
     ) -> [String: String] {
         var labelMap: [String: String] = [:]
-        var nextSpeakerNumber = 1
+        var nextSpeakerNumber = max(1, startingNumber)
         for seg in diarizationSegments.sorted(by: { $0.startTimeSeconds < $1.startTimeSeconds }) {
             if labelMap[seg.speakerId] == nil {
                 labelMap[seg.speakerId] = "\(prefix) \(nextSpeakerNumber)"

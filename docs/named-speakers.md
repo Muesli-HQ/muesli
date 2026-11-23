@@ -31,11 +31,20 @@ starting values and have not been tuned on real meetings, so check the first few
 
 ## What is stored
 
-Voice summaries and names live in your local Muesli database only. They are not in iCloud sync, the
-CLI, exports or logs, and they are never sent to a model. Deleting a meeting removes its speaker rows.
-Voiceprints already taken from a meeting stay with the person until you forget them.
+Voiceprint vectors, per-meeting speaker centroids, and speaker profile/voiceprint records live in
+your local muesli database only. They are not included in iCloud sync, the CLI, exports, or logs,
+and voiceprint vectors are never sent to a model. Deleting a meeting removes its `meeting_speakers`
+rows; voiceprints already saved from a meeting stay with the person until you forget them or delete
+the person.
 
-In a private meeting a name is stored but is not written into the transcript.
+In a normal (non-private) meeting, naming or recognizing a speaker writes that name into the
+meeting's `raw_transcript`. Once written into `raw_transcript`, those speaker names are part of the
+transcript and follow the transcript's normal paths—including iCloud sync, exports, CLI output, Ask
+Meetings, and title/summary model requests.
+
+In a private meeting, a recognized or manually assigned speaker name is stored in the local speaker
+rows but is not written into `raw_transcript`, and private-meeting rules keep the transcript and
+names from leaving for untrusted models, sync, exports, or CLI output.
 
 ## Limits
 

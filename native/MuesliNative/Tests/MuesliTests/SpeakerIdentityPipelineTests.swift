@@ -143,4 +143,33 @@ struct SpeakerIdentityPipelineTests {
         #expect(abs(observations[1].speechSeconds - 9.5) < 0.0001)
         #expect(observations[2].centroid == nil)
     }
+
+    @Test("startingSpeakerNumber offsets both observations and formatted transcript for resumed meetings")
+    func resumedSpeakerNumberOffsetPipeline() throws {
+        let session2Diarization = [segment("x", 3, 5.5), segment("y", 6, 8.5)]
+        let session2Labels = TranscriptFormatter.speakerLabels(for: session2Diarization, startingNumber: 3)
+        #expect(session2Labels == ["x": "Speaker 3", "y": "Speaker 4"])
+
+        let observations = SpeakerCentroidBuilder.observations(
+            from: [segment("x", 0, 15, [1, 0]), segment("y", 15, 30, [0, 1])],
+            startingNumber: 3
+        )
+        #expect(observations.map(\.label) == ["Speaker 3", "Speaker 4"])
+
+        let formatted = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: [
+                SpeechSegment(start: 3, end: 5, text: "resumed part one"),
+                SpeechSegment(start: 6, end: 8, text: "resumed part two"),
+            ],
+            diarizationSegments: session2Diarization,
+            meetingStart: meetingStart,
+            speakerNames: ["Speaker 3": "Alex"],
+            startingSpeakerNumber: 3
+        )
+        #expect(formatted == """
+        [10:00:03] Alex: resumed part one
+        [10:00:06] Speaker 4: resumed part two
+        """)
+    }
 }
