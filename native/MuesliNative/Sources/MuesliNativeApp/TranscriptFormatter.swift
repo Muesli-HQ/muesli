@@ -242,18 +242,15 @@ enum TranscriptFormatter {
         }
 
         guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
-        // An apostrophe or hyphen inside a word ("can'" + "t") continues it;
-        // other punctuation ends the word.
-        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace,
-              !lhsLast.isPunctuation || wordInternalPunctuation.contains(lhsLast) else {
+        // A token with no leading space continues the current word regardless
+        // of preceding punctuation (e.g., "10:30", "3.5", "e.g.", "can't").
+        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace else {
             return false
         }
 
         return !trimmedLHS.contains(where: \.isWhitespace)
             && !trimmedRHS.contains(where: \.isWhitespace)
     }
-
-    private static let wordInternalPunctuation: Set<Character> = ["'", "\u{2019}", "-", "\u{2010}"]
 
     private static func isPunctuationOnly(_ text: String) -> Bool {
         text.allSatisfy { $0.isPunctuation || $0.isSymbol }

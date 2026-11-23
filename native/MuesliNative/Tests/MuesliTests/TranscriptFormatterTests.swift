@@ -487,6 +487,55 @@ struct TranscriptFormatterTests {
         #expect(!result.contains(": op"))
     }
 
+    @Test("diarization keeps punctuated tokens without leading spaces on one speaker line")
+    func diarizationKeepsPunctuatedWordsOnOneSpeakerLine() {
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 1.0),
+            makeDiarSeg(speakerId: "spk_1", start: 1.0, end: 2.0),
+        ]
+
+        let cases: [(expected: String, segments: [SpeechSegment])] = [
+            (
+                "10:30",
+                [
+                    SpeechSegment(start: 0.7, end: 0.85, text: " 10"),
+                    SpeechSegment(start: 0.85, end: 0.95, text: ":"),
+                    SpeechSegment(start: 1.0, end: 1.2, text: "30"),
+                ]
+            ),
+            (
+                "3.5",
+                [
+                    SpeechSegment(start: 0.7, end: 0.85, text: " 3"),
+                    SpeechSegment(start: 0.85, end: 0.95, text: "."),
+                    SpeechSegment(start: 1.0, end: 1.2, text: "5"),
+                ]
+            ),
+            (
+                "e.g.",
+                [
+                    SpeechSegment(start: 0.7, end: 0.85, text: " e"),
+                    SpeechSegment(start: 0.85, end: 0.95, text: "."),
+                    SpeechSegment(start: 1.0, end: 1.1, text: "g"),
+                    SpeechSegment(start: 1.1, end: 1.2, text: "."),
+                ]
+            ),
+        ]
+
+        for testCase in cases {
+            let result = TranscriptFormatter.merge(
+                micSegments: [],
+                systemSegments: testCase.segments,
+                diarizationSegments: diarization,
+                meetingStart: Date(timeIntervalSince1970: 0),
+                systemSegmentsAreTokenTimed: true
+            )
+            let lines = result.components(separatedBy: "\n").filter { !$0.isEmpty }
+            #expect(lines.count == 1, "Expected \(testCase.expected) on one line, got: \(result)")
+            #expect(lines[0].contains("Speaker 1: \(testCase.expected)"))
+        }
+    }
+
     @Test("attached punctuation does not turn a broad window into a reconstructed word")
     func diarizationKeepsPunctuationJoinConservative() {
         let system = [
