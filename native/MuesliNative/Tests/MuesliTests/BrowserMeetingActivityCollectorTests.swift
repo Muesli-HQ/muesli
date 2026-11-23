@@ -577,4 +577,143 @@ struct BrowserMeetingActivityCollectorTests {
         #expect(cached.map(\.normalizedID) == ["googleMeet:meet.google.com/pwm-txwq-txy"])
         #expect(cached.first?.isFocused == false)
     }
+
+    @Test("throttled refreshes preserve background-tab call behind an ordinary page until a real scan finds none")
+    func throttledRefreshesPreserveBackgroundCallBehindOrdinaryPageUntilRealScanClears() async {
+        var tabs = [
+            "https://www.eftps.gov/eftps/payments",
+            "https://meet.google.com/qfm-jwnh-ret",
+        ]
+        let collector = BrowserMeetingActivityCollector(
+            focusedDocumentURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in tabs }
+        )
+
+        let initial = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+        let throttled = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(3),
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+        let nonRefreshAfterThrottled = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: false,
+            now: now.addingTimeInterval(6),
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+
+        tabs = ["https://www.eftps.gov/eftps/payments"]
+        let realScanCleared = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(15),
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+        let cachedAfterRealScanCleared = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: false,
+            now: now.addingTimeInterval(16),
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+
+        #expect(initial.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(initial.first?.isFocused == false)
+        #expect(throttled.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(throttled.first?.isFocused == false)
+        #expect(nonRefreshAfterThrottled.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(realScanCleared.isEmpty)
+        #expect(cachedAfterRealScanCleared.isEmpty)
+    }
+
+    @Test("throttled refreshes preserve background-tab call without a document URL and clear when browser releases sensors")
+    func throttledRefreshesPreserveBackgroundCallWithoutDocumentURLUntilSensorsRelease() async {
+        let collector = BrowserMeetingActivityCollector(
+            documentURLProbeProvider: { _ in .noDocumentURL },
+            activeTabProbeResultProvider: { _ in .noURL },
+            allTabURLsProvider: { _ in ["https://meet.google.com/qfm-jwnh-ret"] }
+        )
+
+        let initial = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+        let throttled = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(3),
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+        let releasedSensors = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(6),
+            scanAllTabsBundleIDs: [],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+        let cachedAfterRelease = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: false,
+            now: now.addingTimeInterval(7),
+            scanAllTabsBundleIDs: [],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+
+        #expect(initial.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(initial.first?.isFocused == false)
+        #expect(throttled.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(throttled.first?.isFocused == false)
+        #expect(releasedSensors.isEmpty)
+        #expect(cachedAfterRelease.isEmpty)
+    }
+
+    @Test("throttled refresh clears background-tab call behind an ordinary page once browser releases sensors")
+    func throttledRefreshClearsBackgroundCallWhenBrowserReleasesSensorsBehindOrdinaryPage() async {
+        let collector = BrowserMeetingActivityCollector(
+            focusedDocumentURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            activeTabURLProvider: { _ in "https://www.eftps.gov/eftps/payments" },
+            allTabURLsProvider: { _ in ["https://meet.google.com/qfm-jwnh-ret"] }
+        )
+
+        let initial = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now,
+            scanAllTabsBundleIDs: ["com.google.Chrome"],
+            shouldAttemptActiveTabFallback: { _ in true }
+        )
+        let releasedSensors = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: true,
+            now: now.addingTimeInterval(3),
+            scanAllTabsBundleIDs: [],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+        let cachedAfterRelease = await collector.collect(
+            runningApps: [chrome(isActive: true)],
+            refresh: false,
+            now: now.addingTimeInterval(4),
+            scanAllTabsBundleIDs: [],
+            shouldAttemptActiveTabFallback: { _ in false }
+        )
+
+        #expect(initial.map(\.normalizedID) == ["googleMeet:meet.google.com/qfm-jwnh-ret"])
+        #expect(releasedSensors.isEmpty)
+        #expect(cachedAfterRelease.isEmpty)
+    }
 }

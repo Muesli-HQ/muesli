@@ -68,7 +68,7 @@ final class BrowserMeetingActivityCollector {
             )
 
             switch probeResult {
-            case .meeting(let normalized, let isFocused):
+            case .meeting(let normalized, let isFocused, let isFromBackgroundTabScan):
                 let context = BrowserMeetingContext(
                     bundleID: app.bundleID,
                     appName: app.appName,
@@ -78,7 +78,11 @@ final class BrowserMeetingActivityCollector {
                     platform: normalized.platform,
                     isFocused: isFocused
                 )
-                cachedMeetings[app.bundleID] = CachedBrowserMeeting(context: context, observedAt: now)
+                cachedMeetings[app.bundleID] = CachedBrowserMeeting(
+                    context: context,
+                    observedAt: now,
+                    isFromBackgroundTabScan: isFromBackgroundTabScan
+                )
                 activeTabFallbacksAwaitingFreshResult.remove(app.bundleID)
                 liveMeetings.append(context)
             case .noMeeting:
@@ -89,18 +93,34 @@ final class BrowserMeetingActivityCollector {
                 if let cached = cachedMeetings[app.bundleID] {
                     liveMeetings.append(context(cached.context, runningApps: browserApps))
                 }
+            case .throttledWhileScanningAllTabs(let focusedIsNonMeeting):
+                if let cached = cachedMeetings[app.bundleID] {
+                    liveMeetings.append(
+                        context(
+                            cached.context,
+                            runningApps: browserApps,
+                            forceUnfocused: focusedIsNonMeeting
+                        )
+                    )
+                }
             case .skipped:
-                if activeTabFallbacksAwaitingFreshResult.contains(app.bundleID),
-                   let cached = cachedMeetings[app.bundleID] {
-                    liveMeetings.append(context(cached.context, runningApps: browserApps))
+                if let cached = cachedMeetings[app.bundleID] {
+                    if cached.isFromBackgroundTabScan {
+                        // The browser released mic/camera without exposing a focused meeting URL.
+                        cachedMeetings.removeValue(forKey: app.bundleID)
+                        activeTabFallbacksAwaitingFreshResult.remove(app.bundleID)
+                    } else if activeTabFallbacksAwaitingFreshResult.contains(app.bundleID) {
+                        liveMeetings.append(context(cached.context, runningApps: browserApps))
+                    }
                 }
             }
         }
 
         // Refresh passes return fresh probe results unless the active-tab
-        // fallback is inconclusive. Follow-up throttled skips may reuse the
-        // TTL-bound cache only until a fresh active-tab result resolves that
-        // inconclusive state.
+        // fallback is inconclusive or throttled while the browser holds the
+        // mic/camera (when a background-tab call may still be live). Follow-up
+        // throttled skips without an active mic/camera scan reuse the TTL-bound
+        // cache only until a fresh active-tab result resolves an inconclusive state.
         return liveMeetings
     }
 
@@ -137,6 +157,9 @@ final class BrowserMeetingActivityCollector {
             return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
         }
         guard shouldAttemptActiveTabFallback(app.bundleID) else {
+            if scansAllTabs {
+                return .throttledWhileScanningAllTabs(focusedIsNonMeeting: observedFocusedNonMeetingDocumentURL)
+            }
             return observedFocusedNonMeetingDocumentURL ? .noMeeting : .skipped
         }
         let tabStartedAt = Date()
@@ -178,7 +201,7 @@ final class BrowserMeetingActivityCollector {
         guard scansAllTabs else { return .noMeeting }
         switch await meetingURLInAnyTab(for: app) {
         case .found(let background):
-            return .meeting(background, isFocused: false)
+            return .meeting(background, isFocused: false, isFromBackgroundTabScan: true)
         case .noCall:
             return .noMeeting
         case .timedOut:
@@ -215,7 +238,8 @@ final class BrowserMeetingActivityCollector {
 
     private func context(
         _ cached: BrowserMeetingContext,
-        runningApps: [RunningAppSnapshot]
+        runningApps: [RunningAppSnapshot],
+        forceUnfocused: Bool = false
     ) -> BrowserMeetingContext {
         let app = runningApps.first { $0.bundleID == cached.bundleID }
         return BrowserMeetingContext(
@@ -225,7 +249,7 @@ final class BrowserMeetingActivityCollector {
             url: cached.url,
             normalizedID: cached.normalizedID,
             platform: cached.platform,
-            isFocused: cached.isFocused && (app?.isActive ?? false)
+            isFocused: !forceUnfocused && cached.isFocused && (app?.isActive ?? false)
         )
     }
 
@@ -456,9 +480,10 @@ final class BrowserMeetingActivityCollector {
 }
 
 private enum BrowserMeetingURLProbeResult {
-    case meeting(NormalizedMeetingURL, isFocused: Bool)
+    case meeting(NormalizedMeetingURL, isFocused: Bool, isFromBackgroundTabScan: Bool = false)
     case noMeeting
     case inconclusive
+    case throttledWhileScanningAllTabs(focusedIsNonMeeting: Bool)
     case skipped
 }
 
@@ -495,6 +520,7 @@ enum BackgroundTabScanResult: Equatable {
 private struct CachedBrowserMeeting {
     let context: BrowserMeetingContext
     let observedAt: Date
+    let isFromBackgroundTabScan: Bool
 }
 
 private final class BrowserScriptingBridgeErrorDelegate: NSObject, SBApplicationDelegate {
