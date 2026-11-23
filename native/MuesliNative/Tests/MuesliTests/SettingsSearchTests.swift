@@ -176,4 +176,72 @@ struct SettingsSearchTests {
             )
         }
     }
+
+    @Test("Cotypist entry is excluded when Cotypist is unavailable")
+    func cotypistAvailabilityFiltersEntriesAndSearch() {
+        let cotypistID = FeatureTourTarget.cotypistSettings.rawValue
+
+        let withCotypist = SettingsSearchIndex.entries(includeCotypist: true)
+        let withoutCotypist = SettingsSearchIndex.entries(includeCotypist: false)
+
+        #expect(withCotypist.contains { $0.id == cotypistID })
+        #expect(!withoutCotypist.contains { $0.id == cotypistID })
+        #expect(withoutCotypist.count == withCotypist.count - 1)
+
+        #expect(SettingsSearchIndex.search("cotypist", includeCotypist: true).first?.id == cotypistID)
+        #expect(SettingsSearchIndex.search("cotypist", includeCotypist: false).isEmpty)
+        #expect(!SettingsSearchIndex.search("autocomplete", includeCotypist: false).contains { $0.id == cotypistID })
+    }
+
+    @Test("Find routing targets Settings search only on the visible Settings tab")
+    func findRoutingTargetsSettingsOnlyWhenVisible() {
+        #expect(
+            AppState.findDestination(
+                selectedTab: .settings,
+                isSearchActive: false,
+                globalSearchPresented: false
+            ) == .settingsSearch
+        )
+        #expect(
+            AppState.findDestination(
+                selectedTab: .settings,
+                isSearchActive: true,
+                globalSearchPresented: false
+            ) == .globalSearch
+        )
+        #expect(
+            AppState.findDestination(
+                selectedTab: .settings,
+                isSearchActive: false,
+                globalSearchPresented: true
+            ) == .globalSearch
+        )
+
+        for tab in DashboardTab.allCases where tab != .settings {
+            #expect(
+                AppState.findDestination(
+                    selectedTab: tab,
+                    isSearchActive: false,
+                    globalSearchPresented: false
+                ) == .globalSearch
+            )
+        }
+    }
+
+    @Test("routeFindAction focuses Settings search on Settings tab without opening Global Search")
+    @MainActor func routeFindActionUpdatesAppState() {
+        let state = AppState()
+        state.selectedTab = .settings
+        state.routeFindAction()
+
+        #expect(state.focusSettingsSearchField)
+        #expect(!state.globalSearchPresented)
+
+        state.focusSettingsSearchField = false
+        state.selectedTab = .dictations
+        state.routeFindAction()
+
+        #expect(!state.focusSettingsSearchField)
+        #expect(state.globalSearchPresented)
+    }
 }

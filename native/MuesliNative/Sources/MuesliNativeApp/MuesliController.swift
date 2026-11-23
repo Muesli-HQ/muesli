@@ -6837,7 +6837,7 @@ public final class MuesliController: NSObject {
         guard ensureOnboardingBeforeDashboard() else { return }
         presentHistoryWindow()
         DispatchQueue.main.async { [weak self] in
-            self?.appState.globalSearchPresented = true
+            self?.appState.routeFindAction()
         }
     }
 

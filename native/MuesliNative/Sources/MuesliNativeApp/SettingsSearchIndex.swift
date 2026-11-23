@@ -403,7 +403,16 @@ enum SettingsSearchIndex {
         ),
     ]
 
-    static func search(_ query: String, in entries: [SettingsSearchEntry] = entries) -> [SettingsSearchEntry] {
+    static func entries(includeCotypist: Bool) -> [SettingsSearchEntry] {
+        guard !includeCotypist else { return entries }
+        return entries.filter { $0.id != FeatureTourTarget.cotypistSettings.rawValue }
+    }
+
+    static func search(_ query: String, includeCotypist: Bool = true) -> [SettingsSearchEntry] {
+        search(query, in: entries(includeCotypist: includeCotypist))
+    }
+
+    static func search(_ query: String, in entries: [SettingsSearchEntry]) -> [SettingsSearchEntry] {
         let normalizedQuery = normalize(query)
         let tokens = normalizedQuery
             .split(whereSeparator: { $0.isWhitespace })
