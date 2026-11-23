@@ -1266,7 +1266,7 @@ struct ModelsView: View {
                     .foregroundStyle(MuesliTheme.textTertiary)
             }
 
-            Text(selectedOption.description)
+            Text(selectedOption.descriptionWithLanguages)
                 .font(MuesliTheme.caption())
                 .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
 
@@ -1650,7 +1650,7 @@ struct ModelsView: View {
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
-                    Text(description ?? option.description)
+                    Text(description ?? option.descriptionWithLanguages)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(incompatibilityReason == nil ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
                 }

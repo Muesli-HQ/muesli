@@ -240,6 +240,18 @@ struct SettingsView: View {
             && downloadedMeetingLiveCaptionBackends.contains(appState.config.resolvedMeetingLiveCaptionBackend)
     }
 
+    /// Languages the model producing the final meeting transcript can handle, so a
+    /// mismatch is visible before recording rather than after (#733).
+    private var meetingFinalTranscriptLanguageDescription: String? {
+        if usesUnifiedMeetingTranscript {
+            return appState.config.resolvedMeetingLiveCaptionBackend == .nemotron35
+                ? BackendOption.nemotron35Multilingual.languageCoverage
+                : nil
+        }
+        guard !meetingBackendOptions.isEmpty else { return nil }
+        return appState.selectedMeetingTranscriptionBackend.languageCoverage
+    }
+
     private var meetingLiveTranscriptDescription: String {
         let selected = appState.config.resolvedMeetingLiveCaptionBackend
         guard appState.config.enableLiveStreamingPartials,
@@ -1187,7 +1199,11 @@ struct SettingsView: View {
                 settingsControl("diarize_microphone")
             }
             Divider().background(MuesliTheme.surfaceBorder)
-            settingsRow("Final transcript", controlWidth: meetingControlWidth) {
+            settingsRow(
+                "Final transcript",
+                description: meetingFinalTranscriptLanguageDescription,
+                controlWidth: meetingControlWidth
+            ) {
                 if usesUnifiedMeetingTranscript {
                     Text("\(appState.config.resolvedMeetingLiveCaptionBackend.label) (same model)")
                         .font(MuesliTheme.callout())
