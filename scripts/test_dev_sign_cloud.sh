@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Exercises scripts/dev-sign-cloud.sh without signing anything. `security`, `codesign` and
-# `pkill` are replaced by stubs that record what the script asked of them, and the "provisioning
+# Exercises scripts/dev-sign-cloud.sh without signing anything. `security`, `codesign`, `pkill` and
+# `otool` are replaced by stubs that record what the script asked of them, and the "provisioning
 # profile" is a plain plist the `security` stub passes through. Needs macOS (PlistBuddy, plutil).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +14,11 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 FAKE_BIN="$TEST_ROOT/bin"
 OUT="$TEST_ROOT/out"
 APP="$TEST_ROOT/MuesliDevT.app"
-mkdir -p "$FAKE_BIN" "$OUT" "$APP/Contents"
+mkdir -p "$FAKE_BIN" "$OUT" "$APP/Contents/MacOS"
+touch \
+  "$APP/Contents/MacOS/liblocalvqe.dylib" \
+  "$APP/Contents/MacOS/libggml.dylib" \
+  "$APP/Contents/MacOS/libggml-base.dylib"
 
 BUNDLE_ID="com.example.muesli.dev"
 TEAM="TEAM123456"
@@ -45,7 +49,23 @@ cat > "$FAKE_BIN/pkill" <<'STUB'
 printf '%s\n' "$*" >> "$FAKE_OUT/pkill.log"
 exit 1
 STUB
-chmod +x "$FAKE_BIN/security" "$FAKE_BIN/codesign" "$FAKE_BIN/pkill"
+cat > "$FAKE_BIN/otool" <<'STUB'
+#!/usr/bin/env bash
+[[ "${1:-}" == "-L" && -n "${2:-}" ]] || exit 2
+library="$2"
+name="$(basename "$library")"
+printf '%s:\n' "$library"
+case "$name" in
+  liblocalvqe*)
+    printf '\t@rpath/libggml.dylib (compatibility version 0.0.0, current version 0.0.0)\n'
+    ;;
+  libggml.dylib)
+    printf '\t@rpath/libggml-base.dylib (compatibility version 0.0.0, current version 0.0.0)\n'
+    ;;
+esac
+printf '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)\n'
+STUB
+chmod +x "$FAKE_BIN/security" "$FAKE_BIN/codesign" "$FAKE_BIN/pkill" "$FAKE_BIN/otool"
 export FAKE_OUT="$OUT"
 
 fail() {
@@ -242,5 +262,19 @@ pattern="$(sed -n 's/^-f //p' "$OUT/pkill.log" | head -n 1)"
 [[ "$pattern" == ^* ]] || fail "pkill pattern is not anchored: '$pattern'"
 [[ "$pattern" == *'MuesliDevT\.app'* ]] || fail "pkill pattern does not escape the app name's dot: '$pattern'"
 echo "ok: the process match is anchored and escaped"
+
+# 8. An app bundle missing or having an incomplete LocalVQE runtime is refused before signing.
+rm -f "$APP/Contents/MacOS/libggml-base.dylib"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_refused "incomplete LocalVQE runtime" "refusing to sign"
+grep -Fq -- "./scripts/build_localvqe.sh" "$OUT/stderr" \
+  || fail "incomplete LocalVQE runtime: expected stderr to mention ./scripts/build_localvqe.sh"
+
+rm -f "$APP/Contents/MacOS/liblocalvqe.dylib" "$APP/Contents/MacOS/libggml.dylib"
+run_sign "$ROOT/scripts/MuesliLocalOnly.entitlements" "$PROFILE" "$MINE" Development
+expect_refused "missing LocalVQE runtime" "refusing to sign"
+grep -Fq -- "./scripts/build_localvqe.sh" "$OUT/stderr" \
+  || fail "missing LocalVQE runtime: expected stderr to mention ./scripts/build_localvqe.sh"
+echo "ok: missing or incomplete LocalVQE runtime is refused"
 
 echo "dev-sign-cloud.sh tests passed"

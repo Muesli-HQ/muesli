@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Re-signs an installed dev app with iCloud (CloudKit) and APNs entitlements from a provisioning
-# profile, using the signing identity you give it. Use it after ./scripts/dev-test.sh when the app
-# is built unsigned (MUESLI_SKIP_SIGN=1), which is the only path that works without the LocalVQE
-# runtime. The signing identity stays the same across rebuilds, so macOS permissions persist.
+# profile, using the signing identity you give it. Use it after ./scripts/dev-test.sh (including
+# when the app is first built unsigned with MUESLI_SKIP_SIGN=1 before signing here). Every signed
+# dev package must include the complete LocalVQE runtime. The signing identity stays the same across
+# rebuilds, so macOS permissions persist.
 #
+#   ./scripts/build_localvqe.sh
 #   MUESLI_DEV_BUNDLE_ID=com.example.muesli.dev MUESLI_SKIP_SIGN=1 ./scripts/dev-test.sh
 #   MUESLI_SIGN_IDENTITY="Apple Development: Name (TEAMID)" \
 #   MUESLI_PROVISIONING_PROFILE=/path/to/Mac.provisionprofile \
@@ -18,6 +20,7 @@ set -euo pipefail
 # stub app with the same bundle id and entitlements and -allowProvisioningUpdates).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/localvqe_runtime.sh"
 APP="${1:-/Applications/MuesliDev.app}"
 IDENTITY="${MUESLI_SIGN_IDENTITY:?set MUESLI_SIGN_IDENTITY}"
 PROFILE="${MUESLI_PROVISIONING_PROFILE:?set MUESLI_PROVISIONING_PROFILE}"
@@ -32,6 +35,11 @@ case "$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')" in
 esac
 
 [[ -d "$APP" ]] || { echo "ERROR: app not found: $APP" >&2; exit 1; }
+if ! muesli_localvqe_runtime_is_complete "$APP/Contents/MacOS"; then
+  echo "ERROR: refusing to sign $APP without a complete LocalVQE runtime in $APP/Contents/MacOS." >&2
+  echo "  Build the runtime once with ./scripts/build_localvqe.sh and rebuild the app before signing." >&2
+  exit 1
+fi
 [[ -f "$PROFILE" ]] || { echo "ERROR: profile not found: $PROFILE" >&2; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/muesli-cloud-sign.XXXXXX")"
