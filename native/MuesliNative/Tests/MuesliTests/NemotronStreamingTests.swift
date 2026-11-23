@@ -1110,10 +1110,10 @@ struct Nemotron35StreamStateTests {
     @Test("fileTranscriptionChunks pads partial tails and appends one trailing silence chunk")
     func fileTranscriptionChunksFlushTail() {
         let chunkSize = 35_840
-        #expect(Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: [], chunkSamples: chunkSize).isEmpty)
+        #expect(Array(Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: [], chunkSamples: chunkSize)).isEmpty)
 
         let shortClip = [Float](repeating: 0.25, count: 16_000)
-        let shortChunks = Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: shortClip, chunkSamples: chunkSize)
+        let shortChunks = Array(Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: shortClip, chunkSamples: chunkSize))
         #expect(shortChunks.count == 2)
         #expect(shortChunks[0].count == chunkSize)
         #expect(Array(shortChunks[0].prefix(16_000)) == shortClip)
@@ -1121,7 +1121,7 @@ struct Nemotron35StreamStateTests {
         #expect(shortChunks[1] == [Float](repeating: 0, count: chunkSize))
 
         let exactClip = [Float](repeating: 0.5, count: chunkSize)
-        let exactChunks = Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: exactClip, chunkSamples: chunkSize)
+        let exactChunks = Array(Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: exactClip, chunkSamples: chunkSize))
         #expect(exactChunks.count == 2)
         #expect(exactChunks[0] == exactClip)
         #expect(exactChunks[1] == [Float](repeating: 0, count: chunkSize))

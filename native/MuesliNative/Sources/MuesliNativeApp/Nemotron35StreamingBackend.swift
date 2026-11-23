@@ -167,22 +167,37 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Convenience (full-file transcription)
 
-    nonisolated static func fileTranscriptionChunks(samples: [Float], chunkSamples: Int) -> [[Float]] {
-        guard !samples.isEmpty, chunkSamples > 0 else { return [] }
-        var chunks: [[Float]] = []
-        var sampleOffset = 0
-        while sampleOffset < samples.count {
-            let chunkEnd = min(sampleOffset + chunkSamples, samples.count)
-            var chunk = Array(samples[sampleOffset..<chunkEnd])
-            if chunk.count < chunkSamples {
-                chunk.append(contentsOf: repeatElement(Float(0), count: chunkSamples - chunk.count))
-            }
-            chunks.append(chunk)
-            sampleOffset += chunkSamples
+    struct FileTranscriptionChunkSequence: Sequence, IteratorProtocol, Sendable {
+        private let samples: [Float]
+        private let chunkSamples: Int
+        private var sampleOffset: Int = 0
+        private var emittedTrailingSilence: Bool = false
+
+        init(samples: [Float], chunkSamples: Int) {
+            self.samples = samples
+            self.chunkSamples = chunkSamples
         }
-        // Flush Nemotron's streaming encoder lookahead so the final word is not dropped.
-        chunks.append(Array(repeating: Float(0), count: chunkSamples))
-        return chunks
+
+        mutating func next() -> [Float]? {
+            guard !samples.isEmpty, chunkSamples > 0 else { return nil }
+            if sampleOffset < samples.count {
+                let chunkEnd = Swift.min(sampleOffset + chunkSamples, samples.count)
+                var chunk = Array(samples[sampleOffset..<chunkEnd])
+                if chunk.count < chunkSamples {
+                    chunk.append(contentsOf: repeatElement(Float(0), count: chunkSamples - chunk.count))
+                }
+                sampleOffset += chunkSamples
+                return chunk
+            }
+            guard !emittedTrailingSilence else { return nil }
+            emittedTrailingSilence = true
+            // Flush Nemotron's streaming encoder lookahead so the final word is not dropped.
+            return Array(repeating: Float(0), count: chunkSamples)
+        }
+    }
+
+    nonisolated static func fileTranscriptionChunks(samples: [Float], chunkSamples: Int) -> FileTranscriptionChunkSequence {
+        FileTranscriptionChunkSequence(samples: samples, chunkSamples: chunkSamples)
     }
 
     func transcribe(wavURL: URL, promptId: Int32? = nil) async throws -> (text: String, processingTime: Double) {
