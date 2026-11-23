@@ -313,6 +313,16 @@ struct SidebarView: View {
                     Text("muesli")
                         .font(MuesliTheme.title2())
                         .foregroundStyle(MuesliTheme.textPrimary)
+                    if let badge = AppIdentity.buildBadge {
+                        Text(badge)
+                            .font(MuesliTheme.font(size: 10, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.orange, in: Capsule()) // same orange as the pill in scripts/badge_app_icon.swift
+                            .padding(.leading, -MuesliTheme.spacing4)
+                            .help("\(AppIdentity.displayName) build labelled \(badge)")
+                            .accessibilityLabel("\(badge.capitalized) build")
+                    }
                 }
                 if !userName.isEmpty {
                     Text("Hi, \(userName)")
