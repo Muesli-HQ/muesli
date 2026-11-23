@@ -167,6 +167,24 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
 
     // MARK: - Convenience (full-file transcription)
 
+    nonisolated static func fileTranscriptionChunks(samples: [Float], chunkSamples: Int) -> [[Float]] {
+        guard !samples.isEmpty, chunkSamples > 0 else { return [] }
+        var chunks: [[Float]] = []
+        var sampleOffset = 0
+        while sampleOffset < samples.count {
+            let chunkEnd = min(sampleOffset + chunkSamples, samples.count)
+            var chunk = Array(samples[sampleOffset..<chunkEnd])
+            if chunk.count < chunkSamples {
+                chunk.append(contentsOf: repeatElement(Float(0), count: chunkSamples - chunk.count))
+            }
+            chunks.append(chunk)
+            sampleOffset += chunkSamples
+        }
+        // Flush Nemotron's streaming encoder lookahead so the final word is not dropped.
+        chunks.append(Array(repeating: Float(0), count: chunkSamples))
+        return chunks
+    }
+
     func transcribe(wavURL: URL, promptId: Int32? = nil) async throws -> (text: String, processingTime: Double) {
         let (models, config) = try await inferenceGate.withReservation(onWait: onWait) {
             let config = self.configuration(promptId: promptId) // Snapshot this file’s language.
@@ -178,15 +196,11 @@ actor Nemotron35StreamingTranscriber: NemotronStreamingTranscribing {
         let samples = try nemotronLoadWavAsFloats(url: wavURL)
         let start = CFAbsoluteTimeGetCurrent()
         var state = try nemotronMakeStreamState(config: config)
-        var sampleOffset = 0
-        while sampleOffset < samples.count {
-            let chunkEnd = min(sampleOffset + config.chunkSamples, samples.count)
-            let chunk = Array(samples[sampleOffset..<chunkEnd])
+        for chunk in Self.fileTranscriptionChunks(samples: samples, chunkSamples: config.chunkSamples) {
             _ = try await inferenceGate.withReservation(onWait: onWait) {
                 try await self.transcribeChunkReserved(samples: chunk, state: &state,
                     models: models, config: config)
             }
-            sampleOffset += config.chunkSamples
         }
         let text = nemotronDecodeTokens(state.allTokens, tokenizer: models.tokenizer,
             stripAngleBracketTags: config.stripAngleBracketTags, trim: true)

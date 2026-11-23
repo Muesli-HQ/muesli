@@ -756,6 +756,22 @@ private actor CancellationIgnoringStreamingTranscriber: NemotronStreamingTranscr
     }
 }
 
+private final class NemotronChunkRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [[Float]] = []
+
+    func record(_ samples: [Float]) -> Int {
+        lock.withLock {
+            storage.append(samples)
+            return storage.count
+        }
+    }
+
+    var chunks: [[Float]] {
+        lock.withLock { storage }
+    }
+}
+
 private final class FailureCounter {
     private let lock = NSLock()
     private var storage = 0
@@ -1063,7 +1079,7 @@ struct Nemotron35StreamStateTests {
             #expect(fixture.snapshot.filePredictions == 1 && fixture.snapshot.dictationPredictions == 0)
         }
         fixture.release.continuation.finish()
-        if scenario != "active-cancel" { #expect(await waitUntil { fixture.snapshot.filePredictions == 3 }) }
+        if scenario != "active-cancel" { #expect(await waitUntil { fixture.snapshot.filePredictions == 4 }) }
         if scenario == "capture" {
             // Longer than the ordinary 2.49s Finish deadline, while no dictation
             // prediction itself is stalled. Both queued chunks must finish first.
@@ -1076,18 +1092,70 @@ struct Nemotron35StreamStateTests {
         }
         fixture.finalRelease.continuation.finish()
         let text = try? await file.value.text
-        #expect(text == (scenario == "active-cancel" ? nil : "Meeting Meeting Meeting"), "The file must retain its original models or report cancellation")
+        #expect(text == (scenario == "active-cancel" ? nil : "Meeting Meeting Meeting Meeting"), "The file must retain its original models or report cancellation")
         if let other {
             let result = try? await other.value
             let expected = scenario == "capture" || scenario == "slow-first" ? " Dictation Dictation"
                 : (scenario == "active-cancel" ? " Dictation" : "mutated")
             #expect(result == expected)
         }
-        #expect(fixture.snapshot.filePrompts == (scenario == "active-cancel" ? [101] : [101, 101, 101]))
+        #expect(fixture.snapshot.filePrompts == (scenario == "active-cancel" ? [101] : [101, 101, 101, 101]))
         if scenario == "reload" { #expect(fixture.snapshot.reloadAfterPredictions == 1) }
         _ = try await coordinator.getLoadedNemotron35Transcriber()
         var next = try await transcriber.makeStreamState()
         #expect(try await transcriber.transcribeChunk(samples: [0.75], state: &next) == " Dictation")
+    }
+
+    @available(macOS 15, *)
+    @Test("fileTranscriptionChunks pads partial tails and appends one trailing silence chunk")
+    func fileTranscriptionChunksFlushTail() {
+        let chunkSize = 35_840
+        #expect(Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: [], chunkSamples: chunkSize).isEmpty)
+
+        let shortClip = [Float](repeating: 0.25, count: 16_000)
+        let shortChunks = Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: shortClip, chunkSamples: chunkSize)
+        #expect(shortChunks.count == 2)
+        #expect(shortChunks[0].count == chunkSize)
+        #expect(Array(shortChunks[0].prefix(16_000)) == shortClip)
+        #expect(shortChunks[0].dropFirst(16_000).allSatisfy { $0 == 0 })
+        #expect(shortChunks[1] == [Float](repeating: 0, count: chunkSize))
+
+        let exactClip = [Float](repeating: 0.5, count: chunkSize)
+        let exactChunks = Nemotron35StreamingTranscriber.fileTranscriptionChunks(samples: exactClip, chunkSamples: chunkSize)
+        #expect(exactChunks.count == 2)
+        #expect(exactChunks[0] == exactClip)
+        #expect(exactChunks[1] == [Float](repeating: 0, count: chunkSize))
+    }
+
+    @available(macOS 15, *)
+    @Test("file transcription flushes trailing silence so the final word is decoded", arguments: [16_000, 35_840])
+    func fileTranscriptionFlushesTrailingSilence(sampleCount: Int) async throws {
+        let recorder = NemotronChunkRecorder()
+        let transcriber = Nemotron35StreamingTranscriber(
+            modelLoader: { _, _ in
+                Nemotron35StreamingTranscriber.Models(
+                    revision: "test",
+                    tokenizer: [2: "▁Hello", 3: "▁world"],
+                    predict: { _, samples, state in
+                        let chunkIndex = recorder.record(samples)
+                        let token = chunkIndex == 1 ? 2 : 3
+                        state.allTokens.append(token)
+                        return [token]
+                    }
+                )
+            },
+            revision: { "test" }
+        )
+        try await transcriber.loadModels()
+        let wav = try WavWriter.writeTemporaryWAV(samples: Array(repeating: 0.25, count: sampleCount))
+        defer { try? FileManager.default.removeItem(at: wav) }
+
+        let result = try await transcriber.transcribe(wavURL: wav)
+        let chunks = recorder.chunks
+        #expect(chunks.count == 2)
+        #expect(chunks[0].count == 35_840)
+        #expect(chunks[1] == [Float](repeating: 0, count: 35_840))
+        #expect(result.text == "Hello world")
     }
 
     @available(macOS 15, *)
@@ -1198,7 +1266,7 @@ private final class NativeNemotronFixture: @unchecked Sendable {
             if orderedTail && !file && snapshot.dictationPredictions == 1 && snapshot.captured {
                 #expect(await waitUntil { self.snapshot.waits == 2 }, "File prediction 2 must queue before dictation yields")
             }
-            if file && snapshot.filePredictions == 3 { for await _ in finalRelease.stream {} }
+            if file && snapshot.filePredictions == 4 { for await _ in finalRelease.stream {} }
             let tokens = [1, file ? 3 : 2]
             state.allTokens += tokens
             return tokens

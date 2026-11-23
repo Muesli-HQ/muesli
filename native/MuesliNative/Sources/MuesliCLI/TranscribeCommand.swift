@@ -882,20 +882,51 @@ actor ParakeetUnifiedCLITranscriber: AudioTranscribing {
 /// model directory maintained by the app's native Nemotron RNNT backend. The
 /// shared store prevents the app and CLI from downloading separate copies.
 actor Nemotron35CLITranscriber: AudioTranscribing {
+    static let trailingSilenceSampleCount = 35_840
+
     private var manager: StreamingNemotronMultilingualAsrManager?
 
     func transcribe(wavURL: URL, model: TranscribeModel, progress: @escaping (String) -> Void) async throws -> HeadlessTranscription {
         let manager = try await loadedManager(progress: progress)
         let start = CFAbsoluteTimeGetCurrent()
         let samples = try AudioConverter().resampleAudioFile(wavURL)
-        _ = try await manager.process(samples: samples)
-        let text = try await manager.finish()
-        await manager.reset()
+        let chunkSampleCount = await manager.config.chunkSamples
+        let text = try await Self.transcribeSamples(
+            samples,
+            chunkSampleCount: chunkSampleCount,
+            process: { try await manager.process(samples: $0) },
+            finish: { try await manager.finish() },
+            reset: { await manager.reset() }
+        )
         progress("transcription complete in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start))s")
         return HeadlessTranscription(
             text: text,
             durationSeconds: Double(samples.count) / Double(CLIWavWriter.sampleRate)
         )
+    }
+
+    static func transcribeSamples(
+        _ samples: [Float],
+        chunkSampleCount: Int = trailingSilenceSampleCount,
+        process: @Sendable ([Float]) async throws -> String,
+        finish: @Sendable () async throws -> String,
+        reset: @Sendable () async -> Void
+    ) async throws -> String {
+        guard !samples.isEmpty else { return "" }
+        _ = try await process(samples)
+        if chunkSampleCount > 0 {
+            // Nemotron's streaming encoder buffers trailing context; append one full chunk of
+            // silence so the final word is flushed before finish().
+            _ = try await process(Array(repeating: Float(0), count: chunkSampleCount))
+        }
+        do {
+            let text = try await finish()
+            await reset()
+            return text
+        } catch {
+            await reset()
+            throw error
+        }
     }
 
     private func loadedManager(progress: @escaping (String) -> Void) async throws -> StreamingNemotronMultilingualAsrManager {

@@ -99,6 +99,14 @@ actor FluidAudioTranscriber {
         try await loadModels(modelID: FluidAudioModel.modelID(for: version))
     }
 
+    static func shouldUseLocalModelLoader(
+        allowDownload: Bool,
+        localOnly: Bool = ManagedASRModelDownloader.localOnly,
+        usesLocalComponents: Bool
+    ) -> Bool {
+        !allowDownload || localOnly || usesLocalComponents
+    }
+
     private static func prepareModel(
         modelID: String,
         allowDownload: Bool,
@@ -127,7 +135,11 @@ actor FluidAudioTranscriber {
             progress?(0.95, preparing.message)
             progressSnapshot?(preparing)
             let models: AsrModels
-            if ManagedASRModelDownloader.localOnly || ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID) {
+            if Self.shouldUseLocalModelLoader(
+                allowDownload: allowDownload,
+                localOnly: ManagedASRModelDownloader.localOnly,
+                usesLocalComponents: ParakeetRuntimePolicy.usesLocalComponents(for: plan.modelID)
+            ) {
                 models = try AsrModels.loadLocal(
                     from: modelDirectory, version: version,
                     encoderComputeUnits: ParakeetRuntimePolicy.encoderComputeUnits(for: plan.modelID)
