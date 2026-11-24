@@ -10,6 +10,12 @@ Retrieval initializes its FTS index lazily, and `importGranola` creates import
 provenance on demand. `TimeTurnerRecapStore` lazily creates the local daily-recap
 table when the Recap tab is first used. Update this guide whenever these schemas change.
 
+The onboarding workflow selection lives in app configuration and the local
+onboarding-progress JSON. The legacy value `everything` means Voice Notes,
+Dictation, and Meetings. New selections serialize their capability IDs in order,
+joined by `_and_`, including `time_turner` when explicitly selected. The
+Time Turner capture switch is a separate preference.
+
 ## Where the database lives
 
 The database filename is `muesli.db` inside the active app's Application

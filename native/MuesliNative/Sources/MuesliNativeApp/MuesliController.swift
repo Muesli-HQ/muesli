@@ -5840,6 +5840,10 @@ public final class MuesliController: NSObject {
     // MARK: - Onboarding
 
     func showOnboarding(resumeFrom progress: OnboardingProgress? = nil) {
+        if let onboardingWindowController {
+            onboardingWindowController.show()
+            return
+        }
         let wc = OnboardingWindowController(controller: self, resumeProgress: progress)
         self.onboardingWindowController = wc
         wc.show()
@@ -6300,11 +6304,13 @@ public final class MuesliController: NSObject {
         updateConfig { config in
             config.hasCompletedOnboarding = true
             config.userName = userName
-            config.sttBackend = backend.backend
-            config.sttModel = backend.model
-            config.cohereLanguage = cohereLanguage.rawValue
-            config.meetingTranscriptionBackend = backend.backend
-            config.meetingTranscriptionModel = backend.model
+            if onboardingUseCase != .timeTurner {
+                config.sttBackend = backend.backend
+                config.sttModel = backend.model
+                config.cohereLanguage = cohereLanguage.rawValue
+                config.meetingTranscriptionBackend = backend.backend
+                config.meetingTranscriptionModel = backend.model
+            }
             config.dictationHotkey = hotkey
             config.computerUseHotkey = HotkeyConfig.computerUseDefault(avoiding: hotkey)
             config.enableComputerUseHotkey = false
@@ -6330,7 +6336,7 @@ public final class MuesliController: NSObject {
                 }
             }
         }
-        selectBackend(backend)
+        if onboardingUseCase != .timeTurner { selectBackend(backend) }
         hotkeyMonitor.configure(hotkey)
         configureComputerUseHotkeyMonitor()
         clearDictationTestLifecycle()
