@@ -5,7 +5,6 @@ struct OnboardingKeycap: View {
     let shortcut: HotkeyConfig
     let selected: Bool
     let pressed: Bool
-    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -38,14 +37,6 @@ struct OnboardingKeycap: View {
         .fixedSize(horizontal: true, vertical: false)
         .frame(height: 54)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: pressed)
-        .overlay {
-            if isFocused {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(MuesliTheme.accentText, lineWidth: 2)
-                    .padding(-3)
-                    .allowsHitTesting(false)
-            }
-        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(shortcut.spokenKeycapName)
     }
@@ -71,6 +62,7 @@ private struct KeycapButtonStyle: ButtonStyle {
 struct OnboardingKeyPicker: View {
     @Binding var selection: HotkeyConfig
     let soundEnabled: Bool
+    @FocusState private var focusedKey: UInt16?
     @State private var held: UInt16?
     @State private var click: NSSound?
 
@@ -129,6 +121,21 @@ struct OnboardingKeyPicker: View {
                 let selected = !selection.isCombination && selection.keyCode == code
                 Button(shortcut.spokenKeycapName) { select(code) }
                     .buttonStyle(KeycapButtonStyle(shortcut: shortcut, selected: selected, held: held == code))
+                    .focusable()
+                    .focused($focusedKey, equals: code)
+                    .focusEffectDisabled()
+                    .overlay {
+                        if focusedKey == code {
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .strokeBorder(MuesliTheme.accentText, lineWidth: 2)
+                                .padding(-3)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .onKeyPress(.space) {
+                        select(code)
+                        return .handled
+                    }
                     .accessibilityLabel(shortcut.spokenKeycapName)
                     .accessibilityAddTraits(selected ? .isSelected : [])
             }
