@@ -312,6 +312,79 @@ struct StreamingMicRecorderBufferTests {
         #expect(samples(try Data(contentsOf: url)).count == sampleCount)
     }
 
+    /// USB audio interfaces report discrete layouts, with the mic on input 1 and
+    /// instrument or loopback inputs after it. AVAudioConverter left the mono
+    /// output unmapped for these, so meetings recorded digital silence.
+    @Test("multichannel input keeps input 1 in the mono stream", arguments: [
+        kAudioChannelLayoutTag_Stereo,
+        kAudioChannelLayoutTag_DiscreteInOrder | 2,
+        kAudioChannelLayoutTag_DiscreteInOrder | 4,
+        kAudioChannelLayoutTag_Quadraphonic,
+    ])
+    func multichannelInputKeepsFirstChannel(layoutTag: AudioChannelLayoutTag) throws {
+        let floats = try convertedMono(layoutTag: layoutTag, activeChannel: 0)
+        #expect(floats.count > 2_800, "Converted sample count: \(floats.count)")
+        let peak = floats.map(abs).max() ?? 0
+        #expect(peak > 0.2, "Input 1 must reach the mono stream; peak \(peak)")
+    }
+
+    /// The fallback selects input 1 only. Loopback or instrument inputs must not
+    /// leak into the mic stream, where echo cancellation expects near-end audio.
+    @Test("multichannel input leaves later inputs out of the mono stream", arguments: [
+        kAudioChannelLayoutTag_DiscreteInOrder | 4,
+        kAudioChannelLayoutTag_Quadraphonic,
+    ])
+    func multichannelInputExcludesLaterChannels(layoutTag: AudioChannelLayoutTag) throws {
+        let floats = try convertedMono(layoutTag: layoutTag, activeChannel: 2)
+        #expect(floats.count > 2_800, "Converted sample count: \(floats.count)")
+        let peak = floats.map(abs).max() ?? 0
+        #expect(peak < 0.01, "Only input 1 may reach the mono stream; peak \(peak)")
+    }
+
+    @Test("multichannel input keeps input 1 after a pause drains the converter", arguments: [
+        kAudioChannelLayoutTag_DiscreteInOrder | 4,
+        kAudioChannelLayoutTag_Quadraphonic,
+    ])
+    func multichannelInputSurvivesPauseDrain(layoutTag: AudioChannelLayoutTag) throws {
+        let floats = try convertedMono(layoutTag: layoutTag, activeChannel: 0, pauseDrainBetweenBuffers: true)
+        #expect(floats.count > 1_400, "Converted sample count after resume: \(floats.count)")
+        let peak = floats.map(abs).max() ?? 0
+        #expect(peak > 0.2, "Input 1 must reach the mono stream after resume; peak \(peak)")
+    }
+
+    /// Sends a constant 0.25 signal on one input channel, silence on the rest,
+    /// through the production tap and converter, and returns the mono output.
+    private func convertedMono(
+        layoutTag: AudioChannelLayoutTag,
+        activeChannel: Int,
+        pauseDrainBetweenBuffers: Bool = false
+    ) throws -> [Float] {
+        let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")
+        let layout = try #require(AVAudioChannelLayout(layoutTag: layoutTag))
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channelLayout: layout)
+        let input = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+        input.frameLength = 4_800
+        for channel in 0..<Int(format.channelCount) {
+            input.floatChannelData![channel].update(repeating: channel == activeChannel ? 0.25 : 0, count: 4_800)
+        }
+        var floats: [Float] = []
+        recorder.onAudioBuffer = { floats.append(contentsOf: $0) }
+        recorder.onRecordingFailed = { Issue.record("Conversion failed: \($0)") }
+        let tap = try recorder.testing_startWithTap(format: format)
+        tap(input, AVAudioTime(sampleTime: 0, atRate: 48_000))
+        if pauseDrainBetweenBuffers {
+            // A meeting pause ends the converter's stream and resets it.
+            recorder.pause()
+            recorder.drainAcceptedAudio()
+            floats.removeAll()
+            recorder.resume()
+        }
+        tap(input, AVAudioTime(sampleTime: 4_800, atRate: 48_000))
+        let url = try #require(recorder.stop())
+        defer { try? FileManager.default.removeItem(at: url) }
+        return floats
+    }
+
     @Test("overflow reports once and preserves every accepted buffer")
     func overflowFailure() throws {
         let recorder = StreamingMicRecorder(directoryName: "streaming-mic-buffer-tests")

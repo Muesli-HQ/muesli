@@ -291,7 +291,7 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
         let needsConversion = hwFormat.sampleRate != Self.sampleRate || hwFormat.channelCount != 1
             || hwFormat.commonFormat != .pcmFormatFloat32
         let converter: AVAudioConverter? = needsConversion
-            ? AVAudioConverter(from: hwFormat, to: targetFormat)
+            ? Self.makeMonoConverter(from: hwFormat, to: targetFormat)
             : nil
         guard !needsConversion || converter != nil else {
             throw Self.runtimeError(code: 4, message: "Could not create microphone sample-rate converter")
@@ -403,6 +403,26 @@ final class StreamingMicRecorder: StreamingDictationRecording, StreamingDictatio
                 )
             }
         }
+    }
+
+    /// AVAudioConverter maps channels by layout label. For some multichannel
+    /// layouts, such as the discrete layout of USB audio interfaces that put the
+    /// mic on input 1 and instrument or loopback channels after it, it leaves the
+    /// mono output unmapped (`channelMap == [-1]`) and converts every buffer to
+    /// digital silence. Take the first input channel instead, as standard stereo
+    /// inputs already do. This is a fallback, not mic detection: a device that
+    /// puts loopback or an instrument on input 1 records that channel. Mixing
+    /// all inputs would be worse, because loopback would reach echo cancellation
+    /// as near-end audio.
+    private static func makeMonoConverter(from inputFormat: AVAudioFormat, to outputFormat: AVAudioFormat) -> AVAudioConverter? {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else { return nil }
+        let inputChannels = 0..<Int(inputFormat.channelCount)
+        if outputFormat.channelCount == 1,
+           inputChannels.count > 1,
+           !converter.channelMap.allSatisfy({ inputChannels.contains($0.intValue) }) {
+            converter.channelMap = [0]
+        }
+        return converter
     }
 
     /// A nil input ends this tap's stream. Drain until the converter requests
