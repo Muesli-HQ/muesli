@@ -25,7 +25,7 @@ struct DictationsView: View {
         var currentHeader = ""
 
         for record in appState.dictationRows {
-            let date = parseDate(record.timestamp) ?? now
+            let date = MeetingBrowserLogic.parseDate(record.timestamp) ?? now
             let dayStart = calendar.startOfDay(for: date)
 
             if dayStart != currentDayStart {
@@ -281,8 +281,8 @@ struct DictationsView: View {
         let now = Date()
 
         // Check oldest dictation to determine which filters make sense
-        let oldestDate: Date? = appState.dictationRows.last.flatMap { parseDate($0.timestamp) }
-            ?? appState.dictationRows.first.flatMap { parseDate($0.timestamp) }
+        let oldestDate: Date? = appState.dictationRows.last.flatMap { MeetingBrowserLogic.parseDate($0.timestamp) }
+            ?? appState.dictationRows.first.flatMap { MeetingBrowserLogic.parseDate($0.timestamp) }
 
         guard let oldest = oldestDate else { return filters }
         let daysSinceOldest = calendar.dateComponents([.day], from: oldest, to: now).day ?? 0
@@ -307,56 +307,11 @@ struct DictationsView: View {
 
     // MARK: - Date parsing
 
-    private static let parsers: [DateFormatterProtocol] = {
-        let iso1 = ISO8601DateFormatter()
-        iso1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let iso2 = ISO8601DateFormatter()
-        iso2.formatOptions = [.withInternetDateTime]
-        let local1: DateFormatter = {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.timeZone = .current
-            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-            return f
-        }()
-        let local2: DateFormatter = {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.timeZone = .current
-            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-            return f
-        }()
-        return [iso1, iso2, local1, local2]
-    }()
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale.current
-        f.dateFormat = "hh:mm a"
-        return f
-    }()
-
-    private func parseDate(_ raw: String) -> Date? {
-        for parser in Self.parsers {
-            if let date = parser.date(from: raw) {
-                return date
-            }
-        }
-        return nil
-    }
-
     private func formatTimeOnly(_ raw: String) -> String {
-        guard let date = parseDate(raw) else {
+        guard let date = MeetingBrowserLogic.parseDate(raw) else {
             let clean = raw.replacingOccurrences(of: "T", with: " ")
             return clean.count > 5 ? String(clean.suffix(8).prefix(5)) : clean
         }
-        return Self.timeFormatter.string(from: date)
+        return MeetingBrowserLogic.formatClockTime(date)
     }
 }
-
-private protocol DateFormatterProtocol {
-    func date(from string: String) -> Date?
-}
-
-extension DateFormatter: DateFormatterProtocol {}
-extension ISO8601DateFormatter: DateFormatterProtocol {}

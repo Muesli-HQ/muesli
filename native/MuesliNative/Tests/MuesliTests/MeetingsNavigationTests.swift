@@ -2825,6 +2825,47 @@ struct MeetingBrowserLogicTests {
         #expect(formatted.localizedCaseInsensitiveContains("PM"))
     }
 
+    @Test("formatClockTime follows the locale's 12- or 24-hour clock")
+    func formatClockTimeFollowsLocaleClock() throws {
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        let date = try #require(MeetingBrowserLogic.parseDate("2025-06-15T14:30:00Z"))
+
+        let us = MeetingBrowserLogic.formatClockTime(date, locale: Locale(identifier: "en_US"), timeZone: utc)
+        #expect(us.contains("2:30"))
+        #expect(us.localizedCaseInsensitiveContains("PM"))
+        #expect(!us.contains("02:30"))
+
+        for identifier in ["en_GB", "de_DE"] {
+            let formatted = MeetingBrowserLogic.formatClockTime(
+                date,
+                locale: Locale(identifier: identifier),
+                timeZone: utc
+            )
+            #expect(formatted == "14:30", "\(identifier) uses a 24-hour clock")
+        }
+
+        // A 24-hour preference on a 12-hour region, which fixed patterns ignored.
+        var components = Locale.Components(identifier: "en_US")
+        components.hourCycle = .zeroToTwentyThree
+        let forced = MeetingBrowserLogic.formatClockTime(date, locale: Locale(components: components), timeZone: utc)
+        #expect(forced == "14:30")
+    }
+
+    @Test("clock times and start times do not share a cached formatter")
+    func clockAndStartTimeFormattersStayDistinct() throws {
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        let locale = Locale(identifier: "en_GB")
+        let date = try #require(MeetingBrowserLogic.parseDate("2025-06-15T14:30:00Z"))
+
+        let start = MeetingBrowserLogic.formatStartTime("2025-06-15T14:30:00Z", locale: locale, timeZone: utc)
+        let clock = MeetingBrowserLogic.formatClockTime(date, locale: locale, timeZone: utc)
+        let startAgain = MeetingBrowserLogic.formatStartTime("2025-06-15T14:30:00Z", locale: locale, timeZone: utc)
+
+        #expect(start.contains("2025"))
+        #expect(clock == "14:30")
+        #expect(startAgain == start)
+    }
+
     @Test("local timestamps follow time-zone changes while explicit offsets stay fixed")
     func localDatesFollowTimeZoneChanges() async {
         // Keep process-wide TZ changes isolated from other tests and macOS settings.

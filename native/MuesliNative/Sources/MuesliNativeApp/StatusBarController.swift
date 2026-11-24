@@ -452,8 +452,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private func addUpcomingEventsSection(_ events: [UnifiedCalendarEvent]) {
         let now = Date()
         let calendar = Calendar.current
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateFormat = "HH:mm"
 
         let futureEvents = events
             .filter { $0.startDate > now }
@@ -466,8 +464,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             let minutesUntil = Int(ceil(firstEvent.startDate.timeIntervalSince(now) / 60))
             addUpcomingEventGroup(
                 title: "Starts in \(formatTimeUntil(minutesUntil))",
-                events: nextUpEvents,
-                timeFormatter: timeFormatter
+                events: nextUpEvents
             )
         }
 
@@ -479,7 +476,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             addUpcomingEventGroup(
                 title: upcomingMenuHeader(for: day, calendar: calendar),
                 events: dayEvents,
-                timeFormatter: timeFormatter,
                 limit: 5
             )
         }
@@ -488,7 +484,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private func addUpcomingEventGroup(
         title: String,
         events: [UnifiedCalendarEvent],
-        timeFormatter: DateFormatter,
         limit: Int? = nil
     ) {
         let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -502,7 +497,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         let displayedEvents = limit.map { Array(events.prefix($0)) } ?? events
         for event in displayedEvents {
-            let timeStr = "\(timeFormatter.string(from: event.startDate)) – \(timeFormatter.string(from: event.endDate))"
+            let timeStr = "\(MeetingBrowserLogic.formatClockTime(event.startDate)) – \(MeetingBrowserLogic.formatClockTime(event.endDate))"
             let item = NSMenuItem(
                 title: "\(event.title)\n\(timeStr)",
                 action: nil,
