@@ -5,6 +5,7 @@ struct OnboardingKeycap: View {
     let shortcut: HotkeyConfig
     let selected: Bool
     let pressed: Bool
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -37,6 +38,14 @@ struct OnboardingKeycap: View {
         .fixedSize(horizontal: true, vertical: false)
         .frame(height: 54)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: pressed)
+        .overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(MuesliTheme.accentText, lineWidth: 2)
+                    .padding(-3)
+                    .allowsHitTesting(false)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(shortcut.spokenKeycapName)
     }
@@ -63,6 +72,7 @@ struct OnboardingKeyPicker: View {
     @Binding var selection: HotkeyConfig
     let soundEnabled: Bool
     @State private var held: UInt16?
+    @State private var click: NSSound?
 
     var body: some View {
         VStack(spacing: MuesliTheme.spacing24) {
@@ -99,6 +109,16 @@ struct OnboardingKeyPicker: View {
         .foregroundStyle(MuesliTheme.textPrimary)
         .padding(.horizontal, MuesliTheme.spacing16)
         .background(ModifierKeyListener(held: $held, select: select))
+        .task(id: soundEnabled) {
+            guard soundEnabled, click == nil else { return }
+            let data = await Task.detached(priority: .utility) { () -> Data? in
+                guard let url = SoundController.bundledLifecycleSoundURL(named: "keycap-click") else { return nil }
+                return try? Data(contentsOf: url)
+            }.value
+            guard !Task.isCancelled, let data else { return }
+            click = NSSound(data: data)
+            click?.volume = 0.16
+        }
     }
 
     @ViewBuilder
@@ -119,15 +139,8 @@ struct OnboardingKeyPicker: View {
         guard let label = HotkeyConfig.label(for: code) else { return }
         selection = HotkeyConfig(keyCode: code, label: label)
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        if soundEnabled { Self.click?.play() }
+        if soundEnabled { click?.play() }
     }
-
-    private static let click: NSSound? = {
-        guard let url = SoundController.bundledLifecycleSoundURL(named: "keycap-click") else { return nil }
-        let sound = NSSound(contentsOf: url, byReference: false)
-        sound?.volume = 0.16
-        return sound
-    }()
 }
 
 /// Observe bare modifier gestures only inside the picker window. Leave normal

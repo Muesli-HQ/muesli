@@ -71,6 +71,15 @@ struct DictationBackendPreparationState {
     private(set) var readiness: DictationBackendReadiness = .preparing
     private var task: Task<Void, Never>?
 
+    static func shouldPrepareAtLaunch(_ config: AppConfig) -> Bool {
+        config.resolvedOnboardingUseCase != .timeTurner || config.enablePushToTalk
+            || config.enableQuilMode || config.enableComputerUseHotkey || config.enableFeedbackCapture
+    }
+
+    func needsLocalPreparation(isHosted: Bool) -> Bool {
+        !isHosted && readiness == .preparing && task == nil
+    }
+
     mutating func begin(isHosted: Bool) -> UUID {
         task?.cancel()
         task = nil
@@ -1438,7 +1447,7 @@ public final class MuesliController: NSObject {
             startMeetingFeatureMonitors(includeMaraudersMap: true)
         }
 
-        if canRunMainApp {
+        if canRunMainApp && DictationBackendPreparationState.shouldPrepareAtLaunch(config) {
             let preparation = beginDictationBackendPreparation()
             let task = Task { [weak self] in
                 guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
@@ -3853,11 +3862,19 @@ public final class MuesliController: NSObject {
         prepareSelectedLocalDictationBackend()
     }
 
+    private func prepareLocalDictationBackendIfNeeded() {
+        guard dictationBackendPreparation.needsLocalPreparation(isHosted: selectedDictationProvider.isHosted) else { return }
+        prepareSelectedLocalDictationBackend()
+    }
+
     private func prepareSelectedLocalDictationBackend() {
         let preparation = beginDictationBackendPreparation()
         let option = selectedBackend
         let task = Task { [weak self] in
             guard let self, self.dictationBackendPreparation.owns(preparation) else { return }
+            await self.cleanupSwapRecoveryTask?.value
+            guard self.dictationBackendPreparation.owns(preparation) else { return }
+            await self.configureTranscriptCleanupForRuntime()
             await self.transcriptionCoordinator.setNemotron35PromptId(self.config.resolvedNemotron35Language.promptId)
             let prepared = await self.prepareDictationBackend(option, preparation: preparation)
             if prepared {
@@ -6490,6 +6507,7 @@ public final class MuesliController: NSObject {
             return .disabled
         case .ready:
             pushToTalkEnablementIntentStore.clear()
+            prepareLocalDictationBackendIfNeeded()
             startDictationHotkeyMonitorIfNeeded(permissions: snapshot)
             syncDictationRecorderWarmup(intent: .idlePrewarm(.permissionsReady))
             if !wasEnabled || wasPending {
@@ -12955,6 +12973,7 @@ public final class MuesliController: NSObject {
         if selectedDictationProvider.isHosted || (forQuill && quillUsesDirectAudio) {
             return ensureNativeModelsReady(forQuill: forQuill)
         }
+        prepareLocalDictationBackendIfNeeded()
         guard !dictationBackendReadiness.allowsDictation else { return ensureNativeModelsReady(forQuill: forQuill) }
         guard let message = dictationBackendReadiness.blockingMessage(
             backendLabel: selectedBackend.label
