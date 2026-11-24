@@ -1,0 +1,20 @@
+{
+  "name": "muesli",
+  "interface": {
+    "displayName": "muesli"
+  },
+  "plugins": [
+    {
+      "name": "muesli",
+      "source": {
+        "source": "local",
+        "path": "./plugins/muesli"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

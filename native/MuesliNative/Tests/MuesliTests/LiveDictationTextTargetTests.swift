@@ -1944,8 +1944,15 @@ struct LiveDictationTextTargetTests {
     }
 
 
-    @Test func transportPolicyOnlyOptsExactCodexBundleIntoKeyboard() {
+    @Test func pasteTransportIsScopedToSupportedEditors() {
         #expect(LiveDictationTextTarget.transport(for: "com.openai.codex") == .targetedPaste)
+        let claude = "com.anthropic.claudefordesktop"
+        let editor = ["tiptap", "ProseMirror", "ProseMirror-focused"]
+        #expect(LiveDictationTextTarget.transport(for: claude, role: "AXTextArea", classes: editor) == .targetedPaste)
+        #expect(LiveDictationTextTarget.transport(for: claude, role: "AXTextField", classes: editor) == .axSelectedText)
+        #expect(LiveDictationTextTarget.transport(for: claude, role: "AXTextArea") == .axSelectedText)
+        #expect(LiveDictationTextTarget.transport(for: "com.example.editor", role: "AXTextArea", classes: editor) == .axSelectedText)
+        #expect(LiveDictationTextTarget.allowsEmptyLineSentinelRemoval(for: claude))
         for id in [nil, "com.openai.codex.beta", "com.openai.chat", "com.apple.TextEdit"] as [String?] {
             #expect(LiveDictationTextTarget.transport(for: id) == .axSelectedText)
         }

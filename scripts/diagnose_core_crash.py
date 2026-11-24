@@ -65,7 +65,7 @@ def main():
             raise SystemExit(f"Empty diagnostic group: {group}")
         command = ["swift", "test", *build_args, "--skip-build"]
         for name in names:
-            command += ["--filter", name]
+            command += ["--filter", rf"^MuesliTests\.{name}/"]
         print(f"::group::Core crash diagnostic: {group} ({len(names)} suites)", flush=True)
         print("Suites:", ", ".join(names), flush=True)
         with tempfile.TemporaryFile(mode="w+t") as output:

@@ -15,6 +15,13 @@ triggering actor (`github.actor`) is `pHequals7`:
 | Explicit manual Blacksmith cache warm-up on `main` by `pHequals7` | Blacksmith |
 | All other workflows and fork-repository runs | GitHub |
 
+## Native test groups
+
+On the default hosted path, one `macos-26` job prepares the Swift test build
+and Metal library once. It runs core, dictation-transcription and meetings in
+separate processes using that build. The job checks each group’s reported
+methods against SwiftPM discovery. Its result feeds the required `ci-gate`.
+
 ## Accelerate a selected PR
 
 Add the repository label `ci:blacksmith`, either in the PR sidebar or with:

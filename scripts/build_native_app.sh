@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/muesli_spm_cache.sh"
 source "$ROOT/scripts/localvqe_runtime.sh"
+source "$ROOT/scripts/muesli_build_badge.sh"
 PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
@@ -16,6 +17,7 @@ APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$DEFAULT_APP_DISPLAY_NAME}"
 APP_BUNDLE_NAME="${MUESLI_APP_BUNDLE_NAME:-$APP_NAME.app}"
 APP_EXECUTABLE_NAME="${MUESLI_EXECUTABLE_NAME:-Muesli}"
 APP_SUPPORT_DIR_NAME="${MUESLI_SUPPORT_DIR_NAME:-$APP_NAME}"
+BUILD_BADGE="${MUESLI_BUILD_BADGE-$(muesli_build_badge_label "$APP_NAME")}"
 BUNDLE_ID="${MUESLI_BUNDLE_ID:-com.muesli.app}"
 TELEMETRYDECK_APP_ID="${MUESLI_TELEMETRYDECK_APP_ID:-}"
 TELEMETRY_CHANNEL="${MUESLI_TELEMETRY_CHANNEL:-unconfigured}"
@@ -330,7 +332,12 @@ fi
 
 # Bundle assets
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
-cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
+if [[ -n "$BUILD_BADGE" ]]; then
+  muesli_badge_icns "$ROOT/assets/muesli.icns" "$BUILD_BADGE" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
+  echo "Badged app icon: $BUILD_BADGE"
+else
+  cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
+fi
 cp "$ROOT/assets/zoom-app.png" "$STAGED_APP_DIR/Contents/Resources/zoom-app.png"
 cp "$ROOT/assets/Google_Meet_icon_(2020).svg.png" "$STAGED_APP_DIR/Contents/Resources/google-meet.png"
 cp "$ROOT/assets/Microsoft_Office_Teams_(2025–present).svg.png" "$STAGED_APP_DIR/Contents/Resources/teams.png"
@@ -421,6 +428,10 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+if [[ -n "$BUILD_BADGE" ]]; then
+  plutil -insert MuesliBuildBadge -string "$BUILD_BADGE" "$STAGED_APP_DIR/Contents/Info.plist"
+  plutil -insert MuesliBuildBadgeShort -string "$(muesli_build_badge_short "$BUILD_BADGE")" "$STAGED_APP_DIR/Contents/Info.plist"
+fi
 # Gemma's reference-tested FP32 encoder policy is process-wide in MLX. Bodhan
 # uses FP16 activations; retain its regression checks when updating this policy.
 /usr/libexec/PlistBuddy -c 'Add :LSEnvironment dict' "$STAGED_APP_DIR/Contents/Info.plist"

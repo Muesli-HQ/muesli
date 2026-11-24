@@ -797,6 +797,7 @@ struct RouteAwareMeetingMicRecorderTests {
     @Test("stop remains correct when first-buffer promotion is already queued")
     func stopRacingQueuedFirstBufferPromotion() throws {
         let lifecycleQueue = DispatchQueue(label: "test.route-aware-meeting.stop-first-buffer-race")
+        let workerQueue = DispatchQueue(label: "test.route-aware-meeting.stop-first-buffer-race.worker")
         let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
         let pending = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
         let oldStopEntered = DispatchSemaphore(value: 0)
@@ -810,6 +811,7 @@ struct RouteAwareMeetingMicRecorderTests {
             systemDefaultRecorder: system,
             appScopedRecorder: pending,
             lifecycleQueue: lifecycleQueue,
+            handoffWorkerQueue: workerQueue,
             handoffTimeout: 1,
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
@@ -818,6 +820,12 @@ struct RouteAwareMeetingMicRecorderTests {
 
         try recorder.start()
         recorder.preferredInputDeviceID = 91
+        // Promotion requires a successful native start (startupSucceeded) as
+        // well as audio. Let the candidate's start return and its success be
+        // recorded on the lifecycle queue before suspending it, so the queued
+        // first-buffer event below is the only pending promotion that races Stop.
+        lifecycleQueue.sync {}
+        workerQueue.sync {}
         lifecycleQueue.sync {}
 
         var queueIsSuspended = true
@@ -860,6 +868,7 @@ struct RouteAwareMeetingMicRecorderTests {
     @Test("discard remains correct when first-buffer promotion is already queued")
     func discardRacingQueuedFirstBufferPromotion() throws {
         let lifecycleQueue = DispatchQueue(label: "test.route-aware-meeting.discard-first-buffer-race")
+        let workerQueue = DispatchQueue(label: "test.route-aware-meeting.discard-first-buffer-race.worker")
         let system = FakeMeetingMicRecorder(kind: .systemDefaultStreaming)
         let pending = FakeMeetingMicRecorder(kind: .appScopedAudioQueue)
         let oldStopEntered = DispatchSemaphore(value: 0)
@@ -875,6 +884,7 @@ struct RouteAwareMeetingMicRecorderTests {
             systemDefaultRecorder: system,
             appScopedRecorder: pending,
             lifecycleQueue: lifecycleQueue,
+            handoffWorkerQueue: workerQueue,
             handoffTimeout: 1,
             handoffTimeoutScheduler: disabledMeetingMicHandoffTimeoutScheduler
         )
@@ -894,6 +904,9 @@ struct RouteAwareMeetingMicRecorderTests {
         DispatchQueue.global().async { system.emit([0]); initialReturned.signal() }
         #expect(deliveryEntered.wait(timeout: .now() + 5) == .success)
         recorder.preferredInputDeviceID = 91
+        // Finish candidate startup before racing discard against its first buffer.
+        lifecycleQueue.sync {}
+        workerQueue.sync {}
         lifecycleQueue.sync {}
 
         var queueIsSuspended = true
