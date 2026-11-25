@@ -130,13 +130,49 @@ struct MuesliCKSyncLegacyScopeMigration: Sendable, Equatable {
 /// so a crash between a local edit and state serialization cannot lose work.
 actor MuesliCKSyncEngine: CKSyncEngineDelegate {
     static var stateKey: String {
-        "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).v1"
+        stateKey(
+            environment: MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent,
+            container: MuesliICloudSyncEngine.Schema.containerIdentifier
+        )
     }
     static var accountScopeKey: String {
-        "cksyncengine.private.MuesliSyncZone.\(MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent).account-owner.v1"
+        accountScopeKey(
+            environment: MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent,
+            container: MuesliICloudSyncEngine.Schema.containerIdentifier
+        )
     }
     static var productionLegacyScopeMigration: MuesliCKSyncLegacyScopeMigration? {
-        guard MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent == "production" else {
+        productionLegacyScopeMigration(
+            environment: MuesliICloudSyncEngine.cloudKitEnvironmentKeyComponent,
+            container: MuesliICloudSyncEngine.Schema.containerIdentifier
+        )
+    }
+
+    /// Where the sync engine's serialized state is saved. The environment and the container are
+    /// both part of the key; upstream's container adds nothing, so existing installs keep their
+    /// saved state.
+    static func stateKey(environment: String, container: String) -> String {
+        "cksyncengine.private.MuesliSyncZone.\(environment)"
+            + MuesliICloudSyncEngine.Schema.stateKeyScope(container: container)
+            + ".v1"
+    }
+
+    /// Where the iCloud account that owns the saved state is recorded, scoped like `stateKey`.
+    static func accountScopeKey(environment: String, container: String) -> String {
+        "cksyncengine.private.MuesliSyncZone.\(environment)"
+            + MuesliICloudSyncEngine.Schema.stateKeyScope(container: container)
+            + ".account-owner.v1"
+    }
+
+    /// The unscoped state that predates environment-keyed storage, migrated only for production.
+    /// Earlier releases synced upstream's container and nothing else, so no other container has
+    /// legacy state to migrate.
+    static func productionLegacyScopeMigration(
+        environment: String,
+        container: String
+    ) -> MuesliCKSyncLegacyScopeMigration? {
+        guard environment == "production",
+              container == MuesliICloudSyncEngine.Schema.defaultContainerIdentifier else {
             return nil
         }
         return MuesliCKSyncLegacyScopeMigration(
@@ -144,6 +180,7 @@ actor MuesliCKSyncEngine: CKSyncEngineDelegate {
             stateKey: "cksyncengine.private.MuesliSyncZone.unspecified.v1"
         )
     }
+
     private static let subscriptionID = "muesli-cksyncengine-private-v1"
     private static let uploadBatchSize = 200
     private static let maximumUploadBatchesPerSync = 50

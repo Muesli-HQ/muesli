@@ -45,6 +45,8 @@ case "${shard}" in
       ComputerUseToolRegistryTests
       ComputerUseTraceFormatterTests
       MuesliCKSyncEngineTests
+      ICloudContainerResolutionTests
+      ICloudSyncStateScopeTests
       MuesliBridgeDeviceIdentityTests
       MuesliBridgeDeviceRefreshPolicyTests
       ICloudBridgeAppStateTests
