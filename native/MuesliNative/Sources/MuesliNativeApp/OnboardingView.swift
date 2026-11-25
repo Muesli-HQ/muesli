@@ -46,8 +46,6 @@ struct OnboardingView: View {
 
     // Hotkey recorder
     @State private var selectedHotkey: HotkeyConfig
-    @State private var isRecordingHotkey = false
-    @State private var hotkeyEventMonitor: Any?
 
     // Model selection
     @State private var showMoreModels = false
@@ -608,7 +606,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.title1())
                     .foregroundStyle(MuesliTheme.textPrimary)
 
-                Text("Local-first dictation and meeting transcription for macOS.")
+                Text("Dictate, take notes, record meetings, and revisit your screen history.")
                     .font(MuesliTheme.body())
                     .foregroundStyle(MuesliTheme.textSecondary)
             }
@@ -631,13 +629,7 @@ struct OnboardingView: View {
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
 
-                LazyVGrid(
-                    columns: [
-                        GridItem(.fixed(132), spacing: MuesliTheme.spacing8),
-                        GridItem(.fixed(132), spacing: MuesliTheme.spacing8),
-                    ],
-                    spacing: MuesliTheme.spacing8
-                ) {
+                HStack(spacing: MuesliTheme.spacing8) {
                     useCaseCard(
                         icon: "waveform",
                         title: "Voice Notes",
@@ -663,6 +655,16 @@ struct OnboardingView: View {
                         selected: selectedUseCase.includesMeetings
                     ) {
                         toggleCapability(.meetings)
+                    }
+                }
+                HStack(spacing: MuesliTheme.spacing8) {
+                    useCaseCard(
+                        icon: "clock.arrow.circlepath",
+                        title: "Time Turner",
+                        subtitle: "Search screen history",
+                        selected: selectedUseCase.includesTimeTurner
+                    ) {
+                        toggleCapability(.timeTurner)
                     }
 
                     useCaseCard(
@@ -880,20 +882,25 @@ struct OnboardingView: View {
 
     /// The ordered list of permissions to grant during onboarding.
     /// Request the permission union for the capabilities selected during setup.
-    /// Screen Recording remains optional because it enriches meeting context but
-    /// is not required to capture the meeting's audio.
     private var permissionSteps: [(icon: String, name: String, description: String, granted: Bool, action: () -> Void)] {
-        var steps: [(String, String, String, Bool, () -> Void)] = [
-            ("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
+        var steps: [(String, String, String, Bool, () -> Void)] = []
+        if selectedUseCase.includesPushToTalk || selectedUseCase.includesMeetings {
+            steps.append(("mic.fill", "Microphone", "Record audio for voice notes, dictation, and meetings", micGranted, {
                 AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            })
-        ]
-        if selectedUseCase.includesPushToTalk {
-            if selectedUseCase.includesDictation {
-                steps += [
-                    ("hand.raised.fill", "Accessibility", "Paste transcribed text into other apps", accessibilityGranted, requestAccessibilityPermission),
-                ]
+            }))
+        }
+        if selectedUseCase.includesDictation || selectedUseCase.includesTimeTurner {
+            let detail: String
+            if selectedUseCase.includesTimeTurner && selectedUseCase.includesDictation {
+                detail = "Paste dictated text into apps and identify the focused window for Time Turner."
+            } else if selectedUseCase.includesTimeTurner {
+                detail = "Identify the focused window and help detect secure fields for Time Turner."
+            } else {
+                detail = "Paste transcribed text into other apps."
             }
+            steps.append(("hand.raised.fill", "Accessibility", detail, accessibilityGranted, requestAccessibilityPermission))
+        }
+        if selectedUseCase.includesPushToTalk {
             steps += [
             ("keyboard.fill", "Input Monitoring", "Detect hotkey for push-to-talk recording", inputMonitoringGranted, {
                 self.controller.beginSystemPermissionGuide(for: .inputMonitoring)
@@ -906,27 +913,22 @@ struct OnboardingView: View {
             }),
             ]
         }
-        if selectedUseCase.includesMeetings {
-            if appState.config.useCoreAudioTap {
-                steps.append((
-                    "speaker.wave.2.fill",
-                    "System Audio",
-                    "Capture meeting audio from other participants",
-                    systemAudioGranted,
-                    { refreshSystemAudioPermission(request: true) }
-                ))
-            } else {
-                steps.append((
-                    "rectangle.dashed.badge.record",
-                    "Screen & System Audio",
-                    "Capture meeting audio from other participants",
-                    screenRecordingGranted,
-                    {
-                        self.controller.beginSystemPermissionGuide(for: .screenRecording)
-                        CGRequestScreenCaptureAccess()
-                    }
-                ))
+        if selectedUseCase.includesMeetings && appState.config.useCoreAudioTap {
+            steps.append(("speaker.wave.2.fill", "System Audio", "Capture meeting audio from other participants",
+                          systemAudioGranted, { refreshSystemAudioPermission(request: true) }))
+        }
+        let meetingScreenAudio = selectedUseCase.includesMeetings && !appState.config.useCoreAudioTap
+        if selectedUseCase.includesTimeTurner || meetingScreenAudio {
+            var detail = meetingScreenAudio ? "Capture meeting audio from other participants." : ""
+            if selectedUseCase.includesTimeTurner {
+                if !detail.isEmpty { detail += " " }
+                detail += "Save screen history when you choose Start Time Turner."
             }
+            steps.append(("rectangle.dashed.badge.record", meetingScreenAudio ? "Screen & System Audio" : "Screen Recording",
+                          detail, screenRecordingGranted, {
+                self.controller.beginSystemPermissionGuide(for: .screenRecording)
+                CGRequestScreenCaptureAccess()
+            }))
         }
         return steps
     }
@@ -1161,7 +1163,7 @@ struct OnboardingView: View {
         case "Microphone": return "Privacy_Microphone"
         case "Accessibility": return "Privacy_Accessibility"
         case "Input Monitoring": return "Privacy_ListenEvent"
-        case "System Audio", "Screen & System Audio": return "Privacy_ScreenCapture"
+        case "System Audio", "Screen Recording", "Screen & System Audio": return "Privacy_ScreenCapture"
         default: return "Privacy_Microphone"
         }
     }
@@ -1351,7 +1353,7 @@ struct OnboardingView: View {
             return inputMonitoringGranted
         case "System Audio":
             return systemAudioGranted
-        case "Screen & System Audio":
+        case "Screen Recording", "Screen & System Audio":
             return screenRecordingGranted
         default:
             return false
@@ -1443,86 +1445,8 @@ struct OnboardingView: View {
     // MARK: - Step 4: Hotkey Configuration
 
     private var hotkeyStep: some View {
-        VStack(spacing: MuesliTheme.spacing24) {
-            Spacer()
-
-            VStack(spacing: MuesliTheme.spacing8) {
-                Text("Dictation Shortcut")
-                    .font(MuesliTheme.title1())
-                    .foregroundStyle(MuesliTheme.textPrimary)
-
-                Text(isSelectedHotkeyToggle
-                    ? "Press your key combination to record, then press it again to transcribe."
-                    : "Choose the key you'll hold to dictate. Press and hold the key to record, release to transcribe.")
-                    .font(MuesliTheme.body())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            VStack(spacing: MuesliTheme.spacing16) {
-                // Current hotkey display
-                Text(selectedHotkey.label)
-                    .font(MuesliTheme.font(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .padding(.horizontal, MuesliTheme.spacing32)
-                    .padding(.vertical, MuesliTheme.spacing16)
-                    .background(MuesliTheme.backgroundRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
-
-                // Change button
-                Button {
-                    if isRecordingHotkey {
-                        stopRecordingHotkey()
-                    } else {
-                        startRecordingHotkey()
-                    }
-                } label: {
-                    Text(isRecordingHotkey ? "Press a modifier key..." : "Change Shortcut")
-                        .font(MuesliTheme.body())
-                        .padding(.horizontal, MuesliTheme.spacing16)
-                        .padding(.vertical, MuesliTheme.spacing8)
-                        .overlay {
-                            if isRecordingHotkey {
-                                RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                                    .strokeBorder(MuesliTheme.accent.opacity(0.3), lineWidth: 1)
-                            }
-                        }
-                }
-                .buttonStyle(.muesli(isRecordingHotkey ? .tinted : .secondary, bordered: !isRecordingHotkey))
-            }
-
-            Text("Supported: Left Cmd, Right Cmd, Fn, Ctrl, Option, Shift")
-                .font(MuesliTheme.caption())
-                .foregroundStyle(MuesliTheme.textTertiary)
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .onDisappear { stopRecordingHotkey() }
-    }
-
-    private func startRecordingHotkey() {
-        isRecordingHotkey = true
-        hotkeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            let keyCode = event.keyCode
-            if let label = HotkeyConfig.label(for: keyCode) {
-                selectedHotkey = HotkeyConfig(keyCode: keyCode, label: label)
-                stopRecordingHotkey()
-            }
-            return event
-        }
-    }
-
-    private func stopRecordingHotkey() {
-        isRecordingHotkey = false
-        if let monitor = hotkeyEventMonitor {
-            NSEvent.removeMonitor(monitor)
-            hotkeyEventMonitor = nil
-        }
+        OnboardingKeyPicker(selection: $selectedHotkey, soundEnabled: appState.config.soundEnabled)
+            .onChange(of: selectedHotkey) { _, _ in saveProgress(atStep: currentStep) }
     }
 
     // MARK: - Step 5: Dictation Test
@@ -1611,24 +1535,15 @@ struct OnboardingView: View {
                                 .strokeBorder(dictationTestResult != nil ? MuesliTheme.success.opacity(0.5) : MuesliTheme.surfaceBorder, lineWidth: 1)
                         )
 
-                    if isDictationTesting {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(isSelectedHotkeyToggle
-                                ? "Listening... press \(selectedHotkey.label) again when done"
-                                : "Listening... release \(selectedHotkey.label) when done")
-                                .font(MuesliTheme.caption())
+                    if dictationTestResult == nil {
+                        HStack(spacing: MuesliTheme.spacing12) {
+                            OnboardingKeycap(shortcut: selectedHotkey, selected: true, pressed: isDictationTesting)
+                            Text(isDictationTesting
+                                ? (isSelectedHotkeyToggle ? "Listening… press again to finish" : "Listening… release to finish")
+                                : (isSelectedHotkeyToggle ? "Press to start" : "Hold to start"))
+                                .font(MuesliTheme.body())
                                 .foregroundStyle(MuesliTheme.textSecondary)
                         }
-                    } else if dictationTestResult == nil {
-                        HStack(spacing: 6) {
-                            Image(systemName: "keyboard")
-                                .font(.system(size: 14))
-                            Text("\(isSelectedHotkeyToggle ? "Press" : "Hold") \(selectedHotkey.label) to start")
-                                .font(MuesliTheme.body())
-                        }
-                        .foregroundStyle(MuesliTheme.textTertiary)
                     }
 
                     if let dictationTestError {
