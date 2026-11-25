@@ -980,6 +980,56 @@ struct MuesliCLITests {
 
         #expect(try String(contentsOf: outputURL, encoding: .utf8) == "plain transcript\n")
     }
+
+    @Test("nemotron35 CLI helper flushes one chunk of trailing silence before finish")
+    func nemotron35CLIFlushesTrailingSilence() async throws {
+        let probe = NemotronCLIProbe()
+        let speech = Array(repeating: Float(0.25), count: 16_000)
+        let transcript = try await Nemotron35CLITranscriber.transcribeSamples(
+            speech,
+            chunkSampleCount: Nemotron35CLITranscriber.trailingSilenceSampleCount,
+            process: { samples in
+                await probe.recordProcess(samples)
+                return ""
+            },
+            finish: {
+                await probe.recordFinish()
+                return "final word"
+            },
+            reset: {
+                await probe.recordReset()
+            }
+        )
+
+        #expect(transcript == "final word")
+        let processedChunks = await probe.processedChunks
+        #expect(processedChunks.count == 2)
+        #expect(processedChunks[0] == speech)
+        #expect(processedChunks[1] == Array(repeating: Float(0), count: 35_840))
+        #expect(await probe.finishCalls == 1)
+        #expect(await probe.resetCalls == 1)
+
+        await probe.clear()
+        let empty = try await Nemotron35CLITranscriber.transcribeSamples(
+            [],
+            chunkSampleCount: Nemotron35CLITranscriber.trailingSilenceSampleCount,
+            process: { samples in
+                await probe.recordProcess(samples)
+                return ""
+            },
+            finish: {
+                await probe.recordFinish()
+                return "unexpected"
+            },
+            reset: {
+                await probe.recordReset()
+            }
+        )
+        #expect(empty.isEmpty)
+        #expect(await probe.processedChunks.isEmpty)
+        #expect(await probe.finishCalls == 0)
+        #expect(await probe.resetCalls == 0)
+    }
 }
 
 private struct TranscribeFixture {
@@ -1047,5 +1097,29 @@ private actor NativeReplayProbe {
     func record(_ url: URL) -> Int {
         urls.append(url)
         return urls.count
+    }
+}
+
+private actor NemotronCLIProbe {
+    private(set) var processedChunks: [[Float]] = []
+    private(set) var finishCalls = 0
+    private(set) var resetCalls = 0
+
+    func recordProcess(_ samples: [Float]) {
+        processedChunks.append(samples)
+    }
+
+    func recordFinish() {
+        finishCalls += 1
+    }
+
+    func recordReset() {
+        resetCalls += 1
+    }
+
+    func clear() {
+        processedChunks.removeAll()
+        finishCalls = 0
+        resetCalls = 0
     }
 }

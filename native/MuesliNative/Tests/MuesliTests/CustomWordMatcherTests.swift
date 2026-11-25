@@ -183,4 +183,37 @@ struct CustomWordMatcherApplyTests {
         let result = CustomWordMatcher.apply(text: "try open, telemetry now", customWords: words)
         #expect(result == "try open, telemetry now")
     }
+
+    @Test("short prefix words stay untouched when longer dictionary term is present")
+    func shortWordsDoNotMatchLongerDictionaryTerm() {
+        for threshold in [0.85, 0.70] {
+            let words = [CustomWord(word: "TypeScript", replacement: "TypeScript", matchingThreshold: threshold)]
+            #expect(CustomWordMatcher.apply(text: "types", customWords: words) == "types")
+            #expect(CustomWordMatcher.apply(text: "type", customWords: words) == "type")
+            #expect(CustomWordMatcher.apply(text: "typed", customWords: words) == "typed")
+            #expect(
+                CustomWordMatcher.apply(text: "the function returns two types", customWords: words)
+                    == "the function returns two types"
+            )
+        }
+    }
+
+    @Test("multi-word type script entry still maps to TypeScript")
+    func multiWordTypeScriptStillMatches() {
+        let words = [
+            CustomWord(word: "TypeScript", replacement: "TypeScript"),
+            CustomWord(word: "type script", replacement: "TypeScript"),
+        ]
+        #expect(CustomWordMatcher.apply(text: "type script", customWords: words) == "TypeScript")
+        #expect(
+            CustomWordMatcher.apply(text: "the function returns two types", customWords: words)
+                == "the function returns two types"
+        )
+    }
+
+    @Test("valid close typo of longer dictionary term still matches")
+    func closeTypoOfLongTermStillMatches() {
+        let words = [CustomWord(word: "TypeScript", replacement: "TypeScript")]
+        #expect(CustomWordMatcher.apply(text: "write typscrpt code", customWords: words) == "write TypeScript code")
+    }
 }

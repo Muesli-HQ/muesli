@@ -317,4 +317,75 @@ struct FluidAudioModelLoadTests {
         #expect(await transcriber.loadedModelID == nil)
         #expect(progress.ready.isEmpty)
     }
+
+    @Test("allowDownload false forces local-only AsrModels loading across Parakeet models")
+    func allowDownloadFalseForcesLocalLoaderAcrossParakeetModels() {
+        let parakeetModels = [
+            BackendOption.parakeetEnglish.model,
+            BackendOption.parakeetMultilingual.model,
+            BackendOption.parakeetRedux.model,
+        ]
+        for modelID in parakeetModels {
+            let usesLocalComponents = ParakeetRuntimePolicy.usesLocalComponents(for: modelID)
+            #expect(!usesLocalComponents)
+            #expect(FluidAudioTranscriber.shouldUseLocalModelLoader(
+                allowDownload: false, localOnly: false, usesLocalComponents: usesLocalComponents
+            ))
+            #expect(FluidAudioTranscriber.shouldUseLocalModelLoader(
+                allowDownload: false, localOnly: true, usesLocalComponents: usesLocalComponents
+            ))
+            #expect(!FluidAudioTranscriber.shouldUseLocalModelLoader(
+                allowDownload: true, localOnly: false, usesLocalComponents: usesLocalComponents
+            ))
+            #expect(FluidAudioTranscriber.shouldUseLocalModelLoader(
+                allowDownload: true, localOnly: true, usesLocalComponents: usesLocalComponents
+            ))
+        }
+        #expect(FluidAudioTranscriber.shouldUseLocalModelLoader(
+            allowDownload: true,
+            localOnly: false,
+            usesLocalComponents: ParakeetRuntimePolicy.usesLocalComponents(for: Self.phonon)
+        ))
+    }
+
+    @Test("transcribePreview passes allowDownload false to the model loader across Parakeet models")
+    func transcribePreviewDisallowsDownloadsAcrossParakeetModels() async {
+        let cases: [(version: AsrModelVersion, modelID: String)] = [
+            (.v2, BackendOption.parakeetEnglish.model),
+            (.v3, BackendOption.parakeetMultilingual.model),
+            (.redux, BackendOption.parakeetRedux.model),
+        ]
+        for entry in cases {
+            let recorder = PreviewLoadRecorder()
+            let transcriber = FluidAudioTranscriber { modelID, allowDownload, _, _ in
+                recorder.record(modelID: modelID, allowDownload: allowDownload)
+                throw CocoaError(.fileNoSuchFile)
+            }
+            await #expect(throws: CocoaError.self) {
+                _ = try await transcriber.transcribePreview(
+                    samples: [Float](repeating: 0, count: 16_000),
+                    expectedVersion: entry.version,
+                    expectedModelID: entry.modelID
+                )
+            }
+            #expect(recorder.calls.count == 1)
+            #expect(recorder.calls.first?.modelID == entry.modelID)
+            #expect(recorder.calls.first?.allowDownload == false)
+        }
+    }
+}
+
+private final class PreviewLoadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(modelID: String, allowDownload: Bool)] = []
+
+    func record(modelID: String, allowDownload: Bool) {
+        lock.withLock {
+            storage.append((modelID: modelID, allowDownload: allowDownload))
+        }
+    }
+
+    var calls: [(modelID: String, allowDownload: Bool)] {
+        lock.withLock { storage }
+    }
 }

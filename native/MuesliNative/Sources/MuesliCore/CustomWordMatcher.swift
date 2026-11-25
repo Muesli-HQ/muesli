@@ -175,13 +175,39 @@ public struct CustomWordMatcher {
         guard candidateTokens.count == entry.tokens.count else { return nil }
 
         if entry.tokens.count == 1 {
-            let score = jaroWinklerSimilarity(candidateTokens[0], entry.tokens[0])
-            return score >= entry.matchingThreshold ? score : nil
+            return tokenSimilarity(candidateTokens[0], entry.tokens[0], threshold: entry.matchingThreshold)
         }
 
-        let tokenScores = zip(candidateTokens, entry.tokens).map(jaroWinklerSimilarity)
-        guard tokenScores.allSatisfy({ $0 >= entry.matchingThreshold }) else { return nil }
+        let tokenScores = zip(candidateTokens, entry.tokens).compactMap { candidate, target in
+            tokenSimilarity(candidate, target, threshold: entry.matchingThreshold)
+        }
+        guard tokenScores.count == entry.tokens.count else { return nil }
         return tokenScores.reduce(0, +) / Double(tokenScores.count)
+    }
+
+    private static func tokenSimilarity(_ candidate: String, _ target: String, threshold: Double) -> Double? {
+        if candidate == target { return 1.0 }
+
+        let chars1 = Array(candidate)
+        let chars2 = Array(target)
+        guard !chars1.isEmpty, !chars2.isEmpty else { return nil }
+
+        // Reject short prefix/substring overlaps against much longer dictionary terms
+        // (e.g. "types" / "type" / "typed" against "typescript").
+        let lengthRatio = Double(min(chars1.count, chars2.count)) / Double(max(chars1.count, chars2.count))
+        let minimumLengthRatio = max(0.65, threshold - 0.10)
+        guard lengthRatio >= minimumLengthRatio else { return nil }
+
+        let metrics = jaroMetrics(chars1, chars2)
+        guard metrics.jaro > 0, metrics.matches > 0 else { return nil }
+
+        let targetCoverage = Double(metrics.matches) / Double(chars2.count)
+        let candidateCoverage = Double(metrics.matches) / Double(chars1.count)
+        let minimumCoverage = max(0.50, threshold - 0.20)
+        guard min(targetCoverage, candidateCoverage) >= minimumCoverage else { return nil }
+
+        let score = jaroWinklerScore(jaro: metrics.jaro, chars1: chars1, chars2: chars2)
+        return score >= threshold ? score : nil
     }
 
     private static func tokenParts(for token: String) -> TokenParts? {
@@ -214,14 +240,22 @@ public struct CustomWordMatcher {
 
     // MARK: - Jaro-Winkler Similarity
 
+    private struct JaroMetrics {
+        let jaro: Double
+        let matches: Int
+    }
+
     /// Computes Jaro-Winkler similarity between two strings (0.0 to 1.0).
     public static func jaroWinklerSimilarity(_ s1: String, _ s2: String) -> Double {
-        let jaro = jaroSimilarity(s1, s2)
-        guard jaro > 0 else { return 0 }
-
-        // Winkler modification: boost for common prefix (up to 4 chars)
         let chars1 = Array(s1)
         let chars2 = Array(s2)
+        let jaro = jaroMetrics(chars1, chars2).jaro
+        guard jaro > 0 else { return 0 }
+        return jaroWinklerScore(jaro: jaro, chars1: chars1, chars2: chars2)
+    }
+
+    private static func jaroWinklerScore(jaro: Double, chars1: [Character], chars2: [Character]) -> Double {
+        // Winkler modification: boost for common prefix (up to 4 chars)
         let prefixLen = min(4, min(chars1.count, chars2.count))
         var commonPrefix = 0
         for i in 0..<prefixLen {
@@ -235,22 +269,19 @@ public struct CustomWordMatcher {
         return jaro + Double(commonPrefix) * 0.1 * (1.0 - jaro)
     }
 
-    /// Computes Jaro similarity between two strings.
-    private static func jaroSimilarity(_ s1: String, _ s2: String) -> Double {
-        let chars1 = Array(s1)
-        let chars2 = Array(s2)
-
-        if chars1.isEmpty && chars2.isEmpty { return 1.0 }
-        if chars1.isEmpty || chars2.isEmpty { return 0.0 }
-        if chars1 == chars2 { return 1.0 }
+    /// Computes Jaro similarity and matched character count between two strings.
+    private static func jaroMetrics(_ chars1: [Character], _ chars2: [Character]) -> JaroMetrics {
+        if chars1.isEmpty && chars2.isEmpty { return JaroMetrics(jaro: 1.0, matches: 0) }
+        if chars1.isEmpty || chars2.isEmpty { return JaroMetrics(jaro: 0.0, matches: 0) }
+        if chars1 == chars2 { return JaroMetrics(jaro: 1.0, matches: chars1.count) }
 
         let matchWindow = max(chars1.count, chars2.count) / 2 - 1
-        guard matchWindow >= 0 else { return 0.0 }
+        guard matchWindow >= 0 else { return JaroMetrics(jaro: 0.0, matches: 0) }
 
         var s1Matches = [Bool](repeating: false, count: chars1.count)
         var s2Matches = [Bool](repeating: false, count: chars2.count)
 
-        var matches: Double = 0
+        var matches = 0
         var transpositions: Double = 0
 
         // Find matches
@@ -268,7 +299,7 @@ public struct CustomWordMatcher {
             }
         }
 
-        guard matches > 0 else { return 0.0 }
+        guard matches > 0 else { return JaroMetrics(jaro: 0.0, matches: 0) }
 
         // Count transpositions
         var k = 0
@@ -279,8 +310,9 @@ public struct CustomWordMatcher {
             k += 1
         }
 
-        let m = matches
+        let m = Double(matches)
         let t = transpositions / 2.0
-        return (m / Double(chars1.count) + m / Double(chars2.count) + (m - t) / m) / 3.0
+        let jaro = (m / Double(chars1.count) + m / Double(chars2.count) + (m - t) / m) / 3.0
+        return JaroMetrics(jaro: jaro, matches: matches)
     }
 }
