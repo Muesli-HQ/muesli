@@ -324,7 +324,9 @@ public final class DictationStore {
             "ALTER TABLE meeting_participants ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
             "ALTER TABLE meeting_participants ADD COLUMN is_suppressed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE meeting_participants ADD COLUMN person_id TEXT",
-            "ALTER TABLE meetings ADD COLUMN visual_context TEXT"
+            "ALTER TABLE meetings ADD COLUMN visual_context TEXT",
+            "ALTER TABLE meetings ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE meeting_folders ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0"
         ] {
             guard sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK else { continue }
             // ADD COLUMN has no IF NOT EXISTS, so a duplicate column is the
@@ -477,6 +479,7 @@ public final class DictationStore {
         try migrateInsightsCache(db: db)
         try MeetingChatSQL.migrate(db: db)
         try MeetingVideoStore.migrate(db: db)
+        try SpeakerIdentitySQL.migrate(db: db)
         try FeedbackCaptureStore.migrate(db: db)
         try migrateWordsBeforeCodeSwitchCache(db: db)
         try migrateCotypist(db: db)
@@ -1762,7 +1765,7 @@ public final class DictationStore {
     }
 
     private func listFoldersInternal(db: OpaquePointer?) throws -> [MeetingFolder] {
-        let sql = "SELECT id, name, parent_id, created_at FROM meeting_folders ORDER BY id ASC"
+        let sql = "SELECT id, name, parent_id, created_at, is_private FROM meeting_folders ORDER BY id ASC"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             throw lastError(db)
@@ -1776,7 +1779,8 @@ public final class DictationStore {
                 id: sqlite3_column_int64(statement, 0),
                 name: stringColumn(statement, index: 1),
                 parentID: parentID,
-                createdAt: stringColumn(statement, index: 3)
+                createdAt: stringColumn(statement, index: 3),
+                isPrivate: sqlite3_column_int(statement, 4) != 0
             ))
         }
         return rows
@@ -2878,16 +2882,26 @@ public final class DictationStore {
         selectedTemplatePrompt: String? = nil,
         folderID: Int64? = nil,
         followUpToID: Int64? = nil,
-        calendarOccurrence: CalendarOccurrenceReference? = nil
+        calendarOccurrence: CalendarOccurrenceReference? = nil,
+        isPrivate: Bool = false
     ) throws -> Int64 {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let followUpRecordName = try followUpToID.flatMap { try meetingCloudRecordName(id: $0, db: db) }
+        var effectivePrivate = isPrivate
+        if !effectivePrivate, let followUpToID {
+            if try isMeetingDirectlyPrivate(id: followUpToID, db: db) {
+                effectivePrivate = true
+            } else if try isMeetingPrivate(id: followUpToID, db: db),
+                      !(try folderID.map { try isFolderPrivate(id: $0, db: db) } ?? false) {
+                effectivePrivate = true
+            }
+        }
 
         let sql = """
         INSERT INTO meetings
-        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, notes_layout_version)
-        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (title, calendar_event_id, start_time, end_time, duration_seconds, raw_transcript, formatted_notes, mic_audio_path, system_audio_path, saved_recording_path, meeting_status, manual_notes, word_count, selected_template_id, selected_template_name, selected_template_kind, selected_template_prompt, source, updated_at, sync_dirty, folder_id, follow_up_to_id, follow_up_to_record_name, calendar_occurrence_key, calendar_source, calendar_id, calendar_series_id, calendar_occurrence_start, notes_layout_version, is_private)
+        VALUES (?, ?, ?, NULL, 0, '', '', NULL, NULL, NULL, ?, '', 0, ?, ?, ?, ?, 'meeting', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -2925,6 +2939,7 @@ public final class DictationStore {
         } else {
             sqlite3_bind_null(statement, 17)
         }
+        sqlite3_bind_int(statement, 18, effectivePrivate ? 1 : 0)
 
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
@@ -3898,6 +3913,7 @@ public final class DictationStore {
             try deleteResumeSnapshot(meetingID: id, db: db)
             try deleteLiveTranscriptCheckpoints(meetingID: id, db: db)
             try deleteMeetingParticipants(meetingID: id, db: db)
+            try SpeakerIdentitySQL.deleteMeetingSpeakers(meetingID: id, db: db)
             let sql = """
             UPDATE meetings
             SET title = 'Deleted Meeting',
@@ -4066,6 +4082,7 @@ public final class DictationStore {
         try exec("DELETE FROM meeting_transcript_checkpoints", db: db)
         try exec("DELETE FROM meeting_participant_suggestions", db: db)
         try exec("DELETE FROM meeting_participants", db: db)
+        try SpeakerIdentitySQL.deleteMeetingSpeakers(meetingID: nil, db: db)
         try exec("DELETE FROM meeting_people_merge_participants", db: db)
         try exec("DELETE FROM meeting_people_merge_emails", db: db)
         try exec("DELETE FROM meeting_people_merge_identifiers", db: db)
@@ -4912,6 +4929,8 @@ public final class DictationStore {
         guard sqlite3_changes(db) > 0 else {
             throw DictationStoreError.meetingNotFound(id: id)
         }
+        // Retranscription relabels speakers; old centroids no longer match the labels.
+        try SpeakerIdentitySQL.deleteMeetingSpeakers(meetingID: id, db: db)
     }
 
     public func updateMeetingTitle(id: Int64, title: String) throws {
@@ -4986,104 +5005,93 @@ public final class DictationStore {
     }
 
     public func deleteFolder(id: Int64) throws {
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
-        guard sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+        try resyncingPrivacyChanges { db in try deleteFolder(id: id, db: db) }
+    }
+
+    private func deleteFolder(id: Int64, db: OpaquePointer?) throws {
+        // Look up the deleted folder's parent so children can be reparented.
+        var parentID: Int64?
+        var pStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT parent_id FROM meeting_folders WHERE id = ?", -1, &pStmt, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(pStmt) }
+        sqlite3_bind_int64(pStmt, 1, id)
+        if sqlite3_step(pStmt) == SQLITE_ROW, sqlite3_column_type(pStmt, 0) != SQLITE_NULL {
+            parentID = sqlite3_column_int64(pStmt, 0)
+        }
+
+        var childIDs: [Int64] = []
+        var childStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id FROM meeting_folders WHERE parent_id = ?", -1, &childStmt, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        sqlite3_bind_int64(childStmt, 1, id)
+        while sqlite3_step(childStmt) == SQLITE_ROW {
+            childIDs.append(sqlite3_column_int64(childStmt, 0))
+        }
+        sqlite3_finalize(childStmt)
+
+        func folderExists(_ folderID: Int64) throws -> Bool {
+            var existsStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT 1 FROM meeting_folders WHERE id = ? LIMIT 1", -1, &existsStmt, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(existsStmt) }
+            sqlite3_bind_int64(existsStmt, 1, folderID)
+            return sqlite3_step(existsStmt) == SQLITE_ROW
+        }
+
+        func safeReplacementParent(for childID: Int64) throws -> Int64? {
+            guard let parentID,
+                  parentID != id,
+                  parentID != childID,
+                  try folderExists(parentID)
+            else {
+                return nil
+            }
+            let descendants = try descendantFolderIDs(of: childID, db: db)
+            return descendants.contains(parentID) ? nil : parentID
+        }
+
+        var reparentStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE meeting_folders SET parent_id = ? WHERE id = ?", -1, &reparentStmt, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(reparentStmt) }
+        for childID in childIDs where childID != id {
+            sqlite3_reset(reparentStmt)
+            sqlite3_clear_bindings(reparentStmt)
+            if let replacementParent = try safeReplacementParent(for: childID) {
+                sqlite3_bind_int64(reparentStmt, 1, replacementParent)
+            } else {
+                sqlite3_bind_null(reparentStmt, 1)
+            }
+            sqlite3_bind_int64(reparentStmt, 2, childID)
+            guard try GlobalSearchIndex.stepSourceWrite(reparentStmt) == SQLITE_DONE else {
+                throw lastError(db)
+            }
+        }
+
+        // Move meetings in deleted folder to unfiled.
+        var s1: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE meetings SET folder_id = NULL WHERE folder_id = ?", -1, &s1, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(s1) }
+        sqlite3_bind_int64(s1, 1, id)
+        guard try GlobalSearchIndex.stepSourceWrite(s1) == SQLITE_DONE else {
             throw lastError(db)
         }
 
-        do {
-            // Look up the deleted folder's parent so children can be reparented.
-            var parentID: Int64?
-            var pStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT parent_id FROM meeting_folders WHERE id = ?", -1, &pStmt, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            defer { sqlite3_finalize(pStmt) }
-            sqlite3_bind_int64(pStmt, 1, id)
-            if sqlite3_step(pStmt) == SQLITE_ROW, sqlite3_column_type(pStmt, 0) != SQLITE_NULL {
-                parentID = sqlite3_column_int64(pStmt, 0)
-            }
-
-            var childIDs: [Int64] = []
-            var childStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT id FROM meeting_folders WHERE parent_id = ?", -1, &childStmt, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            sqlite3_bind_int64(childStmt, 1, id)
-            while sqlite3_step(childStmt) == SQLITE_ROW {
-                childIDs.append(sqlite3_column_int64(childStmt, 0))
-            }
-            sqlite3_finalize(childStmt)
-
-            func folderExists(_ folderID: Int64) throws -> Bool {
-                var existsStmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, "SELECT 1 FROM meeting_folders WHERE id = ? LIMIT 1", -1, &existsStmt, nil) == SQLITE_OK else {
-                    throw lastError(db)
-                }
-                defer { sqlite3_finalize(existsStmt) }
-                sqlite3_bind_int64(existsStmt, 1, folderID)
-                return sqlite3_step(existsStmt) == SQLITE_ROW
-            }
-
-            func safeReplacementParent(for childID: Int64) throws -> Int64? {
-                guard let parentID,
-                      parentID != id,
-                      parentID != childID,
-                      try folderExists(parentID)
-                else {
-                    return nil
-                }
-                let descendants = try descendantFolderIDs(of: childID, db: db)
-                return descendants.contains(parentID) ? nil : parentID
-            }
-
-            var reparentStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "UPDATE meeting_folders SET parent_id = ? WHERE id = ?", -1, &reparentStmt, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            defer { sqlite3_finalize(reparentStmt) }
-            for childID in childIDs where childID != id {
-                sqlite3_reset(reparentStmt)
-                sqlite3_clear_bindings(reparentStmt)
-                if let replacementParent = try safeReplacementParent(for: childID) {
-                    sqlite3_bind_int64(reparentStmt, 1, replacementParent)
-                } else {
-                    sqlite3_bind_null(reparentStmt, 1)
-                }
-                sqlite3_bind_int64(reparentStmt, 2, childID)
-                guard try GlobalSearchIndex.stepSourceWrite(reparentStmt) == SQLITE_DONE else {
-                    throw lastError(db)
-                }
-            }
-
-            // Move meetings in deleted folder to unfiled.
-            var s1: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "UPDATE meetings SET folder_id = NULL WHERE folder_id = ?", -1, &s1, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            defer { sqlite3_finalize(s1) }
-            sqlite3_bind_int64(s1, 1, id)
-            guard try GlobalSearchIndex.stepSourceWrite(s1) == SQLITE_DONE else {
-                throw lastError(db)
-            }
-
-            var s2: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "DELETE FROM meeting_folders WHERE id = ?", -1, &s2, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-            defer { sqlite3_finalize(s2) }
-            sqlite3_bind_int64(s2, 1, id)
-            guard try GlobalSearchIndex.stepSourceWrite(s2) == SQLITE_DONE else {
-                throw lastError(db)
-            }
-
-            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-                throw lastError(db)
-            }
-        } catch {
-            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-            throw error
+        var s2: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM meeting_folders WHERE id = ?", -1, &s2, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(s2) }
+        sqlite3_bind_int64(s2, 1, id)
+        guard try GlobalSearchIndex.stepSourceWrite(s2) == SQLITE_DONE else {
+            throw lastError(db)
         }
     }
 
@@ -5094,8 +5102,10 @@ public final class DictationStore {
     }
 
     public func moveMeeting(id: Int64, toFolder folderID: Int64?) throws {
-        let db = try openDatabase()
-        defer { sqlite3_close(db) }
+        try resyncingPrivacyChanges { db in try moveMeeting(id: id, toFolder: folderID, db: db) }
+    }
+
+    private func moveMeeting(id: Int64, toFolder folderID: Int64?, db: OpaquePointer?) throws {
         let sql = "UPDATE meetings SET folder_id = ? WHERE id = ?"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -5113,9 +5123,396 @@ public final class DictationStore {
         }
     }
 
-    public func moveFolder(id: Int64, toParent newParentID: Int64?) throws {
+    // MARK: - Private meetings
+
+    /// Marks a folder private. Every meeting in it or in a subfolder becomes private.
+    public func setFolderPrivate(id: Int64, isPrivate: Bool) throws {
+        try setPrivateFlag(table: "meeting_folders", id: id, isPrivate: isPrivate)
+    }
+
+    /// Marks one meeting private regardless of the folder it sits in.
+    public func setMeetingPrivate(id: Int64, isPrivate: Bool) throws {
+        try setPrivateFlag(table: "meetings", id: id, isPrivate: isPrivate)
+    }
+
+    /// A meeting is private when it is flagged itself or sits under a flagged folder.
+    /// Unknown ids are not private. This is the only place that answers the question.
+    public func isMeetingPrivate(id: Int64) throws -> Bool {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
+        return try isMeetingPrivate(id: id, db: db)
+    }
+
+    private func isMeetingPrivate(id: Int64, db: OpaquePointer?) throws -> Bool {
+        let sql = """
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT folder_id FROM meetings WHERE id = ?1 AND folder_id IS NOT NULL
+            UNION
+            SELECT f.parent_id FROM meeting_folders f
+            JOIN ancestors a ON f.id = a.id
+            WHERE f.parent_id IS NOT NULL
+        )
+        SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1 AND is_private = 1)
+            OR EXISTS(SELECT 1 FROM meeting_folders WHERE is_private = 1 AND id IN (SELECT id FROM ancestors))
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw lastError(db)
+        }
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    /// A folder is private when it or any ancestor is flagged. Unknown ids are not private.
+    /// A meeting filed into a private folder is private, so a caller about to create one
+    /// there can ask before any content leaves the Mac.
+    public func isFolderPrivate(id: Int64) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try isFolderPrivate(id: id, db: db)
+    }
+
+    private func isFolderPrivate(id: Int64, db: OpaquePointer?) throws -> Bool {
+        let sql = """
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT ?1
+            UNION
+            SELECT f.parent_id FROM meeting_folders f
+            JOIN ancestors a ON f.id = a.id
+            WHERE f.parent_id IS NOT NULL
+        )
+        SELECT EXISTS(SELECT 1 FROM meeting_folders WHERE is_private = 1 AND id IN (SELECT id FROM ancestors))
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw lastError(db)
+        }
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    public func isMeetingDirectlyPrivate(id: Int64) throws -> Bool {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try isMeetingDirectlyPrivate(id: id, db: db)
+    }
+
+    private func isMeetingDirectlyPrivate(id: Int64, db: OpaquePointer?) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT EXISTS(SELECT 1 FROM meetings WHERE id = ?1 AND is_private = 1)", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw lastError(db)
+        }
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    /// Every folder id that is private itself or descends from a private folder.
+    public func privateFolderIDs() throws -> Set<Int64> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try privateFolderIDs(db: db)
+    }
+
+    private func privateFolderIDs(db: OpaquePointer?) throws -> Set<Int64> {
+        let sql = """
+        WITH RECURSIVE private_folders(id) AS (
+            SELECT id FROM meeting_folders WHERE is_private = 1
+            UNION
+            SELECT f.id FROM meeting_folders f
+            JOIN private_folders p ON f.parent_id = p.id
+        )
+        SELECT id FROM private_folders
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var ids: Set<Int64> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            ids.insert(sqlite3_column_int64(statement, 0))
+        }
+        return ids
+    }
+
+    /// Saved Ask Meetings session UUIDs whose scope, attachments, rolling summary,
+    /// or evidence/history dependencies touch any private meeting or private folder.
+    public func privateChatSessionIDs() throws -> Set<String> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try privateChatSessionIDs(db: db)
+    }
+
+    private func privateChatSessionIDs(db: OpaquePointer?) throws -> Set<String> {
+        func tableExists(_ name: String) throws -> Bool {
+            var s: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &s, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(s) }
+            sqlite3_bind_text(s, 1, (name as NSString).utf8String, -1, nil)
+            let status = sqlite3_step(s)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw lastError(db) }
+            return status == SQLITE_ROW
+        }
+        guard try tableExists("meeting_chat_sessions") else { return [] }
+        let privateMeetings = try privateMeetingIDs(db: db)
+        let privateFolders = try privateFolderIDs(db: db)
+        var result: Set<String> = []
+
+        // 1. Sessions linked directly to a private meeting (anchor or selected) or via turn dependencies.
+        if !privateMeetings.isEmpty {
+            if try tableExists("meeting_chat_session_meetings") {
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT DISTINCT session_id, meeting_id FROM meeting_chat_session_meetings", -1, &s, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(s) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    if privateMeetings.contains(sqlite3_column_int64(s, 1)),
+                       let sid = sqlite3_column_text(s, 0).map({ String(cString: $0) }) {
+                        result.insert(sid)
+                    }
+                }
+            }
+            if try tableExists("meeting_chat_turns"), try tableExists("meeting_chat_dependencies") {
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT DISTINCT t.session_id, d.meeting_id FROM meeting_chat_dependencies d JOIN meeting_chat_turns t ON t.id = d.turn_id", -1, &s, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(s) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    if privateMeetings.contains(sqlite3_column_int64(s, 1)),
+                       let sid = sqlite3_column_text(s, 0).map({ String(cString: $0) }) {
+                        result.insert(sid)
+                    }
+                }
+            }
+        }
+
+        // 2. Sessions whose stored scope or rolling summary references a private meeting or folder.
+        var sessionStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id, body FROM meeting_chat_sessions", -1, &sessionStmt, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(sessionStmt) }
+        while sqlite3_step(sessionStmt) == SQLITE_ROW {
+            guard let idPtr = sqlite3_column_text(sessionStmt, 0),
+                  let bodyPtr = sqlite3_column_text(sessionStmt, 1) else { continue }
+            let id = String(cString: idPtr)
+            let body = String(cString: bodyPtr)
+            guard let session = try? JSONDecoder().decode(MeetingChatSession.self, from: Data(body.utf8)) else { continue }
+            switch session.scope.selection {
+            case .all: break
+            case .folder(let folderID):
+                if privateFolders.contains(folderID) { result.insert(id) }
+            case .meetings(let ids):
+                if !privateMeetings.isDisjoint(with: ids) { result.insert(id) }
+            }
+            if let summaryDeps = session.rollingSummary?.dependencies,
+               summaryDeps.contains(where: { privateMeetings.contains($0.meetingID) }) {
+                result.insert(id)
+            }
+        }
+
+        // 3. History dependencies (sqlMeeting, recap, and transitive chat references).
+        if try tableExists("meeting_chat_turns"), try tableExists("meeting_chat_history_dependencies") {
+            var recapPrivateKeys: Set<String> = []
+            if !privateMeetings.isEmpty, try tableExists("time_turner_recaps") {
+                struct RecapBody: Decodable {
+                    struct Source: Decodable { let meeting: MeetingChatCitation? }
+                    let sources: [Source]
+                }
+                var rStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT day_key, body FROM time_turner_recaps", -1, &rStmt, nil) == SQLITE_OK else {
+                    throw lastError(db)
+                }
+                defer { sqlite3_finalize(rStmt) }
+                while sqlite3_step(rStmt) == SQLITE_ROW {
+                    guard let keyPtr = sqlite3_column_text(rStmt, 0),
+                          let bodyPtr = sqlite3_column_text(rStmt, 1) else { continue }
+                    let key = String(cString: keyPtr)
+                    let body = String(cString: bodyPtr)
+                    if let recap = try? JSONDecoder().decode(RecapBody.self, from: Data(body.utf8)),
+                       recap.sources.contains(where: { $0.meeting.map { privateMeetings.contains($0.meetingID) } == true }) {
+                        recapPrivateKeys.insert(key)
+                    }
+                }
+            }
+
+            var chatEdges: [(sessionID: String, referencedSessionID: String)] = []
+            var hStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT t.session_id, h.kind, h.source_id FROM meeting_chat_history_dependencies h JOIN meeting_chat_turns t ON t.id = h.turn_id WHERE h.kind IN ('sqlMeeting','recap','chat')", -1, &hStmt, nil) == SQLITE_OK else {
+                throw lastError(db)
+            }
+            defer { sqlite3_finalize(hStmt) }
+            while sqlite3_step(hStmt) == SQLITE_ROW {
+                guard let sidPtr = sqlite3_column_text(hStmt, 0),
+                      let kindPtr = sqlite3_column_text(hStmt, 1),
+                      let srcPtr = sqlite3_column_text(hStmt, 2) else { continue }
+                let sid = String(cString: sidPtr)
+                let kind = String(cString: kindPtr)
+                let src = String(cString: srcPtr)
+                switch kind {
+                case "sqlMeeting":
+                    if let mid = Int64(src), privateMeetings.contains(mid) { result.insert(sid) }
+                case "recap":
+                    if recapPrivateKeys.contains(src) { result.insert(sid) }
+                case "chat":
+                    chatEdges.append((sid, src))
+                default: break
+                }
+            }
+            var changed = true
+            while changed {
+                changed = false
+                for edge in chatEdges where result.contains(edge.referencedSessionID) {
+                    if result.insert(edge.sessionID).inserted { changed = true }
+                }
+            }
+        }
+        return result
+    }
+
+    /// Every private meeting id, including meetings that are private only through a folder.
+    public func privateMeetingIDs() throws -> Set<Int64> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        return try privateMeetingIDs(db: db)
+    }
+
+    /// Every private meeting id, as a CTE named `private_meetings`. Sync queries join it.
+    private static let privateMeetingsCTE = """
+    WITH RECURSIVE private_folders(id) AS (
+        SELECT id FROM meeting_folders WHERE is_private = 1
+        UNION
+        SELECT f.id FROM meeting_folders f
+        JOIN private_folders p ON f.parent_id = p.id
+    ),
+    private_meetings(id) AS (
+        SELECT id FROM meetings
+        WHERE is_private = 1 OR folder_id IN (SELECT id FROM private_folders)
+    )
+    """
+
+    private func privateMeetingIDs(db: OpaquePointer?) throws -> Set<Int64> {
+        let sql = "\(Self.privateMeetingsCTE) SELECT id FROM private_meetings"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var ids: Set<Int64> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            ids.insert(sqlite3_column_int64(statement, 0))
+        }
+        return ids
+    }
+
+    /// Meetings flagged private themselves, without the ones private only through a folder.
+    public func directlyPrivateMeetingIDs() throws -> Set<Int64> {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id FROM meetings WHERE is_private = 1", -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        var ids: Set<Int64> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            ids.insert(sqlite3_column_int64(statement, 0))
+        }
+        return ids
+    }
+
+    /// Runs a change that can flip which meetings are private (a privacy flag, a meeting or folder
+    /// move, a folder delete) in one transaction, then puts every meeting whose privacy flipped back
+    /// in the iCloud outbox with a newer `updated_at`. Sync then uploads a tombstone for a meeting
+    /// that turned private, which removes the copy on other devices, or the full meeting again for
+    /// one that stopped being private. The newer timestamp makes either win last-write-wins.
+    @discardableResult
+    private func resyncingPrivacyChanges<T>(_ change: (OpaquePointer?) throws -> T) throws -> T {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        try exec("BEGIN IMMEDIATE", db: db)
+        do {
+            let before = try privateMeetingIDs(db: db)
+            let result = try change(db)
+            let flipped = before.symmetricDifference(try privateMeetingIDs(db: db))
+            try markMeetingsDirtyForPrivacyChange(flipped, db: db)
+            try exec("COMMIT", db: db)
+            return result
+        } catch {
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private func markMeetingsDirtyForPrivacyChange(_ ids: Set<Int64>, db: OpaquePointer?) throws {
+        guard !ids.isEmpty else { return }
+        let sql = """
+        UPDATE meetings SET sync_dirty = 1, updated_at = MAX(?, updated_at + 0.001)
+        WHERE id = ? AND deleted_at IS NULL
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        let now = Date().timeIntervalSince1970
+        for id in ids {
+            sqlite3_reset(statement)
+            sqlite3_bind_double(statement, 1, now)
+            sqlite3_bind_int64(statement, 2, id)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw lastError(db)
+            }
+        }
+    }
+
+    private func setPrivateFlag(table: String, id: Int64, isPrivate: Bool) throws {
+        try resyncingPrivacyChanges { db in try setPrivateFlag(table: table, id: id, isPrivate: isPrivate, db: db) }
+    }
+
+    private func setPrivateFlag(table: String, id: Int64, isPrivate: Bool, db: OpaquePointer?) throws {
+        // `table` is only ever one of two literals from the callers above.
+        let sql = "UPDATE \(table) SET is_private = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int(statement, 1, isPrivate ? 1 : 0)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+        guard sqlite3_changes(db) == 1 else {
+            throw NSError(
+                domain: "MuesliDB",
+                code: Int(SQLITE_NOTFOUND),
+                userInfo: [NSLocalizedDescriptionKey: "No row \(id) in \(table) to mark private"]
+            )
+        }
+    }
+
+    public func moveFolder(id: Int64, toParent newParentID: Int64?) throws {
+        try resyncingPrivacyChanges { db in try moveFolder(id: id, toParent: newParentID, db: db) }
+    }
+
+    private func moveFolder(id: Int64, toParent newParentID: Int64?, db: OpaquePointer?) throws {
         // Prevent moving a folder into itself or one of its own descendants.
         if let newParentID {
             let descendants = try descendantFolderIDs(of: id, db: db)
@@ -5244,14 +5641,9 @@ public final class DictationStore {
         }
 
         let meetingSQL = """
-        SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
-               m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
-               m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
-               m.cloud_system_fields, m.notes_layout_version, m.previous_notes
-        FROM meetings AS m
-        LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
+        \(Self.outgoingMeetingSyncSelect)
         WHERE m.cloud_record_name IN (\(placeholders))
+          AND \(Self.outgoingMeetingEligible)
         """
         var meetingStatement: OpaquePointer?
         guard sqlite3_prepare_v2(db, meetingSQL, -1, &meetingStatement, nil) == SQLITE_OK else {
@@ -5740,6 +6132,61 @@ public final class DictationStore {
         return records
     }
 
+    /// The meeting columns every outgoing sync query reads, in `makeSyncMeetingRecord` order, with
+    /// `private_meetings` joined as `pm`. A private meeting that is not deleted reads as a
+    /// content-free tombstone. Muesli removes a remote copy by saving a tombstone over it, so this
+    /// takes a private meeting out of iCloud and off paired devices without any of its text
+    /// leaving the Mac. The local row keeps its content.
+    private static let outgoingMeetingSyncSelect: String = {
+        let hidden = "(pm.id IS NOT NULL AND m.deleted_at IS NULL)"
+        return """
+        \(privateMeetingsCTE)
+        SELECT m.cloud_record_name,
+               CASE WHEN \(hidden) THEN 'Deleted Meeting' ELSE m.title END,
+               CASE WHEN \(hidden) THEN '' ELSE m.raw_transcript END,
+               CASE WHEN \(hidden) THEN NULL ELSE m.formatted_notes END,
+               CASE WHEN \(hidden) THEN '' ELSE m.manual_notes END,
+               m.start_time,
+               CASE WHEN \(hidden) THEN 0 ELSE m.duration_seconds END,
+               CASE WHEN \(hidden) THEN 0 ELSE m.word_count END,
+               m.source, m.meeting_status, m.updated_at,
+               CASE WHEN \(hidden) THEN m.updated_at ELSE m.deleted_at END,
+               m.cloud_change_tag,
+               CASE WHEN \(hidden) THEN NULL
+                    ELSE COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name) END,
+               m.cloud_system_fields,
+               CASE WHEN \(hidden) THEN 0 ELSE m.notes_layout_version END,
+               CASE WHEN \(hidden) THEN NULL ELSE m.previous_notes END
+        FROM meetings AS m
+        LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
+        LEFT JOIN private_meetings AS pm ON pm.id = m.id
+        """
+    }()
+
+    /// SQL that is true for a meeting the outgoing sync queries may offer: it is not private, it is
+    /// a deletion tombstone, or it is private but a copy already reached CloudKit and must be
+    /// replaced by a tombstone. A private meeting that never synced is never offered.
+    private static let outgoingMeetingEligible = """
+    (pm.id IS NULL OR m.deleted_at IS NOT NULL
+        OR m.cloud_system_fields IS NOT NULL OR m.cloud_change_tag IS NOT NULL OR m.last_synced_at IS NOT NULL)
+    """
+
+    /// SQL that is true for a meeting the full migration export may send: it is not private, or it
+    /// is a deletion tombstone. The export runs once, when records move from the legacy default zone
+    /// into the sync zone, so it skips private meetings outright instead of sending tombstones.
+    private static func syncableMeetingCondition(_ alias: String) -> String {
+        """
+        (\(alias).deleted_at IS NOT NULL OR \(alias).id NOT IN (
+            WITH RECURSIVE private_folders(id) AS (
+                SELECT id FROM meeting_folders WHERE is_private = 1
+                UNION
+                SELECT f.id FROM meeting_folders f JOIN private_folders p ON f.parent_id = p.id
+            )
+            SELECT id FROM meetings WHERE is_private = 1 OR folder_id IN (SELECT id FROM private_folders)
+        ))
+        """
+    }
+
     private func dirtyMeetingTextRecords(
         limit: Int,
         offset: Int,
@@ -5748,15 +6195,10 @@ public final class DictationStore {
         guard limit > 0 else { return [] }
         var records: [SyncTextRecord] = []
         let meetingSQL = """
-        SELECT m.cloud_record_name, m.title, m.raw_transcript, m.formatted_notes, m.manual_notes,
-               m.start_time, m.duration_seconds, m.word_count, m.source, m.meeting_status,
-               m.updated_at, m.deleted_at, m.cloud_change_tag,
-               COALESCE(m.follow_up_to_record_name, predecessor.cloud_record_name),
-               m.cloud_system_fields, m.notes_layout_version, m.previous_notes
-        FROM meetings AS m
-        LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
+        \(Self.outgoingMeetingSyncSelect)
         WHERE m.sync_dirty = 1 AND m.cloud_record_name IS NOT NULL
           AND m.meeting_status NOT IN (?, ?)
+          AND \(Self.outgoingMeetingEligible)
         ORDER BY m.updated_at DESC, m.id DESC
         LIMIT ?
         OFFSET ?
@@ -5861,6 +6303,7 @@ public final class DictationStore {
         FROM meetings AS m
         LEFT JOIN meetings AS predecessor ON predecessor.id = m.follow_up_to_id
         WHERE m.cloud_record_name IS NOT NULL
+          AND \(Self.syncableMeetingCondition("m"))
         ORDER BY m.updated_at DESC, m.id DESC
         LIMIT ?
         OFFSET ?
@@ -5896,11 +6339,14 @@ public final class DictationStore {
 
     private func hasDirtyMeetingTextRecords(db: OpaquePointer?) throws -> Bool {
         let sql = """
+        \(Self.privateMeetingsCTE)
         SELECT 1
-        FROM meetings
-        WHERE sync_dirty = 1
-          AND cloud_record_name IS NOT NULL
-          AND meeting_status NOT IN (?, ?)
+        FROM meetings AS m
+        LEFT JOIN private_meetings AS pm ON pm.id = m.id
+        WHERE m.sync_dirty = 1
+          AND m.cloud_record_name IS NOT NULL
+          AND m.meeting_status NOT IN (?, ?)
+          AND \(Self.outgoingMeetingEligible)
         LIMIT 1
         """
         var statement: OpaquePointer?
@@ -5986,7 +6432,14 @@ public final class DictationStore {
         guard try GlobalSearchIndex.stepSourceWrite(statement) == SQLITE_DONE else {
             throw lastError(db)
         }
-        return sqlite3_changes(db) > 0
+        guard sqlite3_changes(db) == 0 else { return true }
+        // The row changed while the save was in flight, so it stays dirty. CloudKit still holds the
+        // saved version now, so record its metadata: the next save then builds on it, and a meeting
+        // marked private mid-upload counts as synced and gets its tombstone.
+        try updateTextRecordCloudMetadata(
+            table: table, recordName: recordName, changeTag: changeTag, systemFields: systemFields, db: db
+        )
+        return false
     }
 
     /// Refreshes CKRecord identity/version metadata without touching local text,
@@ -6001,6 +6454,18 @@ public final class DictationStore {
         let db = try openDatabase()
         defer { sqlite3_close(db) }
         let table = kind == .dictation ? "dictations" : "meetings"
+        try updateTextRecordCloudMetadata(
+            table: table, recordName: recordName, changeTag: changeTag, systemFields: systemFields, db: db
+        )
+    }
+
+    private func updateTextRecordCloudMetadata(
+        table: String,
+        recordName: String,
+        changeTag: String?,
+        systemFields: Data?,
+        db: OpaquePointer?
+    ) throws {
         let sql = """
         UPDATE \(table)
         SET cloud_change_tag = ?, cloud_system_fields = ?
@@ -6551,6 +7016,15 @@ public final class DictationStore {
     }
 
     private func upsertSyncedMeeting(_ record: SyncTextRecord, db: OpaquePointer?) throws -> Bool {
+        // A private meeting's remote copy is the content-free tombstone this Mac uploaded. Applying
+        // it, or anything else fetched for that record, would overwrite the local meeting.
+        if let localID = try liveMeetingID(recordName: record.id, db: db),
+           try isMeetingPrivate(id: localID, db: db) {
+            if !record.isDeleted {
+                try requeuePrivateTombstone(meetingID: localID, over: record, db: db)
+            }
+            return false
+        }
         if let localUpdatedAt = try localUpdatedAt(table: "meetings", recordName: record.id, db: db),
            localUpdatedAt > record.updatedAt.timeIntervalSince1970 {
             return false
@@ -6632,6 +7106,42 @@ public final class DictationStore {
         let trimmed = followUpRecordName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty, trimmed != recordName else { return nil }
         return trimmed
+    }
+
+    /// CloudKit holds content for a meeting that is private here: another device saved over the
+    /// tombstone, or a tombstone save lost a conflict to it. Queue the tombstone again, newer than
+    /// that content and based on its server version, so the next save replaces it.
+    private func requeuePrivateTombstone(meetingID: Int64, over remote: SyncTextRecord, db: OpaquePointer?) throws {
+        let sql = """
+        UPDATE meetings
+        SET sync_dirty = 1, updated_at = MAX(updated_at, ?) + 0.001,
+            cloud_change_tag = COALESCE(?, cloud_change_tag), cloud_system_fields = COALESCE(?, cloud_system_fields)
+        WHERE id = ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, remote.updatedAt.timeIntervalSince1970)
+        bindOptionalText(remote.cloudChangeTag, at: 2, statement: statement)
+        bindOptionalBlob(remote.cloudSystemFields, at: 3, statement: statement)
+        sqlite3_bind_int64(statement, 4, meetingID)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
+    private func liveMeetingID(recordName: String, db: OpaquePointer?) throws -> Int64? {
+        let sql = "SELECT id FROM meetings WHERE cloud_record_name = ? AND deleted_at IS NULL LIMIT 1"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, (recordName as NSString).utf8String, -1, nil)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int64(statement, 0)
     }
 
     private func localUpdatedAt(table: String, recordName: String, db: OpaquePointer?) throws -> Double? {

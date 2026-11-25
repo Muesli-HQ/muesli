@@ -114,7 +114,7 @@ actor MeetingChatWorker {
     func saveRollingSummary(_ text: String, coveredTurns: [MeetingChatTurn], turn: MeetingChatTurn) throws -> Bool {
         try store.saveRollingSummary(text: text, coveredTurns: coveredTurns, for: turn)
     }
-    func evidence(for turn: MeetingChatTurn) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
+    func evidence(for turn: MeetingChatTurn, excludePrivate: Bool = false) throws -> (MeetingChatEvidence, [MeetingChatTurn]) {
         try Task.checkCancellation()
         try validateFileSources(sessionID: turn.sessionID)
         if turn.fileDependencies?.isEmpty == false {
@@ -123,6 +123,10 @@ actor MeetingChatWorker {
         }
         let context = try store.historyContext(before: turn)
         let history = context.turns
+        try ensureNoPrivateDependencies(turn: turn, additionalDependencies: context.dependencies, excludePrivate: excludePrivate)
+        let privateIDs: Set<Int64> = excludePrivate
+            ? try DictationStore(databaseURL: retrieval.databaseURL, readOnly: true).privateMeetingIDs()
+            : []
         // Prior conversation can be transformed without re-reading meetings. Start with
         // no source packet and let the model explicitly search the current scope if it
         // needs new facts. Removing a meeting affects retrieval, not validated history.
@@ -132,6 +136,7 @@ actor MeetingChatWorker {
         if case .meetings(let ids) = turn.scope.selection { hasAttachedMeetings = !ids.isEmpty } else { hasAttachedMeetings = false }
         if !hasAttachedMeetings || turn.skillTitle != nil || !history.isEmpty || turn.fileAttachments?.isEmpty == false {
             let eligible = explicitlyEmpty ? [] : try store.sourceChoices().filter { source in
+                if excludePrivate && privateIDs.contains(source.id) { return false }
                 switch turn.scope.selection {
                 case .all: break
                 case .folder(let id): if source.folderID != id { return false }
@@ -146,12 +151,13 @@ actor MeetingChatWorker {
             return (evidence, history)
         }
         // Supply relevant context from an explicitly selected source. Additional retrieval is model-directed.
-        let evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question), includeScopeContext: true)
+        let evidence = try retrieval.retrieve(question: turn.question, scope: turn.scope, priorQuestions: history.map(\.question), includeScopeContext: true, excludePrivateMeetings: excludePrivate)
         try store.attachEvidence(turnID: turn.id, dependencies: evidence.dependencies, attemptID: turn.attemptID)
         return (evidence, history)
     }
-    func execute(_ call: MeetingChatToolCall, turn: MeetingChatTurn, evidence: MeetingChatEvidence, nextSourceKey: Int, native: Bool = false) throws -> (MeetingChatEvidence, Int, Int, Int?) {
+    func execute(_ call: MeetingChatToolCall, turn: MeetingChatTurn, evidence: MeetingChatEvidence, nextSourceKey: Int, native: Bool = false, excludePrivate: Bool = false) throws -> (MeetingChatEvidence, Int, Int, Int?) {
         try Task.checkCancellation()
+        try ensureNoPrivateDependencies(turn: turn, additionalDependencies: evidence.dependencies, excludePrivate: excludePrivate)
         guard try store.dependenciesAreCurrent(evidence.dependencies) else { throw MeetingChatError.sourceChanged }
         let incoming: [MeetingChatPassage]
         var eligibleCount = evidence.coverage.eligibleMeetingCount
@@ -163,7 +169,7 @@ actor MeetingChatWorker {
             guard let scope = query.intersecting(turn.skillRecentMeetingScope ?? turn.scope) else {
                 return (evidence, nextSourceKey, 0, nil)
             }
-            let result = try store.discoverMeetings(in: scope, title: query.title, limit: query.limit, asOf: Date())
+            let result = try store.discoverMeetings(in: scope, title: query.title, limit: query.limit, asOf: Date(), excludePrivateMeetings: excludePrivate)
             incoming = result.passages
             incomingIsPartialRecap = result.hasMore
             eligibleCount = max(eligibleCount, incoming.count)
@@ -175,26 +181,26 @@ actor MeetingChatWorker {
                 guard let range = filter.intersecting(permitted) else { return (evidence, nextSourceKey, 0, nil) }
                 permitted = range
                 if filter.restrictToLatest || !filter.title.isEmpty {
-                    let matches = try store.discoverMeetings(in: range, title: filter.title, limit: filter.limit, asOf: Date())
+                    let matches = try store.discoverMeetings(in: range, title: filter.title, limit: filter.limit, asOf: Date(), excludePrivateMeetings: excludePrivate)
                     permitted.selection = .meetings(matches.passages.map(\.meetingID))
                     filterDependencies = matches.passages.map { .init(meetingID: $0.meetingID, revision: $0.revision) }
                     incomingIsPartialRecap = matches.hasMore
                 }
             }
-            let retrieved = try retrieval.retrieve(question: query, scope: permitted)
+            let retrieved = try retrieval.retrieve(question: query, scope: permitted, excludePrivateMeetings: excludePrivate)
             guard try store.dependenciesAreCurrent(filterDependencies) else { throw MeetingChatError.sourceChanged }
             eligibleCount = retrieved.coverage.eligibleMeetingCount
             incoming = retrieved.passages
             incomingIsPartialRecap = incomingIsPartialRecap || retrieved.coverage.isPartialRecap
         case .browse:
             let permitted = try store.permitsLibrary(sessionID: turn.sessionID) ? (turn.skillRecentMeetingScope ?? turn.scope) : turn.scope
-            let retrieved = try retrieval.retrieve(question: turn.question, scope: permitted, broadRecap: true)
+            let retrieved = try retrieval.retrieve(question: turn.question, scope: permitted, broadRecap: true, excludePrivateMeetings: excludePrivate)
             eligibleCount = retrieved.coverage.eligibleMeetingCount
             incoming = retrieved.passages
             incomingIsPartialRecap = retrieved.coverage.isPartialRecap
         case .read(let key):
             guard let passage = evidence.passages.first(where: { $0.sourceKey == key }),
-                let snapshot = try scopedSource(passage.meetingID, scope: turn.skillRecentMeetingScope ?? turn.scope), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
+                let snapshot = try scopedSource(passage.meetingID, scope: turn.skillRecentMeetingScope ?? turn.scope, excludePrivate: excludePrivate), snapshot.revision == passage.revision else { throw MeetingChatError.sourceChanged }
             // The capability is an issued source marker, never a model-supplied meeting ID.
             if passage.kind == .title {
                 incoming = Array(MeetingChatPassages.extract(from: snapshot).prefix(4))
@@ -207,7 +213,7 @@ actor MeetingChatWorker {
             let issued = evidence.passages.contains { $0.meetingID == meetingID }
             let library = try store.permitsLibrary(sessionID: turn.sessionID)
             let permittedScope = (issued || library) ? (turn.skillRecentMeetingScope ?? turn.scope) : turn.scope
-            guard let snapshot = try scopedSource(meetingID, scope: permittedScope) else { throw MeetingChatError.sourceChanged }
+            guard let snapshot = try scopedSource(meetingID, scope: permittedScope, excludePrivate: excludePrivate) else { throw MeetingChatError.sourceChanged }
             let pageResult = try Self.meetingPage(snapshot, page: page, byteLimit: native ? 40_000 : 6_000)
             incoming = pageResult.passages
             nextPage = pageResult.nextPage
@@ -243,8 +249,9 @@ actor MeetingChatWorker {
         try store.attachEvidence(turnID: turn.id, dependencies: result.dependencies, attemptID: turn.attemptID)
         return (result, nextKey, incoming.count, nextPage)
     }
-    private func scopedSource(_ id: Int64, scope: MeetingChatScope) throws -> MeetingChatSourceSnapshot? {
+    private func scopedSource(_ id: Int64, scope: MeetingChatScope, excludePrivate: Bool = false) throws -> MeetingChatSourceSnapshot? {
         if case .meetings(let ids) = scope.selection, !ids.contains(id) { return nil }
+        if excludePrivate, try DictationStore(databaseURL: retrieval.databaseURL).isMeetingPrivate(id: id) { return nil }
         let selected = MeetingChatScope(selection: .meetings([id]), startDate: scope.startDate, endDateExclusive: scope.endDateExclusive)
         guard let snapshot = try store.sourceSnapshots(scope: selected).first else { return nil }
         if case .folder(let folderID) = scope.selection, snapshot.folderID != folderID { return nil }
@@ -272,18 +279,45 @@ actor MeetingChatWorker {
         guard currentPage == page else { throw MeetingChatError.invalidResponse }
         return (selected, nil)
     }
-    func canPublishSummary(turn: MeetingChatTurn) throws -> Bool {
+    private func ensureNoPrivateDependencies(turn: MeetingChatTurn, additionalDependencies: [MeetingChatDependency] = [], excludePrivate: Bool) throws {
+        guard excludePrivate else { return }
+        // Earlier answers and active evidence were built from the meetings they cite or query.
+        // If any of those meetings is private (or became private mid-chat), block untrusted egress.
+        let reader = DictationStore(databaseURL: retrieval.databaseURL, readOnly: true)
+        let privateIDs = try reader.privateMeetingIDs()
+        if !privateIDs.isEmpty {
+            let currentDeps = try store.dependencies(turnID: turn.id) + additionalDependencies
+            if currentDeps.contains(where: { privateIDs.contains($0.meetingID) }) {
+                throw MeetingChatError.privateMeetingBlocked
+            }
+            let earlier = try store.turns(sessionID: turn.sessionID).filter { $0.ordinal < turn.ordinal }
+            let cited = try earlier.flatMap { try store.dependencies(turnID: $0.id) }
+            if cited.contains(where: { privateIDs.contains($0.meetingID) }) {
+                throw MeetingChatError.privateMeetingBlocked
+            }
+        }
+        let privateChats = try reader.privateChatSessionIDs()
+        let sessionTurns = try store.turns(sessionID: turn.sessionID).filter { $0.ordinal <= turn.ordinal }
+        for candidateTurn in sessionTurns {
+            if try store.hasPrivateHistoryDependency(turnID: candidateTurn.id, privateMeetingIDs: privateIDs, privateChatSessionIDs: privateChats) {
+                throw MeetingChatError.privateMeetingBlocked
+            }
+        }
+    }
+    func canPublishSummary(turn: MeetingChatTurn, excludePrivate: Bool = false) throws -> Bool {
         try validateFileSources(sessionID: turn.sessionID)
         guard let current = try store.turns(sessionID: turn.sessionID).first(where: { $0.id == turn.id }),
               current.state.isPending, current.attemptID == turn.attemptID else { return false }
+        try ensureNoPrivateDependencies(turn: turn, excludePrivate: excludePrivate)
         let version = try store.sourceMutationVersion()
-        if summaryValidation?.turnID == turn.id, summaryValidation?.sourceVersion == version { return true }
+        if !excludePrivate, summaryValidation?.turnID == turn.id, summaryValidation?.sourceVersion == version { return true }
         guard try store.dependenciesAreCurrent(store.dependencies(turnID: turn.id)) else { return false }
         summaryValidation = (turn.id, version)
         return true
     }
-    func titleContext(turn: MeetingChatTurn) throws -> (question: String, answer: String)? {
+    func titleContext(turn: MeetingChatTurn, excludePrivate: Bool = false) throws -> (question: String, answer: String)? {
         try validateFileSources(sessionID: turn.sessionID)
+        try ensureNoPrivateDependencies(turn: turn, excludePrivate: excludePrivate)
         guard let session = try store.sessions().first(where: { $0.id == turn.sessionID }),
               session.titleIsAutomatic == true, session.generatedTitleTurnID == nil,
               session.scope == (turn.composerScopeAtSend ?? turn.scope), turn.ordinal >= session.contextStartOrdinal,
@@ -293,13 +327,16 @@ actor MeetingChatWorker {
               try store.dependenciesAreCurrent(store.dependencies(turnID: turn.id)) else { return nil }
         return (latest.question, answer)
     }
-    func saveTitle(turn: MeetingChatTurn, title: String) throws -> Bool {
+    func saveTitle(turn: MeetingChatTurn, title: String, excludePrivate: Bool = false) throws -> Bool {
         try validateFileSources(sessionID: turn.sessionID)
+        try ensureNoPrivateDependencies(turn: turn, excludePrivate: excludePrivate)
         guard let attemptID = turn.attemptID else { return false }
         return try store.updateTitleIfAutomatic(turnID: turn.id, attemptID: attemptID, title: title)
     }
-    func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool, documentCoverage: [ChatDocumentCoverage] = []) throws -> Bool {
+    func finish(turn: MeetingChatTurn, answer: MeetingChatAnswer, dependencies: [MeetingChatDependency], isDraft: Bool, documentCoverage: [ChatDocumentCoverage] = [], excludePrivate: Bool = false) throws -> Bool {
         try validateFileSources(sessionID: turn.sessionID, force: true)
+        let allDependencies = dependencies + answer.citations.map { MeetingChatDependency(meetingID: $0.meetingID, revision: $0.revision) }
+        try ensureNoPrivateDependencies(turn: turn, additionalDependencies: allDependencies, excludePrivate: excludePrivate)
         return try store.finishTurn(turnID: turn.id, answer: answer.markdown, citations: answer.citations, dependencies: dependencies, coverage: answer.coverage, isDraft: isDraft, attemptID: turn.attemptID, documentCoverage: documentCoverage.isEmpty ? nil : documentCoverage)
     }
 }
@@ -875,6 +912,8 @@ final class MeetingChatCoordinator {
                 scheduleHistoryReload()
             }
             do {
+                // Private meetings are withheld unless the selected backend is trusted for them.
+                let excludePrivate = !PrivateMeetingPolicy.allowsBackend(config)
                 phase = "Checking model capabilities"
                 let generator = try await unpreparedGenerator.preparedForChat(config: config)
                 try Task.checkCancellation()
@@ -897,7 +936,7 @@ final class MeetingChatCoordinator {
                 let documentTools = ChatDocumentTools(files: attachments.documents,
                     supportsVision: [.chatGPT, .openAI, .openRouter, .anthropic].contains(MeetingSummaryBackendOption.resolved(config.meetingSummaryBackend)),
                     maximumTextBytes: min(256_000, max(256, budget.maximumInputTokens * 3 / 4)), analytics: analytics)
-                let (evidence, history) = try await worker.evidence(for: turn)
+                let (evidence, history) = try await worker.evidence(for: turn, excludePrivate: excludePrivate)
                 if !evidence.passages.isEmpty { analytics.usedChatSource(.meeting) }
                 let savedSummary = try await worker.rollingSummary(for: turn)
                 let plan = budget.plan(history: history, existingSummaryThroughOrdinal: savedSummary?.throughOrdinal)
@@ -906,7 +945,7 @@ final class MeetingChatCoordinator {
                     phase = "Updating conversation memory"
                     rollingSummary = try await budget.summarize(olderTurns: plan.olderTurns, previousSummary: rollingSummary,
                         config: config, sessionID: turn.sessionID, generator: generator, validateContext: {
-                            guard try await worker.canPublishSummary(turn: turn) else { throw MeetingChatError.sourceChanged }
+                            guard try await worker.canPublishSummary(turn: turn, excludePrivate: excludePrivate) else { throw MeetingChatError.sourceChanged }
                         })
                     try Task.checkCancellation()
                     guard activeRequestID == requestID, let summary = rollingSummary else { return }
@@ -922,7 +961,7 @@ final class MeetingChatCoordinator {
                 var nextSourceKey = (evidence.passages.compactMap { Int($0.sourceKey.dropFirst()) }.max() ?? 0) + 1
                 let candidate = turn.scope == MeetingChatScopePolicy.empty && turn.skillRecentMeetingScope?.selection == .all
                 let generalChat = candidate ? try await worker.permitsLibrary(sessionID: turn.sessionID) : false
-                let library = generalChat ? ChatLibraryTools(turn: turn, databaseURL: worker.store.databaseURL, analytics: analytics) : nil
+                let library = generalChat ? ChatLibraryTools(turn: turn, databaseURL: worker.store.databaseURL, analytics: analytics, excludePrivate: excludePrivate) : nil
                 var lastHistoryCursor: String?
                 var historyPages = 0
                 let (answer, finalEvidence) = try await MeetingChatClient.run(question: turn.question,
@@ -930,7 +969,7 @@ final class MeetingChatCoordinator {
                     skillCatalog: MuesliHistoryTask.catalog(custom: config.customMeetingTemplates),
                     discovery: (turn.skillRecentMeetingScope ?? turn.scope) != MeetingChatScopePolicy.empty, library: generalChat,
                     validateContext: {
-                        guard try await worker.canPublishSummary(turn: turn) else { throw MeetingChatError.sourceChanged }
+                        guard try await worker.canPublishSummary(turn: turn, excludePrivate: excludePrivate) else { throw MeetingChatError.sourceChanged }
                     }, execute: { call, current in
                         try Task.checkCancellation()
                         if case .library(let operation) = call {
@@ -956,7 +995,7 @@ final class MeetingChatCoordinator {
                             return MeetingChatToolResult(evidence: current, documentOutput: result.output, images: result.images)
                         }
                         analytics.usedChatSource(.meeting)
-                        let (result, next, count, nextPage) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey, native: generator.supportsNativeTools(config: config))
+                        let (result, next, count, nextPage) = try await worker.execute(call, turn: turn, evidence: current, nextSourceKey: nextSourceKey, native: generator.supportsNativeTools(config: config), excludePrivate: excludePrivate)
                         nextSourceKey = next
                         if self.activeRequestID == requestID, let index = self.activities.indices.last {
                             self.activities[index].output = "\(count) passages returned · \(result.coverage.evidenceMeetingCount) meetings in the current source packet"
@@ -992,7 +1031,7 @@ final class MeetingChatCoordinator {
                         guard let self, self.activeRequestID == requestID, !Task.isCancelled else { return }
                         // Summaries contain meeting data too. Check persisted invalidation before
                         // displaying a delta, even when the UI has not yet refreshed after deletion.
-                        let valid = (try? await worker.canPublishSummary(turn: turn)) == true
+                        let valid = (try? await worker.canPublishSummary(turn: turn, excludePrivate: excludePrivate)) == true
                         guard self.activeRequestID == requestID, !Task.isCancelled else { return }
                         guard valid else { self.reasoningSummaries = []; self.stop(); return }
                         while self.reasoningSummaries.count <= iteration { self.reasoningSummaries.append("") }
@@ -1002,10 +1041,10 @@ final class MeetingChatCoordinator {
                     })
                 try Task.checkCancellation()
                 guard activeRequestID == requestID else { return }
-                guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft, documentCoverage: attachments.documentCoverage) else { throw MeetingChatError.sourceChanged }
+                guard try await worker.finish(turn: turn, answer: answer, dependencies: finalEvidence.dependencies, isDraft: isDraft, documentCoverage: attachments.documentCoverage, excludePrivate: excludePrivate) else { throw MeetingChatError.sourceChanged }
                 guard activeRequestID == requestID, !Task.isCancelled else { return }
                 analyticsOutcome = answer.insufficientEvidence ? .partial : .success
-                if !answer.insufficientEvidence { scheduleTitle(turn: turn, config: config) }
+                if !answer.insufficientEvidence { scheduleTitle(turn: turn, config: config, excludePrivate: excludePrivate) }
             } catch {
                 analyticsOutcome = Task.isCancelled || error is CancellationError ? .cancelled : .failed
                 guard activeRequestID == requestID else { return }
@@ -1024,7 +1063,7 @@ final class MeetingChatCoordinator {
         titleTasks.removeValue(forKey: sessionID)?.cancel()
         titleAttempts.removeValue(forKey: sessionID)
     }
-    private func scheduleTitle(turn: MeetingChatTurn, config: AppConfig) {
+    private func scheduleTitle(turn: MeetingChatTurn, config: AppConfig, excludePrivate: Bool = false) {
         cancelTitle(sessionID: turn.sessionID)
         let token = UUID(); titleAttempts[turn.sessionID] = token
         let worker = worker; let generator = generator
@@ -1036,14 +1075,14 @@ final class MeetingChatCoordinator {
                 }
             }
             do {
-                guard let exchange = try await worker.titleContext(turn: turn) else { return }
+                guard let exchange = try await worker.titleContext(turn: turn, excludePrivate: excludePrivate) else { return }
                 try Task.checkCancellation()
                 let request = try MeetingChatClient.conversationTitleRequest(question: exchange.question, answer: exchange.answer, config: config, sessionID: turn.sessionID)
                 guard let raw = try await generator.generateConversationTitle(request),
                       let title = MeetingChatClient.validatedConversationTitle(raw) else { return }
                 try Task.checkCancellation()
                 guard let self, self.titleAttempts[turn.sessionID] == token else { return }
-                if try await worker.saveTitle(turn: turn, title: title) { await self.refreshHistory() }
+                if try await worker.saveTitle(turn: turn, title: title, excludePrivate: excludePrivate) { await self.refreshHistory() }
             } catch {
                 // A title is optional metadata. Keep the provisional title and completed answer.
             }

@@ -353,6 +353,16 @@ case "${shard}" in
       CalendarPermissionStateTests
       DisabledCalendarFilterTests
       GoogleCalendarTests
+      SpeakerEmbeddingSmokeTests
+      SpeakerIdentityPipelineTests
+      SpeakerIdentityStoreTests
+      SpeakerVoiceprintMatcherTests
+      PrivateMeetingCLISyncTests
+      PrivateMeetingICloudRemovalTests
+      PrivateMeetingChatTests
+      PrivateMeetingExportTests
+      PrivateMeetingPolicyTests
+      PrivateMeetingsStoreTests
       UpcomingMeetingsWindowTests
       MeetingTitleLayoutTests
       # Builds offscreen NSPanels; kept out of core's concurrent NSApp.windows

@@ -373,6 +373,7 @@ struct MeetingsView: View {
                                 localeVersion: localeChangeVersion,
                                 folders: appState.folders,
                                 browsedFolderID: appState.selectedFolderID,
+                                isPrivate: appState.privateMeetingIDs.contains(meeting.id),
                                 onSelect: { controller.showMeetingDocument(id: meeting.id) },
                                 onMove: { folderID in
                                     controller.moveMeeting(id: meeting.id, toFolder: folderID)

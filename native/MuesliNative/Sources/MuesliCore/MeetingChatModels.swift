@@ -124,7 +124,7 @@ public struct MeetingChatSourceSnapshot: Codable, Sendable {
 }
 
 public enum MeetingChatError: Error, LocalizedError {
-    case missingSession, invalidResponse, sourceChanged, questionTooLong, promptTooLarge
+    case missingSession, invalidResponse, sourceChanged, questionTooLong, promptTooLarge, privateMeetingBlocked
     public var errorDescription: String? {
         switch self {
         case .missingSession: "This chat is no longer available."
@@ -132,6 +132,7 @@ public enum MeetingChatError: Error, LocalizedError {
         case .sourceChanged: "A source meeting changed while the answer was being written. Please retry."
         case .questionTooLong: "Keep your question within 2,000 characters."
         case .promptTooLarge: "This context is too large. Choose fewer meetings or start a new chat."
+        case .privateMeetingBlocked: "This chat includes private meetings and the selected AI backend is not trusted for private meetings. Trust it in Settings or start a new chat."
         }
     }
 }

@@ -416,6 +416,7 @@ struct MeetingDetailView: View {
                     } else {
                         MeetingParticipantsView(meetingID: meeting.id, controller: controller)
                             .frame(maxWidth: 150)
+                        MeetingSpeakersView(meetingID: meeting.id, controller: controller)
                     }
                     Spacer(minLength: 0)
                     detailModePicker(for: meeting)
@@ -565,6 +566,7 @@ struct MeetingDetailView: View {
                 meetingID: meeting.id,
                 controller: controller
             )
+            MeetingSpeakersView(meetingID: meeting.id, controller: controller)
         }
     }
 
@@ -849,11 +851,35 @@ struct MeetingDetailView: View {
             && !appState.isMeetingRecording
     }
 
+    /// A lock that shows whether the meeting is private and toggles the meeting's own flag.
+    /// A meeting that is private only through its folder cannot be unlocked from here.
+    @ViewBuilder
+    private func privateToggle(for meeting: MeetingRecord) -> some View {
+        let isPrivate = appState.privateMeetingIDs.contains(meeting.id)
+        let isDirect = appState.directlyPrivateMeetingIDs.contains(meeting.id)
+        let inheritedOnly = isPrivate && !isDirect
+        Button {
+            controller.setMeetingPrivate(id: meeting.id, isPrivate: !isDirect)
+        } label: {
+            Image(systemName: isPrivate ? "lock.fill" : "lock.open")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isPrivate ? MuesliTheme.accent : MuesliTheme.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .disabled(inheritedOnly)
+        .help(inheritedOnly
+            ? "Private because its folder is private. Remove the mark from the folder to change this."
+            : (isPrivate ? "Private meeting. Click to remove the mark." : "Mark this meeting private"))
+        .accessibilityLabel(isPrivate ? "Private meeting" : "Mark meeting private")
+        .accessibilityIdentifier("meeting.private.toggle")
+    }
+
     @ViewBuilder
     private func compactHeaderActions(for meeting: MeetingRecord, appliedTemplate: MeetingTemplateSnapshot) -> some View {
         HStack(spacing: MuesliTheme.spacing8) {
             recordingRecoveryHeaderAction(for: meeting)
             resumeChooserIfAvailable(for: meeting)
+            privateToggle(for: meeting)
             exportMenu(for: meeting)
 
             if isSummarizing {

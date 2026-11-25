@@ -7,7 +7,7 @@ import os
 /// user-configured folder. Mirrors the meeting-hook dispatch pattern by
 /// dispatching export work away from the meeting persistence path.
 protocol MeetingMarkdownAutoExporting {
-    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig)
+    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig, isPrivateMeeting: Bool)
     func recordMeetingLookupFailure(meetingID: Int64, error: Error?)
 }
 
@@ -33,10 +33,10 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
         supportDirectory.appendingPathComponent("meeting-markdown-export.log")
     }
 
-    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig) {
+    func exportIfConfigured(meeting: MeetingRecord, config: AppConfig, isPrivateMeeting: Bool = false) {
         guard config.autoExportMarkdownEnabled else { return }
         Task.detached(priority: .utility) { [self] in
-            await performExport(meeting: meeting, config: config)
+            await performExport(meeting: meeting, config: config, isPrivateMeeting: isPrivateMeeting)
         }
     }
 
@@ -51,7 +51,11 @@ final class MeetingMarkdownAutoExporter: MeetingMarkdownAutoExporting {
     /// Builds the export payloads and writes them to disk. Returns the written URLs on
     /// success (exposed for testing); logs and returns nil on any failure.
     @discardableResult
-    func performExport(meeting: MeetingRecord, config: AppConfig) async -> [URL]? {
+    func performExport(meeting: MeetingRecord, config: AppConfig, isPrivateMeeting: Bool = false) async -> [URL]? {
+        guard !isPrivateMeeting else {
+            writeLog("skipped: private meeting id=\(meeting.id) is never auto-exported")
+            return nil
+        }
         let trimmedFolder = config.autoExportMarkdownFolderPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedFolder.isEmpty else {
             writeLog("skipped: auto-export enabled but no destination folder configured")

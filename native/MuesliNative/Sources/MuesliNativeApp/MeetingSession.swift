@@ -257,10 +257,23 @@ final class MeetingSession {
     var onSystemAudioHealthEpisode: ((MeetingSystemAudioHealthEvent) -> Void)?
     var manualNotesProvider: (() async -> String?)?
     var participantNamesProvider: (() async -> [String])?
+    /// Answers whether this meeting is private at the moment of the call. It is asked
+    /// before every outbound request because the flag can change during processing.
+    var isPrivateMeetingProvider: (() async -> Bool)?
+    /// First `"Speaker N"` index to assign when formatting and recording remote speakers.
+    /// Defaults to `1`; resumed meetings offset past existing speakers in the meeting.
+    var startingSpeakerNumberProvider: (() async -> Int)?
+    /// Persists this meeting's diarized speakers and returns `Speaker N -> name` for
+    /// recognized voices. An empty map keeps the transcript exactly as before.
+    var speakerNamesProvider: (([MeetingSpeakerObservation]) async -> [String: String])?
     var liveTitleProvider: (() async -> String?)?
     /// Formatted notes of the predecessor meeting when this session records a
     /// follow-up; injected into the summary prompt for action-item carry-forward.
     var previousMeetingNotes: String?
+    /// True if `previousMeetingNotes` originated from a private predecessor meeting.
+    var previousMeetingNotesArePrivate = false
+    /// Re-checks whether the follow-up's predecessor meeting is currently private.
+    var isPreviousMeetingPrivateProvider: (() async -> Bool)?
     var onChunkTranscribed: (([SpeechSegment], String) -> Void)?
     /// Display-only streaming partial for a source ("You"/"Others", tail text).
     /// Empty text clears the source's tail. Called on a background thread.
@@ -932,10 +945,12 @@ final class MeetingSession {
         }
 
         var diarizationSegments: [TimedSpeakerSegment]?
+        var systemSpeakerCentroids: [String: [Float]] = [:]
         if let systemAudioURL {
             // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult
+            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudioWithCentroids(at: systemAudioURL) {
+                diarizationSegments = diarizationResult.segments
+                systemSpeakerCentroids = diarizationResult.speakerCentroids
             }
         }
 
@@ -1017,6 +1032,14 @@ final class MeetingSession {
         )
         let protectedTranscriptInputs = reconciledTranscriptInputs
 
+        let startingSpeakerNumber = max(1, await startingSpeakerNumberProvider?() ?? 1)
+        let speakerObservations = SpeakerCentroidBuilder.observations(
+            from: protectedTranscriptInputs.diarizationSegments ?? [],
+            speakerEmbeddings: systemSpeakerCentroids,
+            startingNumber: startingSpeakerNumber
+        )
+        let speakerNames = speakerObservations.isEmpty ? [:] : await speakerNamesProvider?(speakerObservations) ?? [:]
+
         let mixedModels = usesStreamingFinalTranscript && (!micTailFinalized || (lastSystemChunkURL != nil && !systemTailFinalized))
         let analyticsModel = mixedModels ? AnalyticsModel.catalog(provider: "mixed", model: "mixed")
             : .catalog(provider: finalBackend.backend, model: finalBackend.model)
@@ -1027,7 +1050,9 @@ final class MeetingSession {
             systemSegments: protectedTranscriptInputs.systemSegments,
             diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             micDiarizationSegments: protectedTranscriptInputs.micDiarizationSegments,
-            meetingStart: meetingStart
+            meetingStart: meetingStart,
+            speakerNames: speakerNames,
+            startingSpeakerNumber: startingSpeakerNumber
         )
 
         let titleManualNotes = await manualNotesProvider?()
@@ -1043,7 +1068,8 @@ final class MeetingSession {
         } else if let autoTitle = await MeetingSummaryClient.generateTitle(
             transcript: rawTranscript,
             manualNotes: titleManualNotes,
-            config: config
+            config: config,
+            isPrivateMeeting: await currentOutboundPrivacyState()
         ),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
@@ -1071,7 +1097,8 @@ final class MeetingSession {
                 manualNotesToRetain: manualNotes,
                 participantNames: participantNames,
                 visualContext: visualContext.isEmpty ? nil : visualContext,
-                previousMeetingNotes: previousMeetingNotes
+                previousMeetingNotes: previousMeetingNotes,
+                isPrivateMeeting: await currentOutboundPrivacyState()
             )
         } catch {
             fputs("[meeting] summary generation failed: \(MeetingSummaryLog.category(for: error))\n", stderr)
@@ -1121,6 +1148,14 @@ final class MeetingSession {
             templateSnapshot: templateSnapshot,
             visualContext: visualContext.isEmpty ? nil : visualContext
         )
+    }
+
+    func currentOutboundPrivacyState() async -> Bool {
+        if previousMeetingNotesArePrivate { return true }
+        if let isPreviousMeetingPrivateProvider, await isPreviousMeetingPrivateProvider() { return true }
+        if let isPrivateMeetingProvider { return await isPrivateMeetingProvider() }
+        // Fail closed when carried predecessor notes exist without a privacy provider.
+        return previousMeetingNotes != nil
     }
 
     static func calendarTitleCandidate(originalTitle: String, calendarEventID: String?) -> String? {

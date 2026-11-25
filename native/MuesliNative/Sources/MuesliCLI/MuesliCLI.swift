@@ -100,6 +100,22 @@ enum CLIError: Error {
     }
 }
 
+/// Private meetings are never readable or editable through the CLI, which agents call.
+enum CLIPrivacy {
+    /// A failed lookup counts as private, so an error can only withhold content.
+    static func isPrivate(_ store: DictationStore, id: Int64) -> Bool {
+        (try? store.isMeetingPrivate(id: id)) ?? true
+    }
+
+    static func requireNotPrivate(_ store: DictationStore, id: Int64) throws {
+        guard isPrivate(store, id: id) else { return }
+        throw CLIError.invalidInput(
+            "Meeting \(id) is private and cannot be changed through the CLI.",
+            fix: "Open the meeting in Muesli to edit it, or remove its private mark first."
+        )
+    }
+}
+
 func timestampString(_ date: Date = Date()) -> String {
     ISO8601DateFormatter().string(from: date)
 }
@@ -217,8 +233,10 @@ struct MeetingListRow: Encodable {
     let selectedTemplateID: String
     let selectedTemplateName: String
     let selectedTemplateKind: String
+    /// True when the meeting is private. Its notes are withheld from CLI output.
+    let isPrivate: Bool
 
-    init(_ record: MeetingRecord) {
+    init(_ record: MeetingRecord, isPrivate: Bool = false) {
         id = record.id
         title = record.title
         startTime = record.startTime
@@ -226,6 +244,7 @@ struct MeetingListRow: Encodable {
         wordCount = record.wordCount
         folderID = record.folderID
         status = record.status.rawValue
+        self.isPrivate = isPrivate
         notesState = record.notesState.rawValue
         selectedTemplateID = record.appliedTemplateID
         selectedTemplateName = record.appliedTemplateName
@@ -254,28 +273,33 @@ struct MeetingDetailPayload: Encodable {
     let selectedTemplateKind: String
     let selectedTemplatePrompt: String?
     let visualContext: String?
+    /// True when the meeting is private. Transcript, notes, audio paths and context are withheld.
+    let isPrivate: Bool
+    let redacted: Bool
 
-    init(_ record: MeetingRecord) {
+    init(_ record: MeetingRecord, isPrivate: Bool = false) {
         id = record.id
         title = record.title
         startTime = record.startTime
         durationSeconds = record.durationSeconds
-        rawTranscript = record.rawTranscript
-        formattedNotes = record.formattedNotes
+        rawTranscript = isPrivate ? "" : record.rawTranscript
+        formattedNotes = isPrivate ? "" : record.formattedNotes
         wordCount = record.wordCount
         folderID = record.folderID
         status = record.status.rawValue
-        manualNotes = record.manualNotes
+        manualNotes = isPrivate ? "" : record.manualNotes
         notesState = record.notesState.rawValue
-        calendarEventID = record.calendarEventID
-        micAudioPath = record.micAudioPath
-        systemAudioPath = record.systemAudioPath
-        savedRecordingPath = record.savedRecordingPath
+        calendarEventID = isPrivate ? nil : record.calendarEventID
+        micAudioPath = isPrivate ? nil : record.micAudioPath
+        systemAudioPath = isPrivate ? nil : record.systemAudioPath
+        savedRecordingPath = isPrivate ? nil : record.savedRecordingPath
         selectedTemplateID = record.appliedTemplateID
         selectedTemplateName = record.appliedTemplateName
         selectedTemplateKind = record.appliedTemplateKind.rawValue
-        selectedTemplatePrompt = record.selectedTemplatePrompt
-        visualContext = record.visualContext
+        selectedTemplatePrompt = isPrivate ? nil : record.selectedTemplatePrompt
+        visualContext = isPrivate ? nil : record.visualContext
+        self.isPrivate = isPrivate
+        redacted = isPrivate
     }
 }
 
@@ -477,7 +501,11 @@ struct MeetingsListCommand: ParsableCommand {
             return
         }
         let (rows, warnings) = try withMigration(context) {
-            try context.store.recentMeetings(limit: limit, folderID: folderID).map(MeetingListRow.init)
+            let privateIDs: Set<Int64>? = try? context.store.privateMeetingIDs()
+            return try context.store.recentMeetings(limit: limit, folderID: folderID).map {
+                // If the private set cannot be read, treat every meeting as private.
+                MeetingListRow($0, isPrivate: privateIDs?.contains($0.id) ?? true)
+            }
         }
         emitSuccess(command: "muesli-cli meetings list", data: rows, dbPath: context.databaseURL, warnings: warnings)
     }
@@ -495,7 +523,8 @@ struct MeetingsGetCommand: ParsableCommand {
         guard let meeting = found else {
             throw CLIError.notFound("No meeting exists with id \(id).", fix: "Run `muesli-cli meetings list` to find a valid ID.")
         }
-        emitSuccess(command: "muesli-cli meetings get", data: MeetingDetailPayload(meeting), dbPath: context.databaseURL, warnings: warnings)
+        let detail = MeetingDetailPayload(meeting, isPrivate: CLIPrivacy.isPrivate(context.store, id: meeting.id))
+        emitSuccess(command: "muesli-cli meetings get", data: detail, dbPath: context.databaseURL, warnings: warnings)
     }
 }
 
@@ -519,6 +548,7 @@ struct MeetingsUpdateNotesCommand: ParsableCommand {
         guard existing != nil else {
             throw CLIError.notFound("No meeting exists with id \(id).", fix: "Run `muesli-cli meetings list` to find a valid ID.")
         }
+        try CLIPrivacy.requireNotPrivate(context.store, id: id)
 
         let notes: String
         if stdin {
@@ -541,7 +571,7 @@ struct MeetingsUpdateNotesCommand: ParsableCommand {
         guard let updated = try context.store.meeting(id: id) else {
             throw CLIError.databaseError("The meeting was updated but could not be reloaded.")
         }
-        emitSuccess(command: "muesli-cli meetings update-notes", data: MeetingDetailPayload(updated), dbPath: context.databaseURL, warnings: warnings)
+        emitSuccess(command: "muesli-cli meetings update-notes", data: MeetingDetailPayload(updated, isPrivate: false), dbPath: context.databaseURL, warnings: warnings)
     }
 }
 

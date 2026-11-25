@@ -282,6 +282,40 @@ public struct MeetingChatStore: Sendable {
             MeetingChatDependency(meetingID: sqlite3_column_int64($0, 0), revision: MeetingChatSQL.text($0, 1))
         } }
     }
+    package func hasPrivateHistoryDependency(turnID: UUID, privateMeetingIDs: Set<Int64>, privateChatSessionIDs: Set<String>) throws -> Bool {
+        try connection { db in
+            let hasTable = !(try MeetingChatSQL.rows("SELECT 1 FROM sqlite_master WHERE name='meeting_chat_history_dependencies'", db: db) { _ in true }).isEmpty
+            guard hasTable else { return false }
+            let rows = try MeetingChatSQL.rows(
+                "SELECT kind, source_id FROM meeting_chat_history_dependencies WHERE turn_id=? AND kind IN ('sqlMeeting','chat','recap')",
+                [.text(turnID.uuidString)], db: db
+            ) { (MeetingChatSQL.text($0, 0), MeetingChatSQL.text($0, 1)) }
+            for (kind, sourceID) in rows {
+                switch kind {
+                case "sqlMeeting":
+                    if let meetingID = Int64(sourceID), privateMeetingIDs.contains(meetingID) { return true }
+                case "chat":
+                    if privateChatSessionIDs.contains(sourceID) { return true }
+                case "recap":
+                    if !privateMeetingIDs.isEmpty {
+                        struct RecapBody: Decodable {
+                            struct Source: Decodable { let meeting: MeetingChatCitation? }
+                            let sources: [Source]
+                        }
+                        let hasRecapTable = !(try MeetingChatSQL.rows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='time_turner_recaps'", db: db) { _ in true }).isEmpty
+                        if hasRecapTable,
+                           let body = try MeetingChatSQL.rows("SELECT body FROM time_turner_recaps WHERE day_key=?", [.text(sourceID)], db: db, map: { MeetingChatSQL.text($0, 0) }).first,
+                           let recap = try? JSONDecoder().decode(RecapBody.self, from: Data(body.utf8)),
+                           recap.sources.contains(where: { $0.meeting.map { privateMeetingIDs.contains($0.meetingID) } == true }) {
+                            return true
+                        }
+                    }
+                default: break
+                }
+            }
+            return false
+        }
+    }
     public func dependenciesAreCurrent(_ dependencies: [MeetingChatDependency]) throws -> Bool {
         try connection { db in try sourcesMatch(dependencies, db: db) }
     }
@@ -410,12 +444,12 @@ public struct MeetingChatStore: Sendable {
     }
     /// Read identifiers and revisions in the same snapshot so a concurrent folder move
     /// or title edit cannot disclose a meeting that no longer matches the lookup.
-    public func discoverMeetings(in scope: MeetingChatScope, title: String, limit: Int, asOf now: Date) throws -> (passages: [MeetingChatPassage], hasMore: Bool) {
+    public func discoverMeetings(in scope: MeetingChatScope, title: String, limit: Int, asOf now: Date, excludePrivateMeetings: Bool = false) throws -> (passages: [MeetingChatPassage], hasMore: Bool) {
         guard (1...10).contains(limit) else { throw MeetingChatError.invalidResponse }
         return try connection { db in
             try MeetingChatSQL.execute("BEGIN DEFERRED", db: db)
             defer { try? MeetingChatSQL.execute("ROLLBACK", db: db) }
-            let matches = try latestMeetingIDs(in: scope, limit: limit + 1, asOf: now, titleContains: title, db: db)
+            let matches = try latestMeetingIDs(in: scope, limit: limit + 1, asOf: now, titleContains: title, excludePrivateMeetings: excludePrivateMeetings, db: db)
             let page = Array(matches.prefix(limit))
             let snapshots = try MeetingChatSQL.snapshots(scope: .init(selection: .meetings(page)), db: db)
             let byID = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.meetingID, $0.titlePassage) })
@@ -423,8 +457,11 @@ public struct MeetingChatStore: Sendable {
         }
     }
 
-    private func latestMeetingIDs(in scope: MeetingChatScope, limit: Int, asOf now: Date, titleContains: String, db: OpaquePointer?) throws -> [Int64] {
+    private func latestMeetingIDs(in scope: MeetingChatScope, limit: Int, asOf now: Date, titleContains: String, excludePrivateMeetings: Bool, db: OpaquePointer?) throws -> [Int64] {
         var filters = ["deleted_at IS NULL", "meeting_status NOT IN ('recording','processing')", "julianday(start_time)<=julianday(?, 'unixepoch')"]
+        if excludePrivateMeetings {
+            filters.append(MeetingChatSQL.notPrivateMeetingCondition(column: "id"))
+        }
         var args: [MeetingChatSQL.Value] = [.real(now.timeIntervalSince1970)]
         switch scope.selection {
         case .all: break

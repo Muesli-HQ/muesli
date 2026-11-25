@@ -185,6 +185,9 @@ final class AppState {
     var selectedMeetingID: Int64?
     var selectedMeetingRecord: MeetingRecord?
     var folders: [MeetingFolder] = []
+    /// Meetings that are private, directly or through a folder, and the subset flagged on the meeting itself.
+    var privateMeetingIDs: Set<Int64> = []
+    var directlyPrivateMeetingIDs: Set<Int64> = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
     var meetingsNavigationState: MeetingsNavigationState = .browser
     var meetingDetailReturnDestination: MeetingDetailReturnDestination = .meetings

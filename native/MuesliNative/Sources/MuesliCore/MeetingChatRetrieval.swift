@@ -17,14 +17,16 @@ public struct MeetingChatRetrieval: Sendable {
         defer { ContentPrivacy.shared.endWrite() }
         return try DictationStore(databaseURL: databaseURL).withChatDatabase(operation)
     }
-    public func retrieve(question: String, scope: MeetingChatScope, priorQuestions: [String] = [], broadRecap: Bool = false, includeScopeContext: Bool = false) throws -> MeetingChatEvidence {
+    /// With `excludePrivateMeetings`, meetings that are private (directly or through a folder) are
+    /// not eligible, even when the scope names them explicitly.
+    public func retrieve(question: String, scope: MeetingChatScope, priorQuestions: [String] = [], broadRecap: Bool = false, includeScopeContext: Bool = false, excludePrivateMeetings: Bool = false) throws -> MeetingChatEvidence {
         try connection { db in
             let ftsAvailable = useFTS && ContentPrivacy.shared.permits(privacy) && prepareFTS(db: db)
             var metrics = try reconcileIndex(db: db)
             // Warm searches use a read transaction; they neither load meeting text nor take a writer lock.
             try MeetingChatSQL.execute("BEGIN DEFERRED", db: db)
             defer { try? MeetingChatSQL.execute("ROLLBACK", db: db) }
-            let (scopeCondition, scopeBindings) = scopeFilter(scope)
+            let (scopeCondition, scopeBindings) = scopeFilter(scope, excludePrivateMeetings: excludePrivateMeetings)
             let eligible = Dictionary(uniqueKeysWithValues: try MeetingChatSQL.rows(
                 "SELECT s.meeting_id,s.revision FROM meeting_chat_index_state s WHERE \(scopeCondition)", scopeBindings, db: db) {
                     (sqlite3_column_int64($0, 0), MeetingChatSQL.text($0, 1))
@@ -133,8 +135,9 @@ public struct MeetingChatRetrieval: Sendable {
         }
     }
 
-    private func scopeFilter(_ scope: MeetingChatScope) -> (String, [MeetingChatSQL.Value]) {
+    private func scopeFilter(_ scope: MeetingChatScope, excludePrivateMeetings: Bool) -> (String, [MeetingChatSQL.Value]) {
         var conditions: [String] = []; var bindings: [MeetingChatSQL.Value] = []
+        if excludePrivateMeetings { conditions.append(MeetingChatSQL.notPrivateMeetingCondition) }
         switch scope.selection {
         case .all: break
         case .folder(let id): conditions.append("s.folder_id=?"); bindings.append(.integer(id))

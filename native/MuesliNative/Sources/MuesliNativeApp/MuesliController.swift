@@ -1011,7 +1011,7 @@ public final class MuesliController: NSObject {
     /// Prior transcript captured when resuming a finished meeting, keyed by meeting id.
     /// Present only while a resume is in flight; consumed at stop to merge old + new
     /// transcript, and cleared on success or restored-on-failure.
-    private var pendingResumePriorTranscript: [Int64: String] = [:]
+    private(set) var pendingResumePriorTranscript: [Int64: String] = [:]
     private var iCloudSyncTask: Task<Void, Never>?
     private var ckSyncEngine: MuesliCKSyncEngine?
     private var ckSyncEngineLifecycleID = UUID()
@@ -2088,6 +2088,8 @@ public final class MuesliController: NSObject {
         let order = config.folderOrder
         // Sort folders into a depth-first tree order so children appear beneath parents.
         appState.folders = Self.treeOrderedFolders(allFolders, order: order)
+        appState.privateMeetingIDs = (try? dictationStore.privateMeetingIDs()) ?? []
+        appState.directlyPrivateMeetingIDs = (try? dictationStore.directlyPrivateMeetingIDs()) ?? []
         refreshHistoryStats()
         appState.selectedBackend = selectedBackend
         appState.dictationProvider = selectedDictationProvider
@@ -7012,6 +7014,35 @@ public final class MuesliController: NSObject {
         }
     }
 
+    /// Store URL and post-edit refresh for `MuesliController+SpeakerIdentity.swift`.
+    var speakerIdentityDatabaseURL: URL { dictationStore.resolvedDatabaseURL }
+    func speakerIdentityDidRewriteTranscript() {
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+    }
+
+    /// Whether the meeting is private. A failed lookup counts as private, so a
+    /// database error can only withhold a summary, never send one.
+    func isMeetingPrivateFailingClosed(id: Int64) -> Bool {
+        do {
+            return try dictationStore.isMeetingPrivate(id: id)
+        } catch {
+            fputs("[muesli-native] private-meeting lookup failed, treating meeting \(id) as private: \(error.localizedDescription)\n", stderr)
+            return true
+        }
+    }
+
+    /// Whether a meeting filed into this folder would be private. Same fail-closed rule.
+    func isFolderPrivateFailingClosed(id folderID: Int64?) -> Bool {
+        guard let folderID else { return false }
+        do {
+            return try dictationStore.isFolderPrivate(id: folderID)
+        } catch {
+            fputs("[muesli-native] private-folder lookup failed, treating folder \(folderID) as private: \(error.localizedDescription)\n", stderr)
+            return true
+        }
+    }
+
     func resummarize(meeting: MeetingRecord, summaryConfig: AppConfig? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
         let templateSnapshot = meetingTemplateSnapshot(for: meeting)
         resummarize(meeting: meeting, using: templateSnapshot, summaryConfig: summaryConfig, completion: completion)
@@ -7080,7 +7111,8 @@ public final class MuesliController: NSObject {
                 existingNotes: notesContextForResummary(meeting),
                 manualNotesToRetain: summaryManualNotes,
                 participantNames: participantNames,
-                openRouterAPIKeyOverride: openRouterKey
+                openRouterAPIKeyOverride: openRouterKey,
+                isPrivateMeeting: self.isMeetingPrivateFailingClosed(id: meeting.id)
             )
             let generatedTitle: String?
             if MeetingResummarizationPolicy.shouldGenerateTitle(for: meeting) {
@@ -7088,7 +7120,8 @@ public final class MuesliController: NSObject {
                     transcript: meeting.rawTranscript,
                     manualNotes: summaryManualNotes,
                     config: summaryConfig,
-                    openRouterAPIKeyOverride: openRouterKey
+                    openRouterAPIKeyOverride: openRouterKey,
+                    isPrivateMeeting: self.isMeetingPrivateFailingClosed(id: meeting.id)
                 )
             } else {
                 generatedTitle = nil
@@ -7281,7 +7314,8 @@ public final class MuesliController: NSObject {
                         template: templateSnapshot,
                         existingNotes: self.notesContextForResummary(meeting),
                         manualNotesToRetain: Self.manualNotesForResummary(meeting),
-                        participantNames: participantNames
+                        participantNames: participantNames,
+                        isPrivateMeeting: self.isMeetingPrivateFailingClosed(id: meeting.id)
                     )
                 } catch {
                     try Task.checkCancellation()
@@ -7796,17 +7830,20 @@ public final class MuesliController: NSObject {
 
     func moveFolder(id: Int64, toParent newParentID: Int64?) {
         try? dictationStore.moveFolder(id: id, toParent: newParentID)
+        scheduleICloudSyncAfterLocalChange()
         syncAppState()
     }
 
     func createFolderAndMoveMeeting(name: String, meetingID: Int64) {
         guard let folderID = try? dictationStore.createFolder(name: name) else { return }
         try? dictationStore.moveMeeting(id: meetingID, toFolder: folderID)
+        scheduleICloudSyncAfterLocalChange()
         syncAppState()
     }
 
     func deleteFolder(id: Int64) {
         try? dictationStore.deleteFolder(id: id)
+        scheduleICloudSyncAfterLocalChange()
         if appState.selectedFolderID == id {
             appState.selectedFolderID = nil
         }
@@ -7829,6 +7866,7 @@ public final class MuesliController: NSObject {
         if let existing = try? dictationStore.meetingByCalendarOccurrence(occurrence) {
             if let folderID {
                 try? dictationStore.moveMeeting(id: existing.id, toFolder: folderID)
+                scheduleICloudSyncAfterLocalChange()
             }
             syncAppState()
             fputs("[muesli-native] calendar event already exists as meeting \(existing.id), moved to folder\n", stderr)
@@ -7861,7 +7899,35 @@ public final class MuesliController: NSObject {
 
     func moveMeeting(id: Int64, toFolder folderID: Int64?) {
         try? dictationStore.moveMeeting(id: id, toFolder: folderID)
+        scheduleICloudSyncAfterLocalChange()
         syncAppState()
+    }
+
+    func setMeetingPrivate(id: Int64, isPrivate: Bool) {
+        do {
+            try dictationStore.setMeetingPrivate(id: id, isPrivate: isPrivate)
+        } catch {
+            presentErrorAlert(title: "Couldn't Update Privacy", message: error.localizedDescription)
+        }
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+    }
+
+    func setFolderPrivate(id: Int64, isPrivate: Bool) {
+        do {
+            try dictationStore.setFolderPrivate(id: id, isPrivate: isPrivate)
+        } catch {
+            presentErrorAlert(title: "Couldn't Update Privacy", message: error.localizedDescription)
+        }
+        scheduleICloudSyncAfterLocalChange()
+        syncAppState()
+    }
+
+    /// Lets the user choose which summary backends may receive private meetings.
+    func setBackendTrustedForPrivateMeetings(_ backend: String, trusted: Bool) {
+        updateConfig {
+            $0.privateTrustedBackends = PrivateMeetingPolicy.updatedTrust($0.privateTrustedBackends, backend: backend, trusted: trusted)
+        }
     }
 
     func loadMoreDictations() {
@@ -8395,7 +8461,9 @@ public final class MuesliController: NSObject {
         startOrigin: MeetingRecordingStartOrigin = .manual,
         followUpToID: Int64? = nil,
         inheritedFolderID: Int64? = nil,
-        previousMeetingNotes: String? = nil
+        previousMeetingNotes: String? = nil,
+        isPrivate: Bool = false,
+        previousMeetingNotesArePrivate: Bool = false
     ) -> Bool {
         guard ensureNoMeetingRetranscription() else { return false }
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return false }
@@ -8421,7 +8489,8 @@ public final class MuesliController: NSObject {
                 selectedTemplatePrompt: templateSnapshot.prompt,
                 folderID: inheritedFolderID,
                 followUpToID: followUpToID,
-                calendarOccurrence: calendarOccurrence
+                calendarOccurrence: calendarOccurrence,
+                isPrivate: isPrivate
             )
             persistCalendarAttendees(for: calendarOccurrence, meetingID: meetingID)
             installMeetingCapture(id: meetingID, title: title, calendarEventID: resolvedCalendarEventID,
@@ -8472,7 +8541,9 @@ public final class MuesliController: NSObject {
                     owner: attemptOwner,
                     backend: meetingBackend,
                     endDate: endDate,
-                    previousMeetingNotes: previousMeetingNotes
+                    followUpToID: followUpToID,
+                    previousMeetingNotes: previousMeetingNotes,
+                    previousMeetingNotesArePrivate: previousMeetingNotesArePrivate
                 )
             } catch is CancellationError {
                 if self.meetingStartAttempt?.owner == attemptOwner {
@@ -8540,12 +8611,21 @@ public final class MuesliController: NSObject {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
         guard let predecessor = meeting(id: meetingID),
               canStartFollowUpMeeting(predecessor) else { return }
+        let predecessorIsPrivate = isMeetingPrivateFailingClosed(id: predecessor.id)
+        let predecessorDirectlyPrivate: Bool
+        do {
+            predecessorDirectlyPrivate = try dictationStore.isMeetingDirectlyPrivate(id: predecessor.id)
+        } catch {
+            predecessorDirectlyPrivate = true
+        }
         startMeetingRecording(
             title: MeetingFollowUpPolicy.followUpTitle(from: predecessor.title),
             openDocument: true,
             followUpToID: predecessor.id,
             inheritedFolderID: predecessor.folderID,
-            previousMeetingNotes: MeetingFollowUpPolicy.carriedContext(from: predecessor)
+            previousMeetingNotes: MeetingFollowUpPolicy.carriedContext(from: predecessor),
+            isPrivate: predecessorDirectlyPrivate,
+            previousMeetingNotesArePrivate: predecessorIsPrivate
         )
     }
 
@@ -8593,6 +8673,8 @@ public final class MuesliController: NSObject {
         let previousMeetingNotes = meeting.followUpToID
             .flatMap { self.meeting(id: $0) }
             .flatMap { MeetingFollowUpPolicy.carriedContext(from: $0) }
+        let previousMeetingNotesArePrivate = meeting.followUpToID
+            .map { isMeetingPrivateFailingClosed(id: $0) } ?? false
 
         // REUSE the existing row — do NOT call createLiveMeeting.
         installMeetingCapture(id: meetingID, title: meeting.title, calendarEventID: meeting.calendarEventID,
@@ -8628,7 +8710,9 @@ public final class MuesliController: NSObject {
                     owner: attemptOwner,
                     backend: meetingBackend,
                     endDate: nil,
-                    previousMeetingNotes: previousMeetingNotes
+                    followUpToID: meeting.followUpToID,
+                    previousMeetingNotes: previousMeetingNotes,
+                    previousMeetingNotesArePrivate: previousMeetingNotesArePrivate
                 )
             } catch is CancellationError {
                 if self.meetingStartAttempt?.owner == attemptOwner {
@@ -9056,7 +9140,9 @@ public final class MuesliController: NSObject {
         owner: ObjectIdentifier,
         backend: BackendOption,
         endDate: Date?,
-        previousMeetingNotes: String? = nil
+        followUpToID: Int64? = nil,
+        previousMeetingNotes: String? = nil,
+        previousMeetingNotesArePrivate: Bool = false
     ) async throws {
         if let capture = storedFeedbackCapture {
             let released = await capture.finishAndReleaseMicrophone()
@@ -9086,6 +9172,10 @@ public final class MuesliController: NSObject {
             let meetingSession = capture.session
             let transcriptGeneration = UUID()
             meetingSession.previousMeetingNotes = previousMeetingNotes
+            meetingSession.previousMeetingNotesArePrivate = previousMeetingNotesArePrivate
+            meetingSession.isPreviousMeetingPrivateProvider = followUpToID.map { predecessorID in
+                { [weak self] in self?.isMeetingPrivateFailingClosed(id: predecessorID) ?? true }
+            }
 
             do {
                 meetingSession.manualNotesProvider = { [weak self] in
@@ -9097,6 +9187,15 @@ public final class MuesliController: NSObject {
                 meetingSession.participantNamesProvider = { [weak self] in
                     guard let self else { return [] }
                     return await self.summaryParticipantNames(meetingID: meetingID)
+                }
+                meetingSession.isPrivateMeetingProvider = { [weak self] in
+                    self?.isMeetingPrivateFailingClosed(id: meetingID) ?? true
+                }
+                meetingSession.startingSpeakerNumberProvider = { [weak self] in
+                    await self?.startingSpeakerNumberForMeeting(meetingID: meetingID) ?? 1
+                }
+                meetingSession.speakerNamesProvider = { [weak self] observations in
+                    await self?.resolveMeetingSpeakers(meetingID: meetingID, observations: observations) ?? [:]
                 }
                 meetingSession.liveTitleProvider = { [weak self] in
                     await MainActor.run {
@@ -10135,7 +10234,11 @@ public final class MuesliController: NSObject {
         if config.autoExportMarkdownEnabled {
             do {
                 if let record = try dictationStore.meeting(id: persistenceResult.meetingID) {
-                    meetingMarkdownAutoExporter.exportIfConfigured(meeting: record, config: config)
+                    meetingMarkdownAutoExporter.exportIfConfigured(
+                        meeting: record,
+                        config: config,
+                        isPrivateMeeting: isMeetingPrivateFailingClosed(id: record.id)
+                    )
                 } else {
                     meetingMarkdownAutoExporter.recordMeetingLookupFailure(
                         meetingID: persistenceResult.meetingID,
@@ -10202,7 +10305,8 @@ public final class MuesliController: NSObject {
                 existingNotes: originalMeeting.flatMap(Self.notesContextForResummary),
                 manualNotesToRetain: manualNotes,
                 participantNames: participantNames,
-                visualContext: mergedVisualContext
+                visualContext: mergedVisualContext,
+                isPrivateMeeting: isMeetingPrivateFailingClosed(id: meetingID)
             )
         } catch {
             fputs("[muesli-native] resume summary regeneration failed: \(MeetingSummaryLog.category(for: error))\n", stderr)

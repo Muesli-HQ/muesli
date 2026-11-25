@@ -756,12 +756,24 @@ public struct MeetingFolder: Identifiable, Codable, Sendable {
     public var name: String
     public let parentID: Int64?
     public let createdAt: String
+    /// Meetings in a private folder, or in any of its subfolders, are private.
+    public let isPrivate: Bool
 
-    public init(id: Int64, name: String, parentID: Int64? = nil, createdAt: String) {
+    public init(id: Int64, name: String, parentID: Int64? = nil, createdAt: String, isPrivate: Bool = false) {
         self.id = id
         self.name = name
         self.parentID = parentID
         self.createdAt = createdAt
+        self.isPrivate = isPrivate
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int64.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        parentID = try container.decodeIfPresent(Int64.self, forKey: .parentID)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        isPrivate = try container.decodeIfPresent(Bool.self, forKey: .isPrivate) ?? false
     }
 }
 

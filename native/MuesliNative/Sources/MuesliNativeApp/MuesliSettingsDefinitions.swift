@@ -739,6 +739,16 @@ extension MuesliController {
             }) { value in
             if let option = MeetingSummaryBackendOption.all.first(where: { $0.backend == value }) { self.selectMeetingSummaryBackend(option) }
         }
+        // Which services may receive private meetings. Changing this is manual-only: it widens
+        // what leaves the Mac, so a voice command must never grant it.
+        for option in MeetingSummaryBackendOption.all {
+            add("private_trust_\(option.backend)", "Allow private meetings on \(option.label)",
+                [.init(id: "on", label: "On"), .init(id: "off", label: "Off")],
+                read: { PrivateMeetingPolicy.isTrusted(option.backend, in: $0.privateTrustedBackends) ? "on" : "off" },
+                voiceRestriction: "Choosing which services may receive private meetings can only be changed in Settings.") { value in
+                self.setBackendTrustedForPrivateMeetings(option.backend, trusted: value == "on")
+            }
+        }
         add("summary_gemma_model", "On-device Gemma chat and summary model",
             Gemma4LiteRTModel.generalPurpose.map { Choice(id: $0.nativeChatModelID, label: $0.label) },
             read: { $0.gemmaChatModel }, unavailable: { value in
