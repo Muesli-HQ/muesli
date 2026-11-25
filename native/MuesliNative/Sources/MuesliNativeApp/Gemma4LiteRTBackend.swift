@@ -368,7 +368,7 @@ actor Gemma4LiteRTTranscriber {
     }
 
     static func validatePlannerTokenBudget(_ inputTokens: Int) throws {
-        guard inputTokens <= 16384 - 768 - 2048 else {
+        guard inputTokens <= GemmaComputerUseInference.contextTokens - 768 - 2048 else {
             throw ComputerUsePlannerError.invalidResponse(
                 "This request is too large for the on-device planner's context. Try a smaller task or a hosted planner. Nothing was executed.")
         }

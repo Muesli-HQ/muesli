@@ -255,7 +255,7 @@ enum ComputerUseBrowserAutomation {
         appBundleID == "com.google.Chrome"
     }
 
-    private static func runAppleScript(_ script: String) async throws -> String {
+    static func runAppleScript(_ script: String) async throws -> String {
         if let runAppleScriptForTests {
             return try runAppleScriptForTests(script)
         }
@@ -312,7 +312,7 @@ enum ComputerUseBrowserAutomation {
         return message.isEmpty ? "Browser automation failed" : message
     }
 
-    private static func appleScriptString(_ value: String) -> String {
+    static func appleScriptString(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
