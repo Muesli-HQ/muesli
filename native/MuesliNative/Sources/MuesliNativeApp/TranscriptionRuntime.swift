@@ -13,12 +13,22 @@ struct SpeechTranscriptionResult: Sendable {
     let segments: [SpeechSegment]
     let bodhanMeasurement: BodhanWBCSMeasurement?
     let words: [SpeechSegment]?
+    /// True only when `segments` hold ASR tokens aligned to `text`, where a
+    /// leading space marks a word start. Other segments may be trimmed phrases.
+    let hasTokenTimedSegments: Bool
 
-    init(text: String, segments: [SpeechSegment], bodhanMeasurement: BodhanWBCSMeasurement? = nil, words: [SpeechSegment]? = nil) {
+    init(
+        text: String,
+        segments: [SpeechSegment],
+        bodhanMeasurement: BodhanWBCSMeasurement? = nil,
+        words: [SpeechSegment]? = nil,
+        hasTokenTimedSegments: Bool = false
+    ) {
         self.text = text
         self.segments = segments
         self.bodhanMeasurement = bodhanMeasurement
         self.words = words
+        self.hasTokenTimedSegments = hasTokenTimedSegments
     }
 }
 
