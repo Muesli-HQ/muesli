@@ -274,6 +274,7 @@ case "${shard}" in
       ControlCenterSensorAttributionMonitorTests
       MeetingAudioRecoveryDeadlinesTests
       MeetingSignalRefreshPolicyTests
+      SignalCallDetectionAdapterTests
       MeetingMicRecoveryCoordinatorTests
       MeetingMicHealthTrackerTests
       MeetingSystemAudioWatchdogTests
