@@ -51,22 +51,33 @@ public struct CustomWord: Codable, Equatable, Identifiable, Sendable {
 ///
 /// Matching stages (first match wins):
 /// 1. Exact case-insensitive match
-/// 2. Jaro-Winkler similarity >= the entry's configured threshold
+/// 2. Jaro-Winkler similarity >= the entry's configured threshold, for words
+///    of plausibly similar length (see `isPlausibleMisrecognition`)
+///
+/// A trailing possessive ("'s") on the matched text is kept, and a multi-word
+/// replacement is not duplicated when the surrounding words already spell it.
 public struct CustomWordMatcher {
 
     struct Entry {
         let replacement: String
         let matchingThreshold: Double
         let tokens: [String]
-        let normalizedPhrase: String
+        /// Words of `replacement`, and their normalized forms, used to avoid
+        /// re-inserting words of a multi-word replacement that are already present.
+        let replacementWords: [String]
+        let replacementTokens: [String]
+        let endsWithPossessive: Bool
 
         init?(word: String, replacement: String, matchingThreshold: Double) {
             let tokens = Self.normalizedTokens(in: word)
-            guard !tokens.isEmpty else { return nil }
+            guard let lastToken = tokens.last else { return nil }
             self.replacement = replacement
             self.matchingThreshold = matchingThreshold
             self.tokens = tokens
-            normalizedPhrase = tokens.joined(separator: " ")
+            replacementWords = replacement.components(separatedBy: " ")
+                .filter { CustomWordMatcher.tokenParts(for: $0) != nil }
+            replacementTokens = Self.normalizedTokens(in: replacement)
+            endsWithPossessive = !CustomWordMatcher.possessiveSuffix(of: lastToken).isEmpty
         }
 
         private static func normalizedTokens(in text: String) -> [String] {
@@ -87,17 +98,43 @@ public struct CustomWordMatcher {
         let entriesByTokenCount = Dictionary(grouping: entries, by: { $0.tokens.count })
         let tokenCounts = entriesByTokenCount.keys.sorted(by: >)
         let words = text.components(separatedBy: " ")
+        // Only entries whose replacement has more words than they match look
+        // at the words after a match, so the lookahead is filled just for them.
+        let lookahead = Lookahead(count: words.count)
+        if entries.contains(where: { $0.replacementTokens.count > $0.tokens.count }) {
+            for position in stride(from: words.count - 1, through: 0, by: -1) {
+                lookahead.matches[position] = bestMatch(
+                    in: words, startingAt: position, emitted: [],
+                    tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount, lookahead: lookahead
+                )
+            }
+        }
+        // Output so far, one word per element, so a match can see the words
+        // already written before it.
         var result: [String] = []
+        // Words before this point include words an earlier replacement added,
+        // which are not reused as part of a later one, so separate matches each
+        // keep their full replacement.
+        var reusableStart = 0
         var index = 0
 
         while index < words.count {
-            guard let match = bestMatch(in: words, startingAt: index, tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount) else {
+            guard let match = bestMatch(
+                in: words, startingAt: index, emitted: result[reusableStart...],
+                tokenCounts: tokenCounts, entriesByTokenCount: entriesByTokenCount, lookahead: lookahead
+            ) else {
                 result.append(words[index])
                 index += 1
                 continue
             }
 
-            result.append(match.text)
+            let matchWords = match.text.components(separatedBy: " ")
+            result.append(contentsOf: matchWords)
+            // A match that keeps its word count only respells (or recases) the
+            // words that were spoken, so they stay available for reuse.
+            if matchWords.count != match.consumed {
+                reusableStart = result.count
+            }
             index += match.consumed
         }
 
@@ -115,13 +152,35 @@ public struct CustomWordMatcher {
         let consumed: Int
     }
 
+    /// The match `bestMatch` finds at each position of the input when no
+    /// output comes before it. It is filled from the last position back, and a
+    /// lookup only reads positions after the one being filled, so checking the
+    /// words after a match takes constant work instead of a recursive search.
+    private final class Lookahead {
+        var matches: [Match?]
+
+        init(count: Int) {
+            matches = Array(repeating: nil, count: count)
+        }
+    }
+
     private static let boundaryPunctuation = CharacterSet(charactersIn: ".,!?;:\"'()[]{}")
+    private static let possessiveMarkers = ["'s", "\u{2019}s"]
+
+    /// A shorter word below this fraction of the longer word's length is a
+    /// different word, not a misrecognition ("yes" vs "Yonesh" scores 0.85).
+    private static let minimumLengthRatio = 0.6
+    /// A shorter word that is the start of the longer one, missing at least this
+    /// many characters, is a different word ("north" vs "Northcap" scores 0.93).
+    private static let minimumTruncatedCharacters = 3
 
     private static func bestMatch(
         in words: [String],
         startingAt index: Int,
+        emitted: ArraySlice<String>,
         tokenCounts: [Int],
-        entriesByTokenCount: [Int: [Entry]]
+        entriesByTokenCount: [Int: [Entry]],
+        lookahead: Lookahead
     ) -> Match? {
         for count in tokenCounts {
             guard count > 0, index + count <= words.count, let entries = entriesByTokenCount[count] else { continue }
@@ -130,19 +189,48 @@ public struct CustomWordMatcher {
             guard parts.count == count else { continue }
             guard preservesPhraseBoundaryPunctuation(parts) else { continue }
 
+            // A trailing possessive is compared without its "'s" and put back
+            // after the replacement, unless the entry itself ends in one.
             let candidateTokens = parts.map { $0.core.lowercased() }
-            let candidate = candidateTokens.joined(separator: " ")
-            if let exact = entries.first(where: { $0.normalizedPhrase == candidate }) {
+            let possessive = possessiveSuffix(of: parts[count - 1].core)
+            var strippedTokens = candidateTokens
+            if !possessive.isEmpty {
+                strippedTokens[count - 1] = String(strippedTokens[count - 1].dropLast(possessive.count))
+            }
+            func candidate(for entry: Entry) -> (tokens: [String], possessive: String) {
+                possessive.isEmpty || entry.endsWithPossessive ? (candidateTokens, "") : (strippedTokens, possessive)
+            }
+            func match(_ entry: Entry, possessive: String) -> Match {
+                // The "'s" goes after the match, so the words after it can't be
+                // part of the replacement.
+                let replacement = replacementText(
+                    for: entry, in: words, at: index, count: count, emitted: emitted,
+                    reusesFollowing: possessive.isEmpty, lookahead: lookahead
+                )
+                // A replacement that already ends in "'s" keeps its own ending,
+                // and an empty replacement removes the word along with its "'s".
+                let lastCore = replacement.components(separatedBy: " ").last.flatMap { tokenParts(for: $0)?.core } ?? ""
+                let ending = replacement.isEmpty || !possessiveSuffix(of: lastCore).isEmpty ? "" : possessive
                 return Match(
-                    text: parts[0].prefix + exact.replacement + parts[count - 1].suffix,
+                    text: parts[0].prefix + replacement + ending + parts[count - 1].suffix,
                     consumed: count
                 )
+            }
+
+            // An entry for the words exactly as spoken wins over one that only
+            // matches once the "'s" is set aside.
+            if let exact = entries.first(where: { $0.tokens == candidateTokens }) {
+                return match(exact, possessive: "")
+            }
+            if !possessive.isEmpty,
+               let exact = entries.first(where: { !$0.endsWithPossessive && $0.tokens == strippedTokens }) {
+                return match(exact, possessive: possessive)
             }
 
             var bestEntry: Entry?
             var bestScore = 0.0
             for entry in entries {
-                guard let score = similarity(candidateTokens: candidateTokens, entry: entry) else { continue }
+                guard let score = similarity(candidateTokens: candidate(for: entry).tokens, entry: entry) else { continue }
                 if score > bestScore {
                     bestScore = score
                     bestEntry = entry
@@ -150,14 +238,90 @@ public struct CustomWordMatcher {
             }
 
             if let bestEntry {
-                return Match(
-                    text: parts[0].prefix + bestEntry.replacement + parts[count - 1].suffix,
-                    consumed: count
-                )
+                return match(bestEntry, possessive: candidate(for: bestEntry).possessive)
             }
         }
 
         return nil
+    }
+
+    /// The text to insert for a matched window. When the replacement has more
+    /// words than the window and the words around it already spell the rest of
+    /// it (before the match in the output so far, after it in the input, with
+    /// no sentence break in between), only the window's own part of the
+    /// replacement is inserted, so "XY Widget" stays "XY Widget" rather than
+    /// becoming "XY XY Widget".
+    ///
+    /// Words are only reused when nothing is lost by doing so: the replacement
+    /// words left out carry no punctuation of their own, and no other entry
+    /// will later rewrite a reused following word into something else.
+    private static func replacementText(
+        for entry: Entry, in words: [String], at index: Int, count: Int, emitted: ArraySlice<String>,
+        reusesFollowing: Bool, lookahead: Lookahead
+    ) -> String {
+        let extra = entry.replacementTokens.count - count
+        guard extra > 0, entry.replacementWords.count == entry.replacementTokens.count else {
+            return entry.replacement
+        }
+        func normalized<S: Sequence<String>>(_ span: S) -> [String] {
+            span.map { tokenParts(for: $0)?.core.lowercased() ?? "" }
+        }
+        func isBare(_ word: String) -> Bool {
+            tokenParts(for: word).map { $0.prefix.isEmpty && $0.suffix.isEmpty } ?? false
+        }
+        /// Whether the words in `range` come out of `apply` as the same words,
+        /// ignoring case and punctuation.
+        func staysUnchanged(_ range: Range<Int>) -> Bool {
+            var position = range.lowerBound
+            while position < range.upperBound {
+                guard let later = lookahead.matches[position] else {
+                    position += 1
+                    continue
+                }
+                let original = words[position..<(position + later.consumed)]
+                if normalized(later.text.components(separatedBy: " ")) != normalized(original) { return false }
+                position += later.consumed
+            }
+            return true
+        }
+
+        let window = Array(words[index..<(index + count)])
+        for before in stride(from: extra, through: 0, by: -1) {
+            let after = extra - before
+            guard after == 0 || reusesFollowing,
+                  emitted.count >= before, index + count + after <= words.count else { continue }
+            let preceding = Array(emitted.suffix(before))
+            let followingRange = (index + count)..<(index + count + after)
+            let following = Array(words[followingRange])
+            guard normalized(preceding) == Array(entry.replacementTokens[..<before]),
+                  normalized(following) == Array(entry.replacementTokens[(before + count)...]) else { continue }
+            let span = (preceding + window + following).compactMap(tokenParts)
+            guard span.count == before + count + after, preservesPhraseBoundaryPunctuation(span) else { continue }
+            let omitted = entry.replacementWords[..<before] + entry.replacementWords[(before + count)...]
+            guard omitted.allSatisfy(isBare), staysUnchanged(followingRange) else { continue }
+            return entry.replacementWords[before..<(before + count)].joined(separator: " ")
+        }
+        return entry.replacement
+    }
+
+    /// The trailing "'s" (straight or curly apostrophe) of a word, in its
+    /// original case, or "" when it has none.
+    private static func possessiveSuffix(of word: String) -> String {
+        for marker in possessiveMarkers where word.count > marker.count && word.lowercased().hasSuffix(marker) {
+            return String(word.suffix(marker.count))
+        }
+        return ""
+    }
+
+    /// Jaro-Winkler rewards a shared prefix, so on its own it scores ordinary
+    /// short words highly against longer entries that start the same way. A
+    /// recognizer misspells a word; it rarely drops a large part of it.
+    private static func isPlausibleMisrecognition(_ candidate: String, _ entry: String) -> Bool {
+        let (short, long) = candidate.count <= entry.count ? (candidate, entry) : (entry, candidate)
+        guard long.count > 0 else { return true }
+        if Double(short.count) / Double(long.count) < minimumLengthRatio { return false }
+        if long.hasPrefix(short), long.count - short.count >= minimumTruncatedCharacters { return false }
+        return true
     }
 
     private static func preservesPhraseBoundaryPunctuation(_ parts: [TokenParts]) -> Bool {
@@ -173,6 +337,7 @@ public struct CustomWordMatcher {
 
     private static func similarity(candidateTokens: [String], entry: Entry) -> Double? {
         guard candidateTokens.count == entry.tokens.count else { return nil }
+        guard zip(candidateTokens, entry.tokens).allSatisfy(isPlausibleMisrecognition) else { return nil }
 
         if entry.tokens.count == 1 {
             let score = jaroWinklerSimilarity(candidateTokens[0], entry.tokens[0])
