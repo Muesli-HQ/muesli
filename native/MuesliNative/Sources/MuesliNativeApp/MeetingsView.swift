@@ -169,13 +169,24 @@ enum MeetingBrowserLogic {
         guard let date = parseDate(raw) else {
             return formatStartTimeFallback(raw)
         }
-        return startTimeFormatter(locale: locale, timeZone: timeZone).string(from: date)
+        return cachedFormatter(locale: locale, timeZone: timeZone, dateStyle: .medium, timeStyle: .medium)
+            .string(from: date)
+    }
+
+    /// Time of day in the user's region and 12/24-hour setting, such as "2:30 PM" or "14:30".
+    static func formatClockTime(
+        _ date: Date,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        cachedFormatter(locale: locale, timeZone: timeZone, dateStyle: .none, timeStyle: .short)
+            .string(from: date)
     }
 
     // DateFormatter construction loads ICU symbol tables, which dominated list
-    // rendering when every row built its own. One formatter per locale and zone.
-    private static let startTimeFormatterLock = NSLock()
-    nonisolated(unsafe) private static var startTimeFormatters: [String: DateFormatter] = [:]
+    // rendering when every row built its own. One formatter per locale, zone and style.
+    private static let formatterCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedFormatters: [String: DateFormatter] = [:]
 
     // The 12/24-hour preference can change without changing the locale identifier,
     // so the identifier key alone would keep serving a stale clock format.
@@ -184,23 +195,29 @@ enum MeetingBrowserLogic {
         object: nil,
         queue: nil
     ) { _ in
-        startTimeFormatterLock.lock()
-        startTimeFormatters.removeAll()
-        startTimeFormatterLock.unlock()
+        formatterCacheLock.lock()
+        cachedFormatters.removeAll()
+        formatterCacheLock.unlock()
     }
 
-    private static func startTimeFormatter(locale: Locale, timeZone: TimeZone) -> DateFormatter {
+    private static func cachedFormatter(
+        locale: Locale,
+        timeZone: TimeZone,
+        dateStyle: DateFormatter.Style,
+        timeStyle: DateFormatter.Style
+    ) -> DateFormatter {
         _ = localeChangeObserver
-        let key = "\(locale.identifier)|\(timeZone.identifier)"
-        startTimeFormatterLock.lock()
-        defer { startTimeFormatterLock.unlock() }
-        if let cached = startTimeFormatters[key] { return cached }
+        // The identifier omits the user's 12/24-hour override, so key on the hour cycle too.
+        let key = "\(locale.identifier)|\(locale.hourCycle.rawValue)|\(timeZone.identifier)|\(dateStyle.rawValue)|\(timeStyle.rawValue)"
+        formatterCacheLock.lock()
+        defer { formatterCacheLock.unlock() }
+        if let cached = cachedFormatters[key] { return cached }
         let formatter = DateFormatter()
         formatter.locale = locale
         formatter.timeZone = timeZone
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .medium
-        startTimeFormatters[key] = formatter
+        formatter.dateStyle = dateStyle
+        formatter.timeStyle = timeStyle
+        cachedFormatters[key] = formatter
         return formatter
     }
 
@@ -647,13 +664,8 @@ struct MeetingsView: View {
         )
     }
 
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
-    }()
-
     private func formatTimeRange(_ event: UnifiedCalendarEvent) -> String {
-        let f = Self.timeFormatter
-        return "\(f.string(from: event.startDate)) – \(f.string(from: event.endDate))"
+        "\(MeetingBrowserLogic.formatClockTime(event.startDate)) – \(MeetingBrowserLogic.formatClockTime(event.endDate))"
     }
 
     /// Split control mirroring the meeting notification panel: the primary segment runs

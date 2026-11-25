@@ -43,6 +43,34 @@ struct WindowAppearanceTests {
         status.menuDidClose(menu)
     }
 
+    @Test("Status menu upcoming events show times in the user's clock format")
+    func statusMenuUpcomingEventTimes() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DictationStore(databaseURL: directory.appendingPathComponent("muesli.db"))
+        try store.migrateIfNeeded()
+        let runtime = RuntimePaths(repoRoot: directory, menuIcon: nil, appIcon: nil, bundlePath: nil)
+        let controller = MuesliController(runtime: runtime, dictationStore: store,
+                                         configStore: makeTestConfigStore(supportDirectory: directory))
+        let start = Date().addingTimeInterval(30 * 60)
+        let end = start.addingTimeInterval(30 * 60)
+        controller.appState.upcomingCalendarEvents = [
+            UnifiedCalendarEvent(id: "clock", title: "Clock check", startDate: start, endDate: end, isAllDay: false,
+                                 source: .eventKit, meetingURL: URL(string: "https://zoom.us/j/111111111")),
+        ]
+        let menu = NSMenu()
+        let status = StatusBarController(controller: controller, runtime: runtime, menu: menu)
+        status.menuWillOpen(menu)
+        status.menuNeedsUpdate(menu)
+        defer { status.menuDidClose(menu) }
+
+        let item = try #require(menu.items.first { $0.title.hasPrefix("Clock check\n") })
+        let range = "\(MeetingBrowserLogic.formatClockTime(start)) – \(MeetingBrowserLogic.formatClockTime(end))"
+        #expect(item.title == "Clock check\n\(range)")
+    }
+
     @Test("Sidebar order restores defaults, removes unknown/duplicate IDs and appends new tabs")
     func sidebarOrderRecovery() {
         #expect(SidebarOrder.tabs(from: "") == SidebarOrder.defaults)

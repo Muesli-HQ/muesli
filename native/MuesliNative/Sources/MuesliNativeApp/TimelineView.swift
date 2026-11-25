@@ -327,18 +327,11 @@ struct TimelineView: View {
         }
     }
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = .current
-        formatter.dateFormat = "hh:mm a"
-        return formatter
-    }()
-
     fileprivate static func formatTime(_ raw: String) -> String {
         guard let date = MeetingBrowserLogic.parseDate(raw) else {
             return MeetingBrowserLogic.formatStartTime(raw)
         }
-        return timeFormatter.string(from: date)
+        return MeetingBrowserLogic.formatClockTime(date)
     }
 }
 
