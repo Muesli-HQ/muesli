@@ -332,6 +332,33 @@ struct MediaPlaybackControllerTests {
         #expect(client.playbackState == .playing)
     }
 
+    @Test("media the user pauses before the pause toggle is not started on release")
+    func userPauseBeforeToggleIsNotResumed() {
+        // The begin query sees playback, then the user pauses before the pause
+        // attempt reads state again. No toggle goes out, so the release owes
+        // nothing and must not press play.
+        let client = FakeMediaPlaybackClient(playbackState: .playing, completesImmediately: false)
+        let controller = makeController(client: client)
+
+        controller.beginDictationMediaPause(enabled: true, routeKind: .speakerLike)
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+        client.completeNext(with: .playing)
+
+        // The pause attempt's own query is now outstanding; the user pauses.
+        #expect(waitUntil { client.pendingQueryCount == 1 })
+        client.playbackState = .notPlaying
+        client.completesImmediately = true
+        client.completeNext(with: .notPlaying)
+        controller.waitForIdle()
+        #expect(client.toggles.isEmpty)
+
+        controller.restoreDictationMediaPause()
+        controller.waitForIdle()
+
+        #expect(client.toggles.isEmpty)
+        #expect(client.playbackState == .notPlaying)
+    }
+
     /// Polls `condition` until it holds or the timeout elapses. Used where the
     /// assertion is about work still being outstanding, which `waitForIdle`
     /// cannot express.

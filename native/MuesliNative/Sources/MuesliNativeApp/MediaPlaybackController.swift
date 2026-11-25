@@ -84,7 +84,8 @@ final class MediaPlaybackController: MediaPlaybackManaging {
         case idle
         /// Query in flight; we have not yet touched playback.
         case checkingBegin(Int)
-        /// We sent a pause for this session and owe a resume.
+        /// Playback was confirmed at begin and a pause is under way. A resume
+        /// is owed only if a pause toggle was actually sent (`owesResume`).
         case paused(Int)
     }
 
@@ -160,6 +161,13 @@ final class MediaPlaybackController: MediaPlaybackManaging {
                 // oscillate. `owesResume` still carries the obligation, so
                 // cancelling the pause here cannot strand playback.
                 generation += 1
+                // `.paused` records that this session decided to pause, not
+                // that it did. If the user paused the media first, no toggle
+                // went out and there is nothing to give back.
+                guard owesResume else {
+                    MediaPlaybackLogging.log("restore skipped: no pause was sent")
+                    return
+                }
                 ensure(.play, token: generation)
             case .idle:
                 resumeIfOwed()
@@ -217,7 +225,9 @@ final class MediaPlaybackController: MediaPlaybackManaging {
             return
         }
         pauseState = .paused(token)
-        owesResume = true
+        // The resume obligation is taken on in `attempt`, when a pause toggle
+        // is actually sent. Taking it here would make the release start media
+        // the user paused between this query and the pause attempt's own.
         ensure(.pause, token: token)
     }
 
@@ -278,6 +288,11 @@ final class MediaPlaybackController: MediaPlaybackManaging {
                 guard attemptsRemaining > 0 else {
                     completion(false)
                     return
+                }
+                if command == .pause {
+                    // Owed from the moment the toggle leaves, confirmed or not:
+                    // a pause that lands unverified must still be resumed.
+                    self.owesResume = true
                 }
                 self.client.sendPlayPauseToggle(intent: command)
                 self.poll(
