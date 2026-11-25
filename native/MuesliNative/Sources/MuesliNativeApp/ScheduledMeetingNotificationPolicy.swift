@@ -1,16 +1,42 @@
 import Foundation
 
+struct AutoRecordAttemptGuard {
+    private var claimedKeys = Set<String>()
+
+    func hasClaimed(_ key: String) -> Bool {
+        claimedKeys.contains(key)
+    }
+
+    @discardableResult
+    mutating func claim(_ key: String) -> Bool {
+        claimedKeys.insert(key).inserted
+    }
+}
+
 enum ScheduledMeetingNotificationPolicy {
     enum AutoRecordDecision: Equatable {
         case keepCurrentRecording
         case askBeforeRecording
-        case startRecording
+        case waitForJoin
+    }
+
+    enum JoinedCallAction: Equatable {
+        case record
+        case showToast
+        case ignore
     }
 
     static func autoRecordDecision(isRecording: Bool, hasDetectedCall: Bool, hasCallAssertion: Bool?) -> AutoRecordDecision {
         if isRecording { return .keepCurrentRecording }
         if hasDetectedCall || hasCallAssertion != false { return .askBeforeRecording }
-        return .startRecording
+        return .waitForJoin
+    }
+
+    static func joinedCallAction(
+        showsDetection: Bool, autoRecordMeetings: Bool, hasCalendarEvent: Bool, hasLiveMedia: Bool, alreadyAttempted: Bool
+    ) -> JoinedCallAction {
+        if autoRecordMeetings && hasCalendarEvent && hasLiveMedia && !alreadyAttempted { return .record }
+        return showsDetection ? .showToast : .ignore
     }
 
     static func shouldNotifyAboutRecordingConflict(recordingRoom: String?, scheduledRoom: String?) -> Bool {
@@ -114,5 +140,11 @@ enum ScheduledMeetingNotificationPolicy {
         event.meetingURL != nil
             && !event.isAllDay
             && !hiddenEventIDs.contains(event.id)
+    }
+}
+
+extension MeetingCandidate {
+    var hasLiveMediaEvidence: Bool {
+        evidence.contains(.audioInputProcess)
     }
 }
