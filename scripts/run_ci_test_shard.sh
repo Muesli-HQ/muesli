@@ -333,6 +333,7 @@ case "${shard}" in
       MeetingsNavigationTests
       MeetingTranscriptionSelectionObservationTests
       MeetingBrowserLogicTests
+      BrowserAutomationPermissionTests
       MeetingNotesInlineMarkdownTests
       MeetingMarkdownAutoExporterTests
       # PDF case runs a headless NSPrintOperation (no panels, save-to-file).
