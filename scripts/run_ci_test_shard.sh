@@ -251,6 +251,9 @@ case "${shard}" in
       BufferedMicrophoneCaptureTests
       MeetingMicrophoneDeliveryTests
       StreamingMicRecorderBufferTests
+      WeChatCallDetectionAdapterTests
+      WeChatCallDetectionLifecycleTests
+      WeChatCallDetectionCollectorTests
       AudioAttributionServiceTests
       CameraActivityMonitorTests
       MicrophoneActivityMonitorTests
