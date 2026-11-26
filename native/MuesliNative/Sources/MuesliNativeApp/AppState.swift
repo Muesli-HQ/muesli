@@ -2,6 +2,11 @@ import Foundation
 import Observation
 import MuesliCore
 
+enum DashboardFindDestination: Equatable {
+    case globalSearch
+    case settingsSearch
+}
+
 enum DashboardTab: String, CaseIterable {
     case timeline
     case timeTurner
@@ -331,7 +336,33 @@ final class AppState {
     var searchResultDictations: [DictationRecord] = []
     var searchResultMeetings: [MeetingRecord] = []
     var focusSearchField: Bool = false
+    var focusSettingsSearchField: Bool = false
     var isSearchActive: Bool { !searchQuery.isEmpty }
+
+    nonisolated static func findDestination(
+        selectedTab: DashboardTab,
+        isSearchActive: Bool,
+        globalSearchPresented: Bool
+    ) -> DashboardFindDestination {
+        if selectedTab == .settings, !isSearchActive, !globalSearchPresented {
+            return .settingsSearch
+        }
+        return .globalSearch
+    }
+
+    func routeFindAction() {
+        switch Self.findDestination(
+            selectedTab: selectedTab,
+            isSearchActive: isSearchActive,
+            globalSearchPresented: globalSearchPresented
+        ) {
+        case .settingsSearch:
+            focusSettingsSearchField = true
+        case .globalSearch:
+            focusSettingsSearchField = false
+            globalSearchPresented = true
+        }
+    }
 
     // Navigation
     var timeTurnerDay = Date() {

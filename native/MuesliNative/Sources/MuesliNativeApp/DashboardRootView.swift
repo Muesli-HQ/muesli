@@ -160,6 +160,9 @@ struct DashboardRootView: View {
             GlobalSearchPanel(controller: controller, appState: appState)
         }
         .onChange(of: appState.selectedTab) { _, tab in
+            if tab != .settings {
+                appState.focusSettingsSearchField = false
+            }
             if appState.activeFeatureTour == nil, let feature = NewFeature.sidebar(tab) {
                 NewFeatureDiscovery.shared.markUsed(feature)
             }
@@ -167,7 +170,7 @@ struct DashboardRootView: View {
         .onChange(of: appState.focusSearchField) { _, focus in
             if focus {
                 appState.focusSearchField = false
-                appState.globalSearchPresented = true
+                appState.routeFindAction()
             }
         }
         .alert(
