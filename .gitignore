@@ -82,6 +82,7 @@ tmp-install/
 *.wav
 !assets/audio/quill-activate.wav
 !assets/audio/quill-release.wav
+!assets/audio/keycap-click.wav
 *.sqlite
 *.db
 

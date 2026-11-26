@@ -3,6 +3,31 @@ import Testing
 
 @Suite("Dictation backend preparation ownership")
 struct DictationBackendPreparationTests {
+    @Test("Time Turner only defers launch preparation until a speech feature is enabled")
+    func timeTurnerLaunchPreparation() {
+        var config = AppConfig()
+        config.onboardingUseCase = OnboardingUseCase.timeTurner.rawValue
+        config.enablePushToTalk = false
+        #expect(!DictationBackendPreparationState.shouldPrepareAtLaunch(config))
+        config.enablePushToTalk = true
+        #expect(DictationBackendPreparationState.shouldPrepareAtLaunch(config))
+        config.enablePushToTalk = false
+        config.onboardingUseCase = OnboardingUseCase.meetings.rawValue
+        #expect(DictationBackendPreparationState.shouldPrepareAtLaunch(config))
+    }
+
+    @Test("First local use starts deferred preparation once")
+    func deferredLocalPreparation() {
+        var state = DictationBackendPreparationState()
+        #expect(!state.needsLocalPreparation(isHosted: true))
+        #expect(state.needsLocalPreparation(isHosted: false))
+        let token = state.begin(isHosted: false)
+        state.track(Task {}, for: token)
+        #expect(!state.needsLocalPreparation(isHosted: false))
+        _ = state.finish(token, succeeded: true)
+        #expect(!state.needsLocalPreparation(isHosted: false))
+    }
+
     @Test("A new local or hosted selection cancels the previous preparation task", arguments: [true, false])
     func switchingCancelsPreparation(_ hosted: Bool) async {
         var state = DictationBackendPreparationState()

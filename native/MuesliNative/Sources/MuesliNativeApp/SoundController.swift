@@ -131,7 +131,7 @@ enum SoundController {
         return nil
     }
 
-    static func bundledLifecycleSoundURL(named name: String) -> URL? {
+    nonisolated static func bundledLifecycleSoundURL(named name: String) -> URL? {
         for ext in ["wav", "aiff", "mp3"] {
             if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "audio") {
                 return url

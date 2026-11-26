@@ -5,6 +5,24 @@ import Testing
 @Suite("OnboardingProgress")
 struct OnboardingProgressTests {
 
+    @Test("Time Turner uses screen and Accessibility grants, with meeting audio shared on the legacy backend")
+    func timeTurnerPermissionUnion() {
+        var grants = OnboardingPermissionSnapshot(microphone: false, accessibility: true, inputMonitoring: false,
+                                                   systemAudio: false, screenRecording: true)
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(grants, for: .timeTurner))
+        grants.accessibility = false
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(grants, for: .timeTurner))
+        grants.accessibility = true
+        grants.microphone = true
+        let both = OnboardingUseCase.timeTurner.toggling(.meetings)
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(grants, for: both, useCoreAudioTap: false))
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(grants, for: both, useCoreAudioTap: true))
+        grants.systemAudio = true
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(grants, for: both, useCoreAudioTap: true))
+        grants.screenRecording = false
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(grants, for: both, useCoreAudioTap: true))
+    }
+
     @Test("missing Cohere language defaults to english")
     func missingCohereLanguageDefaultsToEnglish() throws {
         let json = """
@@ -403,6 +421,9 @@ struct OnboardingProgressTests {
 
         var everythingGranted = everythingWithoutAccessibility
         everythingGranted.accessibility = true
+        #expect(!OnboardingPermissionGate.hasRequiredPermissions(everythingGranted, for: .everything))
+        #expect(OnboardingPermissionGate.hasRequiredPermissions(everythingGranted, for: .resolved("everything")))
+        everythingGranted.screenRecording = true
         #expect(OnboardingPermissionGate.hasRequiredPermissions(everythingGranted, for: .everything))
     }
 }

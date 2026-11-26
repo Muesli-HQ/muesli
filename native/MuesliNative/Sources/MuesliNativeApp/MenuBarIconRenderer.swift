@@ -57,12 +57,22 @@ enum MenuBarIconRenderer {
         }
     }
 
+    /// `badge` is the short build label (D, DA, PP...) that builds other than
+    /// the release app show beside the icon; see `AppIdentity.buildBadgeShort`.
     static func statusTitle(
         hotkey: HotkeyConfig,
         showsHotkey: Bool = true,
-        detail: String? = nil
+        detail: String? = nil,
+        badge: String? = nil
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
+        if let badge, !badge.isEmpty {
+            result.append(NSAttributedString(
+                string: "\u{2009}\(badge)",
+                // Same orange as the icon pill in scripts/badge_app_icon.swift.
+                attributes: [.font: AppFonts.bold(10), .foregroundColor: NSColor.systemOrange]
+            ))
+        }
         if showsHotkey {
             result.append(NSAttributedString(
                 string: "\u{2009}\(hotkeyCueLabel(for: hotkey))",

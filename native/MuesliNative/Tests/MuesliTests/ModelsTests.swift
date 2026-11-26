@@ -2418,11 +2418,14 @@ struct AppConfigTests {
         #expect(!voiceAndMeetings.includesDictation)
         #expect(voiceAndMeetings.includesMeetings)
 
-        let everything = voiceAndMeetings.toggling(.dictation)
+        let legacy = voiceAndMeetings.toggling(.dictation)
+        #expect(legacy == OnboardingUseCase.resolved("everything"))
+        #expect(!legacy.includesTimeTurner)
+        let everything = legacy.toggling(.timeTurner)
         #expect(everything == .everything)
         #expect(everything.capabilities == OnboardingUseCase.allCapabilities)
 
-        #expect(everything.toggling(.voiceNotes) == .dictationAndMeetings)
+        #expect(legacy.toggling(.voiceNotes) == .dictationAndMeetings)
         #expect(OnboardingUseCase.dictation.toggling(.dictation) == .dictation)
     }
 

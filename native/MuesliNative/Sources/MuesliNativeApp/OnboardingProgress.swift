@@ -39,7 +39,7 @@ enum OnboardingPermissionGate {
         if useCase.includesVoiceNotes {
             return hasRequiredVoiceNotesPermissions(permissions)
         }
-        return permissions.microphone
+        return !useCase.includesMeetings || permissions.microphone
     }
 
     static func hasRequiredPermissions(
@@ -47,7 +47,10 @@ enum OnboardingPermissionGate {
         for useCase: OnboardingUseCase,
         useCoreAudioTap: Bool = true
     ) -> Bool {
-        guard permissions.microphone else { return false }
+        if (useCase.includesPushToTalk || useCase.includesMeetings) && !permissions.microphone { return false }
+        if useCase.includesTimeTurner, FeaturePermission.missingForScreenHistory(
+            screen: permissions.screenRecording, accessibility: permissions.accessibility
+        ) != nil { return false }
         if useCase.includesDictation,
            (!permissions.accessibility || !permissions.inputMonitoring) {
             return false
