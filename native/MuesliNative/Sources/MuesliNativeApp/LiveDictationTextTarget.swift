@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 /// Owns one revisable range for one hands-free session. Never writes AXValue,
-/// or types deletion keystrokes. Codex uses bounded, acknowledged plain-text
+/// or types deletion keystrokes. Supported rich editors use bounded, acknowledged plain-text
 /// pastes for live drafts and one leased paste for final cleanup. Unsupported editors must
 /// use the caller's preview/history path instead of an unverified replacement.
 @MainActor
@@ -101,12 +101,18 @@ final class LiveDictationTextTarget {
         case targetedPaste
     }
 
-    nonisolated static func transport(for bundleIdentifier: String?) -> Transport {
-        bundleIdentifier == "com.openai.codex" ? .targetedPaste : .axSelectedText
+    nonisolated static let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
+
+    nonisolated static func transport(for bundleIdentifier: String?, role: String? = nil, classes: [String] = []) -> Transport {
+        if bundleIdentifier == "com.openai.codex" { return .targetedPaste }
+        // Claude's composer acknowledges AXSelectedText writes without updating its document.
+        if bundleIdentifier == claudeDesktopBundleID, role == kAXTextAreaRole,
+           classes.contains("tiptap"), classes.contains("ProseMirror") { return .targetedPaste }
+        return .axSelectedText
     }
 
     nonisolated static func allowsEmptyLineSentinelRemoval(for bundleIdentifier: String?) -> Bool {
-        bundleIdentifier == "com.openai.codex"
+        bundleIdentifier == "com.openai.codex" || bundleIdentifier == claudeDesktopBundleID
     }
 
     enum FocusStatus: Equatable, Sendable {
@@ -966,10 +972,11 @@ private final class AccessibilityTarget: @unchecked Sendable {
 
     private var isValid: Bool { validityLock.withLock { !invalidated } }
 
-    private init(application: NSRunningApplication, element: AXUIElement, appElement: AXUIElement) {
+    private init(application: NSRunningApplication, element: AXUIElement, appElement: AXUIElement,
+                 transport: LiveDictationTextTarget.Transport) {
         self.application = application
         self.element = element
-        transport = LiveDictationTextTarget.transport(for: application.bundleIdentifier)
+        self.transport = transport
         self.appElement = appElement
     }
 
@@ -992,9 +999,14 @@ private final class AccessibilityTarget: @unchecked Sendable {
                   let raw, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
             let element = raw as! AXUIElement
             AXUIElementSetMessagingTimeout(element, 0.1)
-            let transport = LiveDictationTextTarget.transport(for: app.bundleIdentifier)
+            var classes: CFTypeRef?
+            if app.bundleIdentifier == LiveDictationTextTarget.claudeDesktopBundleID {
+                AXUIElementCopyAttributeValue(element, "AXDOMClassList" as CFString, &classes)
+            }
+            let transport = LiveDictationTextTarget.transport(for: app.bundleIdentifier,
+                role: classes == nil ? nil : string(element, kAXRoleAttribute), classes: classes as? [String] ?? [])
             guard supportsReplacement(element, transport: transport) else { return nil }
-            let target = AccessibilityTarget(application: app, element: element, appElement: appElement)
+            let target = AccessibilityTarget(application: app, element: element, appElement: appElement, transport: transport)
             guard target.focusStatus() == .focused, let snapshot = target.snapshot() else { return nil }
             target.initialSnapshot = snapshot
             if transport == .targetedPaste, snapshot.selection == NSRange(location: 0, length: 0) {

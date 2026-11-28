@@ -121,7 +121,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML",
         label: "Nemotron 3.5 Multilingual",
         sizeLabel: "~665 MB",
-        description: "Live text appears as you speak in more than 100 locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
+        description: "Live text appears as you speak in 32 supported locales, including Hindi, Chinese, and Japanese, with language auto-detection and punctuation. It works for hold-to-talk, hands-free dictation, and meetings, but it only appends words—it does not go back to correct earlier text.",
         recommended: false
     )
 
@@ -169,7 +169,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/sensevoice-small-coreml",
         label: "SenseVoice Small",
         sizeLabel: SenseVoiceTranscriber.downloadedModelSizeLabel,
-        description: "A compact option covering more than 50 languages, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
+        description: "A compact option for Mandarin, Cantonese, English, Japanese, and Korean, with punctuation included in the result. Quality varies by language and accent, so try it with your own voice before relying on it.",
         recommended: false
     )
 
@@ -229,7 +229,7 @@ struct BackendOption: Equatable {
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
         sizeLabel: "~1.3 GB",
-        description: "Experimental multilingual transcription across 52 languages. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
+        description: "Experimental multilingual transcription across 30 languages and 22 Chinese dialects. Accuracy can vary noticeably for accented English, so try it with your own voice before relying on it. Expect a short 2–3 second wait compared with Parakeet, and about 30 seconds of one-time preparation the first time it runs.",
         recommended: false
     )
 
@@ -2076,37 +2076,45 @@ enum OnboardingCapability: String, Codable, CaseIterable, Hashable {
     case voiceNotes = "voice_notes"
     case dictation
     case meetings
+    case timeTurner = "time_turner"
 }
 
-enum OnboardingUseCase: String, Codable, CaseIterable {
-    case voiceNotes = "voice_notes"
-    case dictation = "dictation"
-    case meetings = "meetings"
-    case voiceNotesAndDictation = "voice_notes_and_dictation"
-    case voiceNotesAndMeetings = "voice_notes_and_meetings"
-    case dictationAndMeetings = "dictation_and_meetings"
-    case everything = "everything"
+struct OnboardingUseCase: RawRepresentable, Codable, Hashable {
+    let capabilities: Set<OnboardingCapability>
 
     static let allCapabilities = Set(OnboardingCapability.allCases)
+    static let voiceNotes = Self(capabilities: [.voiceNotes])
+    static let dictation = Self(capabilities: [.dictation])
+    static let meetings = Self(capabilities: [.meetings])
+    static let timeTurner = Self(capabilities: [.timeTurner])
+    static let voiceNotesAndDictation = Self(capabilities: [.voiceNotes, .dictation])
+    static let voiceNotesAndMeetings = Self(capabilities: [.voiceNotes, .meetings])
+    static let dictationAndMeetings = Self(capabilities: [.dictation, .meetings])
+    static let everything = Self(capabilities: allCapabilities)
 
-    var capabilities: Set<OnboardingCapability> {
-        switch self {
-        case .voiceNotes:
-            [.voiceNotes]
-        case .dictation:
-            [.dictation]
-        case .meetings:
-            [.meetings]
-        case .voiceNotesAndDictation:
-            [.voiceNotes, .dictation]
-        case .voiceNotesAndMeetings:
-            [.voiceNotes, .meetings]
-        case .dictationAndMeetings:
-            [.dictation, .meetings]
-        case .everything:
-            Self.allCapabilities
-        }
+    private init(capabilities: Set<OnboardingCapability>) {
+        self.capabilities = capabilities.isEmpty ? [.dictation] : capabilities
     }
+
+    // Earlier builds wrote "everything" for the three original audio workflows.
+    // Preserve that choice on resume, including the permissions it authorized.
+    var rawValue: String {
+        if capabilities == [.voiceNotes, .dictation, .meetings] { return "everything" }
+        return OnboardingCapability.allCases.filter(capabilities.contains).map(\.rawValue).joined(separator: "_and_")
+    }
+
+    init?(rawValue: String) {
+        if rawValue == "everything" {
+            self.init(capabilities: [.voiceNotes, .dictation, .meetings])
+            return
+        }
+        let parts = rawValue.components(separatedBy: "_and_")
+        let capabilities = Set(parts.compactMap(OnboardingCapability.init(rawValue:)))
+        guard capabilities.count == parts.count else { return nil }
+        self.init(capabilities: capabilities)
+    }
+
+    var includesTimeTurner: Bool { capabilities.contains(.timeTurner) }
 
     var includesDictation: Bool {
         capabilities.contains(.dictation)
@@ -2125,7 +2133,7 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 
     var canSwitchToVoiceNotesOnly: Bool {
-        includesDictation && !includesVoiceNotes
+        includesDictation && !includesVoiceNotes && !includesTimeTurner
     }
 
     func toggling(_ capability: OnboardingCapability) -> OnboardingUseCase {
@@ -2147,14 +2155,7 @@ enum OnboardingUseCase: String, Codable, CaseIterable {
     }
 
     static func from(capabilities: Set<OnboardingCapability>) -> OnboardingUseCase {
-        let normalized = capabilities.isEmpty ? Set([OnboardingCapability.dictation]) : capabilities
-        if normalized == [.voiceNotes] { return .voiceNotes }
-        if normalized == [.dictation] { return .dictation }
-        if normalized == [.meetings] { return .meetings }
-        if normalized == [.voiceNotes, .dictation] { return .voiceNotesAndDictation }
-        if normalized == [.voiceNotes, .meetings] { return .voiceNotesAndMeetings }
-        if normalized == [.dictation, .meetings] { return .dictationAndMeetings }
-        return .everything
+        Self(capabilities: capabilities)
     }
 
     static func resolved(_ rawValue: String?) -> OnboardingUseCase {

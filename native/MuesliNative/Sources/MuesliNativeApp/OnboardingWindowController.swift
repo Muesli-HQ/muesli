@@ -35,12 +35,16 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        if window == nil { buildWindow() }
-        window?.center()
+        if window == nil {
+            buildWindow()
+            window?.center()
+        }
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         bringToFront()
     }
 
     func bringToFront() {
+        guard window?.isMiniaturized == false else { return }
         window?.alphaValue = 1
         window?.ignoresMouseEvents = false
         window?.level = .floating
@@ -90,7 +94,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.level = .normal
             window.alphaValue = 1
             window.ignoresMouseEvents = false
-            window.orderFrontRegardless()
+            if !window.isMiniaturized { window.orderFrontRegardless() }
         case .restoredAndActive:
             bringToFront()
         }
@@ -113,7 +117,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func buildWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
-            styleMask: [.titled],
+            styleMask: [.titled, .miniaturizable],
             backing: .buffered,
             defer: false
         )

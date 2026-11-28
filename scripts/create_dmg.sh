@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Creates a signed DMG from the installed app bundle with a custom Finder
-# window layout (dark background, icon positions, no toolbar/sidebar).
+# window layout (branded background, icon positions, no toolbar/sidebar).
 # Usage: ./scripts/create_dmg.sh [app_path] [output_dir]
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,16 +16,15 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$BACKGROUND_DIR/dmg-background.png" ]]; then
-  echo "DMG background not found: $BACKGROUND_DIR/dmg-background.png" >&2
-  echo "Run: python3 scripts/generate_dmg_background.py" >&2
+if [[ ! -f "$BACKGROUND_DIR/dmg-background.png" || ! -f "$BACKGROUND_DIR/dmg-background@2x.png" ]]; then
+  echo "Missing installer artwork in $BACKGROUND_DIR" >&2
+  echo "Run: uv run --with Pillow --with resvg-py python scripts/generate_dmg_background.py" >&2
   exit 1
 fi
 
 # Extract version from Info.plist
 VERSION=$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "0.0.0")
 APP_NAME=$(defaults read "$APP_PATH/Contents/Info" CFBundleDisplayName 2>/dev/null || echo "Muesli")
-export MUESLI_DMG_APP_NAME="$APP_NAME"
 APP_BUNDLE_NAME="$(basename "$APP_PATH")"
 # Keep release asset names stable when user-facing branding changes.
 DMG_NAME="${APP_BUNDLE_NAME%.app}-${VERSION}.dmg"
@@ -71,8 +70,8 @@ ln -s /Applications "$STAGING/Applications"
 
 # Background images (hidden folder — macOS Finder reads .background/)
 mkdir -p "$STAGING/.background"
-cp "$BACKGROUND_DIR/dmg-background.png"    "$STAGING/.background/dmg-background.png"
-cp "$BACKGROUND_DIR/dmg-background@2x.png" "$STAGING/.background/dmg-background@2x.png"
+tiffutil -cathidpicheck "$BACKGROUND_DIR/dmg-background.png" "$BACKGROUND_DIR/dmg-background@2x.png" \
+  -out "$STAGING/.background/dmg-background.tiff"
 
 # Create writable DMG from staging
 hdiutil create -volname "$APP_NAME" \
@@ -107,9 +106,9 @@ open "$MOUNT_POINT" >/dev/null 2>&1 || true
 sleep 1
 
 # Configure Finder window via AppleScript:
-#   - 1080×760pt window (full artboard size), icon size 152
-#   - Custom dark background from .background/dmg-background.png (@2x Retina at 2160×1520)
-#   - App icon at left (260, 313), Applications symlink at right (820, 313)
+#   - 920×406pt content plus Finder title bar, icon size 88
+#   - Multi-resolution TIFF lets Finder select the appropriate Retina representation
+#   - App icon at left (305, 155), Applications symlink at right (615, 155)
 #   - No toolbar, no sidebar, icon view
 #   - Bounds set 3× (before first close, after re-open, after update) to ensure it sticks
 #
@@ -124,22 +123,22 @@ tell application "Finder"
     set toolbar visible of container window to false
     set statusbar visible of container window to false
     set sidebar width of container window to 0
-    set the bounds of container window to {100, 100, 1180, 860}
+    set the bounds of container window to {100, 100, 1020, 538}
     set theViewOptions to the icon view options of container window
     set arrangement of theViewOptions to not arranged
-    set icon size of theViewOptions to 152
-    set text size of theViewOptions to 10
+    set icon size of theViewOptions to 88
+    set text size of theViewOptions to 13
     set label position of theViewOptions to bottom
-    set background picture of theViewOptions to file ".background:dmg-background.png"
-    set position of item ${APPLESCRIPT_APP_BUNDLE_NAME} of container window to {260, 305}
-    set position of item "Applications" of container window to {820, 305}
-    set the bounds of container window to {100, 100, 1180, 860}
+    set background picture of theViewOptions to file ".background:dmg-background.tiff"
+    set position of item ${APPLESCRIPT_APP_BUNDLE_NAME} of container window to {305, 155}
+    set position of item "Applications" of container window to {615, 155}
+    set the bounds of container window to {100, 100, 1020, 538}
     close
     open
-    set the bounds of container window to {100, 100, 1180, 860}
+    set the bounds of container window to {100, 100, 1020, 538}
     update without registering applications
     delay 5
-    set the bounds of container window to {100, 100, 1180, 860}
+    set the bounds of container window to {100, 100, 1020, 538}
     close
   end tell
 end tell

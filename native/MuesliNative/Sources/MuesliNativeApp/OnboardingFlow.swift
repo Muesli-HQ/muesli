@@ -132,10 +132,11 @@ enum OnboardingFlow {
     }
 
     static func orderedSteps(for useCase: OnboardingUseCase) -> [Int] {
-        var steps = [Step.welcome.rawValue, Step.model.rawValue]
+        var steps = [Step.welcome.rawValue]
+        if useCase.includesPushToTalk || useCase.includesMeetings { steps.append(Step.model.rawValue) }
         if useCase.includesPushToTalk {
             steps += [Step.hotkey.rawValue, Step.permissions.rawValue, Step.dictationTest.rawValue]
-        } else if useCase.includesMeetings {
+        } else {
             steps += [Step.permissions.rawValue]
         }
         if useCase.includesMeetings {
@@ -160,6 +161,6 @@ enum OnboardingFlow {
     }
 
     static func completionTab(for useCase: OnboardingUseCase) -> DashboardTab {
-        .timeline
+        useCase == .timeTurner ? .timeTurner : .timeline
     }
 }

@@ -88,8 +88,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         updateMenuBarTitle()
     }
 
+    private var statusIcon: NSImage? {
+        MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+    }
+
     func refreshIcon() {
-        statusItem.button?.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+        statusItem.button?.image = statusIcon
         updateMenuBarTitle()
     }
 
@@ -122,13 +126,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         statusItem.button?.attributedTitle = MenuBarIconRenderer.statusTitle(
             hotkey: controller.config.dictationHotkey,
             showsHotkey: controller.config.showHotkeyInMenuBar,
-            detail: detail
+            detail: detail,
+            badge: AppIdentity.buildBadgeShort
         )
     }
 
     private func build() {
         if let button = statusItem.button {
-            button.image = MenuBarIconRenderer.make(choice: controller.config.menuBarIcon)
+            button.image = statusIcon
             button.imageScaling = .scaleProportionallyDown
             button.toolTip = AppIdentity.displayName
         }

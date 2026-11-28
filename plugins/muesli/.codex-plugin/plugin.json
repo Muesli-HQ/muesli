@@ -1,0 +1,40 @@
+{
+  "name": "muesli",
+  "version": "0.2.0",
+  "description": "Analyze supplied muesli transcripts, with optional local CLI workflows on macOS.",
+  "author": {
+    "name": "Muesli"
+  },
+  "homepage": "https://muesli.works/docs/",
+  "repository": "https://github.com/Muesli-HQ/muesli",
+  "license": "MIT",
+  "keywords": [
+    "muesli",
+    "transcription",
+    "meetings",
+    "macos"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "muesli",
+    "shortDescription": "Work with muesli transcripts",
+    "longDescription": "Turn a muesli transcript you share in chat into notes, decisions, and action items. On a Mac with local command access, use muesli’s CLI to inspect meetings and dictations, transcribe audio, inspect Vidshot frames and narration, or look up activity in Time Turner. ChatGPT can analyze material you share in the conversation; installing this skill does not give it access to your Mac.",
+    "developerName": "Muesli",
+    "category": "Productivity",
+    "capabilities": [
+      "Analyze supplied transcripts",
+      "Guide local muesli CLI workflows",
+      "Inspect local Vidshot captures"
+    ],
+    "websiteURL": "https://muesli.works/",
+    "privacyPolicyURL": "https://muesli.works/privacy",
+    "termsOfServiceURL": "https://muesli.works/terms",
+    "defaultPrompt": [
+      "Summarize this muesli transcript I provided.",
+      "Find decisions and action items in this muesli transcript.",
+      "On my Mac, list recent muesli meetings with the CLI."
+    ],
+    "logo": "./assets/muesli-icon.png",
+    "composerIcon": "./assets/muesli-icon.png"
+  }
+}

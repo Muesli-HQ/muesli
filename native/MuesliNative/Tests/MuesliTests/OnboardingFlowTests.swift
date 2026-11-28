@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MuesliCore
 import Testing
@@ -5,6 +6,52 @@ import Testing
 
 @Suite("OnboardingFlow")
 struct OnboardingFlowTests {
+    @Test("Time Turner alone goes from Welcome to permissions, then screen history")
+    func timeTurnerSteps() {
+        #expect(OnboardingFlow.orderedSteps(for: .timeTurner) == [0, 3])
+        #expect(OnboardingFlow.completionTab(for: .timeTurner) == .timeTurner)
+    }
+
+    @Test("Every nonempty workflow selection survives serialization")
+    func capabilityRoundTrip() throws {
+        let choices = OnboardingCapability.allCases
+        for mask in 1..<(1 << choices.count) {
+            let capabilities = Set(choices.indices.filter { mask & (1 << $0) != 0 }.map { choices[$0] })
+            let choice = OnboardingUseCase.from(capabilities: capabilities)
+            #expect(choice.capabilities == capabilities)
+            #expect(OnboardingUseCase.resolved(choice.rawValue) == choice)
+            let data = try JSONEncoder().encode(choice)
+            #expect(try JSONDecoder().decode(OnboardingUseCase.self, from: data) == choice)
+        }
+    }
+
+    @Test("Keycaps follow the physical side and commit once on release")
+    func keycapPressAndRelease() {
+        var gesture = ModifierKeyGesture()
+        for (code, flag): (UInt16, NSEvent.ModifierFlags) in [
+            (54, .command), (55, .command), (58, .option), (61, .option), (59, .control),
+            (62, .control), (56, .shift), (60, .shift), (63, .function)
+        ] {
+            #expect(gesture.receive(.flagsChanged, keyCode: code, flags: flag) == nil)
+            #expect(gesture.held == code)
+            #expect(gesture.receive(.flagsChanged, keyCode: code, flags: []) == code)
+            #expect(gesture.held == nil)
+            #expect(gesture.receive(.flagsChanged, keyCode: code, flags: []) == nil)
+        }
+    }
+
+    @Test("Typing, modifier chords and modified clicks never change the shortcut")
+    func keycapIgnoresInterruptedPress() {
+        for interruption: NSEvent.EventType in [.keyDown, .flagsChanged, .leftMouseDown] {
+            var gesture = ModifierKeyGesture()
+            _ = gesture.receive(.flagsChanged, keyCode: 55, flags: .command)
+            _ = gesture.receive(interruption, keyCode: 56, flags: [.command, .shift])
+            #expect(gesture.held == nil)
+            #expect(gesture.receive(.flagsChanged, keyCode: 56, flags: .command) == nil)
+            #expect(gesture.receive(.flagsChanged, keyCode: 55, flags: []) == nil)
+        }
+    }
+
     @Test("Restored supported models outside onboarding must be reconfirmed", arguments: [2, 3, 4, 5, 6])
     func replacedModelReturnsToSelection(_ requestedStep: Int) {
         let version = OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
@@ -71,7 +118,7 @@ struct OnboardingFlowTests {
         )
         let updated = OnboardingFlow.toggling(.voiceNotes, in: everything)
 
-        #expect(updated.selectedUseCase == .dictationAndMeetings)
+        #expect(updated.selectedUseCase.capabilities == [.dictation, .meetings, .timeTurner])
         #expect(updated.selectionBeforeEverything == nil)
     }
 
